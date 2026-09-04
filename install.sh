@@ -18,6 +18,8 @@ Options:
   --dry-run             print every action, change nothing
   -h, --help            show this help
 
+Install paths must not contain spaces.
+
 Profiles: see profiles/ in this repository.
 USAGE
 }
@@ -31,9 +33,15 @@ DRY_RUN=0
 while [ $# -gt 0 ]; do
   case "$1" in
     -h|--help) usage; exit 0 ;;
-    --mode) MODE="${2:-}"; shift 2 ;;
-    --target) TARGET_OVERRIDE="${2:-}"; shift 2 ;;
-    --shim-dir) SHIM_DIR="${2:-}"; shift 2 ;;
+    --mode)
+      [ $# -ge 2 ] || die "missing value for --mode"
+      need_value --mode "$2"; MODE="$2"; shift 2 ;;
+    --target)
+      [ $# -ge 2 ] || die "missing value for --target"
+      need_value --target "$2"; TARGET_OVERRIDE="$2"; shift 2 ;;
+    --shim-dir)
+      [ $# -ge 2 ] || die "missing value for --shim-dir"
+      need_value --shim-dir "$2"; SHIM_DIR="$2"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
     -*) die "unknown option: $1" ;;
     *) [ -z "$PROFILE" ] || die "only one profile at a time"; PROFILE="$1"; shift ;;
@@ -45,18 +53,15 @@ export DRY_RUN
 case "$MODE" in symlink|copy) ;; *) die "unknown mode: $MODE" ;; esac
 
 PROFILE_DIR="$REPO_ROOT/profiles/$PROFILE"
-[ -d "$PROFILE_DIR" ] || die "unknown profile: $PROFILE"
-[ -f "$PROFILE_DIR/profile.json" ] || die "profile has no profile.json: $PROFILE"
-
-if [ -n "$TARGET_OVERRIDE" ]; then
-  TARGET="$(expand_path "$TARGET_OVERRIDE")"
-else
-  TARGET="$(expand_path "$(json_field "$PROFILE_DIR/profile.json" target)")"
-fi
+TARGET="$(resolve_profile_target "$PROFILE_DIR" "$TARGET_OVERRIDE")"
+SHIM_DIR="$(expand_path "$SHIM_DIR")"
 SHIM_NAME="$(json_field "$PROFILE_DIR/profile.json" shim)"
 [ -n "$SHIM_NAME" ] || die "profile.json has no shim name"
 
+# Both paths this script creates in — and the uninstaller deletes from — are
+# guarded before anything is written.
 guard_target "$TARGET" "$REPO_ROOT"
+guard_target "$SHIM_DIR" "$REPO_ROOT"
 
 log "profile:  $PROFILE"
 log "target:   $TARGET"
