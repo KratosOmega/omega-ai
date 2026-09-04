@@ -1,0 +1,6 @@
+{
+  "name": "game-dev",
+  "description": "2D game development AI — Godot 4.x plus an engine-agnostic core",
+  "target": "~/.claude-gamedev",
+  "shim": "claude-gd"
+}

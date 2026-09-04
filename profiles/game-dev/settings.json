@@ -1,0 +1,15 @@
+{
+  "model": "opus",
+  "enabledPlugins": {
+    "superpowers@claude-plugins-official": true,
+    "godot-prompter@skillsmith": true
+  },
+  "extraKnownMarketplaces": {
+    "skillsmith": {
+      "source": {
+        "source": "github",
+        "repo": "jame581/skillsmith"
+      }
+    }
+  }
+}
