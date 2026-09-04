@@ -136,7 +136,163 @@ test_two_profiles_independent() {
   assert_file "$TMP/bin/claude-gen" "other profile's shim survives"
 }
 
+# --- Finding 1: the shim directory must pass the same guard as the target. ---
+# Runs under a fake $HOME so the assertions can never involve the real ~/.claude.
+test_install_guards_shim_dir() {
+  FAKE="$TMP/fakehome"
+  mkdir -p "$FAKE/.claude"
+  printf 'precious\n' > "$FAKE/.claude/settings.json"
+  status=0
+  ( HOME="$FAKE" sh "$REPO_ROOT/install.sh" general \
+      --target "$TMP/sg" --shim-dir "$FAKE/.claude/bin" >/dev/null 2>&1 ) || status=$?
+  assert_eq "1" "$status" "install refuses a shim dir inside ~/.claude"
+  assert_missing "$FAKE/.claude/bin" "refused install creates nothing under ~/.claude"
+  assert_missing "$TMP/sg" "refused install creates no config root"
+  assert_contains "$FAKE/.claude/settings.json" "precious" "existing ~/.claude content is untouched"
+
+  status=0
+  ( HOME="$FAKE" sh "$REPO_ROOT/install.sh" general \
+      --target "$TMP/sg" --shim-dir "$FAKE/.claude" >/dev/null 2>&1 ) || status=$?
+  assert_eq "1" "$status" "install refuses ~/.claude itself as the shim dir"
+
+  assert_status 1 "install refuses an in-repo shim dir" -- \
+    sh "$REPO_ROOT/install.sh" general --target "$TMP/sg" --shim-dir "$REPO_ROOT/bin"
+  assert_missing "$REPO_ROOT/bin" "refused install creates no directory in the repo"
+
+  status=0
+  ( HOME="$FAKE" sh "$REPO_ROOT/uninstall.sh" general \
+      --target "$TMP/sg2" --shim-dir "$FAKE/.claude/bin" >/dev/null 2>&1 ) || status=$?
+  assert_eq "1" "$status" "uninstall refuses a shim dir inside ~/.claude"
+}
+
+# --- Finding 2: uninstall only removes what this invocation installed. ---
+test_uninstall_scopes_manifest_entries() {
+  sh "$REPO_ROOT/install.sh" general --target "$TMP/scope" --shim-dir "$TMP/bin-scope" >/dev/null
+  mkdir -p "$TMP/outside"
+  printf 'not ours\n' > "$TMP/outside/precious.txt"
+  printf '%s\n' "$TMP/outside/precious.txt" >> "$TMP/scope/.omega-ai-manifest"
+  sh "$REPO_ROOT/uninstall.sh" general --target "$TMP/scope" --shim-dir "$TMP/bin-scope" \
+    > "$TMP/scope.out" 2>&1
+  assert_file "$TMP/outside/precious.txt" "manifest entry outside the target survives uninstall"
+  assert_contains "$TMP/scope.out" "skipping manifest entry" "uninstall warns about the skipped entry"
+  assert_missing "$TMP/scope/CLAUDE.md" "in-scope entries are still removed"
+  assert_missing "$TMP/bin-scope/claude-gen" "the matching shim is still removed"
+}
+
+# --- Finding 3 + deferred: option values are required, empty is an error. ---
+test_option_value_required() {
+  FAKE="$TMP/fakehome-opt"
+  mkdir -p "$FAKE/.claude-general"
+  printf 'live root\n' > "$FAKE/.claude-general/marker.txt"
+
+  status=0
+  ( HOME="$FAKE" sh "$REPO_ROOT/uninstall.sh" general \
+      --target "" --purge --yes >/dev/null 2>&1 ) || status=$?
+  assert_eq "1" "$status" "uninstall refuses an empty --target instead of falling back"
+  assert_file "$FAKE/.claude-general/marker.txt" "an empty --target never purges the default root"
+
+  assert_status 1 "install refuses an empty --target" -- \
+    sh "$REPO_ROOT/install.sh" general --target "" --shim-dir "$TMP/bin-opt"
+  assert_status 1 "install refuses an empty --shim-dir" -- \
+    sh "$REPO_ROOT/install.sh" general --target "$TMP/opt" --shim-dir ""
+  assert_status 1 "install refuses an empty --mode" -- \
+    sh "$REPO_ROOT/install.sh" general --mode "" --target "$TMP/opt"
+  assert_status 1 "doctor refuses an empty --target" -- \
+    sh "$REPO_ROOT/doctor.sh" general --target ""
+  assert_status 1 "sync-memory refuses an empty --target" -- \
+    sh "$REPO_ROOT/sync-memory.sh" general --target ""
+  assert_missing "$TMP/opt" "no config root is created by a refused install"
+
+  # A trailing option with no value at all must die cleanly, naming the flag.
+  for spec in "install.sh --target" "install.sh --mode" "install.sh --shim-dir" \
+              "uninstall.sh --target" "uninstall.sh --shim-dir" \
+              "doctor.sh --target" "sync-memory.sh --target"; do
+    script="${spec% *}"; flag="${spec#* }"
+    sh "$REPO_ROOT/$script" general "$flag" > "$TMP/opt.out" 2>&1 || true
+    assert_contains "$TMP/opt.out" "missing value for $flag" \
+      "$script names $flag when its value is missing"
+  done
+}
+
+# --- Findings 4 and 7: the doctor must actually detect a leak. ---
+# Only a symlink inside the temporary root is created; nothing under ~/.claude
+# is created, read, modified, or removed. The probe is removed afterwards.
+test_doctor_detects_leak() {
+  sh "$REPO_ROOT/install.sh" general --target "$TMP/leak" --shim-dir "$TMP/bin-leak" >/dev/null
+
+  ln -s "$HOME/.claude/settings.json" "$TMP/leak/leaky-link"
+  status=0
+  sh "$REPO_ROOT/doctor.sh" general --target "$TMP/leak" > "$TMP/leak.out" 2>&1 || status=$?
+  rm -f "$TMP/leak/leaky-link"
+  assert_eq "1" "$status" "doctor exits 1 on a link into ~/.claude"
+  assert_contains "$TMP/leak.out" "leakage:" "doctor reports leakage"
+  assert_contains "$TMP/leak.out" "leaky-link" "doctor names the leaking link"
+  assert_not_contains "$TMP/leak.out" "leakage: none" "doctor does not claim the root is clean"
+
+  # Finding 7: a link to ~/.claude itself, not a descendant, is still a leak.
+  ln -s "$HOME/.claude" "$TMP/leak/exact-link"
+  status=0
+  sh "$REPO_ROOT/doctor.sh" general --target "$TMP/leak" > "$TMP/leak2.out" 2>&1 || status=$?
+  rm -f "$TMP/leak/exact-link"
+  assert_eq "1" "$status" "doctor exits 1 on a link to ~/.claude itself"
+  assert_contains "$TMP/leak2.out" "exact-link" "doctor names the exact-path leak"
+
+  status=0
+  sh "$REPO_ROOT/doctor.sh" general --target "$TMP/leak" > "$TMP/leak3.out" 2>&1 || status=$?
+  assert_eq "0" "$status" "doctor passes again once the probe is removed"
+  assert_contains "$TMP/leak3.out" "leakage: none" "doctor reports a clean root again"
+}
+
+# --- Finding 8: a profile with no enabled plugins prints (none). ---
+test_doctor_reports_no_plugins() {
+  sh "$REPO_ROOT/install.sh" general --target "$TMP/plug" --shim-dir "$TMP/bin-plug" >/dev/null
+  sh "$REPO_ROOT/doctor.sh" general --target "$TMP/plug" > "$TMP/plug.out" 2>&1
+  assert_contains "$TMP/plug.out" "(none)" "doctor prints (none) for a profile with no plugins"
+  sh "$REPO_ROOT/install.sh" game-dev --target "$TMP/plug2" --shim-dir "$TMP/bin-plug" >/dev/null
+  sh "$REPO_ROOT/doctor.sh" game-dev --target "$TMP/plug2" > "$TMP/plug2.out" 2>&1
+  assert_contains "$TMP/plug2.out" "godot-prompter" "doctor lists enabled plugins when present"
+  assert_not_contains "$TMP/plug2.out" "(none)" "doctor does not print (none) when plugins exist"
+}
+
+# --- Finding 6: all four scripts resolve the profile the same way. ---
+test_all_scripts_validate_the_profile() {
+  SB="$TMP/sandbox"
+  mkdir -p "$SB"
+  cp -R "$REPO_ROOT/lib" "$REPO_ROOT/shared" "$REPO_ROOT/profiles" "$SB/"
+  cp "$REPO_ROOT/install.sh" "$REPO_ROOT/uninstall.sh" "$REPO_ROOT/doctor.sh" \
+     "$REPO_ROOT/sync-memory.sh" "$SB/"
+  mkdir -p "$SB/profiles/broken"
+  printf '# broken\n' > "$SB/profiles/broken/CLAUDE.md"
+
+  sh "$SB/install.sh" general --target "$TMP/brk" --shim-dir "$TMP/bin-brk" >/dev/null
+  mkdir -p "$TMP/brk/memory"
+  printf 'session note\n' > "$TMP/brk/memory/NOTE.md"
+
+  assert_status 1 "install refuses a profile with no profile.json" -- \
+    sh "$SB/install.sh" broken --target "$TMP/brk2" --shim-dir "$TMP/bin-brk"
+  assert_status 1 "uninstall refuses a profile with no profile.json" -- \
+    sh "$SB/uninstall.sh" broken --target "$TMP/brk" --shim-dir "$TMP/bin-brk"
+  assert_status 1 "doctor refuses a profile with no profile.json" -- \
+    sh "$SB/doctor.sh" broken --target "$TMP/brk"
+  assert_status 1 "sync-memory refuses a profile with no profile.json" -- \
+    sh "$SB/sync-memory.sh" broken --target "$TMP/brk"
+  assert_file "$TMP/brk/CLAUDE.md" "a refused uninstall removes nothing"
+  assert_missing "$SB/profiles/broken/memory" "a refused sync copies nothing"
+
+  assert_status 1 "install refuses a second positional profile" -- \
+    sh "$SB/install.sh" general game-dev --target "$TMP/brk" --shim-dir "$TMP/bin-brk"
+  assert_status 1 "uninstall refuses a second positional profile" -- \
+    sh "$SB/uninstall.sh" general game-dev --target "$TMP/brk" --shim-dir "$TMP/bin-brk"
+  assert_status 1 "doctor refuses a second positional profile" -- \
+    sh "$SB/doctor.sh" general game-dev --target "$TMP/brk"
+  assert_status 1 "sync-memory refuses a second positional profile" -- \
+    sh "$SB/sync-memory.sh" general game-dev --target "$TMP/brk"
+  assert_file "$TMP/brk/CLAUDE.md" "a refused second-profile run changes nothing"
+}
+
 run_tests test_profile_contract test_install_unknown_profile test_install_guard \
-  test_install_dry_run test_install_content test_install_precedence \
-  test_install_copy_mode test_settings_backup test_shim test_doctor \
-  test_uninstall test_uninstall_purge test_two_profiles_independent
+  test_install_guards_shim_dir test_install_dry_run test_install_content \
+  test_install_precedence test_install_copy_mode test_settings_backup test_shim \
+  test_doctor test_doctor_detects_leak test_doctor_reports_no_plugins \
+  test_option_value_required test_uninstall test_uninstall_scopes_manifest_entries \
+  test_uninstall_purge test_two_profiles_independent test_all_scripts_validate_the_profile

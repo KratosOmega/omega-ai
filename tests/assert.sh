@@ -53,6 +53,17 @@ assert_contains() {
   fi
 }
 
+assert_not_contains() {
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if [ ! -f "$1" ]; then
+    _fail "$3 (no file at $1)"
+  elif grep -q "$2" "$1"; then
+    _fail "$3 (unexpected '$2' in $1)"
+  else
+    _pass "$3"
+  fi
+}
+
 run_tests() {
   for _t in "$@"; do
     printf '%s\n' "$_t"

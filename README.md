@@ -34,6 +34,10 @@ Options: `--mode copy` for a frozen snapshot instead of symlinks, `--target DIR`
 for a different config root, `--shim-dir DIR` for a different shim location, and
 `--dry-run` to see every action without performing it.
 
+Install paths must not contain spaces: the installer captures the paths it
+creates through unquoted word splitting, so a target or shim directory with a
+space in it is not supported.
+
 ## Check
 
 ```sh
