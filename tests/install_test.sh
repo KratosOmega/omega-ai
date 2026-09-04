@@ -107,6 +107,36 @@ test_doctor() {
     sh "$REPO_ROOT/doctor.sh" general --target "$TMP/absent"
 }
 
+test_uninstall() {
+  sh "$REPO_ROOT/install.sh" general --target "$TMP/un" --shim-dir "$TMP/bin" >/dev/null
+  mkdir -p "$TMP/un/sessions"
+  printf 'user data\n' > "$TMP/un/sessions/keep.txt"
+  sh "$REPO_ROOT/uninstall.sh" general --target "$TMP/un" --shim-dir "$TMP/bin" >/dev/null
+  assert_missing "$TMP/un/skills/repo-conventions" "removes installed skill"
+  assert_missing "$TMP/un/CLAUDE.md" "removes rendered CLAUDE.md"
+  assert_missing "$TMP/bin/claude-gen" "removes the shim"
+  assert_missing "$TMP/un/.omega-ai-manifest" "removes the manifest"
+  assert_file "$TMP/un/sessions/keep.txt" "keeps user data"
+}
+
+test_uninstall_purge() {
+  sh "$REPO_ROOT/install.sh" general --target "$TMP/purge" --shim-dir "$TMP/bin" >/dev/null
+  sh "$REPO_ROOT/uninstall.sh" general --target "$TMP/purge" --shim-dir "$TMP/bin" --purge --yes >/dev/null
+  assert_missing "$TMP/purge" "purge removes the whole config root"
+}
+
+test_two_profiles_independent() {
+  sh "$REPO_ROOT/install.sh" general --target "$TMP/a" --shim-dir "$TMP/bin" >/dev/null
+  sh "$REPO_ROOT/install.sh" game-dev --target "$TMP/b" --shim-dir "$TMP/bin" >/dev/null
+  assert_file "$TMP/a/CLAUDE.md" "first profile intact after second install"
+  assert_file "$TMP/b/CLAUDE.md" "second profile installed"
+  assert_contains "$TMP/a/CLAUDE.md" "General Profile" "first root keeps its own prompt"
+  sh "$REPO_ROOT/uninstall.sh" game-dev --target "$TMP/b" --shim-dir "$TMP/bin" --purge --yes >/dev/null
+  assert_file "$TMP/a/CLAUDE.md" "uninstalling one profile leaves the other alone"
+  assert_file "$TMP/bin/claude-gen" "other profile's shim survives"
+}
+
 run_tests test_profile_contract test_install_unknown_profile test_install_guard \
   test_install_dry_run test_install_content test_install_precedence \
-  test_install_copy_mode test_settings_backup test_shim test_doctor
+  test_install_copy_mode test_settings_backup test_shim test_doctor \
+  test_uninstall test_uninstall_purge test_two_profiles_independent
