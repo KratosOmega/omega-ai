@@ -88,6 +88,16 @@ test_settings_backup() {
   assert_eq "1" "$found" "backs up a differing settings.json"
 }
 
+test_shim() {
+  sh "$REPO_ROOT/install.sh" general --target "$TMP/gen" --shim-dir "$TMP/bin" >/dev/null
+  assert_file "$TMP/bin/claude-gen" "writes the shim"
+  assert_contains "$TMP/bin/claude-gen" "CLAUDE_CONFIG_DIR" "shim sets CLAUDE_CONFIG_DIR"
+  assert_contains "$TMP/bin/claude-gen" "$TMP/gen" "shim points at the target root"
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if [ -x "$TMP/bin/claude-gen" ]; then _pass "shim is executable"; else _fail "shim is executable"; fi
+  assert_contains "$TMP/gen/.omega-ai-manifest" "bin/claude-gen" "manifest records the shim"
+}
+
 run_tests test_profile_contract test_install_unknown_profile test_install_guard \
   test_install_dry_run test_install_content test_install_precedence \
-  test_install_copy_mode test_settings_backup
+  test_install_copy_mode test_settings_backup test_shim
