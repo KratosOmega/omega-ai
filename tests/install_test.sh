@@ -26,4 +26,25 @@ test_profile_contract() {
   done
 }
 
-run_tests test_profile_contract
+test_install_unknown_profile() {
+  assert_status 1 "unknown profile is refused" -- \
+    sh "$REPO_ROOT/install.sh" nope --target "$TMP/u" --shim-dir "$TMP/bin"
+}
+
+test_install_guard() {
+  assert_status 1 "refuses ~/.claude as target" -- \
+    sh "$REPO_ROOT/install.sh" general --target "$HOME/.claude" --shim-dir "$TMP/bin"
+  assert_status 1 "refuses home as target" -- \
+    sh "$REPO_ROOT/install.sh" general --target "$HOME" --shim-dir "$TMP/bin"
+  assert_status 1 "refuses in-repo target" -- \
+    sh "$REPO_ROOT/install.sh" general --target "$REPO_ROOT/profiles" --shim-dir "$TMP/bin"
+  assert_missing "$TMP/bin/claude-gen" "no shim written by a refused install"
+}
+
+test_install_dry_run() {
+  sh "$REPO_ROOT/install.sh" general --target "$TMP/dry" --shim-dir "$TMP/bin" --dry-run >/dev/null
+  assert_missing "$TMP/dry" "dry run creates no config root"
+  assert_missing "$TMP/bin/claude-gen" "dry run creates no shim"
+}
+
+run_tests test_profile_contract test_install_unknown_profile test_install_guard test_install_dry_run
