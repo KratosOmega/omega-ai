@@ -98,6 +98,15 @@ test_shim() {
   assert_contains "$TMP/gen/.omega-ai-manifest" "bin/claude-gen" "manifest records the shim"
 }
 
+test_doctor() {
+  sh "$REPO_ROOT/install.sh" general --target "$TMP/gen" --shim-dir "$TMP/bin" >/dev/null
+  sh "$REPO_ROOT/doctor.sh" general --target "$TMP/gen" > "$TMP/doctor.out" 2>&1
+  assert_contains "$TMP/doctor.out" "$TMP/gen" "doctor reports the resolved config root"
+  assert_contains "$TMP/doctor.out" "leakage: none" "doctor finds no leak into ~/.claude"
+  assert_status 1 "doctor fails on a missing root" -- \
+    sh "$REPO_ROOT/doctor.sh" general --target "$TMP/absent"
+}
+
 run_tests test_profile_contract test_install_unknown_profile test_install_guard \
   test_install_dry_run test_install_content test_install_precedence \
-  test_install_copy_mode test_settings_backup test_shim
+  test_install_copy_mode test_settings_backup test_shim test_doctor

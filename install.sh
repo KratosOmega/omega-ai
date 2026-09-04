@@ -130,3 +130,10 @@ fi
 
 log ""
 log "Installed. Launch with: $SHIM_NAME"
+
+if [ "$DRY_RUN" = "1" ]; then
+  log "(dry run complete)"
+else
+  log ""
+  sh "$REPO_ROOT/doctor.sh" "$PROFILE" --target "$TARGET"
+fi
