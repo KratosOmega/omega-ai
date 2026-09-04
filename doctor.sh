@@ -7,22 +7,18 @@ PROFILE=""
 TARGET_OVERRIDE=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    --target) TARGET_OVERRIDE="${2:-}"; shift 2 ;;
+    --target)
+      [ $# -ge 2 ] || die "missing value for --target"
+      need_value --target "$2"; TARGET_OVERRIDE="$2"; shift 2 ;;
     -h|--help) log "Usage: doctor.sh <profile> [--target DIR]"; exit 0 ;;
     -*) die "unknown option: $1" ;;
-    *) PROFILE="$1"; shift ;;
+    *) [ -z "$PROFILE" ] || die "only one profile at a time"; PROFILE="$1"; shift ;;
   esac
 done
 [ -n "$PROFILE" ] || die "no profile given"
 
 PROFILE_DIR="$REPO_ROOT/profiles/$PROFILE"
-[ -d "$PROFILE_DIR" ] || die "unknown profile: $PROFILE"
-
-if [ -n "$TARGET_OVERRIDE" ]; then
-  TARGET="$(expand_path "$TARGET_OVERRIDE")"
-else
-  TARGET="$(expand_path "$(json_field "$PROFILE_DIR/profile.json" target)")"
-fi
+TARGET="$(resolve_profile_target "$PROFILE_DIR" "$TARGET_OVERRIDE")"
 SHIM_NAME="$(json_field "$PROFILE_DIR/profile.json" shim)"
 
 log "profile:      $PROFILE"
@@ -39,8 +35,12 @@ log "hooks:        $(count "$TARGET/hooks")"
 
 if [ -f "$TARGET/settings.json" ]; then
   log "plugins:"
-  grep -o '"[^"]*@[^"]*"[[:space:]]*:[[:space:]]*true' "$TARGET/settings.json" 2>/dev/null \
-    | sed 's/^/  /' || log "  (none)"
+  plugins="$(grep -o '"[^"]*@[^"]*"[[:space:]]*:[[:space:]]*true' "$TARGET/settings.json" 2>/dev/null || true)"
+  if [ -n "$plugins" ]; then
+    printf '%s\n' "$plugins" | sed 's/^/  /'
+  else
+    log "  (none)"
+  fi
 fi
 
 log "launch:       $SHIM_NAME"
@@ -50,12 +50,20 @@ else
   log "shim on PATH: no — add your shim directory to PATH"
 fi
 
-# Leakage check: nothing inside this root may resolve into ~/.claude.
-leaks="$(find "$TARGET" -maxdepth 3 -type l -exec readlink {} \; 2>/dev/null \
-  | grep -F "$HOME/.claude/" || true)"
+# Leakage check: nothing inside this root may resolve into ~/.claude, and the
+# root itself may not be ~/.claude. Both the exact path and any descendant
+# count as a leak. Known limits: only symlinks are inspected, to a depth of 3.
+# The case patterns below carry a leading '(' because bash 3.2 mis-parses an
+# unbalanced ')' inside a command substitution; POSIX allows the open paren.
+leaks="$(find "$TARGET" -maxdepth 3 -type l -print 2>/dev/null | while IFS= read -r link; do
+  dest="$(readlink "$link" 2>/dev/null || true)"
+  case "${dest%/}" in
+    ("${HOME%/}/.claude"|"${HOME%/}/.claude"/*) printf '%s -> %s\n' "$link" "$dest" ;;
+  esac
+done)"
 case "${TARGET%/}" in
-  "${HOME%/}/.claude") leaks="$leaks
-target is ~/.claude" ;;
+  "${HOME%/}/.claude"|"${HOME%/}/.claude"/*) leaks="$leaks
+config root is inside ~/.claude: $TARGET" ;;
 esac
 if [ -n "$(printf '%s' "$leaks" | tr -d '[:space:]')" ]; then
   log "leakage:"
