@@ -91,6 +91,28 @@ test_run_dry() {
   assert_file "$TMP/should-exist" "wet run creates the file"
 }
 
-run_tests test_json_field test_expand_path test_guard_target_rejects \
+# --- Path canonicalization: a '..' spelling must fold before anything trusts it.
+# canon_path must work on paths that do not exist yet, because the install
+# target normally does not. Nothing here may be created on disk.
+test_canon_path() {
+  mkdir -p "$TMP/canon/a/b/c"
+  ln -s "$TMP/canon/a" "$TMP/canon/link"
+  C="$(cd -P "$TMP/canon" && pwd -P)"
+
+  assert_eq "$C/a/b" "$(canon_path "$TMP/canon/a/x/../b")" "resolves .. in the middle"
+  assert_eq "$C/a" "$(canon_path "$TMP/canon/a/b/..")" "resolves .. at the end"
+  assert_eq "$C" "$(canon_path "$TMP/canon/a/b/c/../../..")" "resolves several .. in a row"
+  assert_eq "$C/a/b" "$(canon_path "$TMP/canon/./a/./b")" "drops . segments"
+  assert_eq "$C/a/b" "$(canon_path "$C/a/b")" "leaves an already-canonical path alone"
+  assert_eq "$C/a/b" "$(cd "$TMP/canon" && canon_path "a/b")" "resolves a relative path against the cwd"
+  assert_eq "$C/nope/x" "$(canon_path "$TMP/canon/nope/deeper/../x")" \
+    "resolves a path whose ancestor does not exist"
+  assert_eq "$C/a/b" "$(canon_path "$TMP/canon/link/b")" "resolves a symlinked ancestor"
+  assert_eq "$C/.claude" "$(canon_path "$TMP/canon/x/../.claude")" \
+    "folds the ~/.claude traversal spelling"
+  assert_missing "$TMP/canon/nope" "canon_path creates nothing"
+}
+
+run_tests test_json_field test_expand_path test_canon_path test_guard_target_rejects \
   test_guard_target_rejects_descendants_of_dot_claude test_guard_target_accepts \
   test_need_value test_resolve_profile_target test_run_dry

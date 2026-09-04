@@ -54,7 +54,7 @@ case "$MODE" in symlink|copy) ;; *) die "unknown mode: $MODE" ;; esac
 
 PROFILE_DIR="$REPO_ROOT/profiles/$PROFILE"
 TARGET="$(resolve_profile_target "$PROFILE_DIR" "$TARGET_OVERRIDE")"
-SHIM_DIR="$(expand_path "$SHIM_DIR")"
+SHIM_DIR="$(canon_path "$(expand_path "$SHIM_DIR")")"
 SHIM_NAME="$(json_field "$PROFILE_DIR/profile.json" shim)"
 [ -n "$SHIM_NAME" ] || die "profile.json has no shim name"
 

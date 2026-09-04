@@ -34,16 +34,70 @@ expand_path() {
   esac
 }
 
+# canon_path PATH — print PATH in canonical absolute form. A relative PATH is
+# resolved against the current directory; '.' and '..' segments are folded, and
+# symlinked *ancestors* are resolved physically. Prints an empty line for empty
+# input. Creates nothing.
+#
+# Why not realpath / readlink -f: neither is guaranteed on macOS, and both
+# refuse a path that does not exist yet — which is the normal case here, since
+# the install target is usually about to be created. Walking the path one
+# component at a time resolves the part that does exist with `cd -P`/`pwd -P`
+# (the only POSIX way to dereference a symlinked directory) and folds the
+# missing tail textually, which is exactly how the kernel would resolve it.
+#
+# The final component is deliberately left undereferenced, so a path naming a
+# symlink still names the symlink and not its destination — uninstall.sh must
+# delete an installed link, never whatever the link points at.
+canon_path() {
+  _cp_in="$1"
+  if [ -z "$_cp_in" ]; then
+    printf '%s\n' ""
+    return 0
+  fi
+  case "$_cp_in" in
+    /*) ;;
+    *)  _cp_in="$(pwd -P)/$_cp_in" ;;
+  esac
+  _cp_out=""
+  _cp_rest="$_cp_in"
+  while [ -n "$_cp_rest" ]; do
+    _cp_seg="${_cp_rest%%/*}"
+    if [ "$_cp_seg" = "$_cp_rest" ]; then _cp_rest=""; else _cp_rest="${_cp_rest#*/}"; fi
+    case "$_cp_seg" in
+      ''|'.')
+        ;;
+      '..')
+        # _cp_out is already physical, so popping it textually is correct.
+        _cp_out="${_cp_out%/*}" ;;
+      *)
+        _cp_out="$_cp_out/$_cp_seg"
+        if [ -n "$_cp_rest" ] && [ -L "$_cp_out" ]; then
+          _cp_phys="$(CDPATH='' cd -P "$_cp_out" 2>/dev/null && pwd -P)" || _cp_phys=""
+          if [ -n "$_cp_phys" ]; then _cp_out="${_cp_phys%/}"; fi
+        fi ;;
+    esac
+  done
+  printf '%s\n' "${_cp_out:-/}"
+}
+
 # guard_target PATH REPO_ROOT — refuse to create anything anywhere dangerous.
 # Used for the config root and for the shim directory: both are paths the
 # installer creates and the uninstaller deletes from.
+#
+# Every path is canonicalized first. Without that, a '..' spelling such as
+# ~/x/../.claude matches none of the patterns below and walks straight into the
+# user's existing setup. $HOME and the repository root are canonicalized for the
+# same reason: comparing a resolved path against an unresolved one is a
+# false negative whenever either side crosses a symlink.
 guard_target() {
-  _t="${1%/}"
-  _repo="${2%/}"
+  _t="$(canon_path "${1%/}")"
+  _repo="$(canon_path "${2%/}")"
+  _home="$(canon_path "${HOME%/}")"
   [ -n "$_t" ] || die "install target is empty"
-  [ "$_t" != "${HOME%/}" ] || die "refusing to install into your home directory"
+  [ "$_t" != "$_home" ] || die "refusing to install into your home directory"
   case "$_t" in
-    "${HOME%/}/.claude"|"${HOME%/}/.claude"/*)
+    "$_home/.claude"|"$_home/.claude"/*)
       die "refusing to install into ~/.claude — that is your existing setup" ;;
   esac
   case "$_t" in

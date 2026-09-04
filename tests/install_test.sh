@@ -290,9 +290,106 @@ test_all_scripts_validate_the_profile() {
   assert_file "$TMP/brk/CLAUDE.md" "a refused second-profile run changes nothing"
 }
 
+# --- Critical: a '..' spelling must not walk around guard_target. ---
+# Runs entirely under a fake $HOME inside the sandbox, so no assertion here can
+# create, read, modify or delete anything under the real ~/.claude.
+test_install_refuses_traversal_target() {
+  FAKE="$TMP/fakehome-trav"
+  mkdir -p "$FAKE/.claude"
+  printf 'precious\n' > "$FAKE/.claude/settings.json"
+
+  status=0
+  ( HOME="$FAKE"; guard_target "$FAKE/x/../.claude" "$REPO_ROOT" >/dev/null 2>&1 ) || status=$?
+  assert_eq "1" "$status" "guard_target rejects a traversal spelling of ~/.claude"
+
+  status=0
+  ( HOME="$FAKE"; guard_target "$FAKE/x/../.claude/sub" "$REPO_ROOT" >/dev/null 2>&1 ) || status=$?
+  assert_eq "1" "$status" "guard_target rejects a traversal into a ~/.claude descendant"
+
+  status=0
+  ( HOME="$FAKE" sh "$REPO_ROOT/install.sh" general \
+      --target "$FAKE/x/../.claude" --shim-dir "$TMP/bin-trav" >/dev/null 2>&1 ) || status=$?
+  assert_eq "1" "$status" "install refuses a traversal --target"
+  assert_missing "$FAKE/.claude/CLAUDE.md" "refused traversal install renders no CLAUDE.md in ~/.claude"
+  assert_missing "$FAKE/.claude/skills" "refused traversal install installs no skills in ~/.claude"
+  assert_missing "$FAKE/.claude/commands" "refused traversal install installs no commands in ~/.claude"
+  assert_missing "$FAKE/.claude/.omega-ai-manifest" "refused traversal install writes no manifest in ~/.claude"
+  assert_missing "$FAKE/x" "refused traversal install creates no intermediate directory"
+  assert_missing "$TMP/bin-trav" "refused traversal install writes no shim directory"
+  assert_contains "$FAKE/.claude/settings.json" "precious" \
+    "refused traversal install leaves ~/.claude/settings.json untouched"
+  found=0
+  for f in "$FAKE/.claude"/settings.json.bak-*; do
+    if [ -f "$f" ]; then found=1; fi
+  done
+  assert_eq "0" "$found" "refused traversal install backs up nothing in ~/.claude"
+}
+
+test_install_refuses_traversal_shim_dir() {
+  FAKE="$TMP/fakehome-trav-shim"
+  mkdir -p "$FAKE/.claude"
+  printf 'precious\n' > "$FAKE/.claude/settings.json"
+
+  status=0
+  ( HOME="$FAKE" sh "$REPO_ROOT/install.sh" general \
+      --target "$TMP/trav" --shim-dir "$FAKE/y/../.claude/bin" >/dev/null 2>&1 ) || status=$?
+  assert_eq "1" "$status" "install refuses a traversal --shim-dir"
+  assert_missing "$FAKE/.claude/bin" "refused traversal shim-dir creates no bin under ~/.claude"
+  assert_missing "$FAKE/y" "refused traversal shim-dir creates no intermediate directory"
+  assert_missing "$TMP/trav" "refused traversal shim-dir install creates no config root"
+  assert_contains "$FAKE/.claude/settings.json" "precious" \
+    "refused traversal shim-dir leaves ~/.claude untouched"
+
+  # The uninstaller must bail on the traversal too, before it deletes anything.
+  # A real config root and a decoy shim make the refusal observable: without the
+  # guard, uninstall would strip the root and rm -f the decoy.
+  mkdir -p "$FAKE/.claude/bin"
+  printf 'decoy\n' > "$FAKE/.claude/bin/claude-gen"
+  ( HOME="$FAKE" sh "$REPO_ROOT/install.sh" general \
+      --target "$TMP/travu" --shim-dir "$TMP/bin-travu" >/dev/null 2>&1 ) || true
+  status=0
+  ( HOME="$FAKE" sh "$REPO_ROOT/uninstall.sh" general \
+      --target "$TMP/travu" --shim-dir "$FAKE/y/../.claude/bin" >/dev/null 2>&1 ) || status=$?
+  assert_eq "1" "$status" "uninstall refuses a traversal --shim-dir"
+  assert_contains "$FAKE/.claude/bin/claude-gen" "decoy" \
+    "refused traversal uninstall deletes nothing under ~/.claude"
+  assert_file "$TMP/travu/CLAUDE.md" "refused traversal uninstall strips nothing from the config root"
+}
+
+# --- Critical: a manifest entry spelled with '..' escapes the scope check. ---
+test_uninstall_skips_traversal_manifest_entries() {
+  FAKE="$TMP/fakehome-mani"
+  mkdir -p "$FAKE/.claude/plugins"
+  printf 'precious\n' > "$FAKE/.claude/settings.json"
+  printf 'plugin data\n' > "$FAKE/.claude/plugins/keep.txt"
+
+  ( HOME="$FAKE" sh "$REPO_ROOT/install.sh" general \
+      --target "$FAKE/.claude-general" --shim-dir "$FAKE/bin" >/dev/null 2>&1 ) || true
+  assert_file "$FAKE/.claude-general/.omega-ai-manifest" "sandbox install wrote a manifest"
+
+  # Two hostile entries that textually match "$TARGET/*" but escape the root.
+  printf '%s\n' "$FAKE/.claude-general/../.claude/settings.json" \
+    >> "$FAKE/.claude-general/.omega-ai-manifest"
+  printf '%s\n' "$FAKE/.claude-general/../.claude/plugins" \
+    >> "$FAKE/.claude-general/.omega-ai-manifest"
+
+  ( HOME="$FAKE" sh "$REPO_ROOT/uninstall.sh" general \
+      --target "$FAKE/.claude-general" --shim-dir "$FAKE/bin" > "$TMP/mani.out" 2>&1 ) || true
+  assert_file "$FAKE/.claude/settings.json" "a traversal manifest entry does not delete ~/.claude/settings.json"
+  assert_contains "$FAKE/.claude/settings.json" "precious" "the escaped file keeps its content"
+  assert_file "$FAKE/.claude/plugins/keep.txt" "a traversal manifest entry does not delete ~/.claude/plugins"
+  assert_contains "$TMP/mani.out" "skipping manifest entry" "uninstall warns about the escaping entry"
+  assert_missing "$FAKE/.claude-general/CLAUDE.md" "in-scope entries are still removed"
+  assert_missing "$FAKE/.claude-general/skills/repo-conventions" "in-scope skill is still removed"
+  assert_missing "$FAKE/bin/claude-gen" "the matching shim is still removed"
+  assert_missing "$FAKE/.claude-general/.omega-ai-manifest" "the manifest is still removed"
+}
+
 run_tests test_profile_contract test_install_unknown_profile test_install_guard \
-  test_install_guards_shim_dir test_install_dry_run test_install_content \
+  test_install_guards_shim_dir test_install_refuses_traversal_target \
+  test_install_refuses_traversal_shim_dir test_install_dry_run test_install_content \
   test_install_precedence test_install_copy_mode test_settings_backup test_shim \
   test_doctor test_doctor_detects_leak test_doctor_reports_no_plugins \
   test_option_value_required test_uninstall test_uninstall_scopes_manifest_entries \
+  test_uninstall_skips_traversal_manifest_entries \
   test_uninstall_purge test_two_profiles_independent test_all_scripts_validate_the_profile

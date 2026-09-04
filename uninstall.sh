@@ -28,7 +28,7 @@ done
 
 PROFILE_DIR="$REPO_ROOT/profiles/$PROFILE"
 TARGET="$(resolve_profile_target "$PROFILE_DIR" "$TARGET_OVERRIDE")"
-SHIM_DIR="$(expand_path "$SHIM_DIR")"
+SHIM_DIR="$(canon_path "$(expand_path "$SHIM_DIR")")"
 SHIM_NAME="$(json_field "$PROFILE_DIR/profile.json" shim)"
 
 # Guard both paths this script deletes from.
@@ -38,6 +38,7 @@ guard_target "$SHIM_DIR" "$REPO_ROOT"
 
 MANIFEST="$TARGET/.omega-ai-manifest"
 SHIM_PATH="${SHIM_DIR%/}/$SHIM_NAME"
+TARGET_CANON="$(canon_path "$TARGET")"
 
 if [ "$PURGE" = "1" ]; then
   if [ "$ASSUME_YES" != "1" ]; then
@@ -57,11 +58,17 @@ if [ -f "$MANIFEST" ]; then
   # invocation is responsible for: entries under TARGET, plus its own shim.
   while IFS= read -r entry; do
     [ -n "$entry" ] || continue
+    # Scope is decided on the canonical form of both sides: a '..' spelling
+    # such as "$TARGET/../.claude/settings.json" matches "$TARGET/*" textually
+    # while pointing outside the config root entirely. The removal below still
+    # uses the entry exactly as written, so a path the kernel cannot resolve
+    # deletes nothing rather than deleting the folded path instead.
+    entry_canon="$(canon_path "$entry")"
     in_scope=0
-    case "$entry" in
-      "${TARGET%/}"/*) in_scope=1 ;;
+    case "$entry_canon" in
+      "${TARGET_CANON%/}"/*) in_scope=1 ;;
     esac
-    if [ -n "$SHIM_NAME" ] && [ "$entry" = "$SHIM_PATH" ]; then in_scope=1; fi
+    if [ -n "$SHIM_NAME" ] && [ "$entry_canon" = "$SHIM_PATH" ]; then in_scope=1; fi
     if [ "$in_scope" != "1" ]; then
       warn "skipping manifest entry outside $TARGET: $entry"
       continue
