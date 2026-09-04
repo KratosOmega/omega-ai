@@ -47,4 +47,47 @@ test_install_dry_run() {
   assert_missing "$TMP/bin/claude-gen" "dry run creates no shim"
 }
 
-run_tests test_profile_contract test_install_unknown_profile test_install_guard test_install_dry_run
+test_install_content() {
+  sh "$REPO_ROOT/install.sh" general --target "$TMP/gen" --shim-dir "$TMP/bin" >/dev/null
+  assert_file "$TMP/gen/CLAUDE.md" "renders CLAUDE.md"
+  assert_contains "$TMP/gen/CLAUDE.md" "General Profile" "rendered CLAUDE.md carries profile content"
+  assert_contains "$TMP/gen/CLAUDE.md" "GENERATED" "rendered CLAUDE.md warns it is generated"
+  assert_file "$TMP/gen/settings.json" "copies settings.json"
+  assert_symlink "$TMP/gen/skills/repo-conventions" "links profile skill"
+  assert_file "$TMP/gen/.omega-ai-manifest" "writes a manifest"
+  assert_contains "$TMP/gen/.omega-ai-manifest" "skills/repo-conventions" "manifest records the skill"
+}
+
+test_install_precedence() {
+  mkdir -p "$TMP/fixture/shared/skills/collide" "$TMP/fixture/profile/skills/collide"
+  printf 'shared\n' > "$TMP/fixture/shared/skills/collide/SKILL.md"
+  printf 'profile\n' > "$TMP/fixture/profile/skills/collide/SKILL.md"
+  install_entries "$TMP/fixture/shared/skills" "$TMP/fixture/dest" copy >/dev/null
+  install_entries "$TMP/fixture/profile/skills" "$TMP/fixture/dest" copy >/dev/null
+  assert_eq "profile" "$(cat "$TMP/fixture/dest/collide/SKILL.md")" "profile entry wins the collision"
+}
+
+test_install_copy_mode() {
+  sh "$REPO_ROOT/install.sh" general --target "$TMP/cp" --shim-dir "$TMP/bin" --mode copy >/dev/null
+  assert_file "$TMP/cp/skills/repo-conventions/SKILL.md" "copy mode installs a real file"
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if [ -L "$TMP/cp/skills/repo-conventions" ]; then
+    _fail "copy mode installs no symlink"
+  else
+    _pass "copy mode installs no symlink"
+  fi
+}
+
+test_settings_backup() {
+  printf '{"model":"stale"}\n' > "$TMP/gen/settings.json"
+  sh "$REPO_ROOT/install.sh" general --target "$TMP/gen" --shim-dir "$TMP/bin" >/dev/null
+  found=0
+  for f in "$TMP/gen"/settings.json.bak-*; do
+    [ -f "$f" ] && found=1
+  done
+  assert_eq "1" "$found" "backs up a differing settings.json"
+}
+
+run_tests test_profile_contract test_install_unknown_profile test_install_guard \
+  test_install_dry_run test_install_content test_install_precedence \
+  test_install_copy_mode test_settings_backup

@@ -40,3 +40,31 @@ guard_target() {
   esac
   return 0
 }
+
+# install_entries SRC_DIR DEST_DIR MODE — install each child of SRC_DIR into
+# DEST_DIR, replacing same-named entries. Prints each destination path.
+install_entries() {
+  _src="$1"; _dest="$2"; _mode="$3"
+  [ -d "$_src" ] || return 0
+  run mkdir -p "$_dest"
+  for _entry in "$_src"/*; do
+    [ -e "$_entry" ] || continue
+    _name="$(basename "$_entry")"
+    case "$_name" in .gitkeep) continue ;; esac
+    run rm -rf "$_dest/$_name"
+    if [ "$_mode" = "copy" ]; then
+      run cp -R "$_entry" "$_dest/$_name"
+    else
+      run ln -s "$_entry" "$_dest/$_name"
+    fi
+    printf '%s\n' "$_dest/$_name"
+  done
+}
+
+# manifest_add MANIFEST PATH — record an installed path, one per line.
+manifest_add() {
+  if [ "${DRY_RUN:-0}" = "1" ]; then
+    return 0
+  fi
+  printf '%s\n' "$2" >> "$1"
+}
