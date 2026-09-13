@@ -154,7 +154,29 @@ test_manifest_remove() {
   assert_status 0 "a missing manifest is not an error" -- manifest_remove "$TMP/mr/none" "$TMP/mr/root" ""
 }
 
+# A trailing slash on an entry that names a symlink makes `rm -rf` follow the
+# link: BSD rm deletes the linked directory's contents and leaves the link.
+# canon_path keeps the final component undereferenced, so the entry looks in
+# scope while the deletion lands wherever the link points — in symlink mode,
+# inside the repository. Such an entry must be skipped, not removed.
+test_manifest_remove_skips_trailing_slash() {
+  mkdir -p "$TMP/ts/root/memory" "$TMP/ts/linked"
+  printf 'x\n' > "$TMP/ts/linked/keep.md"
+  ln -s "$TMP/ts/linked" "$TMP/ts/root/memory/sub"
+  printf 'x\n' > "$TMP/ts/root/CLAUDE.md"
+  {
+    printf '%s\n' "$TMP/ts/root/memory/sub/"
+    printf '%s\n' "$TMP/ts/root/CLAUDE.md"
+  } > "$TMP/ts/root/.omega-ai-manifest"
+  manifest_remove "$TMP/ts/root/.omega-ai-manifest" "$TMP/ts/root" "" 2>"$TMP/ts/err"
+  assert_file "$TMP/ts/linked/keep.md" "a trailing-slash entry never deletes through the link"
+  assert_symlink "$TMP/ts/root/memory/sub" "the link itself is left alone"
+  assert_contains "$TMP/ts/err" "trailing slash" "warns about the skipped entry"
+  assert_missing "$TMP/ts/root/CLAUDE.md" "other in-scope entries are still removed"
+  assert_missing "$TMP/ts/root/.omega-ai-manifest" "the manifest is still removed"
+}
+
 run_tests test_json_field test_expand_path test_canon_path test_guard_target_rejects \
   test_guard_target_rejects_descendants_of_dot_claude test_guard_target_accepts \
   test_need_value test_resolve_studio_target test_requires_of test_run_dry \
-  test_manifest_remove
+  test_manifest_remove test_manifest_remove_skips_trailing_slash

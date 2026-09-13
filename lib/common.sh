@@ -173,6 +173,12 @@ manifest_add() {
 # cannot resolve deletes nothing rather than deleting the folded path instead.
 # SHIM_PATH is canonicalized for the same reason: on macOS a shim under
 # $TMPDIR is spelled /var/... while its recorded entry folds to /private/var/...
+#
+# An entry with a trailing slash is skipped outright: `rm -rf link/` follows
+# a symlink and deletes the linked directory's contents (leaving the link),
+# so a crafted "<target>/memory/sub/" would delete through a link into the
+# repository while canon_path still judges it in scope. The installer never
+# records a trailing slash.
 manifest_remove() {
   _m="$1"; _scope_root="$2"; _shim="$3"
   [ -f "$_m" ] || return 0
@@ -180,6 +186,9 @@ manifest_remove() {
   _shim_canon="$(canon_path "$_shim")"
   while IFS= read -r _entry; do
     [ -n "$_entry" ] || continue
+    case "$_entry" in
+      */) warn "skipping manifest entry with trailing slash: $_entry"; continue ;;
+    esac
     _entry_canon="$(canon_path "$_entry")"
     _in_scope=0
     case "$_entry_canon" in
