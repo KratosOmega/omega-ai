@@ -129,6 +129,32 @@ test_canon_path() {
   assert_missing "$TMP/canon/nope" "canon_path creates nothing"
 }
 
+test_manifest_remove() {
+  mkdir -p "$TMP/mr/root/memory" "$TMP/mr/bin" "$TMP/mr/outside"
+  printf 'x\n' > "$TMP/mr/root/memory/a.md"
+  printf 'x\n' > "$TMP/mr/root/CLAUDE.md"
+  printf 'x\n' > "$TMP/mr/bin/claude-x"
+  printf 'x\n' > "$TMP/mr/outside/keep.md"
+  printf 'x\n' > "$TMP/mr/root/user-data.md"
+  {
+    printf '%s\n' "$TMP/mr/root/memory/a.md"
+    printf '%s\n' "$TMP/mr/root/CLAUDE.md"
+    printf '%s\n' "$TMP/mr/bin/claude-x"
+    printf '%s\n' "$TMP/mr/outside/keep.md"
+    printf '%s\n' "$TMP/mr/root/../outside/keep.md"
+  } > "$TMP/mr/root/.omega-ai-manifest"
+  manifest_remove "$TMP/mr/root/.omega-ai-manifest" "$TMP/mr/root" "$TMP/mr/bin/claude-x" 2>"$TMP/mr/err"
+  assert_missing "$TMP/mr/root/memory/a.md" "removes an in-scope entry"
+  assert_missing "$TMP/mr/root/CLAUDE.md" "removes a second in-scope entry"
+  assert_missing "$TMP/mr/bin/claude-x" "removes the named shim"
+  assert_file "$TMP/mr/outside/keep.md" "keeps an entry outside the target"
+  assert_file "$TMP/mr/root/user-data.md" "keeps files the manifest never recorded"
+  assert_missing "$TMP/mr/root/.omega-ai-manifest" "removes the manifest itself"
+  assert_contains "$TMP/mr/err" "skipping manifest entry" "warns about the skipped entry"
+  assert_status 0 "a missing manifest is not an error" -- manifest_remove "$TMP/mr/none" "$TMP/mr/root" ""
+}
+
 run_tests test_json_field test_expand_path test_canon_path test_guard_target_rejects \
   test_guard_target_rejects_descendants_of_dot_claude test_guard_target_accepts \
-  test_need_value test_resolve_studio_target test_requires_of test_run_dry
+  test_need_value test_resolve_studio_target test_requires_of test_run_dry \
+  test_manifest_remove

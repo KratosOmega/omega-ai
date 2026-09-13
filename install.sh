@@ -8,13 +8,17 @@ usage() {
 Usage: install.sh <studio> [options]
 
 Install a studio from this repository into its own Claude Code config root,
-leaving ~/.claude untouched.
+leaving ~/.claude untouched. The studio's skills, agents and hooks load as a
+plugin straight from the studio directory; only CLAUDE.md, settings.json,
+memory/ and bin/ are placed in the config root.
 
 Options:
   --mode symlink|copy   symlink (default) keeps the repo as source of truth;
-                        copy takes a frozen snapshot
+                        copy takes a frozen snapshot: the studio is copied to
+                        <target>/studio and loaded from there
   --target DIR          override the target from studio.json
   --shim-dir DIR        where to write the launch shim (default ~/.local/bin)
+  --no-mcp              never register an MCP server for this studio
   --dry-run             print every action, change nothing
   -h, --help            show this help
 
@@ -28,6 +32,7 @@ STUDIO=""
 MODE="symlink"
 TARGET_OVERRIDE=""
 SHIM_DIR="$HOME/.local/bin"
+NO_MCP=0
 DRY_RUN=0
 
 while [ $# -gt 0 ]; do
@@ -42,6 +47,7 @@ while [ $# -gt 0 ]; do
     --shim-dir)
       [ $# -ge 2 ] || die "missing value for --shim-dir"
       need_value --shim-dir "$2"; SHIM_DIR="$2"; shift 2 ;;
+    --no-mcp) NO_MCP=1; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
     -*) die "unknown option: $1" ;;
     *) [ -z "$STUDIO" ] || die "only one studio at a time"; STUDIO="$1"; shift ;;
@@ -57,25 +63,53 @@ TARGET="$(resolve_studio_target "$STUDIO_DIR" "$TARGET_OVERRIDE")"
 SHIM_DIR="$(canon_path "$(expand_path "$SHIM_DIR")")"
 SHIM_NAME="$(json_field "$STUDIO_DIR/studio.json" shim)"
 [ -n "$SHIM_NAME" ] || die "studio.json has no shim name"
+[ -f "$STUDIO_DIR/.claude-plugin/plugin.json" ] || die "studio has no .claude-plugin/plugin.json: $STUDIO"
 
 # Both paths this script creates in — and the uninstaller deletes from — are
 # guarded before anything is written.
 guard_target "$TARGET" "$REPO_ROOT"
 guard_target "$SHIM_DIR" "$REPO_ROOT"
 
+# The plugin directory Claude Code loads. Symlink mode points at the checkout
+# so edits are live; copy mode snapshots the studio under the config root so
+# the install has no dependency on this checkout.
+if [ "$MODE" = "copy" ]; then
+  PLUGIN_DIR="$TARGET/studio"
+else
+  PLUGIN_DIR="$STUDIO_DIR"
+fi
+SHIM_PATH="$SHIM_DIR/$SHIM_NAME"
+
 log "studio:   $STUDIO"
 log "target:   $TARGET"
 log "mode:     $MODE"
-log "shim:     $SHIM_DIR/$SHIM_NAME"
+log "plugin:   $PLUGIN_DIR"
+log "shim:     $SHIM_PATH"
 if [ "$DRY_RUN" = "1" ]; then log "(dry run — nothing will change)"; fi
 
 run mkdir -p "$TARGET"
 
+# A previous install of this studio leaves a manifest behind. Remove what it
+# recorded before writing anything, so a reinstall never leaves stale links
+# from an older layout beside the new one.
 MANIFEST="$TARGET/.omega-ai-manifest"
-[ "$DRY_RUN" = "1" ] || : > "$MANIFEST"
+if [ "$DRY_RUN" != "1" ]; then
+  # settings.json is the one installed file Claude Code mutates in-session,
+  # and the previous manifest records it — so a differing copy is preserved
+  # before the old entries are removed, never silently discarded.
+  if [ -f "$STUDIO_DIR/settings.json" ] && [ -f "$TARGET/settings.json" ] \
+    && ! cmp -s "$STUDIO_DIR/settings.json" "$TARGET/settings.json"; then
+    backup="$TARGET/settings.json.bak-$(date +%Y%m%d%H%M%S)"
+    cp "$TARGET/settings.json" "$backup"
+    warn "existing settings.json differed; backed up to $backup"
+  fi
+  manifest_remove "$MANIFEST" "$TARGET" "$SHIM_PATH"
+  : > "$MANIFEST"
+fi
 
-# Content directories: shared first, studio second so the studio wins.
-for dir in agents skills commands hooks memory; do
+# Only memory/ and bin/ live in the config root; skills, agents and hooks are
+# served by the plugin. Shared first, studio second so the studio wins.
+for dir in memory bin; do
   for installed in $(install_entries "$REPO_ROOT/shared/$dir" "$TARGET/$dir" "$MODE"); do
     manifest_add "$MANIFEST" "$installed"
   done
@@ -101,36 +135,51 @@ else
 fi
 
 # settings.json is copied, never linked: Claude Code writes to it in-session.
+# A differing existing copy was backed up above, before the old manifest's
+# entries were removed.
 if [ "$DRY_RUN" = "1" ]; then
   log "DRY  copy $TARGET/settings.json"
 elif [ -f "$STUDIO_DIR/settings.json" ]; then
-  if [ -f "$TARGET/settings.json" ] && ! cmp -s "$STUDIO_DIR/settings.json" "$TARGET/settings.json"; then
-    backup="$TARGET/settings.json.bak-$(date +%Y%m%d%H%M%S)"
-    cp "$TARGET/settings.json" "$backup"
-    warn "existing settings.json differed; backed up to $backup"
-  fi
   cp "$STUDIO_DIR/settings.json" "$TARGET/settings.json"
   manifest_add "$MANIFEST" "$TARGET/settings.json"
 fi
 
+if [ "$MODE" = "copy" ]; then
+  run rm -rf "$PLUGIN_DIR"
+  run cp -R "$STUDIO_DIR" "$PLUGIN_DIR"
+  manifest_add "$MANIFEST" "$PLUGIN_DIR"
+fi
+
 if [ "$DRY_RUN" = "1" ]; then
-  log "DRY  write shim $SHIM_DIR/$SHIM_NAME"
+  log "DRY  write shim $SHIM_PATH"
 else
   mkdir -p "$SHIM_DIR"
-  cat > "$SHIM_DIR/$SHIM_NAME" <<SHIM
+  cat > "$SHIM_PATH" <<SHIM
 #!/usr/bin/env sh
 # Generated by omega-ai install.sh — launches Claude Code against the
-# $STUDIO studio's isolated config root.
-CLAUDE_CONFIG_DIR="$TARGET" exec claude "\$@"
+# $STUDIO studio's isolated config root with the studio plugin loaded live.
+OMEGA_STUDIO_ROOT="$PLUGIN_DIR"
+export OMEGA_STUDIO_ROOT
+CLAUDE_CONFIG_DIR="$TARGET" \\
+PATH="$TARGET/bin:\$PATH" \\
+  exec claude --plugin-dir "\$OMEGA_STUDIO_ROOT" "\$@"
 SHIM
-  chmod +x "$SHIM_DIR/$SHIM_NAME"
-  manifest_add "$MANIFEST" "$SHIM_DIR/$SHIM_NAME"
+  chmod +x "$SHIM_PATH"
+  manifest_add "$MANIFEST" "$SHIM_PATH"
 
   case ":$PATH:" in
     *":$SHIM_DIR:"*) ;;
     *) warn "$SHIM_DIR is not on your PATH. Add it:
     export PATH=\"$SHIM_DIR:\$PATH\"" ;;
   esac
+fi
+
+# MCP registration is part of the engine toolkit and arrives with it; the
+# flag is accepted now so scripts written against the final interface work.
+if [ "$NO_MCP" = "1" ]; then
+  log "mcp:      skipped (--no-mcp)"
+else
+  log "mcp:      none registered (arrives with the engine toolkit)"
 fi
 
 log ""

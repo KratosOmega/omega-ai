@@ -159,3 +159,38 @@ manifest_add() {
   fi
   printf '%s\n' "$2" >> "$1"
 }
+
+# manifest_remove MANIFEST TARGET SHIM_PATH — delete every path the manifest
+# records that lies under TARGET, plus the shim at SHIM_PATH, then delete the
+# manifest itself. A missing manifest is a no-op.
+#
+# The manifest lives inside a user-writable root and can be stale from an
+# install that used a different --target or --shim-dir, so entries outside
+# TARGET are skipped with a warning. Scope is decided on the canonical form of
+# both sides: a '..' spelling such as "$TARGET/../.claude/settings.json"
+# matches "$TARGET/*" textually while pointing outside the root entirely. The
+# removal itself uses the entry exactly as written, so a path the kernel
+# cannot resolve deletes nothing rather than deleting the folded path instead.
+# SHIM_PATH is canonicalized for the same reason: on macOS a shim under
+# $TMPDIR is spelled /var/... while its recorded entry folds to /private/var/...
+manifest_remove() {
+  _m="$1"; _scope_root="$2"; _shim="$3"
+  [ -f "$_m" ] || return 0
+  _scope_canon="$(canon_path "$_scope_root")"
+  _shim_canon="$(canon_path "$_shim")"
+  while IFS= read -r _entry; do
+    [ -n "$_entry" ] || continue
+    _entry_canon="$(canon_path "$_entry")"
+    _in_scope=0
+    case "$_entry_canon" in
+      "${_scope_canon%/}"/*) _in_scope=1 ;;
+    esac
+    if [ -n "$_shim_canon" ] && [ "$_entry_canon" = "$_shim_canon" ]; then _in_scope=1; fi
+    if [ "$_in_scope" != "1" ]; then
+      warn "skipping manifest entry outside $_scope_root: $_entry"
+      continue
+    fi
+    rm -rf "$_entry"
+  done < "$_m"
+  rm -f "$_m"
+}

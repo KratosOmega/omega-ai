@@ -54,14 +54,23 @@ test_install_dry_run() {
 }
 
 test_install_content() {
-  sh "$REPO_ROOT/install.sh" general --target "$TMP/gen" --shim-dir "$TMP/bin" >/dev/null
-  assert_file "$TMP/gen/CLAUDE.md" "renders CLAUDE.md"
-  assert_contains "$TMP/gen/CLAUDE.md" "General Studio" "rendered CLAUDE.md carries studio content"
-  assert_contains "$TMP/gen/CLAUDE.md" "GENERATED" "rendered CLAUDE.md warns it is generated"
-  assert_file "$TMP/gen/settings.json" "copies settings.json"
-  assert_symlink "$TMP/gen/skills/repo-conventions" "links studio skill"
-  assert_file "$TMP/gen/.omega-ai-manifest" "writes a manifest"
-  assert_contains "$TMP/gen/.omega-ai-manifest" "skills/repo-conventions" "manifest records the skill"
+  sh "$REPO_ROOT/install.sh" game-dev --target "$TMP/gd" --shim-dir "$TMP/bin" >/dev/null
+  assert_file "$TMP/gd/CLAUDE.md" "renders CLAUDE.md"
+  assert_contains "$TMP/gd/CLAUDE.md" "Game Development Studio" "rendered CLAUDE.md carries studio content"
+  assert_contains "$TMP/gd/CLAUDE.md" "Engineering Standards" "rendered CLAUDE.md carries the shared part"
+  assert_contains "$TMP/gd/CLAUDE.md" "GENERATED" "rendered CLAUDE.md warns it is generated"
+  assert_file "$TMP/gd/settings.json" "copies settings.json"
+  assert_symlink "$TMP/gd/memory/MEMORY.md" "links studio memory"
+  assert_symlink "$TMP/gd/bin/studio-state" "links studio bin"
+  assert_missing "$TMP/gd/skills" "no skills directory in the target — the plugin serves them"
+  assert_missing "$TMP/gd/agents" "no agents directory in the target"
+  assert_missing "$TMP/gd/hooks" "no hooks directory in the target"
+  assert_missing "$TMP/gd/commands" "no commands directory in the target"
+  assert_missing "$TMP/gd/studio" "symlink mode takes no snapshot of the studio"
+  assert_file "$TMP/gd/.omega-ai-manifest" "writes a manifest"
+  assert_contains "$TMP/gd/.omega-ai-manifest" "memory/MEMORY.md" "manifest records the memory link"
+  assert_contains "$TMP/gd/.omega-ai-manifest" "bin/studio-state" "manifest records the bin link"
+  assert_not_contains "$TMP/gd/.omega-ai-manifest" "skills/" "manifest records no skills"
 }
 
 test_install_precedence() {
@@ -74,34 +83,79 @@ test_install_precedence() {
 }
 
 test_install_copy_mode() {
-  sh "$REPO_ROOT/install.sh" general --target "$TMP/cp" --shim-dir "$TMP/bin" --mode copy >/dev/null
-  assert_file "$TMP/cp/skills/repo-conventions/SKILL.md" "copy mode installs a real file"
+  sh "$REPO_ROOT/install.sh" game-dev --target "$TMP/cp" --shim-dir "$TMP/bin-cp" --mode copy >/dev/null
+  assert_file "$TMP/cp/studio/.claude-plugin/plugin.json" "copy mode snapshots the studio under the target"
+  assert_file "$TMP/cp/studio/skills/game-feel/SKILL.md" "the snapshot carries the skills"
+  assert_file "$TMP/cp/bin/studio-state" "copy mode installs a real bin file"
   TESTS_RUN=$((TESTS_RUN + 1))
-  if [ -L "$TMP/cp/skills/repo-conventions" ]; then
+  if [ -L "$TMP/cp/bin/studio-state" ]; then
     _fail "copy mode installs no symlink"
   else
     _pass "copy mode installs no symlink"
   fi
+  assert_contains "$TMP/bin-cp/claude-gd" "OMEGA_STUDIO_ROOT=\"$TMP/cp/studio\"" \
+    "copy-mode shim points the studio root at the snapshot"
+  assert_contains "$TMP/cp/.omega-ai-manifest" "$TMP/cp/studio" "manifest records the snapshot"
 }
 
+# A reinstall must not leave links from an earlier layout behind: the
+# pre-plugin installer linked skills/ into the root, and a stale skills/ tree
+# beside the plugin would load every skill twice.
+test_install_reinstall_cleans_stale_entries() {
+  sh "$REPO_ROOT/install.sh" game-dev --target "$TMP/re" --shim-dir "$TMP/bin-re" >/dev/null
+  mkdir -p "$TMP/re/skills"
+  # If the installer under test still links skills/, the path is already a
+  # link into the repository and ln -s would land inside the checkout.
+  rm -f "$TMP/re/skills/game-feel"
+  ln -s "$REPO_ROOT/studios/game-dev/skills/game-feel" "$TMP/re/skills/game-feel"
+  printf '%s\n' "$TMP/re/skills/game-feel" >> "$TMP/re/.omega-ai-manifest"
+  sh "$REPO_ROOT/install.sh" game-dev --target "$TMP/re" --shim-dir "$TMP/bin-re" >/dev/null
+  assert_missing "$TMP/re/skills/game-feel" "reinstall removes an entry the old manifest recorded"
+  assert_symlink "$TMP/re/memory/MEMORY.md" "reinstall re-creates the current links"
+  assert_file "$TMP/bin-re/claude-gd" "reinstall re-creates the shim"
+  assert_eq "1" "$(grep -c 'memory/MEMORY.md' "$TMP/re/.omega-ai-manifest")" \
+    "the manifest is rewritten, not appended"
+}
+
+test_install_accepts_no_mcp() {
+  assert_status 0 "--no-mcp is accepted" -- \
+    sh "$REPO_ROOT/install.sh" general --target "$TMP/nomcp" --shim-dir "$TMP/bin-nomcp" --no-mcp
+  assert_not_contains "$TMP/nomcp/.omega-ai-manifest" "^mcp " "--no-mcp records no mcp line"
+}
+
+# Claude Code writes to settings.json in-session, and the previous install's
+# manifest records that file — a reinstall must preserve a differing copy
+# rather than removing it along with the other stale entries.
 test_settings_backup() {
-  printf '{"model":"stale"}\n' > "$TMP/gen/settings.json"
   sh "$REPO_ROOT/install.sh" general --target "$TMP/gen" --shim-dir "$TMP/bin" >/dev/null
-  found=0
+  printf '{"model":"stale"}\n' > "$TMP/gen/settings.json"
+  sh "$REPO_ROOT/install.sh" general --target "$TMP/gen" --shim-dir "$TMP/bin" >/dev/null 2>&1
+  found=""
   for f in "$TMP/gen"/settings.json.bak-*; do
-    [ -f "$f" ] && found=1
+    [ -f "$f" ] && found="$f"
   done
-  assert_eq "1" "$found" "backs up a differing settings.json"
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if [ -n "$found" ]; then
+    _pass "backs up a differing settings.json"
+  else
+    _fail "backs up a differing settings.json"
+  fi
+  assert_contains "$found" "stale" "the backup carries the in-session content"
+  assert_not_contains "$TMP/gen/settings.json" "stale" "the studio's settings.json is installed afresh"
 }
 
 test_shim() {
-  sh "$REPO_ROOT/install.sh" general --target "$TMP/gen" --shim-dir "$TMP/bin" >/dev/null
-  assert_file "$TMP/bin/claude-gen" "writes the shim"
-  assert_contains "$TMP/bin/claude-gen" "CLAUDE_CONFIG_DIR" "shim sets CLAUDE_CONFIG_DIR"
-  assert_contains "$TMP/bin/claude-gen" "$TMP/gen" "shim points at the target root"
+  sh "$REPO_ROOT/install.sh" game-dev --target "$TMP/gd" --shim-dir "$TMP/bin" >/dev/null
+  assert_file "$TMP/bin/claude-gd" "writes the shim"
+  assert_contains "$TMP/bin/claude-gd" "CLAUDE_CONFIG_DIR=\"$TMP/gd\"" "shim sets CLAUDE_CONFIG_DIR to the target"
+  assert_contains "$TMP/bin/claude-gd" "PATH=\"$TMP/gd/bin:\$PATH\"" "shim prefixes PATH with the target bin"
+  assert_contains "$TMP/bin/claude-gd" "OMEGA_STUDIO_ROOT=\"$REPO_ROOT/studios/game-dev\"" \
+    "shim exports the studio root"
+  assert_contains "$TMP/bin/claude-gd" "exec claude --plugin-dir \"\$OMEGA_STUDIO_ROOT\" \"\$@\"" \
+    "shim loads the studio as a plugin and passes arguments through"
   TESTS_RUN=$((TESTS_RUN + 1))
-  if [ -x "$TMP/bin/claude-gen" ]; then _pass "shim is executable"; else _fail "shim is executable"; fi
-  assert_contains "$TMP/gen/.omega-ai-manifest" "bin/claude-gen" "manifest records the shim"
+  if [ -x "$TMP/bin/claude-gd" ]; then _pass "shim is executable"; else _fail "shim is executable"; fi
+  assert_contains "$TMP/gd/.omega-ai-manifest" "bin/claude-gd" "manifest records the shim"
 }
 
 test_doctor() {
@@ -114,13 +168,15 @@ test_doctor() {
 }
 
 test_uninstall() {
-  sh "$REPO_ROOT/install.sh" general --target "$TMP/un" --shim-dir "$TMP/bin" >/dev/null
+  sh "$REPO_ROOT/install.sh" game-dev --target "$TMP/un" --shim-dir "$TMP/bin" >/dev/null
   mkdir -p "$TMP/un/sessions"
   printf 'user data\n' > "$TMP/un/sessions/keep.txt"
-  sh "$REPO_ROOT/uninstall.sh" general --target "$TMP/un" --shim-dir "$TMP/bin" >/dev/null
-  assert_missing "$TMP/un/skills/repo-conventions" "removes installed skill"
+  sh "$REPO_ROOT/uninstall.sh" game-dev --target "$TMP/un" --shim-dir "$TMP/bin" >/dev/null
+  assert_missing "$TMP/un/memory/MEMORY.md" "removes the memory link"
+  assert_missing "$TMP/un/bin/studio-state" "removes the bin link"
   assert_missing "$TMP/un/CLAUDE.md" "removes rendered CLAUDE.md"
-  assert_missing "$TMP/bin/claude-gen" "removes the shim"
+  assert_missing "$TMP/un/settings.json" "removes the copied settings.json"
+  assert_missing "$TMP/bin/claude-gd" "removes the shim"
   assert_missing "$TMP/un/.omega-ai-manifest" "removes the manifest"
   assert_file "$TMP/un/sessions/keep.txt" "keeps user data"
 }
@@ -386,7 +442,6 @@ test_uninstall_skips_traversal_manifest_entries() {
   assert_file "$FAKE/.claude/plugins/keep.txt" "a traversal manifest entry does not delete ~/.claude/plugins"
   assert_contains "$TMP/mani.out" "skipping manifest entry" "uninstall warns about the escaping entry"
   assert_missing "$FAKE/.claude-general/CLAUDE.md" "in-scope entries are still removed"
-  assert_missing "$FAKE/.claude-general/skills/repo-conventions" "in-scope skill is still removed"
   assert_missing "$FAKE/bin/claude-gen" "the matching shim is still removed"
   assert_missing "$FAKE/.claude-general/.omega-ai-manifest" "the manifest is still removed"
 }
@@ -394,7 +449,8 @@ test_uninstall_skips_traversal_manifest_entries() {
 run_tests test_studio_contract test_install_unknown_studio test_install_guard \
   test_install_guards_shim_dir test_install_refuses_traversal_target \
   test_install_refuses_traversal_shim_dir test_install_dry_run test_install_content \
-  test_install_precedence test_install_copy_mode test_settings_backup test_shim \
+  test_install_precedence test_install_copy_mode test_install_reinstall_cleans_stale_entries \
+  test_install_accepts_no_mcp test_settings_backup test_shim \
   test_doctor test_doctor_detects_leak test_doctor_reports_no_plugins \
   test_option_value_required test_uninstall test_uninstall_scopes_manifest_entries \
   test_uninstall_skips_traversal_manifest_entries \
