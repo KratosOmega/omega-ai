@@ -1233,11 +1233,12 @@ the one place the studio's roles are mapped to godot-prompter skills, so an
 agent's own list can stay short, and the one place the engine's install
 steps are written down.
 
-Install: git clone --depth 1 --branch v9.3.0 https://github.com/bitwes/Gut.git /tmp/gut && mkdir -p addons && cp -R /tmp/gut/addons/gut addons/gut && rm -rf /tmp/gut
+Install: git clone --depth 1 --branch v9.6.1 https://github.com/bitwes/Gut.git /tmp/gut && mkdir -p addons && cp -R /tmp/gut/addons/gut addons/gut && rm -rf /tmp/gut
 
 The `Install:` line above is read verbatim by `test.sh` when
-`addons/gut/gut_cmdln.gd` is missing. GUT 9.3.0 is the pinned release for
-Godot 4.3+; change the tag here and nowhere else.
+`addons/gut/gut_cmdln.gd` is missing. GUT v9.6.1 targets Godot 4.6.x, which
+matches the installed 4.6.3; 9.7.x targets 4.7 with breaking changes. Plan 3's
+`studio-scaffold` uses the same tag; both must move together.
 
 ## Binary
 
@@ -1384,12 +1385,36 @@ test_test_targets_a_directory() {
 }
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [ ] **Step 2: Add the first-run import test**
+
+A project the editor has never opened has no `.godot/` and so no
+`global_script_class_cache.cfg`; `class_name` lookups then fail at parse time
+in a headless run. `test.sh` imports once when `.godot/` is absent. The stub
+records every invocation as a `stub godot args:` line in the log, so the
+assertions read that. Add this function and name it in `run_tests`:
+
+```sh
+test_test_imports_when_dot_godot_is_absent() {
+  P="$(fresh_project import)"
+  with_gut "$P"
+  verb "$P" studio-test
+  log="$(ls "$P"/.studio/reports/test-*.log | head -n 1)"
+  assert_contains "$log" "^stub godot args: --headless --path $P --import$" "a project without .godot/ is imported before the suite runs"
+  P="$(fresh_project imported)"
+  with_gut "$P"
+  mkdir -p "$P/.godot"
+  verb "$P" studio-test
+  log="$(ls "$P"/.studio/reports/test-*.log | head -n 1)"
+  assert_not_contains "$log" "\-\-import" "a project with .godot/ is not imported again"
+}
+```
+
+- [ ] **Step 3: Run the tests to verify they fail**
 
 Run: `sh tests/toolkit_test.sh`
 Expected: every new assertion FAILs with exit 2 `no adapter for engine godot4 at engines/godot/test.sh`.
 
-- [ ] **Step 3: Write `studios/game-dev/engines/godot/test.sh`**
+- [ ] **Step 4: Write `studios/game-dev/engines/godot/test.sh`**
 
 ```sh
 #!/bin/sh
@@ -1438,8 +1463,14 @@ stamp="$(date +%Y%m%d-%H%M%S)"
 xml_rel=".studio/reports/test-$stamp.xml"
 log="$PROJECT/.studio/reports/test-$stamp.log"
 
+# A project the editor has never opened has no .godot/ (and so no
+# global_script_class_cache.cfg); import once so class_name lookups resolve.
+if [ ! -d "$PROJECT/.godot" ]; then
+  "$GODOT" --headless --path "$PROJECT" --import >>"$log" 2>&1 || true
+fi
+
 "$GODOT" --headless --path "$PROJECT" -s addons/gut/gut_cmdln.gd \
-  "$@" -gexit "-gjunit_xml_file=res://$xml_rel" > "$log" 2>&1
+  "$@" -gexit "-gjunit_xml_file=res://$xml_rel" >> "$log" 2>&1
 engine_status=$?
 
 xml="$PROJECT/$xml_rel"
@@ -1470,12 +1501,12 @@ printf 'report: %s\nlog: %s\n' "$xml_rel" ".studio/reports/test-$stamp.log"
 
 `chmod +x studios/game-dev/engines/godot/test.sh`.
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `sh tests/toolkit_test.sh && sh tests/studio_test.sh`
 Expected: `0 failed` in both.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```sh
 git add studios/game-dev/engines/godot/test.sh tests/toolkit_test.sh
@@ -1514,6 +1545,7 @@ test_run_clean() {
 
 test_run_detects_script_errors() {
   P="$(fresh_project run-error)"
+  mkdir -p "$P/.godot"   # already imported; the stub prints its error line on an import run too
   STUB_SCRIPT_ERROR=1 verb "$P" studio-run --seconds 1
   assert_eq "1" "$(cat "$TMP/status")" "a SCRIPT ERROR line exits 1"
   assert_eq "1" "$(head -n 1 "$TMP/out" | grep -c 'SCRIPT ERROR')" "error lines are echoed first"
@@ -1522,6 +1554,7 @@ test_run_detects_script_errors() {
 
 test_run_passes_scene_and_windowed() {
   P="$(fresh_project run-scene)"
+  mkdir -p "$P/.godot"   # already imported; an import run is always headless
   verb "$P" studio-run --scene res://levels/test_dash.tscn --seconds 1 --windowed
   log="$(ls "$P"/.studio/reports/run-*.log | head -n 1)"
   assert_contains "$log" "res://levels/test_dash.tscn" "the scene is passed to the engine"
@@ -1530,6 +1563,7 @@ test_run_passes_scene_and_windowed() {
 
 test_run_terminates_a_long_process() {
   P="$(fresh_project run-long)"
+  mkdir -p "$P/.godot"   # already imported; the stub sleeps on an import run too
   start="$(date +%s)"
   STUB_SLEEP=30 verb "$P" studio-run --seconds 1
   elapsed=$(( $(date +%s) - start ))
@@ -1547,12 +1581,31 @@ test_run_rejects_bad_options() {
 }
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [ ] **Step 2: Add the first-run import test**
+
+`run.sh` imports once when `.godot/` is absent, for the same reason as
+`test.sh` (Task 6). Add this function and name it in `run_tests`:
+
+```sh
+test_run_imports_when_dot_godot_is_absent() {
+  P="$(fresh_project run-import)"
+  verb "$P" studio-run --seconds 1
+  log="$(ls "$P"/.studio/reports/run-*.log | head -n 1)"
+  assert_contains "$log" "^stub godot args: --headless --path $P --import$" "a project without .godot/ is imported before the run"
+  P="$(fresh_project run-imported)"
+  mkdir -p "$P/.godot"
+  verb "$P" studio-run --seconds 1
+  log="$(ls "$P"/.studio/reports/run-*.log | head -n 1)"
+  assert_not_contains "$log" "\-\-import" "a project with .godot/ is not imported again"
+}
+```
+
+- [ ] **Step 3: Run the tests to verify they fail**
 
 Run: `sh tests/toolkit_test.sh`
 Expected: the `test_run_*` assertions FAIL with `bin/studio-run: No such file or directory`.
 
-- [ ] **Step 3: Write `studios/game-dev/bin/studio-run`**
+- [ ] **Step 4: Write `studios/game-dev/bin/studio-run`**
 
 ```sh
 #!/bin/sh
@@ -1563,7 +1616,7 @@ exec sh "$(dirname "$0")/studio-dispatch" run "$@"
 
 `chmod +x studios/game-dev/bin/studio-run`.
 
-- [ ] **Step 4: Write `studios/game-dev/engines/godot/run.sh`**
+- [ ] **Step 5: Write `studios/game-dev/engines/godot/run.sh`**
 
 ```sh
 #!/bin/sh
@@ -1614,12 +1667,18 @@ stamp="$(date +%Y%m%d-%H%M%S)"
 log_rel=".studio/reports/run-$stamp.log"
 log="$PROJECT/$log_rel"
 
+# A project the editor has never opened has no .godot/ (and so no
+# global_script_class_cache.cfg); import once so class_name lookups resolve.
+if [ ! -d "$PROJECT/.godot" ]; then
+  "$GODOT" --headless --path "$PROJECT" --import >>"$log" 2>&1 || true
+fi
+
 # Build the argument list without word-splitting a scene path.
 set -- --path "$PROJECT"
 [ -n "$HEADLESS" ] && set -- "$HEADLESS" "$@"
 [ -n "$SCENE" ] && set -- "$@" "$SCENE"
 
-"$GODOT" "$@" > "$log" 2>&1 &
+"$GODOT" "$@" >> "$log" 2>&1 &
 pid=$!
 sleep "$DURATION"
 kill -TERM "$pid" 2>/dev/null || true
@@ -1640,12 +1699,12 @@ printf 'studio-run: clean (%ss, %s)\n' "$DURATION" "$log_rel"
 
 `chmod +x studios/game-dev/engines/godot/run.sh`.
 
-- [ ] **Step 5: Run the tests to verify they pass**
+- [ ] **Step 6: Run the tests to verify they pass**
 
 Run: `sh tests/toolkit_test.sh && sh tests/studio_test.sh`
 Expected: `0 failed` in both (the long-process test takes about one second).
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```sh
 git add studios/game-dev/bin/studio-run studios/game-dev/engines/godot/run.sh tests/toolkit_test.sh

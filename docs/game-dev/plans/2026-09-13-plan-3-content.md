@@ -41,6 +41,8 @@ Plan 2 is written concurrently and is not on disk. This plan relies on the spec'
 9. **`README.md` `## Use` section** may have been extended by Plan 2 with the four quality-loop stages. Task 11 replaces the whole section, so the exact Plan 2 wording does not matter.
 10. **`tests/run_all.sh`** may list Plan 2 test files. Task 1 appends `scaffold_test.sh` to the `for f in` list without removing anything.
 
+**Reconciled 2026-09-13.** Items 1–2 hold: Plan 2 delivers the verbs and the engine adapter, and its `engine_dir` strips trailing version digits, so `godot4` → `engines/godot/`. Item 3: Plan 2 centralises root and engine resolution in `bin/studio-dispatch`; `studio-scaffold` may inline the same `$OMEGA_STUDIO_ROOT`-else-symlink-resolved logic or source it from `studio-dispatch` — either is acceptable, no conflict. Item 4: Plan 2 now runs `--import` when `.godot/` is absent (edit made today). Item 5: Plan 2 now pins `v9.6.1` (edit made today). Items 6–10 hold as written: Plan 2's agents keep the current domain-skill names with rename notes and this plan's Task 5 grep sweep renames them; `ship` has a PROGRESS step; the router and `README.md` still say scaffold is "next release" until Task 8/11 here.
+
 ## File structure
 
 | Path | Responsibility |

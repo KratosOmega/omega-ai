@@ -20,4 +20,10 @@ approval page in `artifacts/`.
   https://claude.ai/code/artifact/ca2bdd14-6d92-4ad8-99b6-fe455190fb0d
   (local copy: `artifacts/2026-09-13-game-studio-design.html`).
 - Spec written: `specs/2026-09-13-game-studio-design.md`.
-- Implementation plans: pending.
+- Implementation plans written and committed:
+  `plans/2026-09-13-plan-1-foundation.md` (12 tasks),
+  `plans/2026-09-13-plan-2-quality-loop.md` (16 tasks),
+  `plans/2026-09-13-plan-3-content.md` (12 tasks).
+  Plans 2 and 3 were written in parallel from the spec and reconciled
+  (GUT pin `v9.6.1`, first-run `--import` in the Godot adapter).
+- Next: execute Plan 1, subagent-driven.
