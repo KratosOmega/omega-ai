@@ -8,11 +8,26 @@ approval page in `artifacts/`.
 
 | Plan | Scope | Status |
 |------|-------|--------|
-| 1 — Foundation | `profiles/` → `studios/`, plugin packaging, shim with `--plugin-dir`, installer/doctor/tests, session hook, `docs/game-dev/`, `.studio/STATE.md`, skills `studio` `brainstorm` `plan` `execute` | done |
+| 1 — Foundation | `profiles/` → `studios/`, plugin packaging, shim with `--plugin-dir`, installer/doctor/tests, session hook, `docs/game-dev/`, `.studio/STATE.md`, skills `studio` `brainstorm` `plan` `execute` | delivered — exit criterion (Task 12 manual run) pending |
 | 2 — Quality loop | Ten role agents, skills `review` `playtest` `ship` `retro`, `bin/` verbs with the Godot adapter, optional `godot-mcp`, doctor delegation check | planned |
 | 3 — Content | `scaffold` and template project, domain skills (migrate four, add `vertical-slice` `tuning-data` `milestone-gates`), `PROGRESS.md` conventions, `general` studio parity, skill pressure tests | planned |
 
 ## Log
+
+### 2026-09-13 — Plan 1 review fixes
+
+- Installer: input validation before reinstall, symlink-safe writes, purge
+  requires a manifest, canonical target, manifest header (`mode`, `shim`),
+  doctor shim identity / copy-mode inspection / stale-layout / canonical
+  leak check.
+- State: pointer local and resolved to the main checkout, per-feature
+  ledgers committed with the branch, `studio-state check` / `reset`,
+  PreToolUse guard.
+- Skills: agents renamed and wired, godot-prompter agents interim, verify
+  lists, smoke boot, no merge path from execute.
+- Plan: `plans/2026-09-13-plan-1-review-fixes.md`. The Plan 1 exit
+  criterion (spec §Success criteria 4) is a manual run from the main
+  checkout after merge; it has not been run yet.
 
 ### 2026-09-13 — Plan 1 (Foundation) delivered
 

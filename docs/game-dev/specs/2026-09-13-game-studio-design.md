@@ -49,9 +49,10 @@ rather than linked file by file.
 7. `sh tests/run_all.sh` passes and covers install, uninstall, plugin manifest
    validity, skill and agent frontmatter, the doctor delegation check, `bin/`
    syntax, and scaffold output.
-8. Memory written during a game-dev session lands only in
-   `~/.claude-gamedev/memory/`, and `sync-memory.sh game-dev` copies it only
-   into `studios/game-dev/memory/`.
+8. Studio memory (`studios/game-dev/memory/MEMORY.md`) is linked into
+   `~/.claude-gamedev/memory/` and imported by the rendered `CLAUDE.md`;
+   `sync-memory.sh game-dev` copies it only into `studios/game-dev/memory/`.
+   Claude's auto memory stays under `~/.claude-gamedev/projects/<project>/memory/`.
 
 ## Decisions
 
@@ -479,7 +480,10 @@ description: Use when an approved plan exists — dispatches a fresh role agent 
   out-of-worktree side effects, or a plan too broken to follow.
 - `--inline` follows `superpowers:executing-plans` instead: the main session
   implements tasks in batches and checks in with the user between batches.
-- On completion sets `stage: review`.
+- Requires the spec and plan to be committed before entering the worktree.
+- Before setting `stage: review`, boots the project headless once
+  (`godot --headless --quit-after 1`) and requires a clean log; lists every
+  unverified playtest and visual item; never merges.
 
 ### `/game-dev:review`
 
@@ -560,7 +564,9 @@ settings the template does not cover.
 
 ## State and configuration
 
-Both files live in the game project, under `.studio/`, and are committed.
+Three files live in the game project under `.studio/`. `config.json` and
+`ledger/` are committed; `STATE.md` is a local pointer that `studio-state
+init` gitignores.
 
 ### `.studio/config.json`
 
@@ -592,8 +598,22 @@ milestone: prototype
 `stage` is one of `idle`, `brainstorm`, `plan`, `execute`, `review`,
 `playtest`, `ship`, `retro`. `milestone` is one of `prototype`,
 `vertical-slice`, `alpha`, `beta`, `gold`. Empty values are written as `-`.
-All writes go through `studio-state` so every skill edits the file the same
-way; the ledger is append-only.
+
+The pointer lives in the project's main checkout: `studio-state` resolves it
+through `git rev-parse --git-common-dir`, so a linked worktree edits the same
+file and a project has one stage at a time. It is gitignored; a fresh clone
+rebuilds `task` from the ledger with `studio-state check --rebuild`.
+
+### `.studio/ledger/<feature>.md`
+
+The decision log is per feature: one file named from the spec's slug
+(`2026-09-13-player-dash.md` → `ledger/player-dash.md`), append-only,
+committed with the branch that works the feature, so two features on two
+branches never touch the same file. Lines written while no spec is set (idle
+rulings, bug fixes, `abandoned <spec>`) go to `STATE.md`'s own `## Ledger`.
+The spec, the plan and the ledger are committed at each approval gate so a
+worktree cut afterwards carries them. All writes go through `studio-state`;
+a PreToolUse hook blocks direct edits.
 
 This state file, and the router that reads it, is the whole of what the
 studio borrows from GSD.
@@ -621,6 +641,12 @@ skill; the prefix is written once per cell for readability.
 | `producer` | Scope: vertical slice first, cut lists, milestone gates, backlog. | plan, ship | Read, Write, Edit, Grep, Glob | Cut list in the plan; `PROGRESS.md` update | `game-dev:vertical-slice`, `game-dev:milestone-gates` |
 | `playtester` | Playtest script from spec criteria; bug reports with repro steps. | playtest | Read, Write, Grep, Glob, Bash | Playtest script and report | `godot-prompter:godot-testing`, `godot-debugging` |
 | `reviewer` | Spec compliance plus Godot best-practice review. No praise; one line per finding. | execute (per task), review | Read, Grep, Glob, Bash | Findings list; fix commits when asked | `godot-prompter:godot-code-review`, `godot-optimization` |
+
+**Interim (Plan 1).** Until the ten agents ship, `execute` dispatches
+`godot-prompter:godot-game-dev`, `godot-game-architect`, `godot-ui-designer`
+and `godot-code-reviewer` for the matching roles with the studio persona
+prepended, the shipped `game-dev:feel-tuner`, `tech-artist` and
+`game-designer` as themselves, and `general-purpose` for `level-designer`.
 
 When `.studio/config.json` sets `language: csharp`, `gameplay-programmer`
 routes engine work to `godot-prompter:godot-csharp-engineer` instead of the
@@ -786,12 +812,12 @@ and plan unchanged.
 first section is the milestone gate (prototype → vertical slice → alpha →
 beta → gold) with the exit criteria of the current gate.
 
-**Memory** is isolated by construction. The game studio's memory directory is
-`~/.claude-gamedev/memory/` — a different config root from any other studio or
-from the user's `~/.claude`. `sync-memory.sh game-dev` copies only into
-`studios/game-dev/memory/`. The retro skill is the single writer during a
-session; Claude Code's own auto-memory, if enabled, writes to the same
-isolated directory.
+**Memory.** Studio memory is `studios/game-dev/memory/MEMORY.md`: curated,
+cross-project decisions the retro skill writes, linked into the config root
+and imported by the rendered `CLAUDE.md`, synced back with
+`sync-memory.sh game-dev`. Claude Code's auto memory is separate and stays
+per project under `~/.claude-gamedev/projects/<project>/memory/` — a
+different config root from `~/.claude`, so nothing crosses over.
 
 ## Testing the framework
 

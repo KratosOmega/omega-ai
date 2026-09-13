@@ -10,6 +10,8 @@
 
 **Spec:** `docs/game-dev/specs/2026-09-13-game-studio-design.md` — this plan implements its "Delivery — Plan 3 — Content" scope: the sections "Scaffold template", "`/game-dev:scaffold`", "Domain skills", "Migration of existing content", "Extensibility seams" (the dimension convention), "Docs layout and memory" (a game project's `PROGRESS.md`), "Testing the framework" cases 9 and 10, the `general` studio sentence under "Renames", and the closing paragraph of "Testing the framework" (pressure scenarios).
 
+**Reconciled 2026-09-13 (review fixes).** brainstorm still references `game-dev:game-design-doc` and `game-dev:core-loop-design` (Task 5's grep sweep renames them); brainstorm now dispatches `game-dev:game-designer` for the **Design** section and carries a **Milestone gate** section in its template — `milestone-gates` (Task 6) should read that section when `PROGRESS.md` is absent rather than requiring it.
+
 ## Global Constraints
 
 Copied from the spec; every task's requirements include these.
