@@ -100,15 +100,25 @@ canon_path() {
 # target that does not exist yet has nothing to dereference and passes as
 # before. $HOME and the repository root get the same treatment so a symlinked
 # spelling of either side cannot make the comparison miss.
+#
+# ~/.claude is refused both as spelled and as resolved: when it is itself a
+# symlink (dotfiles-style ~/.claude -> ~/dotfiles/claude), the dereferenced
+# target names the destination, which the textual pattern never matches — so
+# the destination is refused too. The textual pattern stays for a ~/.claude
+# that does not exist yet. $_home is stripped of a trailing slash after
+# canonicalizing so HOME=/ yields "/.claude", never a "//.claude" that
+# matches nothing.
 guard_target() {
   _raw="${1%/}"
   [ -n "$_raw" ] || die "install target is empty"
   _t="$(canon_path "$_raw/.")"
   _repo="$(canon_path "${2%/}/.")"
   _home="$(canon_path "${HOME%/}/.")"
+  _home="${_home%/}"
+  _claude="$(canon_path "$_home/.claude/.")"
   [ "$_t" != "$_home" ] || die "refusing to install into your home directory"
   case "$_t" in
-    "$_home/.claude"|"$_home/.claude"/*)
+    "$_home/.claude"|"$_home/.claude"/*|"$_claude"|"$_claude"/*)
       die "refusing to install into ~/.claude — that is your existing setup" ;;
   esac
   case "$_t" in

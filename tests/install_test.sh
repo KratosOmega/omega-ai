@@ -516,10 +516,10 @@ test_install_refuses_symlinked_target() {
 
   status=0
   ( sh "$SB/install.sh" general --target "$TMP/evil" --shim-dir "$TMP/bin-evil" --dry-run \
-      >/dev/null 2>&1 ) || status=$?
+      > "$TMP/evil.out" 2>&1 ) || status=$?
   assert_eq "1" "$status" "install refuses a --target that links into the repository"
-  assert_not_contains "$SB/studios/general/CLAUDE.md" "GENERATED" \
-    "refused install leaves the studio's CLAUDE.md unrendered"
+  assert_contains "$TMP/evil.out" "refusing to install into the repository itself" \
+    "the refusal comes from the guard"
 
   mkdir -p "$TMP/bin-evil"
   printf 'decoy\n' > "$TMP/bin-evil/claude-gen"

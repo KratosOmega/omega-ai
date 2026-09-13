@@ -91,6 +91,40 @@ test_guard_target_derefs_symlinked_target() {
   assert_missing "$TMP/gt/fresh" "guard_target creates nothing"
 }
 
+# ~/.claude itself may be a symlink (dotfiles-style ~/.claude -> ~/dotfiles/claude).
+# The dereferenced target then names the link's destination, which the
+# textual "$HOME/.claude" pattern never matches — so the guard must refuse the
+# destination as well, while the link and its children stay refused. HOME=/
+# must still refuse /.claude rather than build a "//.claude" pattern.
+test_guard_target_rejects_symlinked_dot_claude() {
+  FAKE="$TMP/fakehome-dotfiles"
+  mkdir -p "$FAKE/dotfiles/claude/sub"
+  ln -s "$FAKE/dotfiles/claude" "$FAKE/.claude"
+
+  status=0
+  ( HOME="$FAKE"; guard_target "$FAKE/.claude" "$REPO_ROOT" >/dev/null 2>&1 ) || status=$?
+  assert_eq "1" "$status" "rejects ~/.claude when it is a symlink"
+  status=0
+  ( HOME="$FAKE"; guard_target "$FAKE/.claude/sub" "$REPO_ROOT" >/dev/null 2>&1 ) || status=$?
+  assert_eq "1" "$status" "rejects a child of a symlinked ~/.claude"
+  status=0
+  ( HOME="$FAKE"; guard_target "$FAKE/dotfiles/claude" "$REPO_ROOT" >/dev/null 2>&1 ) || status=$?
+  assert_eq "1" "$status" "rejects the directory a symlinked ~/.claude points at"
+  status=0
+  ( HOME="$FAKE"; guard_target "$FAKE/dotfiles/claude/sub" "$REPO_ROOT" >/dev/null 2>&1 ) || status=$?
+  assert_eq "1" "$status" "rejects a child of that directory"
+  status=0
+  ( HOME="$FAKE"; guard_target "$FAKE/dotfiles" "$REPO_ROOT" >/dev/null 2>&1 ) || status=$?
+  assert_eq "0" "$status" "still accepts the destination's parent"
+
+  status=0
+  ( HOME="/"; guard_target "/.claude" "$REPO_ROOT" >/dev/null 2>&1 ) || status=$?
+  assert_eq "1" "$status" "rejects /.claude when HOME is /"
+  status=0
+  ( HOME="/"; guard_target "/.claude/sub" "$REPO_ROOT" >/dev/null 2>&1 ) || status=$?
+  assert_eq "1" "$status" "rejects a child of /.claude when HOME is /"
+}
+
 test_need_value() {
   assert_status 1 "rejects an empty option value" -- need_value --target ""
   assert_status 1 "rejects an absent option value" -- need_value --target
@@ -250,7 +284,7 @@ test_manifest_remove_skips_trailing_slash() {
 
 run_tests test_json_field test_expand_path test_canon_path test_guard_target_rejects \
   test_guard_target_rejects_descendants_of_dot_claude test_guard_target_accepts \
-  test_guard_target_derefs_symlinked_target \
+  test_guard_target_derefs_symlinked_target test_guard_target_rejects_symlinked_dot_claude \
   test_need_value test_resolve_studio_target test_requires_of test_run_dry \
   test_manifest_remove test_manifest_remove_through_symlinked_root \
   test_manifest_remove_skips_trailing_slash
