@@ -24,16 +24,24 @@
 # usage, or a check that found a mismatch
 set -eu
 
-# --path-format=absolute needs git 2.31+. Outside a repository both roots are
-# the current directory.
-_common="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
-if [ -n "$_common" ]; then
-  STATE_ROOT="$(dirname "$_common")"
-  WORK_ROOT="$(git rev-parse --show-toplevel)"
+# The pointer's root is the main worktree, always listed first by
+# `git worktree list` (correct from the main checkout or any linked
+# worktree). That listing instead reports a bare repository's or a
+# submodule's own git-dir — not a worktree — when there is no ordinary
+# worktree to report, so trust the candidate only when it owns a `.git` entry
+# of its own; otherwise fall back to the working root, and outside a
+# repository — or a bare one, which has no working root either — to the
+# current directory. Every git call is guarded so a missing repository, an
+# unborn HEAD, or a bare repository never aborts the script under `set -eu`.
+_wt="$(git worktree list --porcelain 2>/dev/null | sed -n '1s/^worktree //p')"
+WORK_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+if [ -n "$_wt" ] && [ -e "$_wt/.git" ]; then
+  STATE_ROOT="$_wt"
 else
-  STATE_ROOT="$(pwd -P)"
-  WORK_ROOT="$STATE_ROOT"
+  STATE_ROOT="$WORK_ROOT"
 fi
+[ -n "$STATE_ROOT" ] || STATE_ROOT="$(pwd -P)"
+[ -n "$WORK_ROOT" ] || WORK_ROOT="$(pwd -P)"
 STATE="$STATE_ROOT/.studio/STATE.md"
 CONFIG="$WORK_ROOT/.studio/config.json"
 LEDGER_DIR="$WORK_ROOT/.studio/ledger"
@@ -92,8 +100,15 @@ EOF
     fi
     # The pointer is local to this checkout: ignore it once, where it lives.
     if [ -e "$STATE_ROOT/.git" ]; then
-      grep -qxF '.studio/STATE.md' "$STATE_ROOT/.gitignore" 2>/dev/null \
-        || printf '.studio/STATE.md\n' >> "$STATE_ROOT/.gitignore"
+      _gi="$STATE_ROOT/.gitignore"
+      if ! grep -qxF '.studio/STATE.md' "$_gi" 2>/dev/null; then
+        # A gitignore missing its trailing newline would otherwise run
+        # together with the appended line.
+        if [ -s "$_gi" ] && [ -n "$(tail -c 1 "$_gi")" ]; then
+          printf '\n' >> "$_gi"
+        fi
+        printf '.studio/STATE.md\n' >> "$_gi"
+      fi
     fi
     printf 'initialised %s\n' "$STATE"
     ;;

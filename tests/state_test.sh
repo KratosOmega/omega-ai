@@ -171,7 +171,35 @@ test_state_init_writes_config_ledger_and_gitignore_once() {
   assert_missing "$P3/.gitignore" "outside git no .gitignore is written"
 }
 
+# A pre-existing gitignore without a trailing newline must not run its last
+# line together with the appended pointer line.
+test_state_init_gitignore_appends_safely() {
+  P="$(fresh_project gi-nl)"
+  ( cd "$P" && git init -q ) 2>/dev/null
+  printf 'node_modules' > "$P/.gitignore"
+  ( cd "$P" && sh "$STATE_BIN" init >/dev/null )
+  assert_eq "2" "$(wc -l < "$P/.gitignore" | tr -d ' ')" \
+    "a missing trailing newline does not merge the two gitignore lines"
+  assert_eq "1" "$(grep -c '^node_modules$' "$P/.gitignore")" \
+    "the pre-existing rule survives intact"
+  assert_eq "1" "$(grep -c '^\.studio/STATE\.md$' "$P/.gitignore")" \
+    "the pointer line is appended on its own line"
+}
+
+# git noise (e.g. "fatal: not a git repository") must never reach stderr for
+# an ordinary non-repo project, and a leaked GIT_DIR from the caller's
+# environment must not make the tool believe it is inside a repository.
+test_state_root_outside_git_is_quiet() {
+  P="$(fresh_project quiet)"
+  assert_status 0 "root exits 0 outside git" -- \
+    sh -c "cd '$P' && unset GIT_DIR GIT_WORK_TREE; sh '$STATE_BIN' root"
+  ( cd "$P" && unset GIT_DIR GIT_WORK_TREE; sh "$STATE_BIN" root >"$TMP/quiet.out" 2>"$TMP/quiet.err" )
+  assert_eq "$P" "$(cat "$TMP/quiet.out")" "root prints the current directory outside git"
+  assert_eq "0" "$(wc -c < "$TMP/quiet.err" | tr -d ' ')" "root prints no git noise to stderr outside git"
+}
+
 run_tests test_state_needs_init test_state_init test_state_get_set test_state_validation \
   test_state_ledger test_state_ledger_keeps_all_words test_state_ledger_folds_newlines \
   test_state_set_keeps_backslashes test_state_show test_state_resolves_to_main_checkout \
-  test_state_init_writes_config_ledger_and_gitignore_once
+  test_state_init_writes_config_ledger_and_gitignore_once test_state_init_gitignore_appends_safely \
+  test_state_root_outside_git_is_quiet
