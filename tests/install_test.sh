@@ -687,6 +687,75 @@ test_uninstall_purge_symlinked_target() {
   assert_missing "$TMP/bin-link/claude-gen" "purge removes the shim"
 }
 
+test_doctor_fails_on_missing_files() {
+  sh "$REPO_ROOT/install.sh" general --target "$TMP/dmf" --shim-dir "$TMP/bin-dmf" >/dev/null 2>&1
+  rm "$TMP/dmf/CLAUDE.md"
+  status=0
+  sh "$REPO_ROOT/doctor.sh" general --target "$TMP/dmf" > "$TMP/dmf.out" 2>&1 || status=$?
+  assert_eq "1" "$status" "doctor fails when CLAUDE.md is missing"
+  assert_contains "$TMP/dmf.out" "CLAUDE.md:    MISSING" "doctor reports the missing CLAUDE.md"
+}
+
+# ~/.claude itself can be a symlink (dotfiles), and a link destination can be
+# spelled with '..'; the textual comparison used to miss both. Fake HOME only.
+test_doctor_detects_leak_through_symlinked_dot_claude() {
+  FAKE="$TMP/fakehome-dot"
+  mkdir -p "$FAKE/dotfiles/claude"
+  printf '{}\n' > "$FAKE/dotfiles/claude/settings.json"
+  ln -s "$FAKE/dotfiles/claude" "$FAKE/.claude"
+  ( HOME="$FAKE" sh "$REPO_ROOT/install.sh" general --target "$FAKE/root" --shim-dir "$FAKE/bin" ) >/dev/null 2>&1
+  ln -s "$FAKE/dotfiles/claude/settings.json" "$FAKE/root/leak"
+  status=0
+  ( HOME="$FAKE" sh "$REPO_ROOT/doctor.sh" general --target "$FAKE/root" ) > "$TMP/dot.out" 2>&1 || status=$?
+  assert_eq "1" "$status" "doctor exits 1 on a link into the directory ~/.claude points at"
+  assert_contains "$TMP/dot.out" "leak" "doctor names the leaking link"
+  rm "$FAKE/root/leak"
+  ln -s "$FAKE/root/../.claude/settings.json" "$FAKE/root/leak2"
+  status=0
+  ( HOME="$FAKE" sh "$REPO_ROOT/doctor.sh" general --target "$FAKE/root" ) > "$TMP/dot2.out" 2>&1 || status=$?
+  assert_eq "1" "$status" "doctor exits 1 on a '..'-spelled link into ~/.claude"
+  rm "$FAKE/root/leak2"
+  status=0
+  ( HOME="$FAKE" sh "$REPO_ROOT/doctor.sh" general --target "$FAKE/root" ) > "$TMP/dot3.out" 2>&1 || status=$?
+  assert_eq "0" "$status" "doctor passes again with the probes removed"
+}
+
+# A plugin id was interpolated into a grep pattern: "foo.bar@m" matched
+# "fooXbar@m" and an unenabled plugin was reported enabled.
+test_doctor_matches_plugin_ids_literally() {
+  SB="$TMP/sandbox-ids"
+  mkdir -p "$SB"
+  cp -R "$REPO_ROOT/lib" "$REPO_ROOT/shared" "$REPO_ROOT/studios" "$SB/"
+  cp "$REPO_ROOT/install.sh" "$REPO_ROOT/doctor.sh" "$SB/"
+  printf 'plugin foo.bar@market\n' > "$SB/studios/general/requires.txt"
+  printf '{ "enabledPlugins": { "fooXbar@market": true } }\n' > "$SB/studios/general/settings.json"
+  sh "$SB/install.sh" general --target "$TMP/ids" --shim-dir "$TMP/bin-ids" >/dev/null 2>&1 || true
+  status=0
+  sh "$SB/doctor.sh" general --target "$TMP/ids" > "$TMP/ids.out" 2>&1 || status=$?
+  assert_eq "1" "$status" "doctor fails when the enabled id only matches as a pattern"
+  assert_contains "$TMP/ids.out" "foo.bar@market NOT ENABLED" "doctor names the plugin as not enabled"
+}
+
+# The pre-plugin installer linked skills/, agents/, commands/ and hooks/ into
+# the root. After profiles/ disappeared those links dangle, and the doctor
+# used to report such a root as healthy.
+test_doctor_flags_stale_layout() {
+  sh "$REPO_ROOT/install.sh" general --target "$TMP/stale" --shim-dir "$TMP/bin-stale" >/dev/null 2>&1
+  mkdir -p "$TMP/stale/skills"
+  ln -s "$TMP/gone/skill" "$TMP/stale/skills/old-skill"
+  printf '%s\n' "$TMP/stale/skills/old-skill" >> "$TMP/stale/.omega-ai-manifest"
+  status=0
+  sh "$REPO_ROOT/doctor.sh" general --target "$TMP/stale" > "$TMP/stale.out" 2>&1 || status=$?
+  assert_eq "1" "$status" "doctor fails on a skills/ link from the previous installer"
+  assert_contains "$TMP/stale.out" "stale layout from a previous installer" "doctor explains the stale layout"
+  assert_contains "$TMP/stale.out" "run install.sh general again" "doctor says how to fix it"
+  sh "$REPO_ROOT/install.sh" general --target "$TMP/stale" --shim-dir "$TMP/bin-stale" >/dev/null 2>&1
+  assert_missing "$TMP/stale/skills/old-skill" "reinstall removes the recorded stale link"
+  status=0
+  sh "$REPO_ROOT/doctor.sh" general --target "$TMP/stale" >/dev/null 2>&1 || status=$?
+  assert_eq "0" "$status" "doctor passes after the reinstall"
+}
+
 run_tests test_studio_contract test_install_unknown_studio test_install_guard \
   test_install_guards_shim_dir test_install_refuses_traversal_target \
   test_install_refuses_traversal_shim_dir test_install_refuses_symlinked_target \
@@ -700,4 +769,5 @@ run_tests test_studio_contract test_install_unknown_studio test_install_guard \
   test_uninstall_purge test_two_studios_independent test_all_scripts_validate_the_studio \
   test_install_normalizes_name_and_target test_resolve_studio_target_failure_is_not_masked \
   test_install_replaces_symlinked_files \
-  test_uninstall_purge_requires_manifest test_uninstall_purge_symlinked_target
+  test_uninstall_purge_requires_manifest test_uninstall_purge_symlinked_target \
+  test_doctor_fails_on_missing_files test_doctor_detects_leak_through_symlinked_dot_claude test_doctor_matches_plugin_ids_literally test_doctor_flags_stale_layout

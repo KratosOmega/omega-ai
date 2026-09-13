@@ -33,8 +33,8 @@ log "studio:       $STUDIO"
 log "config root:  $TARGET"
 [ -d "$TARGET" ] || die "config root does not exist — run install.sh $STUDIO"
 
-log "CLAUDE.md:    $([ -f "$TARGET/CLAUDE.md" ] && printf 'present' || printf 'MISSING')"
-log "settings:     $([ -f "$TARGET/settings.json" ] && printf 'present' || printf 'MISSING')"
+if [ -f "$TARGET/CLAUDE.md" ]; then log "CLAUDE.md:    present"; else log "CLAUDE.md:    MISSING"; failed=1; fi
+if [ -f "$TARGET/settings.json" ]; then log "settings:     present"; else log "settings:     MISSING"; failed=1; fi
 
 # Plugin content is counted in the studio directory, which is what the shim's
 # --plugin-dir loads; nothing under the config root carries it.
@@ -77,7 +77,8 @@ for req in $required; do
   listed=1
   rname="${req%@*}"
   rmarket="${req#*@}"
-  if grep -q "\"$req\"[[:space:]]*:[[:space:]]*true" "$TARGET/settings.json" 2>/dev/null; then
+  # -F: a plugin id is data ('.' in it must not match any character).
+  if grep -F "\"$req\"" "$TARGET/settings.json" 2>/dev/null | grep -q '"[[:space:]]*:[[:space:]]*true'; then
     cache="$TARGET/plugins/cache/$rmarket/$rname"
     if [ -d "$cache" ]; then
       versions="$(ls -1 "$cache" 2>/dev/null | tr '\n' ' ')"
@@ -109,21 +110,50 @@ else
   log "shim on PATH: no — add your shim directory to PATH"
 fi
 
+# The pre-plugin installer linked skills/, agents/, commands/ and hooks/ into
+# the root; any symlink under those, or a dangling link directly under the
+# root, is that layout left behind — a reinstall removes what its manifest
+# recorded.
+stale=""
+for d in skills agents commands hooks; do
+  for l in "$TARGET/$d"/*; do
+    [ -L "$l" ] && stale="$stale $d/$(basename "$l")"
+  done
+done
+for l in "$TARGET"/*; do
+  if [ -L "$l" ] && [ ! -e "$l" ]; then stale="$stale $(basename "$l")"; fi
+done
+if [ -n "$stale" ]; then
+  warn "stale layout from a previous installer:$stale — run install.sh $STUDIO again"
+  failed=1
+fi
+
 # Leakage check: nothing inside this root may resolve into ~/.claude, and the
-# root itself may not be ~/.claude. Both the exact path and any descendant
-# count as a leak. Known limits: only symlinks are inspected, to a depth of 3.
-# The case patterns below carry a leading '(' because bash 3.2 mis-parses an
-# unbalanced ')' inside a command substitution; POSIX allows the open paren.
+# root itself may not be ~/.claude. Both sides are canonical: ~/.claude may
+# itself be a symlink (dotfiles), and a link destination may be spelled with
+# '..'. Only symlinks are inspected, to a depth of 3.
+home_canon="$(canon_path "${HOME%/}/.")"
+home_canon="${home_canon%/}"
+claude_canon="$(canon_path "$home_canon/.claude/.")"
+# is_leak CANONICAL_PATH — inside ~/.claude, as spelled or as resolved. The
+# leading '(' on each pattern is the bash-3.2-in-a-command-substitution
+# workaround already used below: an unbalanced ')' inside $(...) is otherwise
+# mis-parsed, so every case arm's paren is balanced explicitly.
+is_leak() {
+  case "$1" in
+    ("$home_canon/.claude"|"$home_canon/.claude"/*|"$claude_canon"|"$claude_canon"/*) return 0 ;;
+  esac
+  return 1
+}
 leaks="$(find "$TARGET" -maxdepth 3 -type l -print 2>/dev/null | while IFS= read -r link; do
   dest="$(readlink "$link" 2>/dev/null || true)"
-  case "${dest%/}" in
-    ("${HOME%/}/.claude"|"${HOME%/}/.claude"/*) printf '%s -> %s\n' "$link" "$dest" ;;
-  esac
+  case "$dest" in (/*) ;; (*) dest="$(dirname "$link")/$dest" ;; esac
+  if is_leak "$(canon_path "$dest")"; then printf '%s -> %s\n' "$link" "$dest"; fi
 done)"
-case "${TARGET%/}" in
-  "${HOME%/}/.claude"|"${HOME%/}/.claude"/*) leaks="$leaks
-config root is inside ~/.claude: $TARGET" ;;
-esac
+if is_leak "$(canon_path "${TARGET%/}/.")"; then
+  leaks="$leaks
+config root is inside ~/.claude: $TARGET"
+fi
 if [ -n "$(printf '%s' "$leaks" | tr -d '[:space:]')" ]; then
   log "leakage:"
   printf '%s\n' "$leaks" | sed 's/^/  /'
