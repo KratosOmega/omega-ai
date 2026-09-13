@@ -38,7 +38,6 @@ guard_target "$SHIM_DIR" "$REPO_ROOT"
 
 MANIFEST="$TARGET/.omega-ai-manifest"
 SHIM_PATH="${SHIM_DIR%/}/$SHIM_NAME"
-TARGET_CANON="$(canon_path "$TARGET")"
 
 if [ "$PURGE" = "1" ]; then
   if [ "$ASSUME_YES" != "1" ]; then
@@ -53,29 +52,7 @@ if [ "$PURGE" = "1" ]; then
 fi
 
 if [ -f "$MANIFEST" ]; then
-  # The manifest lives inside a user-writable root and can be stale from an
-  # install that used a different --target or --shim-dir. Delete only what this
-  # invocation is responsible for: entries under TARGET, plus its own shim.
-  while IFS= read -r entry; do
-    [ -n "$entry" ] || continue
-    # Scope is decided on the canonical form of both sides: a '..' spelling
-    # such as "$TARGET/../.claude/settings.json" matches "$TARGET/*" textually
-    # while pointing outside the config root entirely. The removal below still
-    # uses the entry exactly as written, so a path the kernel cannot resolve
-    # deletes nothing rather than deleting the folded path instead.
-    entry_canon="$(canon_path "$entry")"
-    in_scope=0
-    case "$entry_canon" in
-      "${TARGET_CANON%/}"/*) in_scope=1 ;;
-    esac
-    if [ -n "$SHIM_NAME" ] && [ "$entry_canon" = "$SHIM_PATH" ]; then in_scope=1; fi
-    if [ "$in_scope" != "1" ]; then
-      warn "skipping manifest entry outside $TARGET: $entry"
-      continue
-    fi
-    rm -rf "$entry"
-  done < "$MANIFEST"
-  rm -f "$MANIFEST"
+  manifest_remove "$MANIFEST" "$TARGET" "$SHIM_PATH"
 else
   warn "no manifest at $MANIFEST — removing nothing"
 fi

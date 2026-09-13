@@ -316,6 +316,45 @@ test_doctor_reports_no_plugins() {
   assert_not_contains "$TMP/plug2.out" "(none)" "doctor does not print (none) when plugins exist"
 }
 
+test_doctor_plugin_report() {
+  sh "$REPO_ROOT/install.sh" game-dev --target "$TMP/dr" --shim-dir "$TMP/bin-dr" >/dev/null
+  status=0
+  sh "$REPO_ROOT/doctor.sh" game-dev --target "$TMP/dr" > "$TMP/dr.out" 2>&1 || status=$?
+  assert_eq "0" "$status" "doctor passes on a fresh install with no plugin cache"
+  assert_contains "$TMP/dr.out" "plugin:       game-dev 0.1.0" "doctor reports the plugin name and version"
+  assert_contains "$TMP/dr.out" "skills [1-9]" "doctor counts skills from the studio directory"
+  assert_contains "$TMP/dr.out" "agents [1-9]" "doctor counts agents from the studio directory"
+  assert_contains "$TMP/dr.out" "superpowers@claude-plugins-official enabled, not yet fetched" \
+    "an enabled but uncached plugin is a warning"
+  assert_contains "$TMP/dr.out" "launch claude-gd once" "the warning names the shim to launch"
+
+  mkdir -p "$TMP/dr/plugins/cache/claude-plugins-official/superpowers/6.3.0"
+  sh "$REPO_ROOT/doctor.sh" game-dev --target "$TMP/dr" > "$TMP/dr2.out" 2>&1
+  assert_contains "$TMP/dr2.out" "superpowers@claude-plugins-official ok 6.3.0" \
+    "a cached plugin is reported with its version"
+
+  printf '{ "model": "opus", "enabledPlugins": { "superpowers@claude-plugins-official": true } }\n' \
+    > "$TMP/dr/settings.json"
+  status=0
+  sh "$REPO_ROOT/doctor.sh" game-dev --target "$TMP/dr" > "$TMP/dr3.out" 2>&1 || status=$?
+  assert_eq "1" "$status" "doctor fails when a required plugin is not enabled"
+  assert_contains "$TMP/dr3.out" "godot-prompter@skillsmith NOT ENABLED" "doctor names the missing plugin"
+}
+
+test_doctor_plugin_name_mismatch() {
+  SB="$TMP/sandbox-name"
+  mkdir -p "$SB"
+  cp -R "$REPO_ROOT/lib" "$REPO_ROOT/shared" "$REPO_ROOT/studios" "$SB/"
+  cp "$REPO_ROOT/install.sh" "$REPO_ROOT/doctor.sh" "$SB/"
+  printf '{ "name": "wrong", "version": "0.1.0", "description": "x" }\n' \
+    > "$SB/studios/general/.claude-plugin/plugin.json"
+  sh "$SB/install.sh" general --target "$TMP/nm" --shim-dir "$TMP/bin-nm" >/dev/null 2>&1 || true
+  status=0
+  sh "$SB/doctor.sh" general --target "$TMP/nm" > "$TMP/nm.out" 2>&1 || status=$?
+  assert_eq "1" "$status" "doctor fails when the plugin name does not match the studio"
+  assert_contains "$TMP/nm.out" "does not match" "doctor explains the mismatch"
+}
+
 # --- Finding 6: all four scripts resolve the studio the same way. ---
 test_all_scripts_validate_the_studio() {
   SB="$TMP/sandbox"
@@ -452,6 +491,7 @@ run_tests test_studio_contract test_install_unknown_studio test_install_guard \
   test_install_precedence test_install_copy_mode test_install_reinstall_cleans_stale_entries \
   test_install_accepts_no_mcp test_settings_backup test_shim \
   test_doctor test_doctor_detects_leak test_doctor_reports_no_plugins \
+  test_doctor_plugin_report test_doctor_plugin_name_mismatch \
   test_option_value_required test_uninstall test_uninstall_scopes_manifest_entries \
   test_uninstall_skips_traversal_manifest_entries \
   test_uninstall_purge test_two_studios_independent test_all_scripts_validate_the_studio

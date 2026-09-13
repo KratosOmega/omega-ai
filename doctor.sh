@@ -20,28 +20,82 @@ done
 STUDIO_DIR="$REPO_ROOT/studios/$STUDIO"
 TARGET="$(resolve_studio_target "$STUDIO_DIR" "$TARGET_OVERRIDE")"
 SHIM_NAME="$(json_field "$STUDIO_DIR/studio.json" shim)"
+PLUGIN_JSON="$STUDIO_DIR/.claude-plugin/plugin.json"
+REQUIRES="$STUDIO_DIR/requires.txt"
+failed=0
 
 log "studio:       $STUDIO"
 log "config root:  $TARGET"
 [ -d "$TARGET" ] || die "config root does not exist — run install.sh $STUDIO"
 
-count() { [ -d "$1" ] && ls -1 "$1" 2>/dev/null | wc -l | tr -d ' ' || printf '0'; }
 log "CLAUDE.md:    $([ -f "$TARGET/CLAUDE.md" ] && printf 'present' || printf 'MISSING')"
 log "settings:     $([ -f "$TARGET/settings.json" ] && printf 'present' || printf 'MISSING')"
-log "agents:       $(count "$TARGET/agents")"
-log "skills:       $(count "$TARGET/skills")"
-log "commands:     $(count "$TARGET/commands")"
-log "hooks:        $(count "$TARGET/hooks")"
 
-if [ -f "$TARGET/settings.json" ]; then
-  log "plugins:"
-  plugins="$(grep -o '"[^"]*@[^"]*"[[:space:]]*:[[:space:]]*true' "$TARGET/settings.json" 2>/dev/null || true)"
-  if [ -n "$plugins" ]; then
-    printf '%s\n' "$plugins" | sed 's/^/  /'
-  else
-    log "  (none)"
+# Plugin content is counted in the studio directory, which is what the shim's
+# --plugin-dir loads; nothing under the config root carries it.
+count_skills() {
+  _n=0
+  for _d in "$1"/skills/*/; do
+    [ -f "${_d}SKILL.md" ] && _n=$((_n + 1))
+  done
+  printf '%s' "$_n"
+}
+count_agents() {
+  _n=0
+  for _f in "$1"/agents/*.md; do
+    [ -f "$_f" ] && _n=$((_n + 1))
+  done
+  printf '%s' "$_n"
+}
+
+if [ -f "$PLUGIN_JSON" ]; then
+  pname="$(json_field "$PLUGIN_JSON" name)"
+  pver="$(json_field "$PLUGIN_JSON" version)"
+  hooks_state="none"
+  [ -f "$STUDIO_DIR/hooks/hooks.json" ] && hooks_state="present"
+  log "plugin:       ${pname:-?} ${pver:-?}   skills $(count_skills "$STUDIO_DIR")  agents $(count_agents "$STUDIO_DIR")  hooks $hooks_state"
+  if [ "$pname" != "$STUDIO" ]; then
+    warn "plugin name '$pname' does not match studio '$STUDIO' — skills would load under the wrong prefix"
+    failed=1
   fi
+else
+  warn "no plugin manifest at $PLUGIN_JSON"
+  failed=1
 fi
+
+# Required plugins: declared in requires.txt, enabled in settings.json, and
+# fetched into the config root's plugin cache on first launch.
+log "plugins:"
+listed=0
+required="$(requires_of "$REQUIRES" plugin | tr '\n' ' ')"
+for req in $required; do
+  listed=1
+  rname="${req%@*}"
+  rmarket="${req#*@}"
+  if grep -q "\"$req\"[[:space:]]*:[[:space:]]*true" "$TARGET/settings.json" 2>/dev/null; then
+    cache="$TARGET/plugins/cache/$rmarket/$rname"
+    if [ -d "$cache" ]; then
+      versions="$(ls -1 "$cache" 2>/dev/null | tr '\n' ' ')"
+      log "  $req ok ${versions% }"
+    else
+      log "  $req enabled, not yet fetched — launch $SHIM_NAME once"
+    fi
+  else
+    log "  $req NOT ENABLED in settings.json"
+    failed=1
+  fi
+done
+# Plugins enabled beyond the declared ones are listed too, so the report
+# shows everything a session will load.
+others="$(grep -o '"[^"]*@[^"]*"[[:space:]]*:[[:space:]]*true' "$TARGET/settings.json" 2>/dev/null \
+  | sed 's/"\([^"]*\)".*/\1/' || true)"
+for p in $others; do
+  case " $required" in
+    *" $p "*) ;;
+    *) listed=1; log "  $p (enabled, not declared in requires.txt)" ;;
+  esac
+done
+[ "$listed" = "1" ] || log "  (none)"
 
 log "launch:       $SHIM_NAME"
 if command -v "$SHIM_NAME" >/dev/null 2>&1; then
@@ -71,3 +125,8 @@ if [ -n "$(printf '%s' "$leaks" | tr -d '[:space:]')" ]; then
   exit 1
 fi
 log "leakage: none"
+
+if [ "$failed" != "0" ]; then
+  log "doctor: FAILED (see warnings above)"
+  exit 1
+fi
