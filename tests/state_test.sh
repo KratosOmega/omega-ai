@@ -198,8 +198,32 @@ test_state_root_outside_git_is_quiet() {
   assert_eq "0" "$(wc -c < "$TMP/quiet.err" | tr -d ' ')" "root prints no git noise to stderr outside git"
 }
 
+# set used to exit 0 and write nothing when the header line was gone, so a
+# hand-edited STATE.md silently lost every later write.
+test_state_set_hardening() {
+  P="$(fresh_project harden)"
+  ( cd "$P" && sh "$STATE_BIN" init >/dev/null )
+  grep -v '^spec: ' "$P/.studio/STATE.md" > "$P/damaged" && mv "$P/damaged" "$P/.studio/STATE.md"
+  status=0
+  ( cd "$P" && sh "$STATE_BIN" set spec docs/x.md ) > /dev/null 2> "$P/set.err" || status=$?
+  assert_eq "1" "$status" "set fails when the key's header line is absent"
+  assert_contains "$P/set.err" "no 'spec:' line" "set names the missing header"
+
+  P="$(fresh_project harden2)"
+  ( cd "$P" && sh "$STATE_BIN" init >/dev/null )
+  ( cd "$P" && sh "$STATE_BIN" set spec "$(printf 'a\nstage: hacked')" )
+  assert_eq "1" "$(grep -c '^stage: ' "$P/.studio/STATE.md")" "a newline in a value cannot inject a header line"
+  assert_eq "a stage: hacked" "$(cd "$P" && sh "$STATE_BIN" get spec)" "the newline is folded to a space"
+  assert_status 1 "set rejects extra arguments" -- sh -c "cd '$P' && sh '$STATE_BIN' set spec docs/my spec.md"
+  assert_eq "a stage: hacked" "$(cd "$P" && sh "$STATE_BIN" get spec)" "a rejected set changes nothing"
+  assert_status 1 "set task rejects a value that is not n/N" -- sh -c "cd '$P' && sh '$STATE_BIN' set task three"
+  assert_status 0 "set task accepts n/N" -- sh -c "cd '$P' && sh '$STATE_BIN' set task 2/5"
+  assert_status 0 "set task accepts -" -- sh -c "cd '$P' && sh '$STATE_BIN' set task -"
+}
+
 run_tests test_state_needs_init test_state_init test_state_get_set test_state_validation \
   test_state_ledger test_state_ledger_keeps_all_words test_state_ledger_folds_newlines \
   test_state_set_keeps_backslashes test_state_show test_state_resolves_to_main_checkout \
   test_state_init_writes_config_ledger_and_gitignore_once test_state_init_gitignore_appends_safely \
-  test_state_root_outside_git_is_quiet
+  test_state_root_outside_git_is_quiet \
+  test_state_set_hardening

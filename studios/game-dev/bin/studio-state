@@ -66,6 +66,20 @@ need_state() {
   [ -f "$STATE" ] || fail "no $STATE here — run 'studio-state init' in the project root"
 }
 
+# write_field KEY VALUE — replace the first "KEY: " header line. Only that
+# line is replaced; ledger lines start with "- " and can never match. The
+# value travels through the environment, not `awk -v`, which would turn a
+# "\n" in a path into a real newline and split the header.
+write_field() {
+  _tmp="$STATE.tmp.$$"
+  STUDIO_STATE_VALUE="$2" awk -v k="$1" '
+    BEGIN { done = 0 }
+    !done && $0 ~ ("^" k ": ") { print k ": " ENVIRON["STUDIO_STATE_VALUE"]; done = 1; next }
+    { print }
+  ' "$STATE" > "$_tmp"
+  mv "$_tmp" "$STATE"
+}
+
 cmd="${1:-}"
 [ -n "$cmd" ] || usage
 
@@ -124,25 +138,23 @@ EOF
     ;;
   set)
     need_state
-    key="${2:-}"
-    val="${3:-}"
+    [ $# -eq 3 ] || usage
+    key="$2"
+    # A real newline in a value would split the header into two lines.
+    val="$(printf '%s' "$3" | tr '\n\r' '  ')"
     in_list "$key" "$KEYS" || usage
     [ -n "$val" ] || usage
     case "$key" in
       stage) in_list "$val" "$STAGES" || fail "stage must be one of: $STAGES" ;;
       milestone) in_list "$val" "$MILESTONES" || fail "milestone must be one of: $MILESTONES" ;;
+      task)
+        case "$val" in
+          -) ;;
+          *) printf '%s' "$val" | grep -qE '^[0-9]+/[0-9]+$' || fail "task must be n/N or -" ;;
+        esac ;;
     esac
-    tmp="$STATE.tmp.$$"
-    # Only the first matching header line is replaced; ledger lines start
-    # with "- " and can never match "^key: ". The value travels through the
-    # environment, not `awk -v`, which would turn a "\n" in a path into a
-    # real newline and split the header.
-    STUDIO_STATE_VALUE="$val" awk -v k="$key" '
-      BEGIN { done = 0 }
-      !done && $0 ~ ("^" k ": ") { print k ": " ENVIRON["STUDIO_STATE_VALUE"]; done = 1; next }
-      { print }
-    ' "$STATE" > "$tmp"
-    mv "$tmp" "$STATE"
+    grep -q "^$key: " "$STATE" || fail "no '$key:' line in $STATE — the file is damaged; restore the header"
+    write_field "$key" "$val"
     ;;
   ledger)
     need_state
