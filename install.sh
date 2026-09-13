@@ -22,8 +22,6 @@ Options:
   --dry-run             print every action, change nothing
   -h, --help            show this help
 
-Install paths must not contain spaces.
-
 Studios: see studios/ in this repository.
 USAGE
 }
@@ -75,6 +73,11 @@ SHIM_NAME="$(json_field "$STUDIO_DIR/studio.json" shim)"
 [ -n "$SHIM_NAME" ] || die "studio.json has no shim name"
 [ -f "$STUDIO_DIR/.claude-plugin/plugin.json" ] || die "studio has no .claude-plugin/plugin.json: $STUDIO"
 
+# Everything the install reads is checked here, before the previous install
+# is removed: a reinstall that dies half-way must leave the old one in place.
+[ -f "$STUDIO_DIR/CLAUDE.md" ] || die "studio has no CLAUDE.md: $STUDIO"
+[ -f "$STUDIO_DIR/settings.json" ] || die "studio has no settings.json: $STUDIO"
+
 # Both paths this script creates in — and the uninstaller deletes from — are
 # guarded before anything is written.
 guard_target "$TARGET" "$REPO_ROOT"
@@ -125,13 +128,13 @@ if [ "$DRY_RUN" != "1" ]; then
 fi
 
 # Only memory/ and bin/ live in the config root; skills, agents and hooks are
-# served by the plugin. Shared first, studio second so the studio wins.
+# served by the plugin. Shared first, studio second so the studio wins. The
+# entries are read line by line: a path with a space is one entry.
 for dir in memory bin; do
-  for installed in $(install_entries "$REPO_ROOT/shared/$dir" "$TARGET/$dir" "$MODE"); do
-    manifest_add "$MANIFEST" "$installed"
-  done
-  for installed in $(install_entries "$STUDIO_DIR/$dir" "$TARGET/$dir" "$MODE"); do
-    manifest_add "$MANIFEST" "$installed"
+  for src in "$REPO_ROOT/shared/$dir" "$STUDIO_DIR/$dir"; do
+    install_entries "$src" "$TARGET/$dir" "$MODE" | while IFS= read -r installed; do
+      manifest_add "$MANIFEST" "$installed"
+    done
   done
 done
 
@@ -159,7 +162,7 @@ fi
 # entries were removed.
 if [ "$DRY_RUN" = "1" ]; then
   log "DRY  copy $TARGET/settings.json"
-elif [ -f "$STUDIO_DIR/settings.json" ]; then
+else
   rm -f "$TARGET/settings.json"
   cp "$STUDIO_DIR/settings.json" "$TARGET/settings.json"
   manifest_add "$MANIFEST" "$TARGET/settings.json"

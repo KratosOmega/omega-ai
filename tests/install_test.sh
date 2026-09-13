@@ -790,6 +790,40 @@ test_doctor_flags_stale_layout() {
   assert_eq "0" "$status" "doctor passes after the reinstall"
 }
 
+# A reinstall used to remove the previous install first and discover a
+# missing studio file only while rendering — leaving a 0-byte manifest, a
+# half-rendered CLAUDE.md nothing records, and no settings.json or shim.
+test_reinstall_keeps_previous_install_when_studio_is_broken() {
+  SB="$TMP/sandbox-atomic"
+  mkdir -p "$SB"
+  cp -R "$REPO_ROOT/lib" "$REPO_ROOT/shared" "$REPO_ROOT/studios" "$SB/"
+  cp "$REPO_ROOT/install.sh" "$REPO_ROOT/uninstall.sh" "$REPO_ROOT/doctor.sh" "$SB/"
+  sh "$SB/install.sh" general --target "$TMP/atomic" --shim-dir "$TMP/bin-atomic" >/dev/null 2>&1
+  assert_file "$TMP/atomic/CLAUDE.md" "first install succeeds"
+  rm "$SB/studios/general/CLAUDE.md"
+  status=0
+  sh "$SB/install.sh" general --target "$TMP/atomic" --shim-dir "$TMP/bin-atomic" > "$TMP/atomic.out" 2>&1 || status=$?
+  assert_eq "1" "$status" "reinstall fails when the studio has no CLAUDE.md"
+  assert_contains "$TMP/atomic.out" "has no CLAUDE.md" "the failure names the missing file"
+  assert_file "$TMP/atomic/CLAUDE.md" "the previous CLAUDE.md is still installed"
+  assert_file "$TMP/atomic/settings.json" "the previous settings.json is still installed"
+  assert_file "$TMP/bin-atomic/claude-gen" "the previous shim is still installed"
+  assert_contains "$TMP/atomic/.omega-ai-manifest" "CLAUDE.md" "the previous manifest is intact"
+}
+
+# install_entries' output used to be word-split, so a path with a space
+# became two manifest lines that uninstall then skipped as out of scope.
+test_install_path_with_space() {
+  sh "$REPO_ROOT/install.sh" game-dev --target "$TMP/with space/root" --shim-dir "$TMP/with space/bin" >/dev/null 2>&1
+  assert_symlink "$TMP/with space/root/memory/MEMORY.md" "a target with a space gets its links"
+  assert_eq "1" "$(grep -c "^$TMP/with space/root/memory/MEMORY.md\$" "$TMP/with space/root/.omega-ai-manifest")" \
+    "the manifest records the whole path on one line"
+  sh "$REPO_ROOT/uninstall.sh" game-dev --target "$TMP/with space/root" --shim-dir "$TMP/with space/bin" >/dev/null 2>&1
+  assert_missing "$TMP/with space/root/memory/MEMORY.md" "uninstall removes the link under a path with a space"
+  assert_missing "$TMP/with space/root/bin/studio-state" "uninstall removes the bin link under a path with a space"
+  assert_missing "$TMP/with space/bin/claude-gd" "uninstall removes the shim under a path with a space"
+}
+
 run_tests test_studio_contract test_install_unknown_studio test_install_guard \
   test_install_guards_shim_dir test_install_refuses_traversal_target \
   test_install_refuses_traversal_shim_dir test_install_refuses_symlinked_target \
@@ -804,4 +838,5 @@ run_tests test_studio_contract test_install_unknown_studio test_install_guard \
   test_install_normalizes_name_and_target test_resolve_studio_target_failure_is_not_masked \
   test_install_replaces_symlinked_files \
   test_uninstall_purge_requires_manifest test_uninstall_purge_symlinked_target \
-  test_doctor_fails_on_missing_files test_doctor_detects_leak_through_symlinked_dot_claude test_doctor_matches_plugin_ids_literally test_doctor_flags_stale_layout
+  test_doctor_fails_on_missing_files test_doctor_detects_leak_through_symlinked_dot_claude test_doctor_matches_plugin_ids_literally test_doctor_flags_stale_layout \
+  test_reinstall_keeps_previous_install_when_studio_is_broken test_install_path_with_space
