@@ -451,9 +451,10 @@ description: Use when an approved spec exists and needs an implementation plan �
   Files: src/player/dash_state.gd, tests/unit/test_dash_input.gd
   ```
 
-  `Verify` is one of `unit` (TDD mandatory, GUT test named in `Files`),
-  `playtest` (a criterion the playtest script will carry), or `visual` (the
-  user looks at it; no automated check).
+  `Verify:` is a `+`-joined list of `unit`, `playtest`, `visual`; any task
+  that introduces a tunable value includes `unit`; the unit test targets the
+  project's configured test framework (`tests` in `.studio/config.json`,
+  default GUT).
 - Dispatches `game-dev:producer` for the scope pass. The producer cuts every
   task that is not needed for the current milestone into a "Backlog" section
   at the end of the plan and says why.
@@ -475,8 +476,9 @@ description: Use when an approved plan exists — dispatches a fresh role agent 
   compliance and Godot best practice; the implementer fixes findings before
   the next task starts.
 - Works in a git worktree via `superpowers:using-git-worktrees`.
-- Records every judgment call as a ruling in the `STATE.md` ledger and
-  advances `task: n/N`. Stops only for irreversible, security-sensitive, or
+- Records every judgment call as a ruling in the feature ledger
+  (`.studio/ledger/<feature>.md`, via `studio-state ledger`) and advances
+  `task: n/N`. Stops only for irreversible, security-sensitive, or
   out-of-worktree side effects, or a plan too broken to follow.
 - `--inline` follows `superpowers:executing-plans` instead: the main session
   implements tasks in batches and checks in with the user between batches.
@@ -564,9 +566,9 @@ settings the template does not cover.
 
 ## State and configuration
 
-Three files live in the game project under `.studio/`. `config.json` and
-`ledger/` are committed; `STATE.md` is a local pointer that `studio-state
-init` gitignores.
+`config.json`, `STATE.md` and the `ledger/` directory live in the game
+project under `.studio/`. `config.json` and `ledger/` are committed;
+`STATE.md` is a local pointer that `studio-state init` gitignores.
 
 ### `.studio/config.json`
 
@@ -590,7 +592,11 @@ last_playtest: docs/game-dev/playtests/2026-09-12-movement.md
 milestone: prototype
 
 ## Ledger
+```
 
+### `.studio/ledger/player-dash.md`
+
+```markdown
 - 2026-09-13 T3 Ruling: buffer window 0.1 s — spec said "short" — cost if wrong: retune one value
 - 2026-09-13 T1 Review: cooldown literal moved to DashTuning.tres
 ```
@@ -601,8 +607,10 @@ milestone: prototype
 
 The pointer lives in the project's main checkout: `studio-state` resolves it
 through `git rev-parse --git-common-dir`, so a linked worktree edits the same
-file and a project has one stage at a time. It is gitignored; a fresh clone
-rebuilds `task` from the ledger with `studio-state check --rebuild`.
+file and a project has one stage at a time. It is gitignored, so a fresh
+clone starts idle: `studio-state init` and `studio-state set spec/plan`
+re-point it at the committed spec and plan, after which `studio-state check
+--rebuild` rebuilds `task` from the feature ledger.
 
 ### `.studio/ledger/<feature>.md`
 
@@ -642,11 +650,16 @@ skill; the prefix is written once per cell for readability.
 | `playtester` | Playtest script from spec criteria; bug reports with repro steps. | playtest | Read, Write, Grep, Glob, Bash | Playtest script and report | `godot-prompter:godot-testing`, `godot-debugging` |
 | `reviewer` | Spec compliance plus Godot best-practice review. No praise; one line per finding. | execute (per task), review | Read, Grep, Glob, Bash | Findings list; fix commits when asked | `godot-prompter:godot-code-review`, `godot-optimization` |
 
-**Interim (Plan 1).** Until the ten agents ship, `execute` dispatches
-`godot-prompter:godot-game-dev`, `godot-game-architect`, `godot-ui-designer`
-and `godot-code-reviewer` for the matching roles with the studio persona
-prepended, the shipped `game-dev:feel-tuner`, `tech-artist` and
-`game-designer` as themselves, and `general-purpose` for `level-designer`.
+**Interim (Plan 1).** Until the ten agents ship, the stage skills dispatch:
+brainstorm dispatches `game-dev:game-designer` and, on the architectural
+path, `godot-prompter:godot-game-architect` for the `architect` role;
+execute dispatches `godot-prompter:godot-game-dev` for
+`gameplay-programmer` and `godot-prompter:godot-ui-designer` for
+`ui-designer`, the shipped `game-dev:feel-tuner` and `game-dev:tech-artist`
+as themselves, and `general-purpose` for `level-designer`; the per-task
+reviewer is `godot-prompter:godot-code-reviewer`. The godot-prompter agents
+get the studio persona prepended. Plan 2 replaces these with the studio's
+own agents.
 
 When `.studio/config.json` sets `language: csharp`, `gameplay-programmer`
 routes engine work to `godot-prompter:godot-csharp-engineer` instead of the
