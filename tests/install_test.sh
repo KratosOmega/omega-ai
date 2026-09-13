@@ -72,6 +72,7 @@ test_install_content() {
   assert_contains "$TMP/gd/CLAUDE.md" "Game Development Studio" "rendered CLAUDE.md carries studio content"
   assert_contains "$TMP/gd/CLAUDE.md" "Engineering Standards" "rendered CLAUDE.md carries the shared part"
   assert_contains "$TMP/gd/CLAUDE.md" "GENERATED" "rendered CLAUDE.md warns it is generated"
+  assert_contains "$TMP/gd/CLAUDE.md" "^@memory/MEMORY.md" "rendered CLAUDE.md imports the studio memory"
   assert_file "$TMP/gd/settings.json" "copies settings.json"
   assert_symlink "$TMP/gd/memory/MEMORY.md" "links studio memory"
   assert_symlink "$TMP/gd/bin/studio-state" "links studio bin"
@@ -190,6 +191,7 @@ test_shim() {
 
 test_doctor() {
   sh "$REPO_ROOT/install.sh" general --target "$TMP/gen" --shim-dir "$TMP/bin" >/dev/null 2>&1
+  assert_not_contains "$TMP/gen/CLAUDE.md" "@memory/MEMORY.md" "a studio without memory/ imports nothing"
   sh "$REPO_ROOT/doctor.sh" general --target "$TMP/gen" > "$TMP/doctor.out" 2>&1
   assert_contains "$TMP/doctor.out" "$TMP/gen" "doctor reports the resolved config root"
   assert_contains "$TMP/doctor.out" "leakage: none" "doctor finds no leak into ~/.claude"

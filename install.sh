@@ -155,6 +155,12 @@ else
     fi
     printf '\n'
     cat "$STUDIO_DIR/CLAUDE.md"
+    # Studio memory: curated, cross-project decisions the retro stage writes.
+    # An @import is how Claude Code loads it; the path is relative to this
+    # file. Claude's own auto memory stays under projects/<project>/memory/.
+    if [ -f "$STUDIO_DIR/memory/MEMORY.md" ] || [ -f "$REPO_ROOT/shared/memory/MEMORY.md" ]; then
+      printf '\n## Studio memory\n\nDurable studio-wide decisions, kept in version control:\n\n@memory/MEMORY.md\n'
+    fi
   } > "$TARGET/CLAUDE.md"
   manifest_add "$MANIFEST" "$TARGET/CLAUDE.md"
 fi

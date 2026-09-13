@@ -20,11 +20,13 @@ assistants is a matter of which command you type.
 
 This creates `~/.claude-gamedev` with a rendered `CLAUDE.md`, a copied
 `settings.json`, and links to the studio's `memory/` and `bin/`; writes a shim
-at `~/.local/bin/claude-gd`; and runs `doctor.sh`. The shim launches Claude
-Code with `CLAUDE_CONFIG_DIR` pointing at the config root, the studio's
-`bin/` on `PATH`, and `--plugin-dir` pointing at `studios/game-dev/`, so the
-studio's skills, agents and hooks load straight from this checkout — edit a
-skill and it is live in the next session.
+at `~/.local/bin/claude-gd`; records the mode and the shim path in
+`~/.claude-gamedev/.omega-ai-manifest`; and runs `doctor.sh`. The shim
+launches Claude Code with `CLAUDE_CONFIG_DIR` pointing at the config root, the
+studio's `bin/` on `PATH`, and `--plugin-dir` pointing at `studios/game-dev/`,
+so the studio's skills, agents and hooks load straight from this checkout —
+edit a skill and it is live in the next session. The rendered `CLAUDE.md`
+imports `memory/MEMORY.md`, the studio's own memory (see Memory below).
 
 Add `~/.local/bin` to your `PATH` if it is not there already. Then:
 
@@ -40,10 +42,19 @@ Options: `--mode copy` for a frozen snapshot (the studio is copied to
 `~/.claude-gamedev/studio/` and loaded from there), `--target DIR` for a
 different config root, `--shim-dir DIR` for a different shim location,
 `--no-mcp` (accepted now; MCP registration arrives with the engine toolkit
-in Plan 2), and `--dry-run` to see every action without performing it.
-Reinstalling removes everything the previous install recorded first.
+in Plan 2), and `--dry-run` to see every action — including the removal of
+a previous install's entries — without performing it. Reinstalling checks
+that the studio's files are all present, then removes everything the
+previous install recorded before writing anew. The install exits non-zero
+when the doctor finds a problem.
 
-Install paths must not contain spaces.
+### Upgrading from `profiles/`
+
+An install made by the earlier `profiles/` installer linked `skills/`,
+`agents/`, `commands/` and `hooks/` into the config root and wrote a shim
+without `--plugin-dir`. `doctor.sh` now reports that as a stale layout.
+Run `./install.sh <studio>` again: the old manifest's entries are removed and
+the new shim is written.
 
 ## Use
 
@@ -58,7 +69,11 @@ Inside `claude-gd`, in a Godot project:
 
 `review`, `playtest`, `ship`, `retro` and `scaffold` arrive in later releases;
 the session bootstrap says so when one is missing. State lives in the
-project's `.studio/STATE.md`, written only through `studio-state`.
+project's `.studio/`: `STATE.md` is the stage/task pointer — local, gitignored,
+resolved to the project's main checkout from any worktree — and
+`ledger/<feature>.md` is the feature's decision log, committed with the
+feature. Both are written only through `studio-state`; a hook blocks direct
+edits.
 
 ## Check
 
@@ -66,26 +81,47 @@ project's `.studio/STATE.md`, written only through `studio-state`.
 ./doctor.sh game-dev
 ```
 
-Reports the config root, the plugin manifest and its skill / agent counts,
-every plugin `requires.txt` declares (enabled? fetched? which version?),
-whether the shim is on `PATH`, and whether anything leaks back into
-`~/.claude`. Exits non-zero on a name mismatch, a missing plugin, or a leak.
+Reports the config root, the plugin directory the shim loads and its skill /
+agent counts, every plugin `requires.txt` declares (enabled? fetched? which
+version?), the shim the install recorded (present? launches this root?
+loads the plugin?), whether that shim's directory is on `PATH`, any stale
+layout from the earlier installer, and whether anything leaks back into
+`~/.claude`. Exits non-zero on a missing `CLAUDE.md` or `settings.json`, a
+name mismatch, a missing plugin, a stale or foreign shim, a stale layout, or
+a leak. `--target DIR` checks a root installed elsewhere.
 
 ## Uninstall
 
 ```sh
 ./uninstall.sh game-dev            # remove installed content, keep sessions
-./uninstall.sh game-dev --purge    # remove the config root entirely
+./uninstall.sh game-dev --purge    # remove the config root entirely (asks; --yes skips)
 ```
+
+Uninstall removes what the manifest recorded and the shim the manifest names
+— unless that shim now launches a different config root, in which case it is
+kept and said so. `--purge` refuses a directory that has no manifest.
+`--target DIR` and `--shim-dir DIR` match the flags the install used;
+`--shim-dir` is only needed for installs made before the manifest recorded
+the shim.
 
 ## Memory
 
-Memory written during a session lives in the studio's config root. Pull it
-back into version control with:
+Two memories exist, and they do not mix.
+
+**Studio memory** is `studios/<studio>/memory/MEMORY.md` — curated,
+cross-project decisions the retro stage writes (design rulings, pipeline
+conventions). It is linked into the config root and imported by the rendered
+`CLAUDE.md`, so every `claude-gd` session loads it. It never reaches plain
+`claude`. Pull in-session edits back into version control with:
 
 ```sh
 ./sync-memory.sh game-dev
 ```
+
+**Claude's auto memory** is per project and per config root:
+`~/.claude-gamedev/projects/<project>/memory/`. A game project and a business
+project have different paths, and `claude-gd` and `claude` have different
+config roots, so nothing crosses over. The installer does not touch it.
 
 In copy mode the config root holds a copied `memory/`, and a reinstall or
 uninstall removes that copy, in-session edits included — run
