@@ -201,6 +201,7 @@ EOF
     ;;
   check)
     need_state
+    [ $# -le 2 ] || usage
     rebuild=0
     case "${2:-}" in '') ;; --rebuild) rebuild=1 ;; *) usage ;; esac
     problems=0
@@ -240,6 +241,7 @@ EOF
     ;;
   reset)
     need_state
+    [ $# -le 2 ] || usage
     keep=0
     case "${2:-}" in '') ;; --keep-ledger) keep=1 ;; *) usage ;; esac
     spec="$(field spec)"

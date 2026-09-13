@@ -275,6 +275,7 @@ test_state_check() {
   assert_contains "$TMP/chk2.out" "ledger says T3 complete but task is 2/5" "check explains the mismatch"
   assert_status 0 "check --rebuild succeeds" -- sh -c "cd '$P' && sh '$STATE_BIN' check --rebuild"
   assert_eq "3/5" "$(cd "$P" && sh "$STATE_BIN" get task)" "check --rebuild sets task from the ledger"
+  assert_status 1 "check --rebuild rejects a trailing word" -- sh -c "cd '$P' && sh '$STATE_BIN' check --rebuild garbage"
   ( cd "$P" && sh "$STATE_BIN" set task 4/5 )
   ( cd "$P" && sh "$STATE_BIN" check ) > "$TMP/chk3.out" 2>&1
   assert_contains "$TMP/chk3.out" "note" "a ledger behind task is a note, not a failure"
@@ -299,6 +300,12 @@ test_state_reset() {
   ( cd "$P" && sh "$STATE_BIN" set spec docs/s/2026-09-13-keep.md && sh "$STATE_BIN" ledger "K1" )
   ( cd "$P" && sh "$STATE_BIN" reset --keep-ledger )
   assert_file "$P/.studio/ledger/keep.md" "reset --keep-ledger keeps the feature ledger"
+  ( cd "$P" && sh "$STATE_BIN" set spec docs/s/2026-09-13-guard.md && sh "$STATE_BIN" ledger "G1" )
+  assert_status 1 "reset --keep-ledger rejects a trailing word" -- \
+    sh -c "cd '$P' && sh '$STATE_BIN' reset --keep-ledger garbage"
+  assert_eq "docs/s/2026-09-13-guard.md" "$(cd "$P" && sh "$STATE_BIN" get spec)" \
+    "a rejected reset --keep-ledger leaves the pointer untouched"
+  assert_file "$P/.studio/ledger/guard.md" "a rejected reset --keep-ledger leaves the feature ledger untouched"
   assert_status 1 "reset rejects an unknown flag" -- sh -c "cd '$P' && sh '$STATE_BIN' reset --nope"
 }
 
