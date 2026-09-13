@@ -90,10 +90,22 @@ canon_path() {
 # user's existing setup. $HOME and the repository root are canonicalized for the
 # same reason: comparing a resolved path against an unresolved one is a
 # false negative whenever either side crosses a symlink.
+#
+# The target is checked by where it *points*: canon_path leaves a final
+# symlink undereferenced, so the "/." suffix makes it an ancestor and resolves
+# it physically. Without that, `--target ~/evil` with `evil -> studios/general`
+# passes and a wet install renders the studio's CLAUDE.md onto itself. The
+# dereferenced form is used for this comparison only — callers keep the path
+# as given, so uninstall still deletes a link and never what it points at. A
+# target that does not exist yet has nothing to dereference and passes as
+# before. $HOME and the repository root get the same treatment so a symlinked
+# spelling of either side cannot make the comparison miss.
 guard_target() {
-  _t="$(canon_path "${1%/}")"
-  _repo="$(canon_path "${2%/}")"
-  _home="$(canon_path "${HOME%/}")"
+  _raw="${1%/}"
+  [ -n "$_raw" ] || die "install target is empty"
+  _t="$(canon_path "$_raw/.")"
+  _repo="$(canon_path "${2%/}/.")"
+  _home="$(canon_path "${HOME%/}/.")"
   [ -n "$_t" ] || die "install target is empty"
   [ "$_t" != "$_home" ] || die "refusing to install into your home directory"
   case "$_t" in
@@ -174,6 +186,12 @@ manifest_add() {
 # SHIM_PATH is canonicalized for the same reason: on macOS a shim under
 # $TMPDIR is spelled /var/... while its recorded entry folds to /private/var/...
 #
+# The scope root is resolved physically ("/." makes its final component an
+# ancestor for canon_path): entries under a symlinked root (`--target ~/link`)
+# canonicalize through the link to the real directory, so the scope must be
+# the real directory too — otherwise every entry looks outside scope and the
+# cleanup is a silent no-op. A root that does not exist yet stays textual.
+#
 # An entry with a trailing slash is skipped outright: `rm -rf link/` follows
 # a symlink and deletes the linked directory's contents (leaving the link),
 # so a crafted "<target>/memory/sub/" would delete through a link into the
@@ -182,7 +200,7 @@ manifest_add() {
 manifest_remove() {
   _m="$1"; _scope_root="$2"; _shim="$3"
   [ -f "$_m" ] || return 0
-  _scope_canon="$(canon_path "$_scope_root")"
+  _scope_canon="$(canon_path "${_scope_root%/}/.")"
   _shim_canon="$(canon_path "$_shim")"
   while IFS= read -r _entry; do
     [ -n "$_entry" ] || continue

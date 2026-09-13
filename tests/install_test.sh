@@ -457,6 +457,36 @@ test_install_refuses_traversal_shim_dir() {
   assert_file "$TMP/travu/CLAUDE.md" "refused traversal uninstall strips nothing from the config root"
 }
 
+# --- A --target that is a symlink into the repository must be refused. ---
+# Runs against a sandbox copy of the repository so the checkout is never at
+# risk. The install is a dry run on purpose: the guard runs before the dry-run
+# branch, so its verdict is the exit status either way, while an unguarded wet
+# run renders studios/general/CLAUDE.md onto itself and never terminates.
+test_install_refuses_symlinked_target() {
+  SB="$TMP/sandbox-link"
+  mkdir -p "$SB"
+  cp -R "$REPO_ROOT/lib" "$REPO_ROOT/shared" "$REPO_ROOT/studios" "$SB/"
+  cp "$REPO_ROOT/install.sh" "$REPO_ROOT/uninstall.sh" "$REPO_ROOT/doctor.sh" "$SB/"
+  # The link lives outside the sandbox repository; only its destination is inside.
+  ln -s "$SB/studios/general" "$TMP/evil"
+
+  status=0
+  ( sh "$SB/install.sh" general --target "$TMP/evil" --shim-dir "$TMP/bin-evil" --dry-run \
+      >/dev/null 2>&1 ) || status=$?
+  assert_eq "1" "$status" "install refuses a --target that links into the repository"
+  assert_not_contains "$SB/studios/general/CLAUDE.md" "GENERATED" \
+    "refused install leaves the studio's CLAUDE.md unrendered"
+
+  mkdir -p "$TMP/bin-evil"
+  printf 'decoy\n' > "$TMP/bin-evil/claude-gen"
+  status=0
+  ( sh "$SB/uninstall.sh" general --target "$TMP/evil" --shim-dir "$TMP/bin-evil" \
+      >/dev/null 2>&1 ) || status=$?
+  assert_eq "1" "$status" "uninstall refuses a --target that links into the repository"
+  assert_file "$TMP/bin-evil/claude-gen" "refused uninstall deletes no shim"
+  assert_file "$SB/studios/general/CLAUDE.md" "refused uninstall strips nothing from the studio"
+}
+
 # --- Critical: a manifest entry spelled with '..' escapes the scope check. ---
 test_uninstall_skips_traversal_manifest_entries() {
   FAKE="$TMP/fakehome-mani"
@@ -487,7 +517,8 @@ test_uninstall_skips_traversal_manifest_entries() {
 
 run_tests test_studio_contract test_install_unknown_studio test_install_guard \
   test_install_guards_shim_dir test_install_refuses_traversal_target \
-  test_install_refuses_traversal_shim_dir test_install_dry_run test_install_content \
+  test_install_refuses_traversal_shim_dir test_install_refuses_symlinked_target \
+  test_install_dry_run test_install_content \
   test_install_precedence test_install_copy_mode test_install_reinstall_cleans_stale_entries \
   test_install_accepts_no_mcp test_settings_backup test_shim \
   test_doctor test_doctor_detects_leak test_doctor_reports_no_plugins \
