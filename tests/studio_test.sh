@@ -134,6 +134,18 @@ test_role_agents_exist() {
     "game-designer states assumptions instead of asking (a subagent cannot ask)"
 }
 
+# Behaviour the review fixed, pinned as text contracts on the stage skills.
+test_stage_skill_contracts() {
+  S="$REPO_ROOT/studios/game-dev/skills"
+  assert_not_contains "$S/execute/SKILL.md" "finishing-a-development-branch" "execute never offers a merge path"
+  assert_contains "$S/execute/SKILL.md" "quit-after" "execute smoke-boots the project"
+  assert_contains "$S/execute/SKILL.md" "git log -1" "execute requires a committed spec and plan"
+  assert_contains "$S/execute/SKILL.md" "godot-prompter:godot-game-dev" "execute dispatches godot-prompter's game dev for gameplay tasks"
+  assert_contains "$S/execute/SKILL.md" "game-dev:feel-tuner" "execute dispatches the studio's feel tuner"
+  assert_contains "$S/execute/SKILL.md" "unverified" "execute lists unverified items"
+  assert_not_contains "$S/execute/SKILL.md" "bypass the event bus" "execute's reviewer no longer mandates bus-for-everything"
+}
+
 run_tests test_plugin_manifests test_skill_frontmatter test_agent_frontmatter \
   test_external_references_declared test_required_plugins_enabled test_bin_syntax \
-  test_role_agents_exist
+  test_role_agents_exist test_stage_skill_contracts
