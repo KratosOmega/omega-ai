@@ -39,9 +39,9 @@ The first `claude-gd` launch fetches the plugins the studio depends on
 Options: `--mode copy` for a frozen snapshot (the studio is copied to
 `~/.claude-gamedev/studio/` and loaded from there), `--target DIR` for a
 different config root, `--shim-dir DIR` for a different shim location,
-`--no-mcp` to skip MCP registration, and `--dry-run` to see every action
-without performing it. Reinstalling removes everything the previous install
-recorded first.
+`--no-mcp` (accepted now; MCP registration arrives with the engine toolkit
+in Plan 2), and `--dry-run` to see every action without performing it.
+Reinstalling removes everything the previous install recorded first.
 
 Install paths must not contain spaces.
 
@@ -86,6 +86,10 @@ back into version control with:
 ```sh
 ./sync-memory.sh game-dev
 ```
+
+In copy mode the config root holds a copied `memory/`, and a reinstall or
+uninstall removes that copy, in-session edits included — run
+`./sync-memory.sh <studio>` first.
 
 ## What is and is not isolated
 
