@@ -289,9 +289,27 @@ test_studio_arg() {
   assert_status 1 "studio_arg refuses an empty name" -- studio_arg ""
 }
 
+test_manifest_header() {
+  mkdir -p "$TMP/mh/root"
+  printf '# mode=copy\n# shim=/some where/claude-x\n%s\n' "$TMP/mh/root/file" > "$TMP/mh/root/.omega-ai-manifest"
+  printf 'x\n' > "$TMP/mh/root/file"
+  assert_eq "copy" "$(manifest_meta "$TMP/mh/root/.omega-ai-manifest" mode)" "manifest_meta reads the mode"
+  assert_eq "/some where/claude-x" "$(manifest_meta "$TMP/mh/root/.omega-ai-manifest" shim)" \
+    "manifest_meta reads a shim path with a space"
+  assert_eq "" "$(manifest_meta "$TMP/mh/root/.omega-ai-manifest" nope)" "manifest_meta prints nothing for an absent key"
+  assert_eq "" "$(manifest_meta "$TMP/mh/none" mode)" "manifest_meta prints nothing for a missing manifest"
+  manifest_remove "$TMP/mh/root/.omega-ai-manifest" "$TMP/mh/root" "" 2> "$TMP/mh/warn.out"
+  assert_missing "$TMP/mh/root/file" "manifest_remove still removes the entries"
+  assert_not_contains "$TMP/mh/warn.out" "skipping" "manifest_remove does not treat header lines as entries"
+  printf '#!/bin/sh\nCLAUDE_CONFIG_DIR="/roots/a" exec claude "$@"\n' > "$TMP/mh/shim"
+  assert_status 0 "shim_owned accepts the shim of its root" -- shim_owned "$TMP/mh/shim" /roots/a
+  assert_status 1 "shim_owned rejects the shim of another root" -- shim_owned "$TMP/mh/shim" /roots/b
+  assert_status 1 "shim_owned rejects a missing shim" -- shim_owned "$TMP/mh/none" /roots/a
+}
+
 run_tests test_json_field test_expand_path test_canon_path test_guard_target_rejects \
   test_guard_target_rejects_descendants_of_dot_claude test_guard_target_accepts \
   test_guard_target_derefs_symlinked_target test_guard_target_rejects_symlinked_dot_claude \
   test_need_value test_resolve_studio_target test_requires_of test_run_dry \
   test_manifest_remove test_manifest_remove_through_symlinked_root \
-  test_manifest_remove_skips_trailing_slash test_studio_arg
+  test_manifest_remove_skips_trailing_slash test_studio_arg test_manifest_header

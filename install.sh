@@ -124,7 +124,9 @@ if [ "$DRY_RUN" != "1" ]; then
   for d in agents skills commands hooks; do
     rmdir "$TARGET/$d" 2>/dev/null || true
   done
-  : > "$MANIFEST"
+  # The header tells uninstall and doctor what this install chose, so neither
+  # has to be told --shim-dir or guess the mode.
+  printf '# mode=%s\n# shim=%s\n' "$MODE" "$SHIM_PATH" > "$MANIFEST"
 fi
 
 # Only memory/ and bin/ live in the config root; skills, agents and hooks are

@@ -191,9 +191,26 @@ manifest_add() {
   printf '%s\n' "$2" >> "$1"
 }
 
+# manifest_meta MANIFEST KEY — the value of the header line "# KEY=value"
+# the installer writes (mode, shim); empty when the manifest or the key is
+# absent. One key per line, so a shim path with a space survives.
+manifest_meta() {
+  [ -f "$1" ] || return 0
+  sed -n "s/^# $2=//p" "$1" | head -n 1
+}
+
+# shim_owned SHIM TARGET — SHIM launches Claude Code against TARGET. Two
+# studios can share a shim directory and a root can be reinstalled at another
+# target; a shim that points elsewhere is not this root's to delete.
+shim_owned() {
+  [ -f "$1" ] && grep -qF "CLAUDE_CONFIG_DIR=\"$2\"" "$1"
+}
+
 # manifest_remove MANIFEST TARGET SHIM_PATH — delete every path the manifest
 # records that lies under TARGET, plus the shim at SHIM_PATH, then delete the
 # manifest itself. A missing manifest is a no-op.
+#
+# Header lines ("# key=value") are metadata, never paths.
 #
 # The manifest lives inside a user-writable root and can be stale from an
 # install that used a different --target or --shim-dir, so entries outside
@@ -223,6 +240,7 @@ manifest_remove() {
   _shim_canon="$(canon_path "$_shim")"
   while IFS= read -r _entry; do
     [ -n "$_entry" ] || continue
+    case "$_entry" in '#'*) continue ;; esac
     case "$_entry" in
       */) warn "skipping manifest entry with trailing slash: $_entry"; continue ;;
     esac

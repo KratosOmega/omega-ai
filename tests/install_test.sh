@@ -84,6 +84,8 @@ test_install_content() {
   assert_contains "$TMP/gd/.omega-ai-manifest" "memory/MEMORY.md" "manifest records the memory link"
   assert_contains "$TMP/gd/.omega-ai-manifest" "bin/studio-state" "manifest records the bin link"
   assert_not_contains "$TMP/gd/.omega-ai-manifest" "skills/" "manifest records no skills"
+  assert_eq "# mode=symlink" "$(sed -n '1p' "$TMP/gd/.omega-ai-manifest")" "manifest starts with the mode"
+  assert_eq "# shim=$TMP/bin/claude-gd" "$(sed -n '2p' "$TMP/gd/.omega-ai-manifest")" "manifest records the shim path"
 }
 
 test_install_precedence() {
@@ -109,6 +111,7 @@ test_install_copy_mode() {
   assert_contains "$TMP/bin-cp/claude-gd" "OMEGA_STUDIO_ROOT=\"$TMP/cp/studio\"" \
     "copy-mode shim points the studio root at the snapshot"
   assert_contains "$TMP/cp/.omega-ai-manifest" "$TMP/cp/studio" "manifest records the snapshot"
+  assert_eq "# mode=copy" "$(sed -n '1p' "$TMP/cp/.omega-ai-manifest")" "copy mode is recorded in the manifest"
 }
 
 # A reinstall must not leave links from an earlier layout behind: the
@@ -824,6 +827,20 @@ test_install_path_with_space() {
   assert_missing "$TMP/with space/bin/claude-gd" "uninstall removes the shim under a path with a space"
 }
 
+# Two roots can share a shim directory; the shim launches whichever was
+# installed last. Uninstalling the other root used to delete it anyway.
+test_uninstall_keeps_shim_of_another_root() {
+  sh "$REPO_ROOT/install.sh" general --target "$TMP/shA" --shim-dir "$TMP/bin-shared" >/dev/null 2>&1
+  sh "$REPO_ROOT/install.sh" general --target "$TMP/shB" --shim-dir "$TMP/bin-shared" >/dev/null 2>&1
+  assert_contains "$TMP/bin-shared/claude-gen" "CLAUDE_CONFIG_DIR=\"$TMP/shB\"" "the shared shim launches the second root"
+  sh "$REPO_ROOT/uninstall.sh" general --target "$TMP/shA" > "$TMP/shA.out" 2>&1
+  assert_missing "$TMP/shA/CLAUDE.md" "the first root is uninstalled"
+  assert_file "$TMP/bin-shared/claude-gen" "the shim that launches the second root survives"
+  assert_contains "$TMP/shA.out" "keeping it" "uninstall says why the shim stays"
+  sh "$REPO_ROOT/uninstall.sh" general --target "$TMP/shB" >/dev/null 2>&1
+  assert_missing "$TMP/bin-shared/claude-gen" "uninstall without --shim-dir removes the recorded shim"
+}
+
 run_tests test_studio_contract test_install_unknown_studio test_install_guard \
   test_install_guards_shim_dir test_install_refuses_traversal_target \
   test_install_refuses_traversal_shim_dir test_install_refuses_symlinked_target \
@@ -839,4 +856,5 @@ run_tests test_studio_contract test_install_unknown_studio test_install_guard \
   test_install_replaces_symlinked_files \
   test_uninstall_purge_requires_manifest test_uninstall_purge_symlinked_target \
   test_doctor_fails_on_missing_files test_doctor_detects_leak_through_symlinked_dot_claude test_doctor_matches_plugin_ids_literally test_doctor_flags_stale_layout \
-  test_reinstall_keeps_previous_install_when_studio_is_broken test_install_path_with_space
+  test_reinstall_keeps_previous_install_when_studio_is_broken test_install_path_with_space \
+  test_uninstall_keeps_shim_of_another_root

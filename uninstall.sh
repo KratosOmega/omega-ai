@@ -19,7 +19,7 @@ while [ $# -gt 0 ]; do
       need_value --shim-dir "$2"; SHIM_DIR="$2"; shift 2 ;;
     --purge) PURGE=1; shift ;;
     --yes) ASSUME_YES=1; shift ;;
-    -h|--help) log "Usage: uninstall.sh <studio> [--target DIR] [--shim-dir DIR] [--purge] [--yes]"; exit 0 ;;
+    -h|--help) log "Usage: uninstall.sh <studio> [--target DIR] [--shim-dir DIR] [--purge] [--yes]   (--shim-dir only for installs made before the manifest recorded the shim)"; exit 0 ;;
     -*) die "unknown option: $1" ;;
     *) [ -z "$STUDIO" ] || die "only one studio at a time"; STUDIO="$1"; shift ;;
   esac
@@ -45,7 +45,18 @@ guard_target "$SHIM_DIR" "$REPO_ROOT"
 [ -d "$TARGET" ] || die "nothing installed at $TARGET"
 
 MANIFEST="$TARGET/.omega-ai-manifest"
-SHIM_PATH="${SHIM_DIR%/}/$SHIM_NAME"
+# The shim the install recorded wins over the derived path; a manifest from
+# the previous installer records none, and --shim-dir is the fallback.
+SHIM_PATH="$(manifest_meta "$MANIFEST" shim)"
+if [ -n "$SHIM_PATH" ]; then
+  guard_target "$(dirname "$SHIM_PATH")" "$REPO_ROOT"
+else
+  SHIM_PATH="${SHIM_DIR%/}/$SHIM_NAME"
+fi
+if [ -f "$SHIM_PATH" ] && ! shim_owned "$SHIM_PATH" "$TARGET"; then
+  warn "shim $SHIM_PATH launches another config root; keeping it"
+  SHIM_PATH=""
+fi
 
 if [ "$PURGE" = "1" ]; then
   # Only a root this installer wrote may be purged; the manifest is the proof.
@@ -60,7 +71,7 @@ if [ "$PURGE" = "1" ]; then
   real="$(canon_path "$TARGET/.")"
   rm -rf "$real"
   if [ -L "$TARGET" ]; then rm -f "$TARGET"; fi
-  rm -f "$SHIM_PATH"
+  [ -z "$SHIM_PATH" ] || rm -f "$SHIM_PATH"
   log "purged $TARGET"
   exit 0
 fi
@@ -71,5 +82,5 @@ else
   warn "no manifest at $MANIFEST — removing nothing"
 fi
 
-rm -f "$SHIM_PATH"
+[ -z "$SHIM_PATH" ] || rm -f "$SHIM_PATH"
 log "uninstalled $STUDIO from $TARGET (user data kept; use --purge to remove everything)"
