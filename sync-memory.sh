@@ -22,7 +22,11 @@ export DRY_RUN
 STUDIO="$(studio_arg "$STUDIO")"
 
 STUDIO_DIR="$REPO_ROOT/studios/$STUDIO"
-TARGET="$(canon_path "$(resolve_studio_target "$STUDIO_DIR" "$TARGET_OVERRIDE")")"
+# Two assignments, not one nested substitution — see install.sh for why: a
+# single `canon_path "$(resolve_studio_target ...)"` masks the inner die
+# under `set -e`.
+TARGET="$(resolve_studio_target "$STUDIO_DIR" "$TARGET_OVERRIDE")"
+TARGET="$(canon_path "$TARGET")"
 
 SRC="$TARGET/memory"
 DEST="$STUDIO_DIR/memory"

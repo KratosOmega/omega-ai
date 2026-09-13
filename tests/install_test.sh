@@ -591,6 +591,56 @@ test_install_normalizes_name_and_target() {
     "a trailing slash on --target is not doubled in the manifest"
 }
 
+# resolve_studio_target's die must not be masked by canon_path swallowing its
+# exit status: TARGET="$(canon_path "$(resolve_studio_target ...)")" ran
+# canon_path on an empty string, which succeeded — set -e never fired, so
+# every script pressed on with TARGET="" and surfaced a confusing downstream
+# message (guard_target's "install target is empty", uninstall's "nothing
+# installed at", doctor's "config root does not exist", sync-memory's "no
+# memory directory at") instead of resolve_studio_target's own die message.
+test_resolve_studio_target_failure_is_not_masked() {
+  SB="$TMP/sandbox-resolve"
+  mkdir -p "$SB"
+  cp -R "$REPO_ROOT/lib" "$REPO_ROOT/shared" "$REPO_ROOT/studios" "$SB/"
+  cp "$REPO_ROOT/install.sh" "$REPO_ROOT/uninstall.sh" "$REPO_ROOT/doctor.sh" \
+     "$REPO_ROOT/sync-memory.sh" "$SB/"
+  printf '{ "name": "general", "shim": "claude-gen" }\n' > "$SB/studios/general/studio.json"
+
+  status=0
+  sh "$SB/install.sh" general --shim-dir "$TMP/rst-bin" \
+    > "$TMP/rst-install.out" 2>&1 || status=$?
+  assert_eq "1" "$status" "install fails when studio.json declares no target"
+  assert_contains "$TMP/rst-install.out" "studio.json declares no target: general" \
+    "install surfaces resolve_studio_target's own die message"
+  assert_not_contains "$TMP/rst-install.out" "install target is empty" \
+    "install does not fall through to guard_target's message"
+
+  status=0
+  sh "$SB/uninstall.sh" general --shim-dir "$TMP/rst-bin" \
+    > "$TMP/rst-uninstall.out" 2>&1 || status=$?
+  assert_eq "1" "$status" "uninstall fails when studio.json declares no target"
+  assert_contains "$TMP/rst-uninstall.out" "studio.json declares no target: general" \
+    "uninstall surfaces resolve_studio_target's own die message"
+  assert_not_contains "$TMP/rst-uninstall.out" "install target is empty" \
+    "uninstall does not fall through to guard_target's message"
+
+  status=0
+  sh "$SB/doctor.sh" general > "$TMP/rst-doctor.out" 2>&1 || status=$?
+  assert_eq "1" "$status" "doctor fails when studio.json declares no target"
+  assert_contains "$TMP/rst-doctor.out" "studio.json declares no target: general" \
+    "doctor surfaces resolve_studio_target's own die message"
+  assert_not_contains "$TMP/rst-doctor.out" "config root does not exist" \
+    "doctor does not fall through to the missing-root message"
+
+  status=0
+  sh "$SB/sync-memory.sh" general > "$TMP/rst-sync.out" 2>&1 || status=$?
+  assert_eq "1" "$status" "sync-memory fails when studio.json declares no target"
+  assert_contains "$TMP/rst-sync.out" "studio.json declares no target: general" \
+    "sync-memory surfaces resolve_studio_target's own die message"
+  assert_not_contains "$TMP/rst-sync.out" "no memory directory at" \
+    "sync-memory does not fall through to the missing-memory message"
+}
+
 run_tests test_studio_contract test_install_unknown_studio test_install_guard \
   test_install_guards_shim_dir test_install_refuses_traversal_target \
   test_install_refuses_traversal_shim_dir test_install_refuses_symlinked_target \
@@ -602,4 +652,4 @@ run_tests test_studio_contract test_install_unknown_studio test_install_guard \
   test_option_value_required test_uninstall test_uninstall_scopes_manifest_entries \
   test_uninstall_skips_traversal_manifest_entries test_uninstall_refuses_empty_shim_name \
   test_uninstall_purge test_two_studios_independent test_all_scripts_validate_the_studio \
-  test_install_normalizes_name_and_target
+  test_install_normalizes_name_and_target test_resolve_studio_target_failure_is_not_masked

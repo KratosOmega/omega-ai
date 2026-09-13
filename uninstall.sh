@@ -28,7 +28,11 @@ done
 STUDIO="$(studio_arg "$STUDIO")"
 
 STUDIO_DIR="$REPO_ROOT/studios/$STUDIO"
-TARGET="$(canon_path "$(resolve_studio_target "$STUDIO_DIR" "$TARGET_OVERRIDE")")"
+# Two assignments, not one nested substitution — see install.sh for why: a
+# single `canon_path "$(resolve_studio_target ...)"` masks the inner die
+# under `set -e`.
+TARGET="$(resolve_studio_target "$STUDIO_DIR" "$TARGET_OVERRIDE")"
+TARGET="$(canon_path "$TARGET")"
 SHIM_DIR="$(canon_path "$(expand_path "$SHIM_DIR")")"
 SHIM_NAME="$(json_field "$STUDIO_DIR/studio.json" shim)"
 # An empty name would make SHIM_PATH the shim directory itself, which
