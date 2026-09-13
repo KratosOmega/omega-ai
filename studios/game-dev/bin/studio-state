@@ -78,17 +78,22 @@ EOF
     esac
     tmp="$STATE.tmp.$$"
     # Only the first matching header line is replaced; ledger lines start
-    # with "- " and can never match "^key: ".
-    awk -v k="$key" -v v="$val" '
+    # with "- " and can never match "^key: ". The value travels through the
+    # environment, not `awk -v`, which would turn a "\n" in a path into a
+    # real newline and split the header.
+    STUDIO_STATE_VALUE="$val" awk -v k="$key" '
       BEGIN { done = 0 }
-      !done && $0 ~ ("^" k ": ") { print k ": " v; done = 1; next }
+      !done && $0 ~ ("^" k ": ") { print k ": " ENVIRON["STUDIO_STATE_VALUE"]; done = 1; next }
       { print }
     ' "$STATE" > "$tmp"
     mv "$tmp" "$STATE"
     ;;
   ledger)
     need_state
-    text="${2:-}"
+    shift
+    # All remaining words form the entry, so an unquoted call keeps its text;
+    # an embedded newline is folded to a space so an entry stays one line.
+    text="$(printf '%s' "$*" | tr '\n' ' ')"
     [ -n "$text" ] || usage
     printf -- '- %s %s\n' "$(date +%Y-%m-%d)" "$text" >> "$STATE"
     ;;

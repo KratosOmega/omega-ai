@@ -87,6 +87,43 @@ test_state_ledger() {
     "set does not disturb the ledger"
 }
 
+# Skills quote the ledger text, but an unquoted call must not silently keep
+# only the first word, and a value or text is data: a backslash sequence in a
+# path must land as typed, and a newline inside ledger text must not split
+# the entry into two lines (the ledger is one line per entry).
+test_state_ledger_keeps_all_words() {
+  P="$(fresh_project words)"
+  ( cd "$P" && sh "$STATE_BIN" init >/dev/null )
+  today="$(date +%Y-%m-%d)"
+  assert_status 0 "ledger accepts unquoted words" -- \
+    sh -c "cd '$P' && sh '$STATE_BIN' ledger T2 complete abc123..def456"
+  assert_eq "- $today T2 complete abc123..def456" "$(tail -n 1 "$P/.studio/STATE.md")" \
+    "unquoted multi-word text is kept whole"
+}
+
+test_state_ledger_folds_newlines() {
+  P="$(fresh_project fold)"
+  ( cd "$P" && sh "$STATE_BIN" init >/dev/null )
+  today="$(date +%Y-%m-%d)"
+  before="$(wc -l < "$P/.studio/STATE.md" | tr -d ' ')"
+  ( cd "$P" && sh "$STATE_BIN" ledger "$(printf 'T3 Ruling: first line\nsecond line')" )
+  assert_eq "$((before + 1))" "$(wc -l < "$P/.studio/STATE.md" | tr -d ' ')" \
+    "a ledger entry with an embedded newline adds exactly one line"
+  assert_eq "- $today T3 Ruling: first line second line" "$(tail -n 1 "$P/.studio/STATE.md")" \
+    "the newline is folded to a space"
+}
+
+test_state_set_keeps_backslashes() {
+  P="$(fresh_project backslash)"
+  ( cd "$P" && sh "$STATE_BIN" init >/dev/null )
+  assert_status 0 "set accepts a value with a backslash sequence" -- \
+    sh -c "cd '$P' && sh '$STATE_BIN' set spec 'docs\\nested.md'"
+  assert_eq 'docs\nested.md' "$(cd "$P" && sh "$STATE_BIN" get spec)" \
+    "a backslash-n in a value is stored literally, not as a newline"
+  assert_eq "1" "$(grep -c '^spec: ' "$P/.studio/STATE.md")" "the header line is not split"
+  assert_eq "plan: -" "$(sed -n '5p' "$P/.studio/STATE.md")" "the following header line is undisturbed"
+}
+
 test_state_show() {
   P="$(fresh_project show)"
   ( cd "$P" && sh "$STATE_BIN" init >/dev/null )
@@ -95,4 +132,5 @@ test_state_show() {
 }
 
 run_tests test_state_needs_init test_state_init test_state_get_set test_state_validation \
-  test_state_ledger test_state_show
+  test_state_ledger test_state_ledger_keeps_all_words test_state_ledger_folds_newlines \
+  test_state_set_keeps_backslashes test_state_show
