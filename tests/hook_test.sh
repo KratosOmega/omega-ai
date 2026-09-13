@@ -94,5 +94,24 @@ test_hook_escapes_json() {
   fi
 }
 
+# A config value is data, not a pattern: '/' and '&' are sed substitution
+# metacharacters, and a value carrying them used to break the fill so the hook
+# emitted an empty context with exit 0 — dropping the whole bootstrap.
+test_hook_fills_config_value_with_metacharacters() {
+  mkdir -p "$TMP/meta/.studio"
+  printf '{ "engine": "godot4/mono&x" }\n' > "$TMP/meta/.studio/config.json"
+  run_hook "$TMP/meta"
+  context "$TMP/hook.out" > "$TMP/ctx5.txt"
+  assert_contains "$TMP/ctx5.txt" "godot4/mono&x · 2D · GDScript · GUT" \
+    "a value with sed metacharacters is filled in literally"
+  assert_contains "$TMP/ctx5.txt" "stage skills own the workflow" "the rest of the bootstrap survives"
+  assert_contains "$TMP/ctx5.txt" ".studio/STATE.md" "the state instruction survives"
+  assert_not_contains "$TMP/hook.out" '"additionalContext":""' "the context is not emptied"
+  if command -v jq >/dev/null 2>&1; then
+    assert_status 0 "output is still valid JSON" -- jq -e . "$TMP/hook.out"
+  fi
+}
+
 run_tests test_hook_files test_hook_output_shape test_hook_defaults_from_studio_json \
-  test_hook_reads_project_config test_hook_partial_config_falls_back test_hook_escapes_json
+  test_hook_reads_project_config test_hook_partial_config_falls_back test_hook_escapes_json \
+  test_hook_fills_config_value_with_metacharacters

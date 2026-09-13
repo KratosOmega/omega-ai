@@ -41,14 +41,35 @@ ENGINE="$(label "$(pick engine)")"
 DIMENSION="$(label "$(pick dimension)")"
 LANGUAGE="$(label "$(pick language)")"
 TESTS="$(label "$(pick tests)")"
+export ENGINE DIMENSION LANGUAGE TESTS
 
 TAB="$(printf '\t')"
 # Fill the identity line, then escape for a JSON string: backslash, quote,
 # tab, and newlines (joined into one line by awk). Carriage returns are dropped.
-escaped="$(sed -e "s/{{ENGINE}}/$ENGINE/g" \
-               -e "s/{{DIMENSION}}/$DIMENSION/g" \
-               -e "s/{{LANGUAGE}}/$LANGUAGE/g" \
-               -e "s/{{TESTS}}/$TESTS/g" "$ROOT/hooks/bootstrap.md" \
+#
+# The fill is plain string splicing on purpose. The values are data from a
+# user-written config.json: through sed they are patterns ('/' or '&' in
+# "godot4/mono" breaks the substitution and the hook emits an empty context
+# with exit 0), and through awk's gsub a replacement string still interprets
+# '&' and '\'. index/substr interpret nothing, and ENVIRON carries the values
+# without the backslash processing `awk -v` applies.
+escaped="$(awk '
+  function fill(s, tok, val,    out, i) {
+    out = ""
+    while ((i = index(s, tok)) > 0) {
+      out = out substr(s, 1, i - 1) val
+      s = substr(s, i + length(tok))
+    }
+    return out s
+  }
+  {
+    line = $0
+    line = fill(line, "{{ENGINE}}", ENVIRON["ENGINE"])
+    line = fill(line, "{{DIMENSION}}", ENVIRON["DIMENSION"])
+    line = fill(line, "{{LANGUAGE}}", ENVIRON["LANGUAGE"])
+    line = fill(line, "{{TESTS}}", ENVIRON["TESTS"])
+    print line
+  }' "$ROOT/hooks/bootstrap.md" \
   | tr -d '\r' \
   | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e "s/$TAB/\\\\t/g" \
   | awk 'BEGIN { ORS = "" } NR > 1 { printf "\\n" } { printf "%s", $0 }')"
