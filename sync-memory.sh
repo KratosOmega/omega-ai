@@ -3,7 +3,7 @@ set -eu
 REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
 . "$REPO_ROOT/lib/common.sh"
 
-PROFILE=""
+STUDIO=""
 TARGET_OVERRIDE=""
 DRY_RUN=0
 while [ $# -gt 0 ]; do
@@ -12,19 +12,19 @@ while [ $# -gt 0 ]; do
       [ $# -ge 2 ] || die "missing value for --target"
       need_value --target "$2"; TARGET_OVERRIDE="$2"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
-    -h|--help) log "Usage: sync-memory.sh <profile> [--target DIR] [--dry-run]"; exit 0 ;;
+    -h|--help) log "Usage: sync-memory.sh <studio> [--target DIR] [--dry-run]"; exit 0 ;;
     -*) die "unknown option: $1" ;;
-    *) [ -z "$PROFILE" ] || die "only one profile at a time"; PROFILE="$1"; shift ;;
+    *) [ -z "$STUDIO" ] || die "only one studio at a time"; STUDIO="$1"; shift ;;
   esac
 done
 export DRY_RUN
-[ -n "$PROFILE" ] || die "no profile given"
+[ -n "$STUDIO" ] || die "no studio given"
 
-PROFILE_DIR="$REPO_ROOT/profiles/$PROFILE"
-TARGET="$(resolve_profile_target "$PROFILE_DIR" "$TARGET_OVERRIDE")"
+STUDIO_DIR="$REPO_ROOT/studios/$STUDIO"
+TARGET="$(resolve_studio_target "$STUDIO_DIR" "$TARGET_OVERRIDE")"
 
 SRC="$TARGET/memory"
-DEST="$PROFILE_DIR/memory"
+DEST="$STUDIO_DIR/memory"
 [ -d "$SRC" ] || die "no memory directory at $SRC"
 
 # -type f skips symlinks, which already point back into this repository.

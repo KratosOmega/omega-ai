@@ -1,0 +1,6 @@
+{
+  "name": "general",
+  "description": "Minimal general-purpose studio — a clean room, isolated from ~/.claude",
+  "target": "~/.claude-general",
+  "shim": "claude-gen"
+}

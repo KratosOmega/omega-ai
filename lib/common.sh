@@ -106,22 +106,30 @@ guard_target() {
   return 0
 }
 
-# resolve_profile_target PROFILE_DIR [OVERRIDE] — print the profile's config
-# root. OVERRIDE wins when given; otherwise profile.json's target is used.
-# Dies when the profile, its profile.json, or the resolved target is missing.
-resolve_profile_target() {
-  _pdir="${1%/}"
+# resolve_studio_target STUDIO_DIR [OVERRIDE] — print the studio's config
+# root. OVERRIDE wins when given; otherwise studio.json's target is used.
+# Dies when the studio, its studio.json, or the resolved target is missing.
+resolve_studio_target() {
+  _sdir="${1%/}"
   _override="${2:-}"
-  _pname="$(basename "$_pdir")"
-  [ -d "$_pdir" ] || die "unknown profile: $_pname"
-  [ -f "$_pdir/profile.json" ] || die "profile has no profile.json: $_pname"
+  _sname="$(basename "$_sdir")"
+  [ -d "$_sdir" ] || die "unknown studio: $_sname"
+  [ -f "$_sdir/studio.json" ] || die "studio has no studio.json: $_sname"
   if [ -n "$_override" ]; then
     _resolved="$(expand_path "$_override")"
   else
-    _resolved="$(expand_path "$(json_field "$_pdir/profile.json" target)")"
+    _resolved="$(expand_path "$(json_field "$_sdir/studio.json" target)")"
   fi
-  [ -n "$_resolved" ] || die "profile.json declares no target: $_pname"
+  [ -n "$_resolved" ] || die "studio.json declares no target: $_sname"
   printf '%s\n' "$_resolved"
+}
+
+# requires_of FILE KIND — print the names a requires.txt declares for KIND
+# (plugin, skill, or agent), one per line. A missing file prints nothing, so
+# a studio with no dependencies needs only an empty requires.txt.
+requires_of() {
+  [ -f "$1" ] || return 0
+  awk -v kind="$2" '$1 == kind { print $2 }' "$1"
 }
 
 # install_entries SRC_DIR DEST_DIR MODE — install each child of SRC_DIR into

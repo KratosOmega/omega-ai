@@ -7,15 +7,21 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
-test_profile_contract() {
-  for dir in "$REPO_ROOT"/profiles/*/; do
+test_studio_contract() {
+  for dir in "$REPO_ROOT"/studios/*/; do
     name="$(basename "$dir")"
-    assert_file "$dir/profile.json" "$name has profile.json"
+    assert_file "$dir/studio.json" "$name has studio.json"
     assert_file "$dir/CLAUDE.md" "$name has CLAUDE.md"
     assert_file "$dir/settings.json" "$name has settings.json"
-    assert_eq "$name" "$(json_field "$dir/profile.json" name)" "$name profile.json name matches directory"
-    target="$(json_field "$dir/profile.json" target)"
-    shim="$(json_field "$dir/profile.json" shim)"
+    assert_file "$dir/requires.txt" "$name has requires.txt"
+    assert_file "$dir/.claude-plugin/plugin.json" "$name has a plugin manifest"
+    assert_eq "$name" "$(json_field "$dir/studio.json" name)" "$name studio.json name matches directory"
+    assert_eq "$name" "$(json_field "$dir/.claude-plugin/plugin.json" name)" \
+      "$name plugin.json name matches directory"
+    assert_eq "0.1.0" "$(json_field "$dir/.claude-plugin/plugin.json" version)" \
+      "$name plugin.json declares version 0.1.0"
+    target="$(json_field "$dir/studio.json" target)"
+    shim="$(json_field "$dir/studio.json" shim)"
     assert_status 0 "$name declares a safe target" -- guard_target "$(expand_path "$target")" "$REPO_ROOT"
     if [ -n "$shim" ]; then
       _pass "$name declares a shim"
@@ -26,8 +32,8 @@ test_profile_contract() {
   done
 }
 
-test_install_unknown_profile() {
-  assert_status 1 "unknown profile is refused" -- \
+test_install_unknown_studio() {
+  assert_status 1 "unknown studio is refused" -- \
     sh "$REPO_ROOT/install.sh" nope --target "$TMP/u" --shim-dir "$TMP/bin"
 }
 
@@ -37,7 +43,7 @@ test_install_guard() {
   assert_status 1 "refuses home as target" -- \
     sh "$REPO_ROOT/install.sh" general --target "$HOME" --shim-dir "$TMP/bin"
   assert_status 1 "refuses in-repo target" -- \
-    sh "$REPO_ROOT/install.sh" general --target "$REPO_ROOT/profiles" --shim-dir "$TMP/bin"
+    sh "$REPO_ROOT/install.sh" general --target "$REPO_ROOT/studios" --shim-dir "$TMP/bin"
   assert_missing "$TMP/bin/claude-gen" "no shim written by a refused install"
 }
 
@@ -50,21 +56,21 @@ test_install_dry_run() {
 test_install_content() {
   sh "$REPO_ROOT/install.sh" general --target "$TMP/gen" --shim-dir "$TMP/bin" >/dev/null
   assert_file "$TMP/gen/CLAUDE.md" "renders CLAUDE.md"
-  assert_contains "$TMP/gen/CLAUDE.md" "General Profile" "rendered CLAUDE.md carries profile content"
+  assert_contains "$TMP/gen/CLAUDE.md" "General Studio" "rendered CLAUDE.md carries studio content"
   assert_contains "$TMP/gen/CLAUDE.md" "GENERATED" "rendered CLAUDE.md warns it is generated"
   assert_file "$TMP/gen/settings.json" "copies settings.json"
-  assert_symlink "$TMP/gen/skills/repo-conventions" "links profile skill"
+  assert_symlink "$TMP/gen/skills/repo-conventions" "links studio skill"
   assert_file "$TMP/gen/.omega-ai-manifest" "writes a manifest"
   assert_contains "$TMP/gen/.omega-ai-manifest" "skills/repo-conventions" "manifest records the skill"
 }
 
 test_install_precedence() {
-  mkdir -p "$TMP/fixture/shared/skills/collide" "$TMP/fixture/profile/skills/collide"
+  mkdir -p "$TMP/fixture/shared/skills/collide" "$TMP/fixture/studio/skills/collide"
   printf 'shared\n' > "$TMP/fixture/shared/skills/collide/SKILL.md"
-  printf 'profile\n' > "$TMP/fixture/profile/skills/collide/SKILL.md"
+  printf 'studio\n' > "$TMP/fixture/studio/skills/collide/SKILL.md"
   install_entries "$TMP/fixture/shared/skills" "$TMP/fixture/dest" copy >/dev/null
-  install_entries "$TMP/fixture/profile/skills" "$TMP/fixture/dest" copy >/dev/null
-  assert_eq "profile" "$(cat "$TMP/fixture/dest/collide/SKILL.md")" "profile entry wins the collision"
+  install_entries "$TMP/fixture/studio/skills" "$TMP/fixture/dest" copy >/dev/null
+  assert_eq "studio" "$(cat "$TMP/fixture/dest/collide/SKILL.md")" "studio entry wins the collision"
 }
 
 test_install_copy_mode() {
@@ -125,15 +131,15 @@ test_uninstall_purge() {
   assert_missing "$TMP/purge" "purge removes the whole config root"
 }
 
-test_two_profiles_independent() {
+test_two_studios_independent() {
   sh "$REPO_ROOT/install.sh" general --target "$TMP/a" --shim-dir "$TMP/bin" >/dev/null
   sh "$REPO_ROOT/install.sh" game-dev --target "$TMP/b" --shim-dir "$TMP/bin" >/dev/null
-  assert_file "$TMP/a/CLAUDE.md" "first profile intact after second install"
-  assert_file "$TMP/b/CLAUDE.md" "second profile installed"
-  assert_contains "$TMP/a/CLAUDE.md" "General Profile" "first root keeps its own prompt"
+  assert_file "$TMP/a/CLAUDE.md" "first studio intact after second install"
+  assert_file "$TMP/b/CLAUDE.md" "second studio installed"
+  assert_contains "$TMP/a/CLAUDE.md" "General Studio" "first root keeps its own prompt"
   sh "$REPO_ROOT/uninstall.sh" game-dev --target "$TMP/b" --shim-dir "$TMP/bin" --purge --yes >/dev/null
-  assert_file "$TMP/a/CLAUDE.md" "uninstalling one profile leaves the other alone"
-  assert_file "$TMP/bin/claude-gen" "other profile's shim survives"
+  assert_file "$TMP/a/CLAUDE.md" "uninstalling one studio leaves the other alone"
+  assert_file "$TMP/bin/claude-gen" "other studio's shim survives"
 }
 
 # --- Finding 1: the shim directory must pass the same guard as the target. ---
@@ -243,51 +249,51 @@ test_doctor_detects_leak() {
   assert_contains "$TMP/leak3.out" "leakage: none" "doctor reports a clean root again"
 }
 
-# --- Finding 8: a profile with no enabled plugins prints (none). ---
+# --- Finding 8: a studio with no enabled plugins prints (none). ---
 test_doctor_reports_no_plugins() {
   sh "$REPO_ROOT/install.sh" general --target "$TMP/plug" --shim-dir "$TMP/bin-plug" >/dev/null
   sh "$REPO_ROOT/doctor.sh" general --target "$TMP/plug" > "$TMP/plug.out" 2>&1
-  assert_contains "$TMP/plug.out" "(none)" "doctor prints (none) for a profile with no plugins"
+  assert_contains "$TMP/plug.out" "(none)" "doctor prints (none) for a studio with no plugins"
   sh "$REPO_ROOT/install.sh" game-dev --target "$TMP/plug2" --shim-dir "$TMP/bin-plug" >/dev/null
   sh "$REPO_ROOT/doctor.sh" game-dev --target "$TMP/plug2" > "$TMP/plug2.out" 2>&1
   assert_contains "$TMP/plug2.out" "godot-prompter" "doctor lists enabled plugins when present"
   assert_not_contains "$TMP/plug2.out" "(none)" "doctor does not print (none) when plugins exist"
 }
 
-# --- Finding 6: all four scripts resolve the profile the same way. ---
-test_all_scripts_validate_the_profile() {
+# --- Finding 6: all four scripts resolve the studio the same way. ---
+test_all_scripts_validate_the_studio() {
   SB="$TMP/sandbox"
   mkdir -p "$SB"
-  cp -R "$REPO_ROOT/lib" "$REPO_ROOT/shared" "$REPO_ROOT/profiles" "$SB/"
+  cp -R "$REPO_ROOT/lib" "$REPO_ROOT/shared" "$REPO_ROOT/studios" "$SB/"
   cp "$REPO_ROOT/install.sh" "$REPO_ROOT/uninstall.sh" "$REPO_ROOT/doctor.sh" \
      "$REPO_ROOT/sync-memory.sh" "$SB/"
-  mkdir -p "$SB/profiles/broken"
-  printf '# broken\n' > "$SB/profiles/broken/CLAUDE.md"
+  mkdir -p "$SB/studios/broken"
+  printf '# broken\n' > "$SB/studios/broken/CLAUDE.md"
 
   sh "$SB/install.sh" general --target "$TMP/brk" --shim-dir "$TMP/bin-brk" >/dev/null
   mkdir -p "$TMP/brk/memory"
   printf 'session note\n' > "$TMP/brk/memory/NOTE.md"
 
-  assert_status 1 "install refuses a profile with no profile.json" -- \
+  assert_status 1 "install refuses a studio with no studio.json" -- \
     sh "$SB/install.sh" broken --target "$TMP/brk2" --shim-dir "$TMP/bin-brk"
-  assert_status 1 "uninstall refuses a profile with no profile.json" -- \
+  assert_status 1 "uninstall refuses a studio with no studio.json" -- \
     sh "$SB/uninstall.sh" broken --target "$TMP/brk" --shim-dir "$TMP/bin-brk"
-  assert_status 1 "doctor refuses a profile with no profile.json" -- \
+  assert_status 1 "doctor refuses a studio with no studio.json" -- \
     sh "$SB/doctor.sh" broken --target "$TMP/brk"
-  assert_status 1 "sync-memory refuses a profile with no profile.json" -- \
+  assert_status 1 "sync-memory refuses a studio with no studio.json" -- \
     sh "$SB/sync-memory.sh" broken --target "$TMP/brk"
   assert_file "$TMP/brk/CLAUDE.md" "a refused uninstall removes nothing"
-  assert_missing "$SB/profiles/broken/memory" "a refused sync copies nothing"
+  assert_missing "$SB/studios/broken/memory" "a refused sync copies nothing"
 
-  assert_status 1 "install refuses a second positional profile" -- \
+  assert_status 1 "install refuses a second positional studio" -- \
     sh "$SB/install.sh" general game-dev --target "$TMP/brk" --shim-dir "$TMP/bin-brk"
-  assert_status 1 "uninstall refuses a second positional profile" -- \
+  assert_status 1 "uninstall refuses a second positional studio" -- \
     sh "$SB/uninstall.sh" general game-dev --target "$TMP/brk" --shim-dir "$TMP/bin-brk"
-  assert_status 1 "doctor refuses a second positional profile" -- \
+  assert_status 1 "doctor refuses a second positional studio" -- \
     sh "$SB/doctor.sh" general game-dev --target "$TMP/brk"
-  assert_status 1 "sync-memory refuses a second positional profile" -- \
+  assert_status 1 "sync-memory refuses a second positional studio" -- \
     sh "$SB/sync-memory.sh" general game-dev --target "$TMP/brk"
-  assert_file "$TMP/brk/CLAUDE.md" "a refused second-profile run changes nothing"
+  assert_file "$TMP/brk/CLAUDE.md" "a refused second-studio run changes nothing"
 }
 
 # --- Critical: a '..' spelling must not walk around guard_target. ---
@@ -385,11 +391,11 @@ test_uninstall_skips_traversal_manifest_entries() {
   assert_missing "$FAKE/.claude-general/.omega-ai-manifest" "the manifest is still removed"
 }
 
-run_tests test_profile_contract test_install_unknown_profile test_install_guard \
+run_tests test_studio_contract test_install_unknown_studio test_install_guard \
   test_install_guards_shim_dir test_install_refuses_traversal_target \
   test_install_refuses_traversal_shim_dir test_install_dry_run test_install_content \
   test_install_precedence test_install_copy_mode test_settings_backup test_shim \
   test_doctor test_doctor_detects_leak test_doctor_reports_no_plugins \
   test_option_value_required test_uninstall test_uninstall_scopes_manifest_entries \
   test_uninstall_skips_traversal_manifest_entries \
-  test_uninstall_purge test_two_profiles_independent test_all_scripts_validate_the_profile
+  test_uninstall_purge test_two_studios_independent test_all_scripts_validate_the_studio

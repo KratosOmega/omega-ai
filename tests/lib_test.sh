@@ -33,7 +33,7 @@ test_guard_target_rejects() {
   assert_status 1 "rejects ~/.claude" -- guard_target "$HOME/.claude" "$REPO_ROOT"
   assert_status 1 "rejects ~/.claude with slash" -- guard_target "$HOME/.claude/" "$REPO_ROOT"
   assert_status 1 "rejects empty target" -- guard_target "" "$REPO_ROOT"
-  assert_status 1 "rejects in-repo target" -- guard_target "$REPO_ROOT/profiles" "$REPO_ROOT"
+  assert_status 1 "rejects in-repo target" -- guard_target "$REPO_ROOT/studios" "$REPO_ROOT"
 }
 
 # A shim directory goes through the same guard, so a descendant of ~/.claude
@@ -64,24 +64,40 @@ test_need_value() {
   assert_contains "$TMP/need.out" "missing value for --target" "names the flag it is missing"
 }
 
-test_resolve_profile_target() {
-  mkdir -p "$TMP/profiles/good" "$TMP/profiles/bare"
-  cat > "$TMP/profiles/good/profile.json" <<'JSON'
+test_resolve_studio_target() {
+  mkdir -p "$TMP/studios/good" "$TMP/studios/bare"
+  cat > "$TMP/studios/good/studio.json" <<'JSON'
 { "name": "good", "target": "~/.claude-good", "shim": "claude-good" }
 JSON
-  assert_eq "$HOME/.claude-good" "$(resolve_profile_target "$TMP/profiles/good" "")" \
-    "resolves the target from profile.json"
-  assert_eq "$TMP/override" "$(resolve_profile_target "$TMP/profiles/good" "$TMP/override")" \
-    "an override wins over profile.json"
-  assert_eq "$HOME/ovr" "$(resolve_profile_target "$TMP/profiles/good" '~/ovr')" \
+  assert_eq "$HOME/.claude-good" "$(resolve_studio_target "$TMP/studios/good" "")" \
+    "resolves the target from studio.json"
+  assert_eq "$TMP/override" "$(resolve_studio_target "$TMP/studios/good" "$TMP/override")" \
+    "an override wins over studio.json"
+  assert_eq "$HOME/ovr" "$(resolve_studio_target "$TMP/studios/good" '~/ovr')" \
     "an override is tilde-expanded"
-  assert_status 1 "rejects an unknown profile directory" -- \
-    resolve_profile_target "$TMP/profiles/absent" ""
-  assert_status 1 "rejects a profile with no profile.json" -- \
-    resolve_profile_target "$TMP/profiles/bare" ""
-  printf '{ "name": "empty" }\n' > "$TMP/profiles/bare/profile.json"
-  assert_status 1 "rejects a profile.json with no target" -- \
-    resolve_profile_target "$TMP/profiles/bare" ""
+  assert_status 1 "rejects an unknown studio directory" -- \
+    resolve_studio_target "$TMP/studios/absent" ""
+  assert_status 1 "rejects a studio with no studio.json" -- \
+    resolve_studio_target "$TMP/studios/bare" ""
+  printf '{ "name": "empty" }\n' > "$TMP/studios/bare/studio.json"
+  assert_status 1 "rejects a studio.json with no target" -- \
+    resolve_studio_target "$TMP/studios/bare" ""
+}
+
+test_requires_of() {
+  cat > "$TMP/requires.txt" <<'REQ'
+plugin superpowers@claude-plugins-official
+plugin godot-prompter@skillsmith
+skill  superpowers:test-driven-development
+agent  godot-prompter:godot-csharp-engineer
+REQ
+  assert_eq "superpowers@claude-plugins-official
+godot-prompter@skillsmith" "$(requires_of "$TMP/requires.txt" plugin)" "lists the plugin lines"
+  assert_eq "superpowers:test-driven-development" "$(requires_of "$TMP/requires.txt" skill)" \
+    "lists the skill lines"
+  assert_eq "godot-prompter:godot-csharp-engineer" "$(requires_of "$TMP/requires.txt" agent)" \
+    "lists the agent lines"
+  assert_eq "" "$(requires_of "$TMP/absent.txt" plugin)" "a missing file lists nothing"
 }
 
 test_run_dry() {
@@ -115,4 +131,4 @@ test_canon_path() {
 
 run_tests test_json_field test_expand_path test_canon_path test_guard_target_rejects \
   test_guard_target_rejects_descendants_of_dot_claude test_guard_target_accepts \
-  test_need_value test_resolve_profile_target test_run_dry
+  test_need_value test_resolve_studio_target test_requires_of test_run_dry

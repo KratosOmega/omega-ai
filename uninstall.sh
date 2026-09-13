@@ -3,7 +3,7 @@ set -eu
 REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
 . "$REPO_ROOT/lib/common.sh"
 
-PROFILE=""
+STUDIO=""
 TARGET_OVERRIDE=""
 SHIM_DIR="$HOME/.local/bin"
 PURGE=0
@@ -19,17 +19,17 @@ while [ $# -gt 0 ]; do
       need_value --shim-dir "$2"; SHIM_DIR="$2"; shift 2 ;;
     --purge) PURGE=1; shift ;;
     --yes) ASSUME_YES=1; shift ;;
-    -h|--help) log "Usage: uninstall.sh <profile> [--target DIR] [--shim-dir DIR] [--purge] [--yes]"; exit 0 ;;
+    -h|--help) log "Usage: uninstall.sh <studio> [--target DIR] [--shim-dir DIR] [--purge] [--yes]"; exit 0 ;;
     -*) die "unknown option: $1" ;;
-    *) [ -z "$PROFILE" ] || die "only one profile at a time"; PROFILE="$1"; shift ;;
+    *) [ -z "$STUDIO" ] || die "only one studio at a time"; STUDIO="$1"; shift ;;
   esac
 done
-[ -n "$PROFILE" ] || die "no profile given"
+[ -n "$STUDIO" ] || die "no studio given"
 
-PROFILE_DIR="$REPO_ROOT/profiles/$PROFILE"
-TARGET="$(resolve_profile_target "$PROFILE_DIR" "$TARGET_OVERRIDE")"
+STUDIO_DIR="$REPO_ROOT/studios/$STUDIO"
+TARGET="$(resolve_studio_target "$STUDIO_DIR" "$TARGET_OVERRIDE")"
 SHIM_DIR="$(canon_path "$(expand_path "$SHIM_DIR")")"
-SHIM_NAME="$(json_field "$PROFILE_DIR/profile.json" shim)"
+SHIM_NAME="$(json_field "$STUDIO_DIR/studio.json" shim)"
 
 # Guard both paths this script deletes from.
 guard_target "$TARGET" "$REPO_ROOT"
@@ -81,4 +81,4 @@ else
 fi
 
 if [ -n "$SHIM_NAME" ]; then rm -f "$SHIM_PATH"; fi
-log "uninstalled $PROFILE from $TARGET (user data kept; use --purge to remove everything)"
+log "uninstalled $STUDIO from $TARGET (user data kept; use --purge to remove everything)"

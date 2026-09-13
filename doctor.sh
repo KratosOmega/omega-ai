@@ -3,27 +3,27 @@ set -eu
 REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
 . "$REPO_ROOT/lib/common.sh"
 
-PROFILE=""
+STUDIO=""
 TARGET_OVERRIDE=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --target)
       [ $# -ge 2 ] || die "missing value for --target"
       need_value --target "$2"; TARGET_OVERRIDE="$2"; shift 2 ;;
-    -h|--help) log "Usage: doctor.sh <profile> [--target DIR]"; exit 0 ;;
+    -h|--help) log "Usage: doctor.sh <studio> [--target DIR]"; exit 0 ;;
     -*) die "unknown option: $1" ;;
-    *) [ -z "$PROFILE" ] || die "only one profile at a time"; PROFILE="$1"; shift ;;
+    *) [ -z "$STUDIO" ] || die "only one studio at a time"; STUDIO="$1"; shift ;;
   esac
 done
-[ -n "$PROFILE" ] || die "no profile given"
+[ -n "$STUDIO" ] || die "no studio given"
 
-PROFILE_DIR="$REPO_ROOT/profiles/$PROFILE"
-TARGET="$(resolve_profile_target "$PROFILE_DIR" "$TARGET_OVERRIDE")"
-SHIM_NAME="$(json_field "$PROFILE_DIR/profile.json" shim)"
+STUDIO_DIR="$REPO_ROOT/studios/$STUDIO"
+TARGET="$(resolve_studio_target "$STUDIO_DIR" "$TARGET_OVERRIDE")"
+SHIM_NAME="$(json_field "$STUDIO_DIR/studio.json" shim)"
 
-log "profile:      $PROFILE"
+log "studio:       $STUDIO"
 log "config root:  $TARGET"
-[ -d "$TARGET" ] || die "config root does not exist — run install.sh $PROFILE"
+[ -d "$TARGET" ] || die "config root does not exist — run install.sh $STUDIO"
 
 count() { [ -d "$1" ] && ls -1 "$1" 2>/dev/null | wc -l | tr -d ' ' || printf '0'; }
 log "CLAUDE.md:    $([ -f "$TARGET/CLAUDE.md" ] && printf 'present' || printf 'MISSING')"

@@ -1,6 +1,6 @@
-# 2D Game Development Profile
+# 2D Game Development Studio
 
-This profile is for building 2D games. The default engine is Godot 4.x; design
+This studio is for building 2D games. The default engine is Godot 4.x; design
 and pipeline work that does not depend on an engine is engine-agnostic and
 should stay that way.
 
