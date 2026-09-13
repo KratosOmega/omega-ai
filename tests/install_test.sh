@@ -708,12 +708,15 @@ test_doctor_detects_leak_through_symlinked_dot_claude() {
   status=0
   ( HOME="$FAKE" sh "$REPO_ROOT/doctor.sh" general --target "$FAKE/root" ) > "$TMP/dot.out" 2>&1 || status=$?
   assert_eq "1" "$status" "doctor exits 1 on a link into the directory ~/.claude points at"
-  assert_contains "$TMP/dot.out" "leak" "doctor names the leaking link"
+  assert_contains "$TMP/dot.out" "root/leak ->" "doctor names the leaking link"
+  assert_not_contains "$TMP/dot.out" "leakage: none" "doctor does not claim the root is clean"
   rm "$FAKE/root/leak"
   ln -s "$FAKE/root/../.claude/settings.json" "$FAKE/root/leak2"
   status=0
   ( HOME="$FAKE" sh "$REPO_ROOT/doctor.sh" general --target "$FAKE/root" ) > "$TMP/dot2.out" 2>&1 || status=$?
   assert_eq "1" "$status" "doctor exits 1 on a '..'-spelled link into ~/.claude"
+  assert_contains "$TMP/dot2.out" "root/leak2 ->" "doctor names the '..'-spelled leaking link"
+  assert_not_contains "$TMP/dot2.out" "leakage: none" "doctor does not claim the root is clean"
   rm "$FAKE/root/leak2"
   status=0
   ( HOME="$FAKE" sh "$REPO_ROOT/doctor.sh" general --target "$FAKE/root" ) > "$TMP/dot3.out" 2>&1 || status=$?
@@ -734,6 +737,23 @@ test_doctor_matches_plugin_ids_literally() {
   sh "$SB/doctor.sh" general --target "$TMP/ids" > "$TMP/ids.out" 2>&1 || status=$?
   assert_eq "1" "$status" "doctor fails when the enabled id only matches as a pattern"
   assert_contains "$TMP/ids.out" "foo.bar@market NOT ENABLED" "doctor names the plugin as not enabled"
+
+  # A two-stage grep (id line, then a separate ": true" line) loses
+  # adjacency: on one line, a disabled id followed by an unrelated enabled id
+  # must not read as the disabled id being enabled.
+  SB2="$TMP/sandbox-ids-adjacent"
+  mkdir -p "$SB2"
+  cp -R "$REPO_ROOT/lib" "$REPO_ROOT/shared" "$REPO_ROOT/studios" "$SB2/"
+  cp "$REPO_ROOT/install.sh" "$REPO_ROOT/doctor.sh" "$SB2/"
+  printf 'plugin foo.bar@market\n' > "$SB2/studios/general/requires.txt"
+  printf '{ "enabledPlugins": { "foo.bar@market": false, "other@x": true } }\n' \
+    > "$SB2/studios/general/settings.json"
+  sh "$SB2/install.sh" general --target "$TMP/ids-adj" --shim-dir "$TMP/bin-ids-adj" >/dev/null 2>&1 || true
+  status=0
+  sh "$SB2/doctor.sh" general --target "$TMP/ids-adj" > "$TMP/ids-adj.out" 2>&1 || status=$?
+  assert_eq "1" "$status" "doctor fails when the id's own line is disabled despite an unrelated enabled id"
+  assert_contains "$TMP/ids-adj.out" "foo.bar@market NOT ENABLED" \
+    "doctor does not borrow 'true' from an unrelated adjacent id"
 }
 
 # The pre-plugin installer linked skills/, agents/, commands/ and hooks/ into

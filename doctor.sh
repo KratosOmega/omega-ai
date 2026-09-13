@@ -72,13 +72,17 @@ fi
 # fetched into the config root's plugin cache on first launch.
 log "plugins:"
 listed=0
+# grep_escape STRING — escape BRE metacharacters so a plugin id (data, not a
+# pattern) matches only itself: an unescaped '.' would match any character
+# and a two-stage grep (id line, then a ": true" line) would lose adjacency —
+# "foo.bar@m": false next to "other@x": true would read as foo.bar@m enabled.
+grep_escape() { printf '%s' "$1" | sed 's/[][\.*^$/]/\\&/g'; }
 required="$(requires_of "$REQUIRES" plugin | tr '\n' ' ')"
 for req in $required; do
   listed=1
   rname="${req%@*}"
   rmarket="${req#*@}"
-  # -F: a plugin id is data ('.' in it must not match any character).
-  if grep -F "\"$req\"" "$TARGET/settings.json" 2>/dev/null | grep -q '"[[:space:]]*:[[:space:]]*true'; then
+  if grep -q "\"$(grep_escape "$req")\"[[:space:]]*:[[:space:]]*true" "$TARGET/settings.json" 2>/dev/null; then
     cache="$TARGET/plugins/cache/$rmarket/$rname"
     if [ -d "$cache" ]; then
       versions="$(ls -1 "$cache" 2>/dev/null | tr '\n' ' ')"
