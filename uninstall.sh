@@ -48,12 +48,18 @@ MANIFEST="$TARGET/.omega-ai-manifest"
 SHIM_PATH="${SHIM_DIR%/}/$SHIM_NAME"
 
 if [ "$PURGE" = "1" ]; then
+  # Only a root this installer wrote may be purged; the manifest is the proof.
+  [ -f "$MANIFEST" ] || die "no manifest at $MANIFEST — not an omega-ai config root, refusing to purge"
   if [ "$ASSUME_YES" != "1" ]; then
     printf 'Delete the entire config root %s, including sessions and history? [y/N] ' "$TARGET"
     read -r reply
     case "$reply" in y|Y) ;; *) die "aborted" ;; esac
   fi
-  rm -rf "$TARGET"
+  # rm -rf on a symlink removes the link and keeps the directory: purge the
+  # directory the target names, then the link that named it.
+  real="$(canon_path "$TARGET/.")"
+  rm -rf "$real"
+  if [ -L "$TARGET" ]; then rm -f "$TARGET"; fi
   rm -f "$SHIM_PATH"
   log "purged $TARGET"
   exit 0

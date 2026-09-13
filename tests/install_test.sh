@@ -663,6 +663,30 @@ test_install_replaces_symlinked_files() {
   assert_contains "$TMP/sym/CLAUDE.md" "General Studio" "CLAUDE.md is rendered in place"
 }
 
+# --purge used to rm -rf any directory that passed guard_target, installed
+# or not; and on a symlinked target it removed only the link.
+test_uninstall_purge_requires_manifest() {
+  mkdir -p "$TMP/notours/important"
+  printf 'keep\n' > "$TMP/notours/important/file.txt"
+  status=0
+  sh "$REPO_ROOT/uninstall.sh" general --target "$TMP/notours" --shim-dir "$TMP/bin-no" --purge --yes \
+    > "$TMP/notours.out" 2>&1 || status=$?
+  assert_eq "1" "$status" "purge refuses a directory with no manifest"
+  assert_file "$TMP/notours/important/file.txt" "a refused purge deletes nothing"
+  assert_contains "$TMP/notours.out" "no manifest" "the refusal names the missing manifest"
+}
+
+test_uninstall_purge_symlinked_target() {
+  mkdir -p "$TMP/realroot"
+  ln -s "$TMP/realroot" "$TMP/linkroot"
+  sh "$REPO_ROOT/install.sh" general --target "$TMP/linkroot" --shim-dir "$TMP/bin-link" >/dev/null 2>&1
+  assert_file "$TMP/realroot/CLAUDE.md" "install through a link lands in the real root"
+  sh "$REPO_ROOT/uninstall.sh" general --target "$TMP/linkroot" --shim-dir "$TMP/bin-link" --purge --yes >/dev/null 2>&1
+  assert_missing "$TMP/realroot" "purge removes the real root behind the link"
+  assert_missing "$TMP/linkroot" "purge removes the link too"
+  assert_missing "$TMP/bin-link/claude-gen" "purge removes the shim"
+}
+
 run_tests test_studio_contract test_install_unknown_studio test_install_guard \
   test_install_guards_shim_dir test_install_refuses_traversal_target \
   test_install_refuses_traversal_shim_dir test_install_refuses_symlinked_target \
@@ -675,4 +699,5 @@ run_tests test_studio_contract test_install_unknown_studio test_install_guard \
   test_uninstall_skips_traversal_manifest_entries test_uninstall_refuses_empty_shim_name \
   test_uninstall_purge test_two_studios_independent test_all_scripts_validate_the_studio \
   test_install_normalizes_name_and_target test_resolve_studio_target_failure_is_not_masked \
-  test_install_replaces_symlinked_files
+  test_install_replaces_symlinked_files \
+  test_uninstall_purge_requires_manifest test_uninstall_purge_symlinked_target
