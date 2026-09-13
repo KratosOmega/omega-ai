@@ -25,9 +25,10 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ -n "$STUDIO" ] || die "no studio given"
+STUDIO="$(studio_arg "$STUDIO")"
 
 STUDIO_DIR="$REPO_ROOT/studios/$STUDIO"
-TARGET="$(resolve_studio_target "$STUDIO_DIR" "$TARGET_OVERRIDE")"
+TARGET="$(canon_path "$(resolve_studio_target "$STUDIO_DIR" "$TARGET_OVERRIDE")")"
 SHIM_DIR="$(canon_path "$(expand_path "$SHIM_DIR")")"
 SHIM_NAME="$(json_field "$STUDIO_DIR/studio.json" shim)"
 # An empty name would make SHIM_PATH the shim directory itself, which

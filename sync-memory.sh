@@ -19,9 +19,10 @@ while [ $# -gt 0 ]; do
 done
 export DRY_RUN
 [ -n "$STUDIO" ] || die "no studio given"
+STUDIO="$(studio_arg "$STUDIO")"
 
 STUDIO_DIR="$REPO_ROOT/studios/$STUDIO"
-TARGET="$(resolve_studio_target "$STUDIO_DIR" "$TARGET_OVERRIDE")"
+TARGET="$(canon_path "$(resolve_studio_target "$STUDIO_DIR" "$TARGET_OVERRIDE")")"
 
 SRC="$TARGET/memory"
 DEST="$STUDIO_DIR/memory"

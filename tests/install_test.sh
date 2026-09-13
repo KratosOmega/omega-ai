@@ -4,7 +4,9 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 . "$REPO_ROOT/tests/assert.sh"
 . "$REPO_ROOT/lib/common.sh"
 
-TMP="$(mktemp -d)"
+# Physical path: the installer canonicalizes the target, so assertions that
+# quote $TMP must use the same spelling (/var -> /private/var on macOS).
+TMP="$(cd "$(mktemp -d)" && pwd -P)"
 trap 'rm -rf "$TMP"' EXIT
 
 test_studio_contract() {
@@ -559,6 +561,36 @@ test_uninstall_skips_traversal_manifest_entries() {
   assert_missing "$FAKE/.claude-general/.omega-ai-manifest" "the manifest is still removed"
 }
 
+# A relative --target used to be baked into the shim and the manifest as
+# typed, so the install only worked from the directory it was run in; a
+# trailing slash on the studio name installed and then failed the doctor.
+test_install_normalizes_name_and_target() {
+  status=0
+  sh "$REPO_ROOT/install.sh" general/ --target "$TMP/slash" --shim-dir "$TMP/bin-slash" \
+    > "$TMP/slash.out" 2>&1 || status=$?
+  assert_eq "0" "$status" "a studio name with a trailing slash installs and passes the doctor"
+  assert_not_contains "$TMP/slash.out" "does not match" "no plugin-name mismatch is reported"
+  assert_contains "$TMP/slash/CLAUDE.md" "studios/general/CLAUDE.md" "the rendered header names the studio cleanly"
+  assert_status 1 "a studio given as a path is refused" -- \
+    sh "$REPO_ROOT/install.sh" studios/general --target "$TMP/slash2" --shim-dir "$TMP/bin-slash"
+
+  mkdir -p "$TMP/relcwd"
+  ( cd "$TMP/relcwd" && sh "$REPO_ROOT/install.sh" general --target rel/root --shim-dir rel/bin ) >/dev/null 2>&1
+  assert_file "$TMP/relcwd/rel/root/CLAUDE.md" "a relative --target installs under the current directory"
+  assert_contains "$TMP/relcwd/rel/bin/claude-gen" "CLAUDE_CONFIG_DIR=\"$TMP/relcwd/rel/root\"" \
+    "the shim carries the absolute config root"
+  assert_contains "$TMP/relcwd/rel/root/.omega-ai-manifest" "^$TMP/relcwd/rel/root/CLAUDE.md" \
+    "the manifest records absolute paths"
+  ( cd "$TMP" && sh "$REPO_ROOT/uninstall.sh" general --target "$TMP/relcwd/rel/root" \
+      --shim-dir "$TMP/relcwd/rel/bin" ) >/dev/null 2>&1
+  assert_missing "$TMP/relcwd/rel/root/CLAUDE.md" "uninstall from another directory removes the install"
+  assert_missing "$TMP/relcwd/rel/bin/claude-gen" "uninstall from another directory removes the shim"
+
+  sh "$REPO_ROOT/install.sh" general --target "$TMP/trail/" --shim-dir "$TMP/bin-trail" >/dev/null 2>&1
+  assert_contains "$TMP/trail/.omega-ai-manifest" "^$TMP/trail/CLAUDE.md" \
+    "a trailing slash on --target is not doubled in the manifest"
+}
+
 run_tests test_studio_contract test_install_unknown_studio test_install_guard \
   test_install_guards_shim_dir test_install_refuses_traversal_target \
   test_install_refuses_traversal_shim_dir test_install_refuses_symlinked_target \
@@ -569,4 +601,5 @@ run_tests test_studio_contract test_install_unknown_studio test_install_guard \
   test_doctor_plugin_report test_doctor_plugin_name_mismatch \
   test_option_value_required test_uninstall test_uninstall_scopes_manifest_entries \
   test_uninstall_skips_traversal_manifest_entries test_uninstall_refuses_empty_shim_name \
-  test_uninstall_purge test_two_studios_independent test_all_scripts_validate_the_studio
+  test_uninstall_purge test_two_studios_independent test_all_scripts_validate_the_studio \
+  test_install_normalizes_name_and_target

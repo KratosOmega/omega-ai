@@ -282,9 +282,16 @@ test_manifest_remove_skips_trailing_slash() {
   assert_missing "$TMP/ts/root/.omega-ai-manifest" "the manifest is still removed"
 }
 
+test_studio_arg() {
+  assert_eq "general" "$(studio_arg general)" "studio_arg passes a plain name through"
+  assert_eq "general" "$(studio_arg general/)" "studio_arg strips a trailing slash"
+  assert_status 1 "studio_arg refuses a path" -- studio_arg studios/general
+  assert_status 1 "studio_arg refuses an empty name" -- studio_arg ""
+}
+
 run_tests test_json_field test_expand_path test_canon_path test_guard_target_rejects \
   test_guard_target_rejects_descendants_of_dot_claude test_guard_target_accepts \
   test_guard_target_derefs_symlinked_target test_guard_target_rejects_symlinked_dot_claude \
   test_need_value test_resolve_studio_target test_requires_of test_run_dry \
   test_manifest_remove test_manifest_remove_through_symlinked_root \
-  test_manifest_remove_skips_trailing_slash
+  test_manifest_remove_skips_trailing_slash test_studio_arg

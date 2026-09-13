@@ -20,6 +20,16 @@ need_value() {
   [ -n "${2:-}" ] || die "missing value for $1"
 }
 
+# studio_arg NAME — the studio name as typed, with a trailing slash stripped
+# (tab completion adds one; it used to install fine and then fail the
+# doctor's name check). A name with a slash inside it, or an empty one, dies.
+studio_arg() {
+  _s="${1%/}"
+  [ -n "$_s" ] || die "no studio given"
+  case "$_s" in */*) die "studio must be a name, not a path: $1" ;; esac
+  printf '%s\n' "$_s"
+}
+
 # json_field FILE KEY — value of a flat JSON string key; empty when absent.
 json_field() {
   sed -n 's/.*"'"$2"'"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$1" | head -n 1

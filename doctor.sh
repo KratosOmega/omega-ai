@@ -16,9 +16,10 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ -n "$STUDIO" ] || die "no studio given"
+STUDIO="$(studio_arg "$STUDIO")"
 
 STUDIO_DIR="$REPO_ROOT/studios/$STUDIO"
-TARGET="$(resolve_studio_target "$STUDIO_DIR" "$TARGET_OVERRIDE")"
+TARGET="$(canon_path "$(resolve_studio_target "$STUDIO_DIR" "$TARGET_OVERRIDE")")"
 SHIM_NAME="$(json_field "$STUDIO_DIR/studio.json" shim)"
 PLUGIN_JSON="$STUDIO_DIR/.claude-plugin/plugin.json"
 REQUIRES="$STUDIO_DIR/requires.txt"

@@ -56,10 +56,13 @@ done
 export DRY_RUN
 
 [ -n "$STUDIO" ] || { usage; die "no studio given"; }
+STUDIO="$(studio_arg "$STUDIO")"
 case "$MODE" in symlink|copy) ;; *) die "unknown mode: $MODE" ;; esac
 
 STUDIO_DIR="$REPO_ROOT/studios/$STUDIO"
-TARGET="$(resolve_studio_target "$STUDIO_DIR" "$TARGET_OVERRIDE")"
+# The target is canonical so the shim and the manifest carry a path that is
+# valid from any directory; a relative --target used to be recorded as typed.
+TARGET="$(canon_path "$(resolve_studio_target "$STUDIO_DIR" "$TARGET_OVERRIDE")")"
 SHIM_DIR="$(canon_path "$(expand_path "$SHIM_DIR")")"
 SHIM_NAME="$(json_field "$STUDIO_DIR/studio.json" shim)"
 [ -n "$SHIM_NAME" ] || die "studio.json has no shim name"
