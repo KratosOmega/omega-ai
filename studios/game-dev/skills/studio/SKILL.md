@@ -42,8 +42,8 @@ The next stage follows from the current one:
 | `stage` | Next | Unless |
 |---------|------|--------|
 | `idle` | `/game-dev:brainstorm` | — |
-| `brainstorm` | `/game-dev:plan` | the ledger has no `spec approved` line — then: "spec awaiting approval; reply approve to `/game-dev:brainstorm` or re-run it" |
-| `plan` | `/game-dev:execute` | the ledger has no `plan approved` line — same pattern |
+| `brainstorm` | `/game-dev:plan` | the ledger has no `spec approved <path>` line for the current `spec` value — then: "spec awaiting approval; reply approve to `/game-dev:brainstorm` or re-run it" |
+| `plan` | `/game-dev:execute` | the ledger has no `plan approved <path>` line for the current `plan` value — same pattern |
 | `execute` | `/game-dev:execute` (resume) | `task` is `N/N` — then `/game-dev:review` |
 | `review` | `/game-dev:playtest` | — |
 | `playtest` | `/game-dev:ship` | the ledger has no `playtest signed off` line — "playtest awaiting sign-off" |
@@ -79,7 +79,7 @@ paraphrase a request into a different one.
 
 - Never do the stage's work here. The router's whole output is the state
   line, the next-step line, and the hand-off.
-- Never write to `.studio/STATE.md` except `studio-state init` after the user
-  says yes.
+- Never write to `.studio/STATE.md` except through `studio-state init` after
+  the user says yes and the `studio-state ledger` line of the bug route.
 - Always end by naming the exact command to run next, even when it is the one
   you just invoked.

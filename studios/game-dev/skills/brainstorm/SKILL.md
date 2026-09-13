@@ -14,7 +14,9 @@ a short spec — but it never disappears.
 ## 0. State
 
 - If `.studio/STATE.md` does not exist and `project.godot` does, ask once
-  whether to initialise studio state; on yes run `studio-state init`.
+  whether to initialise studio state; on yes run `studio-state init`. On no,
+  or when there is no `project.godot`, continue without state and skip every
+  `studio-state` call in this skill.
 - Run `studio-state set stage brainstorm`.
 - If `studio-state get spec` names a file and the ledger has no matching
   `spec approved` line, tell the user an unapproved spec already exists and
