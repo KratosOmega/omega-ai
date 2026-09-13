@@ -46,7 +46,7 @@ assert_status() {
 
 assert_contains() {
   TESTS_RUN=$((TESTS_RUN + 1))
-  if [ -f "$1" ] && grep -q "$2" "$1"; then
+  if [ -f "$1" ] && grep -q -- "$2" "$1"; then
     _pass "$3"
   else
     _fail "$3 (missing '$2' in $1)"
@@ -57,7 +57,7 @@ assert_not_contains() {
   TESTS_RUN=$((TESTS_RUN + 1))
   if [ ! -f "$1" ]; then
     _fail "$3 (no file at $1)"
-  elif grep -q "$2" "$1"; then
+  elif grep -q -- "$2" "$1"; then
     _fail "$3 (unexpected '$2' in $1)"
   else
     _pass "$3"

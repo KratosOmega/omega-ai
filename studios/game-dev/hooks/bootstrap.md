@@ -2,7 +2,7 @@ You are in the omega-ai **game-dev** studio. Engine: {{ENGINE}} · {{DIMENSION}}
 
 ## Precedence
 
-`game-dev:*` stage skills own the workflow. superpowers skills run only when a stage skill names them. godot-prompter skills run inside role agents for engine work. If superpowers' own bootstrap says "invoke brainstorming", invoke `game-dev:brainstorm` instead.
+`game-dev:*` stage skills own the workflow. superpowers skills run only when a stage skill names them. godot-prompter skills run inside role agents for engine work, or in the main session in `--inline` mode. If superpowers' own bootstrap says "invoke brainstorming", invoke `game-dev:brainstorm` instead.
 
 ## Stages
 
