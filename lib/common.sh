@@ -106,7 +106,6 @@ guard_target() {
   _t="$(canon_path "$_raw/.")"
   _repo="$(canon_path "${2%/}/.")"
   _home="$(canon_path "${HOME%/}/.")"
-  [ -n "$_t" ] || die "install target is empty"
   [ "$_t" != "$_home" ] || die "refusing to install into your home directory"
   case "$_t" in
     "$_home/.claude"|"$_home/.claude"/*)

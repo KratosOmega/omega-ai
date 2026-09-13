@@ -41,7 +41,6 @@ ENGINE="$(label "$(pick engine)")"
 DIMENSION="$(label "$(pick dimension)")"
 LANGUAGE="$(label "$(pick language)")"
 TESTS="$(label "$(pick tests)")"
-export ENGINE DIMENSION LANGUAGE TESTS
 
 TAB="$(printf '\t')"
 # Fill the identity line, then escape for a JSON string: backslash, quote,
@@ -52,8 +51,10 @@ TAB="$(printf '\t')"
 # "godot4/mono" breaks the substitution and the hook emits an empty context
 # with exit 0), and through awk's gsub a replacement string still interprets
 # '&' and '\'. index/substr interpret nothing, and ENVIRON carries the values
-# without the backslash processing `awk -v` applies.
-escaped="$(awk '
+# without the backslash processing `awk -v` applies. The variables are set
+# for the awk call only (not exported): LANGUAGE is also a locale variable.
+escaped="$(STUDIO_ENGINE="$ENGINE" STUDIO_DIMENSION="$DIMENSION" \
+  STUDIO_LANGUAGE="$LANGUAGE" STUDIO_TESTS="$TESTS" awk '
   function fill(s, tok, val,    out, i) {
     out = ""
     while ((i = index(s, tok)) > 0) {
@@ -64,10 +65,10 @@ escaped="$(awk '
   }
   {
     line = $0
-    line = fill(line, "{{ENGINE}}", ENVIRON["ENGINE"])
-    line = fill(line, "{{DIMENSION}}", ENVIRON["DIMENSION"])
-    line = fill(line, "{{LANGUAGE}}", ENVIRON["LANGUAGE"])
-    line = fill(line, "{{TESTS}}", ENVIRON["TESTS"])
+    line = fill(line, "{{ENGINE}}", ENVIRON["STUDIO_ENGINE"])
+    line = fill(line, "{{DIMENSION}}", ENVIRON["STUDIO_DIMENSION"])
+    line = fill(line, "{{LANGUAGE}}", ENVIRON["STUDIO_LANGUAGE"])
+    line = fill(line, "{{TESTS}}", ENVIRON["STUDIO_TESTS"])
     print line
   }' "$ROOT/hooks/bootstrap.md" \
   | tr -d '\r' \
