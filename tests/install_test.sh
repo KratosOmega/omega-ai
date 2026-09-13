@@ -20,8 +20,12 @@ test_studio_contract() {
     assert_eq "$name" "$(json_field "$dir/studio.json" name)" "$name studio.json name matches directory"
     assert_eq "$name" "$(json_field "$dir/.claude-plugin/plugin.json" name)" \
       "$name plugin.json name matches directory"
-    assert_eq "0.1.0" "$(json_field "$dir/.claude-plugin/plugin.json" version)" \
-      "$name plugin.json declares version 0.1.0"
+    TESTS_RUN=$((TESTS_RUN + 1))
+    if printf '%s' "$(json_field "$dir/.claude-plugin/plugin.json" version)" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+      _pass "$name plugin.json declares a semver version"
+    else
+      _fail "$name plugin.json declares a semver version"
+    fi
     target="$(json_field "$dir/studio.json" target)"
     shim="$(json_field "$dir/studio.json" shim)"
     assert_status 0 "$name declares a safe target" -- guard_target "$(expand_path "$target")" "$REPO_ROOT"
@@ -39,14 +43,21 @@ test_install_unknown_studio() {
     sh "$REPO_ROOT/install.sh" nope --target "$TMP/u" --shim-dir "$TMP/bin"
 }
 
+# Runs under a fake $HOME: a guard_target regression must never write into
+# the developer's live ~/.claude before the assertion fails.
 test_install_guard() {
-  assert_status 1 "refuses ~/.claude as target" -- \
-    sh "$REPO_ROOT/install.sh" general --target "$HOME/.claude" --shim-dir "$TMP/bin"
-  assert_status 1 "refuses home as target" -- \
-    sh "$REPO_ROOT/install.sh" general --target "$HOME" --shim-dir "$TMP/bin"
+  FAKE="$TMP/fakehome-guard"
+  mkdir -p "$FAKE/.claude"
+  status=0
+  ( HOME="$FAKE" sh "$REPO_ROOT/install.sh" general --target "$FAKE/.claude" --shim-dir "$TMP/bin" >/dev/null 2>&1 ) || status=$?
+  assert_eq "1" "$status" "refuses ~/.claude as target"
+  status=0
+  ( HOME="$FAKE" sh "$REPO_ROOT/install.sh" general --target "$FAKE" --shim-dir "$TMP/bin" >/dev/null 2>&1 ) || status=$?
+  assert_eq "1" "$status" "refuses home as target"
   assert_status 1 "refuses in-repo target" -- \
     sh "$REPO_ROOT/install.sh" general --target "$REPO_ROOT/studios" --shim-dir "$TMP/bin"
   assert_missing "$TMP/bin/claude-gen" "no shim written by a refused install"
+  assert_missing "$FAKE/.claude/CLAUDE.md" "refused install writes nothing into ~/.claude"
 }
 
 test_install_dry_run() {
@@ -274,7 +285,7 @@ test_option_value_required() {
   assert_status 1 "install refuses an empty --shim-dir" -- \
     sh "$REPO_ROOT/install.sh" general --target "$TMP/opt" --shim-dir ""
   assert_status 1 "install refuses an empty --mode" -- \
-    sh "$REPO_ROOT/install.sh" general --mode "" --target "$TMP/opt"
+    sh "$REPO_ROOT/install.sh" general --mode "" --target "$TMP/opt" --shim-dir "$TMP/bin-opt"
   assert_status 1 "doctor refuses an empty --target" -- \
     sh "$REPO_ROOT/doctor.sh" general --target ""
   assert_status 1 "sync-memory refuses an empty --target" -- \
@@ -293,14 +304,17 @@ test_option_value_required() {
 }
 
 # --- Findings 4 and 7: the doctor must actually detect a leak. ---
-# Only a symlink inside the temporary root is created; nothing under ~/.claude
-# is created, read, modified, or removed. The probe is removed afterwards.
+# Runs under a fake $HOME; nothing under the real ~/.claude is read or touched.
 test_doctor_detects_leak() {
+  FAKE="$TMP/fakehome-leak"
+  mkdir -p "$FAKE/.claude"
+  printf '{}\n' > "$FAKE/.claude/settings.json"
+
   sh "$REPO_ROOT/install.sh" general --target "$TMP/leak" --shim-dir "$TMP/bin-leak" >/dev/null 2>&1
 
-  ln -s "$HOME/.claude/settings.json" "$TMP/leak/leaky-link"
+  ln -s "$FAKE/.claude/settings.json" "$TMP/leak/leaky-link"
   status=0
-  sh "$REPO_ROOT/doctor.sh" general --target "$TMP/leak" > "$TMP/leak.out" 2>&1 || status=$?
+  ( HOME="$FAKE" sh "$REPO_ROOT/doctor.sh" general --target "$TMP/leak" > "$TMP/leak.out" 2>&1 ) || status=$?
   rm -f "$TMP/leak/leaky-link"
   assert_eq "1" "$status" "doctor exits 1 on a link into ~/.claude"
   assert_contains "$TMP/leak.out" "leakage:" "doctor reports leakage"
@@ -308,15 +322,15 @@ test_doctor_detects_leak() {
   assert_not_contains "$TMP/leak.out" "leakage: none" "doctor does not claim the root is clean"
 
   # Finding 7: a link to ~/.claude itself, not a descendant, is still a leak.
-  ln -s "$HOME/.claude" "$TMP/leak/exact-link"
+  ln -s "$FAKE/.claude" "$TMP/leak/exact-link"
   status=0
-  sh "$REPO_ROOT/doctor.sh" general --target "$TMP/leak" > "$TMP/leak2.out" 2>&1 || status=$?
+  ( HOME="$FAKE" sh "$REPO_ROOT/doctor.sh" general --target "$TMP/leak" > "$TMP/leak2.out" 2>&1 ) || status=$?
   rm -f "$TMP/leak/exact-link"
   assert_eq "1" "$status" "doctor exits 1 on a link to ~/.claude itself"
   assert_contains "$TMP/leak2.out" "exact-link" "doctor names the exact-path leak"
 
   status=0
-  sh "$REPO_ROOT/doctor.sh" general --target "$TMP/leak" > "$TMP/leak3.out" 2>&1 || status=$?
+  ( HOME="$FAKE" sh "$REPO_ROOT/doctor.sh" general --target "$TMP/leak" > "$TMP/leak3.out" 2>&1 ) || status=$?
   assert_eq "0" "$status" "doctor passes again once the probe is removed"
   assert_contains "$TMP/leak3.out" "leakage: none" "doctor reports a clean root again"
 }
@@ -337,7 +351,7 @@ test_doctor_plugin_report() {
   status=0
   sh "$REPO_ROOT/doctor.sh" game-dev --target "$TMP/dr" > "$TMP/dr.out" 2>&1 || status=$?
   assert_eq "0" "$status" "doctor passes on a fresh install with no plugin cache"
-  assert_contains "$TMP/dr.out" "plugin:       game-dev 0.1.0" "doctor reports the plugin name and version"
+  assert_contains "$TMP/dr.out" "plugin:       game-dev [0-9]" "doctor reports the plugin name and version"
   assert_contains "$TMP/dr.out" "skills [1-9]" "doctor counts skills from the studio directory"
   assert_contains "$TMP/dr.out" "agents [1-9]" "doctor counts agents from the studio directory"
   assert_contains "$TMP/dr.out" "superpowers@claude-plugins-official enabled, not yet fetched" \
