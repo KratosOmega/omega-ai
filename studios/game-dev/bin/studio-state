@@ -1,24 +1,48 @@
 #!/bin/sh
-# studio-state — read and write .studio/STATE.md the same way from every
-# skill. Run from the root of a game project.
+# studio-state — read and write the studio's state the same way from every
+# skill. Two roots: the stage/task pointer (.studio/STATE.md) lives in the
+# project's main checkout, so a linked git worktree edits the same file and
+# one project has one stage; the feature ledger, config.json and the spec and
+# plan paths live in the checkout the command runs in, so they travel with
+# the branch.
 #
-#   studio-state init            create .studio/STATE.md (stage idle)
-#   studio-state show            print the file
+#   studio-state root [--work]   print the pointer's root, or the working root
+#   studio-state init            create .studio/ (STATE.md, config.json, ledger/)
+#   studio-state show            print STATE.md, then the current feature ledger
 #   studio-state get KEY         print one field
 #   studio-state set KEY VALUE   replace one field; '-' clears it
-#   studio-state ledger TEXT     append a dated line to the ledger
+#   studio-state ledger TEXT     append a dated line to the feature ledger
+#                                (.studio/ledger/<feature>.md when spec is set,
+#                                else STATE.md's own ledger)
+#   studio-state check [--rebuild]      verify state against files and ledger;
+#                                       --rebuild sets task from the ledger
+#   studio-state reset [--keep-ledger]  back to idle; drops the feature ledger
+#                                       unless --keep-ledger
 #
 # Keys: stage spec plan task last_playtest milestone
-# Exit: 0 ok · 1 no .studio/ (except init), bad key, bad value, bad usage
+# Exit: 0 ok · 1 no .studio/ (except init and root), bad key, bad value, bad
+# usage, or a check that found a mismatch
 set -eu
 
-STATE=".studio/STATE.md"
+# --path-format=absolute needs git 2.31+. Outside a repository both roots are
+# the current directory.
+_common="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+if [ -n "$_common" ]; then
+  STATE_ROOT="$(dirname "$_common")"
+  WORK_ROOT="$(git rev-parse --show-toplevel)"
+else
+  STATE_ROOT="$(pwd -P)"
+  WORK_ROOT="$STATE_ROOT"
+fi
+STATE="$STATE_ROOT/.studio/STATE.md"
+CONFIG="$WORK_ROOT/.studio/config.json"
+LEDGER_DIR="$WORK_ROOT/.studio/ledger"
 KEYS="stage spec plan task last_playtest milestone"
 STAGES="idle brainstorm plan execute review playtest ship retro"
 MILESTONES="prototype vertical-slice alpha beta gold"
 
 usage() {
-  printf 'usage: studio-state init | show | get KEY | set KEY VALUE | ledger TEXT\nkeys: %s\n' "$KEYS" >&2
+  printf 'usage: studio-state root [--work] | init | show | get KEY | set KEY VALUE | ledger TEXT | check [--rebuild] | reset [--keep-ledger]\nkeys: %s\n' "$KEYS" >&2
   exit 1
 }
 
@@ -38,9 +62,16 @@ cmd="${1:-}"
 [ -n "$cmd" ] || usage
 
 case "$cmd" in
+  root)
+    case "${2:-}" in
+      '') printf '%s\n' "$STATE_ROOT" ;;
+      --work) printf '%s\n' "$WORK_ROOT" ;;
+      *) usage ;;
+    esac
+    ;;
   init)
     [ ! -f "$STATE" ] || fail "$STATE already exists"
-    mkdir -p .studio
+    mkdir -p "$STATE_ROOT/.studio" "$LEDGER_DIR"
     cat > "$STATE" <<'EOF'
 # Studio State
 
@@ -54,6 +85,16 @@ milestone: prototype
 ## Ledger
 
 EOF
+    # The studio defaults; the session hook reads this file for its identity
+    # line and a project overrides keys here.
+    if [ ! -f "$CONFIG" ]; then
+      printf '{ "engine": "godot4", "dimension": "2d", "language": "gdscript", "tests": "gut" }\n' > "$CONFIG"
+    fi
+    # The pointer is local to this checkout: ignore it once, where it lives.
+    if [ -e "$STATE_ROOT/.git" ]; then
+      grep -qxF '.studio/STATE.md' "$STATE_ROOT/.gitignore" 2>/dev/null \
+        || printf '.studio/STATE.md\n' >> "$STATE_ROOT/.gitignore"
+    fi
     printf 'initialised %s\n' "$STATE"
     ;;
   show)

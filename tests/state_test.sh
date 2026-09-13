@@ -4,7 +4,9 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 . "$REPO_ROOT/tests/assert.sh"
 
 STATE_BIN="$REPO_ROOT/studios/game-dev/bin/studio-state"
-TMP="$(mktemp -d)"
+# Physical path: git prints physical paths, and the tool's root resolution
+# is compared against $TMP textually.
+TMP="$(cd "$(mktemp -d)" && pwd -P)"
 trap 'rm -rf "$TMP"' EXIT
 
 # Every test runs in its own empty project directory.
@@ -131,6 +133,45 @@ test_state_show() {
   assert_contains "$TMP/show.out" "^milestone: prototype" "show prints the file"
 }
 
+# The pointer lives in the main checkout: a linked worktree of the project
+# edits the same STATE.md, so execute on a feature branch and the router in
+# main see one stage. The gitignore line keeps the pointer out of commits.
+test_state_resolves_to_main_checkout() {
+  P="$(fresh_project wt)"
+  ( cd "$P" && git init -q && git -c user.name=t -c user.email=t@t commit -q --allow-empty -m init ) 2>/dev/null
+  ( cd "$P" && sh "$STATE_BIN" init >/dev/null )
+  ( cd "$P" && git worktree add -q "$TMP/wt-linked" -b feature ) >/dev/null 2>&1
+  assert_eq "$P" "$(cd "$TMP/wt-linked" && sh "$STATE_BIN" root)" "root from a worktree is the main checkout"
+  assert_eq "$TMP/wt-linked" "$(cd "$TMP/wt-linked" && sh "$STATE_BIN" root --work)" "root --work is the worktree"
+  assert_eq "$P" "$(cd "$P" && sh "$STATE_BIN" root --work)" "root --work in main is main"
+  assert_status 0 "set from a worktree succeeds" -- sh -c "cd '$TMP/wt-linked' && sh '$STATE_BIN' set stage execute"
+  assert_eq "execute" "$(cd "$P" && sh "$STATE_BIN" get stage)" "the main checkout's STATE.md carries the change"
+  assert_missing "$TMP/wt-linked/.studio/STATE.md" "the worktree holds no copy of the pointer"
+  assert_contains "$P/.gitignore" "^\.studio/STATE\.md$" "init gitignores the pointer"
+  P2="$(fresh_project nogit)"
+  assert_eq "$P2" "$(cd "$P2" && sh "$STATE_BIN" root)" "outside git the root is the current directory"
+}
+
+test_state_init_writes_config_ledger_and_gitignore_once() {
+  P="$(fresh_project gi)"
+  ( cd "$P" && git init -q ) 2>/dev/null
+  ( cd "$P" && sh "$STATE_BIN" init >/dev/null )
+  assert_file "$P/.studio/config.json" "init writes config.json"
+  assert_contains "$P/.studio/config.json" '"engine": "godot4"' "config.json carries the studio defaults"
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if [ -d "$P/.studio/ledger" ]; then _pass "init creates the ledger directory"; else _fail "init creates the ledger directory"; fi
+  assert_status 1 "init refuses to overwrite an existing state" -- sh -c "cd '$P' && sh '$STATE_BIN' init"
+  printf '{ "engine": "godot4", "tests": "gdunit4" }\n' > "$P/.studio/config.json"
+  rm "$P/.studio/STATE.md"
+  ( cd "$P" && sh "$STATE_BIN" init >/dev/null )
+  assert_eq "1" "$(grep -c '^\.studio/STATE\.md$' "$P/.gitignore")" "the gitignore line is added once"
+  assert_contains "$P/.studio/config.json" "gdunit4" "an existing config.json is kept"
+  P3="$(fresh_project gi-nogit)"
+  ( cd "$P3" && sh "$STATE_BIN" init >/dev/null )
+  assert_missing "$P3/.gitignore" "outside git no .gitignore is written"
+}
+
 run_tests test_state_needs_init test_state_init test_state_get_set test_state_validation \
   test_state_ledger test_state_ledger_keeps_all_words test_state_ledger_folds_newlines \
-  test_state_set_keeps_backslashes test_state_show
+  test_state_set_keeps_backslashes test_state_show test_state_resolves_to_main_checkout \
+  test_state_init_writes_config_ledger_and_gitignore_once
