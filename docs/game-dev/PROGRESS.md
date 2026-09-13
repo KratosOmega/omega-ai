@@ -8,11 +8,22 @@ approval page in `artifacts/`.
 
 | Plan | Scope | Status |
 |------|-------|--------|
-| 1 — Foundation | `profiles/` → `studios/`, plugin packaging, shim with `--plugin-dir`, installer/doctor/tests, session hook, `docs/game-dev/`, `.studio/STATE.md`, skills `studio` `brainstorm` `plan` `execute` | planned |
+| 1 — Foundation | `profiles/` → `studios/`, plugin packaging, shim with `--plugin-dir`, installer/doctor/tests, session hook, `docs/game-dev/`, `.studio/STATE.md`, skills `studio` `brainstorm` `plan` `execute` | done |
 | 2 — Quality loop | Ten role agents, skills `review` `playtest` `ship` `retro`, `bin/` verbs with the Godot adapter, optional `godot-mcp`, doctor delegation check | planned |
 | 3 — Content | `scaffold` and template project, domain skills (migrate four, add `vertical-slice` `tuning-data` `milestone-gates`), `PROGRESS.md` conventions, `general` studio parity, skill pressure tests | planned |
 
 ## Log
+
+### 2026-09-13 — Plan 1 (Foundation) delivered
+
+- `profiles/` became `studios/`; each studio is a Claude Code plugin loaded
+  live through the shim's `--plugin-dir`.
+- Installer, uninstaller, doctor and tests updated; reinstall cleans stale
+  entries; doctor checks `requires.txt` against `settings.json` and the
+  plugin cache.
+- Session hook, `studio-state`, and the stage skills `studio`, `brainstorm`,
+  `plan`, `execute`.
+- Plan: `plans/2026-09-13-plan-1-foundation.md`.
 
 ### 2026-09-13 — Design approved
 

@@ -1,17 +1,16 @@
 # omega-ai
 
-Version-controlled Claude Code profiles — agents, skills, commands, settings,
-and seed memory — each installable into its own isolated config directory.
+Version-controlled Claude Code **studios** — each a plugin (skills, agents,
+hooks) plus a small manifest — installable into its own isolated config
+directory. Installing a studio never touches `~/.claude`. Switching between
+assistants is a matter of which command you type.
 
-Installing a profile never touches `~/.claude`. Switching between assistants is
-a matter of which command you type.
+## Studios
 
-## Profiles
-
-| Profile | Config root | Launch | Purpose |
+| Studio | Config root | Launch | Purpose |
 |---|---|---|---|
-| `game-dev` | `~/.claude-gamedev` | `claude-gd` | 2D game development, Godot 4.x plus engine-agnostic design |
-| `general` | `~/.claude-general` | `claude-gen` | Minimal clean-room profile |
+| `game-dev` | `~/.claude-gamedev` | `claude-gd` | A small game studio: stage skills, role agents, Godot 4.x 2D toolkit |
+| `general` | `~/.claude-general` | `claude-gen` | Minimal clean-room studio |
 
 ## Install
 
@@ -19,24 +18,47 @@ a matter of which command you type.
 ./install.sh game-dev
 ```
 
-This creates `~/.claude-gamedev`, links the profile's content into it, writes a
-shim at `~/.local/bin/claude-gd`, and runs `doctor.sh` to show what was
-installed. Add `~/.local/bin` to your `PATH` if it is not there already.
+This creates `~/.claude-gamedev` with a rendered `CLAUDE.md`, a copied
+`settings.json`, and links to the studio's `memory/` and `bin/`; writes a shim
+at `~/.local/bin/claude-gd`; and runs `doctor.sh`. The shim launches Claude
+Code with `CLAUDE_CONFIG_DIR` pointing at the config root, the studio's
+`bin/` on `PATH`, and `--plugin-dir` pointing at `studios/game-dev/`, so the
+studio's skills, agents and hooks load straight from this checkout — edit a
+skill and it is live in the next session.
 
-Then:
+Add `~/.local/bin` to your `PATH` if it is not there already. Then:
 
 ```sh
 claude       # your existing setup, unchanged
-claude-gd    # the game-development profile
+claude-gd    # the game-dev studio
 ```
 
-Options: `--mode copy` for a frozen snapshot instead of symlinks, `--target DIR`
-for a different config root, `--shim-dir DIR` for a different shim location, and
-`--dry-run` to see every action without performing it.
+The first `claude-gd` launch fetches the plugins the studio depends on
+(superpowers, godot-prompter) into the isolated config root.
 
-Install paths must not contain spaces: the installer captures the paths it
-creates through unquoted word splitting, so a target or shim directory with a
-space in it is not supported.
+Options: `--mode copy` for a frozen snapshot (the studio is copied to
+`~/.claude-gamedev/studio/` and loaded from there), `--target DIR` for a
+different config root, `--shim-dir DIR` for a different shim location,
+`--no-mcp` to skip MCP registration, and `--dry-run` to see every action
+without performing it. Reinstalling removes everything the previous install
+recorded first.
+
+Install paths must not contain spaces.
+
+## Use
+
+Inside `claude-gd`, in a Godot project:
+
+| Command | Does |
+|---|---|
+| `/game-dev:studio` | Reads `.studio/STATE.md`, reports the stage and milestone, names the next step, routes freeform text |
+| `/game-dev:brainstorm` | Batched questions → spec with GDD-lite sections → artifact page → **your approval** |
+| `/game-dev:plan` | Tasks tagged `Role:` and `Verify: unit \| playtest \| visual`, producer scope cut → **your approval** |
+| `/game-dev:execute` | Fresh subagent per task, reviewer after each; `--inline` for checkpointed execution |
+
+`review`, `playtest`, `ship`, `retro` and `scaffold` arrive in later releases;
+the session bootstrap says so when one is missing. State lives in the
+project's `.studio/STATE.md`, written only through `studio-state`.
 
 ## Check
 
@@ -44,8 +66,10 @@ space in it is not supported.
 ./doctor.sh game-dev
 ```
 
-Reports the resolved config root, content counts, enabled plugins, whether the
-shim is on `PATH`, and whether anything leaks back into `~/.claude`.
+Reports the config root, the plugin manifest and its skill / agent counts,
+every plugin `requires.txt` declares (enabled? fetched? which version?),
+whether the shim is on `PATH`, and whether anything leaks back into
+`~/.claude`. Exits non-zero on a name mismatch, a missing plugin, or a leak.
 
 ## Uninstall
 
@@ -56,8 +80,8 @@ shim is on `PATH`, and whether anything leaks back into `~/.claude`.
 
 ## Memory
 
-Memory written during a session lives in the profile's config root. Pull it back
-into version control with:
+Memory written during a session lives in the studio's config root. Pull it
+back into version control with:
 
 ```sh
 ./sync-memory.sh game-dev
@@ -65,19 +89,39 @@ into version control with:
 
 ## What is and is not isolated
 
-Isolated per profile: `CLAUDE.md`, `settings.json`, agents, skills, commands,
-hooks, plugins, sessions, history, and memory.
+Isolated per studio: `CLAUDE.md`, `settings.json`, plugins, sessions,
+history, and memory. The studio's own skills, agents and hooks come from the
+plugin directory and are never copied into the config root in symlink mode.
 
 Not isolated, by design: a project's own `CLAUDE.md` and `.claude/` directory
-load in every profile, because they describe the project rather than the
+load in every studio, because they describe the project rather than the
 assistant. System- or enterprise-managed settings also still apply.
 
-## Adding a profile
+## Adding a studio
 
-Create `profiles/<name>/` with `profile.json`, `CLAUDE.md`, and `settings.json`,
-plus any `agents/`, `skills/`, `commands/`, `hooks/`, or `memory/` directories.
-Content in `shared/` is merged into every profile, with profile entries winning
-name collisions. Run `sh tests/run_all.sh` to check the profile contract.
+Create `studios/<name>/` with `.claude-plugin/plugin.json` (`name` must equal
+the directory), `studio.json`, `requires.txt`, `CLAUDE.md`, and
+`settings.json`, plus any `skills/`, `agents/`, `hooks/`, `bin/`, or
+`memory/`. Content in `shared/` is merged into every studio's `CLAUDE.md`.
+Run `sh tests/run_all.sh` to check the studio contract.
+
+## Layout
+
+```
+studios/<name>/
+├── .claude-plugin/plugin.json   what Claude Code reads (name → namespace)
+├── studio.json                  what install.sh / doctor.sh read
+├── requires.txt                 plugins, skills, agents the studio depends on
+├── skills/ agents/ hooks/       plugin content, loaded live via --plugin-dir
+├── bin/                         toolkit, linked into the config root and put on PATH
+└── CLAUDE.md settings.json memory/   installed into the config root
+```
+
+## Docs
+
+`docs/game-dev/` holds the game studio's design spec, implementation plans,
+approval artifacts and progress log. `docs/superpowers/` holds the earlier
+profiles installer design.
 
 ## Tests
 
