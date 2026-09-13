@@ -19,6 +19,8 @@ skill  godot-prompter:state-machine
 skill  godot-prompter:event-bus
 skill  godot-prompter:resource-pattern
 agent  godot-prompter:godot-csharp-engineer
+skill  godot-prompter:csharp-godot
+skill  godot-prompter:csharp-signals
 skill  godot-prompter:component-system
 skill  godot-prompter:dependency-injection
 skill  godot-prompter:player-controller

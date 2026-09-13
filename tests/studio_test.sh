@@ -144,6 +144,11 @@ test_stage_skill_contracts() {
   assert_contains "$S/execute/SKILL.md" "game-dev:feel-tuner" "execute dispatches the studio's feel tuner"
   assert_contains "$S/execute/SKILL.md" "unverified" "execute lists unverified items"
   assert_not_contains "$S/execute/SKILL.md" "bypass the event bus" "execute's reviewer no longer mandates bus-for-everything"
+  assert_contains "$S/execute/SKILL.md" "[-][-]headless" "execute's smoke boot runs headless"
+  assert_contains "$S/execute/SKILL.md" "SCRIPT ERROR" "execute's smoke boot checks for SCRIPT ERROR"
+  assert_contains "$S/execute/SKILL.md" "godot-prompter:godot-code-reviewer" "execute dispatches godot-prompter's code reviewer"
+  assert_contains "$S/execute/SKILL.md" "godot-prompter:godot-ui-designer" "execute dispatches godot-prompter's UI designer"
+  assert_contains "$S/execute/SKILL.md" "GODOT_PATH" "execute's smoke boot resolves the binary via GODOT_PATH"
 }
 
 run_tests test_plugin_manifests test_skill_frontmatter test_agent_frontmatter \

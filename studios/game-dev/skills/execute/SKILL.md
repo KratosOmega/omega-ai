@@ -16,10 +16,14 @@ Check these first, in the checkout you are in:
   has a `plan approved` line for it; otherwise stop and point at
   `/game-dev:plan`.
 - The spec and the plan are committed: `git log -1 --format=%h -- <spec path>`
-  and the same for the plan path each print a hash. If either prints nothing,
-  stop and say: "commit the spec and plan first —
+  and the same for the plan path each print a hash — note both hashes. If
+  either prints nothing, stop and say: "commit the spec and plan first —
   `git add <spec> <plan> .studio/ledger .studio/config.json && git commit -m 'docs: approve <topic>'`".
   A worktree is a checkout; an uncommitted spec does not travel into it.
+- Nothing is staged or pending on top of that commit:
+  `git status --porcelain -- <spec> <plan> .studio/ledger .studio/config.json`
+  prints nothing. Uncommitted changes to the gate inputs mean the worktree
+  would carry a stale plan — commit or discard them first.
 - Read the plan once. Read the spec its header names; the spec is the
   authority the plan argues from.
 - Run `studio-state set stage execute`. Read `task` to find where to resume:
@@ -27,11 +31,14 @@ Check these first, in the checkout you are in:
   pointer in the project's main checkout, so every call below works the same
   from inside a worktree.
 
-Then isolate: note the current branch (`git branch --show-current`), invoke
-`superpowers:using-git-worktrees`, and in the new worktree confirm the plan
-file exists. If it does not, the worktree was cut from a base that lacks the
-gate commits: run `git merge --ff-only <noted branch>`; if that fails, stop
-and say so. Never implement on `main` without the user's explicit consent.
+Then isolate: note the current branch (`git branch --show-current`) along
+with the spec's and plan's noted hashes, invoke
+`superpowers:using-git-worktrees`, and in the new worktree confirm each
+noted commit is in `HEAD`: `git merge-base --is-ancestor <hash> HEAD` for
+the spec's hash and for the plan's hash. If either is not an ancestor, the
+worktree was cut from a base that lacks the gate commits: run
+`git merge --ff-only <noted branch>`; if that fails, stop and say so. Never
+implement on `main` without the user's explicit consent.
 
 ## 1. Mode
 
@@ -64,7 +71,13 @@ godot-prompter agent knows the engine, not this studio's rules.
 | `game-dev:level-designer` | `general-purpose` | You are the studio's level designer: layout teaches the mechanic before it tests it; collision is authored on the tileset, not per level. | `godot-prompter:2d-essentials` |
 
 When `.studio/config.json` sets `language: csharp`, `gameplay-programmer`
-dispatches `godot-prompter:godot-csharp-engineer` instead.
+dispatches `godot-prompter:godot-csharp-engineer` instead, and the skills
+column swaps too: `godot-prompter:csharp-godot` and
+`godot-prompter:csharp-signals` replace `godot-prompter:gdscript-patterns`
+(the engine-pattern skills — `state-machine`, `event-bus`,
+`resource-pattern`, `component-system`, `player-controller`,
+`input-handling`, `physics-system`, `camera-system`, `godot-testing` — carry
+over unchanged).
 
 Every brief also carries: the task text (via the skill's task-brief script),
 the spec sections the task cites, the project `CLAUDE.md` architecture
@@ -138,11 +151,14 @@ follow. Everything else is a ruling.
 
 When the final whole-branch review is clean:
 
-1. **Smoke boot.** From the project root run the engine headless and let it
-   quit on its own: `godot --headless --quit-after 1` (or the binary
-   `godot-prompter:godot-testing` resolves when `godot` is not on `PATH`),
-   capturing the output. Require exit 0 and no line matching `SCRIPT ERROR`
-   or `ERROR:`. A failure is a task: fix it through the loop above, re-run,
+1. **Smoke boot.** From the project root run the resolved binary headless
+   and let it quit on its own: `<binary> --headless --quit-after 1 2>&1`,
+   capturing both stdout and stderr — Godot prints `SCRIPT ERROR` and
+   `ERROR:` to stderr. Binary: `$GODOT_PATH` if set, else the first
+   `/Applications/Godot*.app/Contents/MacOS/Godot`, else `godot` on `PATH`;
+   if none is found, stop and ask the user to set `GODOT_PATH` — do not set
+   `stage review`. Require exit 0 and no line matching `SCRIPT ERROR` or
+   `ERROR:`. A failure is a task: fix it through the loop above, re-run,
    then continue.
 2. `studio-state set stage review`.
 3. List every ruling you made, in order, with what it costs if wrong.
