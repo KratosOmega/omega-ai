@@ -5,6 +5,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 STUDIO_DIR="$REPO_ROOT/studios/game-dev"
 HOOK="$STUDIO_DIR/hooks/session-start.sh"
+GUARD="$STUDIO_DIR/hooks/guard-state.sh"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
@@ -38,6 +39,10 @@ test_hook_files() {
   assert_contains "$STUDIO_DIR/hooks/bootstrap.md" 'invoke `game-dev:brainstorm` instead' \
     "bootstrap redirects superpowers' brainstorming"
   assert_contains "$STUDIO_DIR/hooks/bootstrap.md" "/game-dev:studio" "bootstrap lists the router"
+  assert_contains "$STUDIO_DIR/hooks/hooks.json" '"PreToolUse"' "hooks.json registers PreToolUse"
+  assert_contains "$STUDIO_DIR/hooks/hooks.json" 'Edit|Write|MultiEdit' "the guard matches the file-writing tools"
+  assert_contains "$STUDIO_DIR/hooks/hooks.json" 'CLAUDE_PLUGIN_ROOT}/hooks/guard-state.sh' \
+    "hooks.json runs guard-state.sh from the plugin root"
 }
 
 test_hook_output_shape() {
@@ -112,6 +117,34 @@ test_hook_fills_config_value_with_metacharacters() {
   fi
 }
 
+# "STATE.md is written only through studio-state" was a sentence in a skill;
+# the harness enforces it now.
+test_guard_state_blocks_direct_writes() {
+  status=0
+  printf '{"tool_name":"Edit","tool_input":{"file_path":"/p/game/.studio/STATE.md","old_string":"a","new_string":"b"}}' \
+    | sh "$GUARD" > /dev/null 2> "$TMP/guard.err" || status=$?
+  assert_eq "2" "$status" "guard blocks an Edit of .studio/STATE.md"
+  assert_contains "$TMP/guard.err" "use studio-state" "guard says what to use instead"
+  status=0
+  printf '{"tool_name":"Write","tool_input":{"file_path":"/p/game/.studio/ledger/dash.md","content":"x"}}' \
+    | sh "$GUARD" > /dev/null 2>&1 || status=$?
+  assert_eq "2" "$status" "guard blocks a Write of a feature ledger"
+  status=0
+  printf '{"tool_name":"Write","tool_input":{"file_path":".studio/STATE.md","content":"x"}}' \
+    | sh "$GUARD" > /dev/null 2>&1 || status=$?
+  assert_eq "2" "$status" "guard blocks a relative path too"
+  status=0
+  printf '{"tool_name":"Write","tool_input":{"file_path":"/p/game/.studio/config.json","content":"x"}}' \
+    | sh "$GUARD" > /dev/null 2>&1 || status=$?
+  assert_eq "0" "$status" "guard lets config.json through"
+  status=0
+  printf '{"tool_name":"Edit","tool_input":{"file_path":"/p/game/src/player.gd"}}' | sh "$GUARD" >/dev/null 2>&1 || status=$?
+  assert_eq "0" "$status" "guard lets ordinary files through"
+  status=0
+  printf '' | sh "$GUARD" >/dev/null 2>&1 || status=$?
+  assert_eq "0" "$status" "guard exits 0 on empty input"
+}
+
 run_tests test_hook_files test_hook_output_shape test_hook_defaults_from_studio_json \
   test_hook_reads_project_config test_hook_partial_config_falls_back test_hook_escapes_json \
-  test_hook_fills_config_value_with_metacharacters
+  test_hook_fills_config_value_with_metacharacters test_guard_state_blocks_direct_writes
