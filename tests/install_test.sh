@@ -48,13 +48,13 @@ test_install_guard() {
 }
 
 test_install_dry_run() {
-  sh "$REPO_ROOT/install.sh" general --target "$TMP/dry" --shim-dir "$TMP/bin" --dry-run >/dev/null
+  sh "$REPO_ROOT/install.sh" general --target "$TMP/dry" --shim-dir "$TMP/bin" --dry-run >/dev/null 2>&1
   assert_missing "$TMP/dry" "dry run creates no config root"
   assert_missing "$TMP/bin/claude-gen" "dry run creates no shim"
 }
 
 test_install_content() {
-  sh "$REPO_ROOT/install.sh" game-dev --target "$TMP/gd" --shim-dir "$TMP/bin" >/dev/null
+  sh "$REPO_ROOT/install.sh" game-dev --target "$TMP/gd" --shim-dir "$TMP/bin" >/dev/null 2>&1
   assert_file "$TMP/gd/CLAUDE.md" "renders CLAUDE.md"
   assert_contains "$TMP/gd/CLAUDE.md" "Game Development Studio" "rendered CLAUDE.md carries studio content"
   assert_contains "$TMP/gd/CLAUDE.md" "Engineering Standards" "rendered CLAUDE.md carries the shared part"
@@ -83,7 +83,7 @@ test_install_precedence() {
 }
 
 test_install_copy_mode() {
-  sh "$REPO_ROOT/install.sh" game-dev --target "$TMP/cp" --shim-dir "$TMP/bin-cp" --mode copy >/dev/null
+  sh "$REPO_ROOT/install.sh" game-dev --target "$TMP/cp" --shim-dir "$TMP/bin-cp" --mode copy >/dev/null 2>&1
   assert_file "$TMP/cp/studio/.claude-plugin/plugin.json" "copy mode snapshots the studio under the target"
   assert_file "$TMP/cp/studio/skills/game-feel/SKILL.md" "the snapshot carries the skills"
   assert_file "$TMP/cp/bin/studio-state" "copy mode installs a real bin file"
@@ -102,15 +102,29 @@ test_install_copy_mode() {
 # pre-plugin installer linked skills/ into the root, and a stale skills/ tree
 # beside the plugin would load every skill twice.
 test_install_reinstall_cleans_stale_entries() {
-  sh "$REPO_ROOT/install.sh" game-dev --target "$TMP/re" --shim-dir "$TMP/bin-re" >/dev/null
-  mkdir -p "$TMP/re/skills"
+  sh "$REPO_ROOT/install.sh" game-dev --target "$TMP/re" --shim-dir "$TMP/bin-re" >/dev/null 2>&1
+  mkdir -p "$TMP/re/skills" "$TMP/re/agents" "$TMP/re/commands" "$TMP/re/hooks"
   # If the installer under test still links skills/, the path is already a
   # link into the repository and ln -s would land inside the checkout.
   rm -f "$TMP/re/skills/game-feel"
   ln -s "$REPO_ROOT/studios/game-dev/skills/game-feel" "$TMP/re/skills/game-feel"
-  printf '%s\n' "$TMP/re/skills/game-feel" >> "$TMP/re/.omega-ai-manifest"
-  sh "$REPO_ROOT/install.sh" game-dev --target "$TMP/re" --shim-dir "$TMP/bin-re" >/dev/null
+  mkdir -p "$TMP/re-src"
+  printf 'stale\n' > "$TMP/re-src/stale.md"
+  ln -s "$TMP/re-src/stale.md" "$TMP/re/agents/stale"
+  ln -s "$TMP/re-src/stale.md" "$TMP/re/commands/stale"
+  {
+    printf '%s\n' "$TMP/re/skills/game-feel"
+    printf '%s\n' "$TMP/re/agents/stale"
+    printf '%s\n' "$TMP/re/commands/stale"
+  } >> "$TMP/re/.omega-ai-manifest"
+  # A file the manifest never recorded keeps its directory alive.
+  printf 'mine\n' > "$TMP/re/hooks/user-hook.sh"
+  sh "$REPO_ROOT/install.sh" game-dev --target "$TMP/re" --shim-dir "$TMP/bin-re" >/dev/null 2>&1
   assert_missing "$TMP/re/skills/game-feel" "reinstall removes an entry the old manifest recorded"
+  assert_missing "$TMP/re/skills" "reinstall removes the emptied skills/ directory"
+  assert_missing "$TMP/re/agents" "reinstall removes the emptied agents/ directory"
+  assert_missing "$TMP/re/commands" "reinstall removes the emptied commands/ directory"
+  assert_file "$TMP/re/hooks/user-hook.sh" "reinstall keeps a directory that still holds user files"
   assert_symlink "$TMP/re/memory/MEMORY.md" "reinstall re-creates the current links"
   assert_file "$TMP/bin-re/claude-gd" "reinstall re-creates the shim"
   assert_eq "1" "$(grep -c 'memory/MEMORY.md' "$TMP/re/.omega-ai-manifest")" \
@@ -127,7 +141,7 @@ test_install_accepts_no_mcp() {
 # manifest records that file — a reinstall must preserve a differing copy
 # rather than removing it along with the other stale entries.
 test_settings_backup() {
-  sh "$REPO_ROOT/install.sh" general --target "$TMP/gen" --shim-dir "$TMP/bin" >/dev/null
+  sh "$REPO_ROOT/install.sh" general --target "$TMP/gen" --shim-dir "$TMP/bin" >/dev/null 2>&1
   printf '{"model":"stale"}\n' > "$TMP/gen/settings.json"
   sh "$REPO_ROOT/install.sh" general --target "$TMP/gen" --shim-dir "$TMP/bin" >/dev/null 2>&1
   found=""
@@ -145,7 +159,7 @@ test_settings_backup() {
 }
 
 test_shim() {
-  sh "$REPO_ROOT/install.sh" game-dev --target "$TMP/gd" --shim-dir "$TMP/bin" >/dev/null
+  sh "$REPO_ROOT/install.sh" game-dev --target "$TMP/gd" --shim-dir "$TMP/bin" >/dev/null 2>&1
   assert_file "$TMP/bin/claude-gd" "writes the shim"
   assert_contains "$TMP/bin/claude-gd" "CLAUDE_CONFIG_DIR=\"$TMP/gd\"" "shim sets CLAUDE_CONFIG_DIR to the target"
   assert_contains "$TMP/bin/claude-gd" "PATH=\"$TMP/gd/bin:\$PATH\"" "shim prefixes PATH with the target bin"
@@ -159,7 +173,7 @@ test_shim() {
 }
 
 test_doctor() {
-  sh "$REPO_ROOT/install.sh" general --target "$TMP/gen" --shim-dir "$TMP/bin" >/dev/null
+  sh "$REPO_ROOT/install.sh" general --target "$TMP/gen" --shim-dir "$TMP/bin" >/dev/null 2>&1
   sh "$REPO_ROOT/doctor.sh" general --target "$TMP/gen" > "$TMP/doctor.out" 2>&1
   assert_contains "$TMP/doctor.out" "$TMP/gen" "doctor reports the resolved config root"
   assert_contains "$TMP/doctor.out" "leakage: none" "doctor finds no leak into ~/.claude"
@@ -168,7 +182,7 @@ test_doctor() {
 }
 
 test_uninstall() {
-  sh "$REPO_ROOT/install.sh" game-dev --target "$TMP/un" --shim-dir "$TMP/bin" >/dev/null
+  sh "$REPO_ROOT/install.sh" game-dev --target "$TMP/un" --shim-dir "$TMP/bin" >/dev/null 2>&1
   mkdir -p "$TMP/un/sessions"
   printf 'user data\n' > "$TMP/un/sessions/keep.txt"
   sh "$REPO_ROOT/uninstall.sh" game-dev --target "$TMP/un" --shim-dir "$TMP/bin" >/dev/null
@@ -182,14 +196,14 @@ test_uninstall() {
 }
 
 test_uninstall_purge() {
-  sh "$REPO_ROOT/install.sh" general --target "$TMP/purge" --shim-dir "$TMP/bin" >/dev/null
+  sh "$REPO_ROOT/install.sh" general --target "$TMP/purge" --shim-dir "$TMP/bin" >/dev/null 2>&1
   sh "$REPO_ROOT/uninstall.sh" general --target "$TMP/purge" --shim-dir "$TMP/bin" --purge --yes >/dev/null
   assert_missing "$TMP/purge" "purge removes the whole config root"
 }
 
 test_two_studios_independent() {
-  sh "$REPO_ROOT/install.sh" general --target "$TMP/a" --shim-dir "$TMP/bin" >/dev/null
-  sh "$REPO_ROOT/install.sh" game-dev --target "$TMP/b" --shim-dir "$TMP/bin" >/dev/null
+  sh "$REPO_ROOT/install.sh" general --target "$TMP/a" --shim-dir "$TMP/bin" >/dev/null 2>&1
+  sh "$REPO_ROOT/install.sh" game-dev --target "$TMP/b" --shim-dir "$TMP/bin" >/dev/null 2>&1
   assert_file "$TMP/a/CLAUDE.md" "first studio intact after second install"
   assert_file "$TMP/b/CLAUDE.md" "second studio installed"
   assert_contains "$TMP/a/CLAUDE.md" "General Studio" "first root keeps its own prompt"
@@ -229,7 +243,7 @@ test_install_guards_shim_dir() {
 
 # --- Finding 2: uninstall only removes what this invocation installed. ---
 test_uninstall_scopes_manifest_entries() {
-  sh "$REPO_ROOT/install.sh" general --target "$TMP/scope" --shim-dir "$TMP/bin-scope" >/dev/null
+  sh "$REPO_ROOT/install.sh" general --target "$TMP/scope" --shim-dir "$TMP/bin-scope" >/dev/null 2>&1
   mkdir -p "$TMP/outside"
   printf 'not ours\n' > "$TMP/outside/precious.txt"
   printf '%s\n' "$TMP/outside/precious.txt" >> "$TMP/scope/.omega-ai-manifest"
@@ -280,7 +294,7 @@ test_option_value_required() {
 # Only a symlink inside the temporary root is created; nothing under ~/.claude
 # is created, read, modified, or removed. The probe is removed afterwards.
 test_doctor_detects_leak() {
-  sh "$REPO_ROOT/install.sh" general --target "$TMP/leak" --shim-dir "$TMP/bin-leak" >/dev/null
+  sh "$REPO_ROOT/install.sh" general --target "$TMP/leak" --shim-dir "$TMP/bin-leak" >/dev/null 2>&1
 
   ln -s "$HOME/.claude/settings.json" "$TMP/leak/leaky-link"
   status=0
@@ -307,17 +321,17 @@ test_doctor_detects_leak() {
 
 # --- Finding 8: a studio with no enabled plugins prints (none). ---
 test_doctor_reports_no_plugins() {
-  sh "$REPO_ROOT/install.sh" general --target "$TMP/plug" --shim-dir "$TMP/bin-plug" >/dev/null
+  sh "$REPO_ROOT/install.sh" general --target "$TMP/plug" --shim-dir "$TMP/bin-plug" >/dev/null 2>&1
   sh "$REPO_ROOT/doctor.sh" general --target "$TMP/plug" > "$TMP/plug.out" 2>&1
   assert_contains "$TMP/plug.out" "(none)" "doctor prints (none) for a studio with no plugins"
-  sh "$REPO_ROOT/install.sh" game-dev --target "$TMP/plug2" --shim-dir "$TMP/bin-plug" >/dev/null
+  sh "$REPO_ROOT/install.sh" game-dev --target "$TMP/plug2" --shim-dir "$TMP/bin-plug" >/dev/null 2>&1
   sh "$REPO_ROOT/doctor.sh" game-dev --target "$TMP/plug2" > "$TMP/plug2.out" 2>&1
   assert_contains "$TMP/plug2.out" "godot-prompter" "doctor lists enabled plugins when present"
   assert_not_contains "$TMP/plug2.out" "(none)" "doctor does not print (none) when plugins exist"
 }
 
 test_doctor_plugin_report() {
-  sh "$REPO_ROOT/install.sh" game-dev --target "$TMP/dr" --shim-dir "$TMP/bin-dr" >/dev/null
+  sh "$REPO_ROOT/install.sh" game-dev --target "$TMP/dr" --shim-dir "$TMP/bin-dr" >/dev/null 2>&1
   status=0
   sh "$REPO_ROOT/doctor.sh" game-dev --target "$TMP/dr" > "$TMP/dr.out" 2>&1 || status=$?
   assert_eq "0" "$status" "doctor passes on a fresh install with no plugin cache"
@@ -355,6 +369,36 @@ test_doctor_plugin_name_mismatch() {
   assert_contains "$TMP/nm.out" "does not match" "doctor explains the mismatch"
 }
 
+# An empty shim name makes SHIM_PATH "<shim dir>/", which canon_path folds to
+# the shim directory itself — a manifest entry equal to that directory would
+# then count as in scope. install.sh already dies on it; uninstall.sh must
+# refuse the same way, before it removes anything.
+test_uninstall_refuses_empty_shim_name() {
+  SB="$TMP/sandbox-shim"
+  mkdir -p "$SB"
+  cp -R "$REPO_ROOT/lib" "$REPO_ROOT/shared" "$REPO_ROOT/studios" "$SB/"
+  cp "$REPO_ROOT/install.sh" "$REPO_ROOT/uninstall.sh" "$REPO_ROOT/doctor.sh" "$SB/"
+  sh "$SB/install.sh" general --target "$TMP/noshim" --shim-dir "$TMP/bin-noshim" >/dev/null 2>&1
+  assert_file "$TMP/noshim/.omega-ai-manifest" "sandbox install wrote a manifest"
+  printf '{ "name": "general", "target": "~/.claude-general", "shim": "" }\n' \
+    > "$SB/studios/general/studio.json"
+
+  status=0
+  sh "$SB/uninstall.sh" general --target "$TMP/noshim" --shim-dir "$TMP/bin-noshim" \
+    > "$TMP/noshim.out" 2>&1 || status=$?
+  assert_eq "1" "$status" "uninstall refuses a studio.json with an empty shim name"
+  assert_contains "$TMP/noshim.out" "has no shim name" "uninstall says why"
+  assert_file "$TMP/noshim/CLAUDE.md" "refused uninstall removes nothing from the config root"
+  assert_file "$TMP/noshim/.omega-ai-manifest" "refused uninstall keeps the manifest"
+  assert_file "$TMP/bin-noshim/claude-gen" "refused uninstall keeps the shim"
+
+  status=0
+  sh "$SB/uninstall.sh" general --target "$TMP/noshim" --shim-dir "$TMP/bin-noshim" --purge --yes \
+    >/dev/null 2>&1 || status=$?
+  assert_eq "1" "$status" "uninstall --purge refuses an empty shim name too"
+  assert_file "$TMP/noshim/CLAUDE.md" "refused purge removes nothing"
+}
+
 # --- Finding 6: all four scripts resolve the studio the same way. ---
 test_all_scripts_validate_the_studio() {
   SB="$TMP/sandbox"
@@ -365,7 +409,7 @@ test_all_scripts_validate_the_studio() {
   mkdir -p "$SB/studios/broken"
   printf '# broken\n' > "$SB/studios/broken/CLAUDE.md"
 
-  sh "$SB/install.sh" general --target "$TMP/brk" --shim-dir "$TMP/bin-brk" >/dev/null
+  sh "$SB/install.sh" general --target "$TMP/brk" --shim-dir "$TMP/bin-brk" >/dev/null 2>&1
   mkdir -p "$TMP/brk/memory"
   printf 'session note\n' > "$TMP/brk/memory/NOTE.md"
 
@@ -524,5 +568,5 @@ run_tests test_studio_contract test_install_unknown_studio test_install_guard \
   test_doctor test_doctor_detects_leak test_doctor_reports_no_plugins \
   test_doctor_plugin_report test_doctor_plugin_name_mismatch \
   test_option_value_required test_uninstall test_uninstall_scopes_manifest_entries \
-  test_uninstall_skips_traversal_manifest_entries \
+  test_uninstall_skips_traversal_manifest_entries test_uninstall_refuses_empty_shim_name \
   test_uninstall_purge test_two_studios_independent test_all_scripts_validate_the_studio

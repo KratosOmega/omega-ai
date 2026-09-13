@@ -104,6 +104,13 @@ if [ "$DRY_RUN" != "1" ]; then
     warn "existing settings.json differed; backed up to $backup"
   fi
   manifest_remove "$MANIFEST" "$TARGET" "$SHIM_PATH"
+  # The pre-plugin layout linked skills, agents, commands and hooks into the
+  # root; removing those entries leaves their directories behind, empty.
+  # rmdir takes only an empty directory, so one that still holds user files
+  # stays.
+  for d in agents skills commands hooks; do
+    rmdir "$TARGET/$d" 2>/dev/null || true
+  done
   : > "$MANIFEST"
 fi
 

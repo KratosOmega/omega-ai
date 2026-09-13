@@ -30,6 +30,9 @@ STUDIO_DIR="$REPO_ROOT/studios/$STUDIO"
 TARGET="$(resolve_studio_target "$STUDIO_DIR" "$TARGET_OVERRIDE")"
 SHIM_DIR="$(canon_path "$(expand_path "$SHIM_DIR")")"
 SHIM_NAME="$(json_field "$STUDIO_DIR/studio.json" shim)"
+# An empty name would make SHIM_PATH the shim directory itself, which
+# manifest_remove would then treat as a removable entry.
+[ -n "$SHIM_NAME" ] || die "studio.json has no shim name"
 
 # Guard both paths this script deletes from.
 guard_target "$TARGET" "$REPO_ROOT"
@@ -46,7 +49,7 @@ if [ "$PURGE" = "1" ]; then
     case "$reply" in y|Y) ;; *) die "aborted" ;; esac
   fi
   rm -rf "$TARGET"
-  if [ -n "$SHIM_NAME" ]; then rm -f "$SHIM_PATH"; fi
+  rm -f "$SHIM_PATH"
   log "purged $TARGET"
   exit 0
 fi
@@ -57,5 +60,5 @@ else
   warn "no manifest at $MANIFEST — removing nothing"
 fi
 
-if [ -n "$SHIM_NAME" ]; then rm -f "$SHIM_PATH"; fi
+rm -f "$SHIM_PATH"
 log "uninstalled $STUDIO from $TARGET (user data kept; use --purge to remove everything)"

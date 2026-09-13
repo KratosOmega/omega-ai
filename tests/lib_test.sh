@@ -137,7 +137,7 @@ godot-prompter@skillsmith" "$(requires_of "$TMP/requires.txt" plugin)" "lists th
 }
 
 test_run_dry() {
-  DRY_RUN=1 run touch "$TMP/should-not-exist"
+  DRY_RUN=1 run touch "$TMP/should-not-exist" 2>/dev/null
   assert_missing "$TMP/should-not-exist" "dry run creates nothing"
   DRY_RUN=0 run touch "$TMP/should-exist"
   assert_file "$TMP/should-exist" "wet run creates the file"

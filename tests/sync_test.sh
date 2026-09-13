@@ -46,7 +46,7 @@ test_sync_dry_run() {
   setup_sandbox
   mkdir -p "$TMP/cfg3/memory"
   printf 'x\n' > "$TMP/cfg3/memory/new.md"
-  sh "$SANDBOX/sync-memory.sh" general --target "$TMP/cfg3" --dry-run >/dev/null
+  sh "$SANDBOX/sync-memory.sh" general --target "$TMP/cfg3" --dry-run >/dev/null 2>&1
   assert_missing "$SANDBOX/studios/general/memory/new.md" "dry run copies nothing"
 }
 
