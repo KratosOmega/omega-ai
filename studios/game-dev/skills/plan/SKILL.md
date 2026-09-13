@@ -1,0 +1,104 @@
+---
+name: plan
+description: Use when an approved spec exists and needs an implementation plan — writes role-tagged, verify-tagged tasks, runs the producer scope pass, and waits for approval.
+---
+
+# Plan
+
+**Announce at start:** "Using game-dev:plan to write the implementation plan."
+
+## 0. Preconditions
+
+- `studio-state get spec` names a file that exists, and the ledger has a
+  `spec approved` line for it. If not, stop and say the spec must be approved
+  first (`/game-dev:brainstorm`). The user may approve it now in one word;
+  then record `studio-state ledger "spec approved <path>"` and continue.
+- Read the spec in full, the project `CLAUDE.md`, and the milestone gate in
+  `docs/game-dev/PROGRESS.md`.
+
+## 1. Format
+
+Invoke `superpowers:writing-plans` and follow it for the header, file
+structure, task structure, bite-sized steps, the no-placeholder rules, and
+the self-review. Two studio rules override its defaults:
+
+- Save the plan to `docs/game-dev/plans/YYYY-MM-DD-<topic>.md` in the game
+  project, not `docs/superpowers/plans/`.
+- Every task carries two extra lines directly under its heading:
+
+  ```markdown
+  ### Task 3: Input action and buffer window
+  Role: game-dev:gameplay-programmer
+  Verify: unit
+  Files: src/player/dash_state.gd, tests/unit/test_dash_input.gd
+  ```
+
+The plan header's **Spec:** line points at the approved spec, and its
+**Global Constraints** copy the spec's feel targets and acceptance criteria
+verbatim, plus the project's architecture rules from `CLAUDE.md`.
+
+## 2. Roles
+
+`Role:` names who implements the task. Use exactly one of:
+
+| Role | Give it |
+|------|---------|
+| `game-dev:gameplay-programmer` | GDScript logic, state machines, signals, Resources, unit tests |
+| `game-dev:level-designer` | level layout, TileMapLayer authoring, pacing |
+| `game-dev:tech-artist` | sprites, atlases, import settings, animation frames |
+| `game-dev:feel-tuner` | input latency, forgiveness windows, acceleration, animation timing, camera, juice |
+| `game-dev:ui-designer` | HUD, menus, themes, responsive layout |
+| `game-dev:architect` | a task whose deliverable is a design decision or a refactor of system boundaries |
+
+`game-dev:game-designer`, `game-dev:producer`, `game-dev:playtester` and
+`game-dev:reviewer` do not implement tasks and never appear in `Role:`.
+
+## 3. Verify
+
+`Verify:` names how the task's deliverable is checked, and binds the
+implementer:
+
+- `unit` — a GUT test named in `Files:` is written first and fails before the
+  implementation exists (`superpowers:test-driven-development` is mandatory).
+  Use it for numbers, state transitions, cooldowns, collisions, signal
+  emission, Resource loading.
+- `playtest` — the task states, in its own text, the playtest item it will
+  produce: the action, the expected perceptual result, and what a failure
+  looks like. No unit test is required. Use it for snappiness, readability,
+  timing, camera behaviour.
+- `visual` — the user looks at it; no automated check. Use it for art
+  placement, UI layout, particle look.
+
+A task that mixes kinds is two tasks.
+
+## 4. Producer scope pass
+
+Before saving, run the scope pass. (The `game-dev:producer` agent takes this
+over in Plan 2 of the studio; until then, do it here.) For every task ask:
+
+1. Does the current milestone gate's exit criteria need this task?
+2. Would the feature be playable end to end without it?
+
+A task that fails 1 and passes 2 moves to a `## Backlog` section at the end
+of the plan with a one-line reason. Say what was cut in the plan's header
+under **Cut in the scope pass:**. Vertical slice first; polish, variants and
+content wait.
+
+## 5. Self-review, then gate
+
+Run the writing-plans self-review (spec coverage, placeholder scan, name
+consistency). Additionally check: every acceptance criterion in the spec maps
+to a task; every `Verify: unit` task names a test file; every
+`Verify: playtest` task states its playtest item.
+
+Then run `studio-state set stage plan`, `studio-state set plan <plan path>`,
+`studio-state set task 0/N` (N = number of tasks outside the backlog), and
+`studio-state ledger "plan written <plan path>"`. **Stop** with:
+
+> Plan at `<path>`: N tasks, K cut to backlog. Reply **approve**, or name the
+> task to change.
+
+On approval run `studio-state ledger "plan approved <plan path>"` and tell
+the user the next command is `/game-dev:execute` (subagent-driven by
+default; `--inline` for checkpointed execution in this session). Do not
+invoke it yourself.
