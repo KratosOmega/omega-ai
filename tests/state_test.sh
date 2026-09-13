@@ -221,9 +221,91 @@ test_state_set_hardening() {
   assert_status 0 "set task accepts -" -- sh -c "cd '$P' && sh '$STATE_BIN' set task -"
 }
 
+# Rulings belong to the feature, not to a single slot edited on every
+# branch: one ledger file per spec, committed with the feature's branch.
+test_state_feature_ledger() {
+  P="$(fresh_project fl)"
+  ( cd "$P" && sh "$STATE_BIN" init >/dev/null )
+  today="$(date +%Y-%m-%d)"
+  ( cd "$P" && sh "$STATE_BIN" ledger "idle note" )
+  assert_contains "$P/.studio/STATE.md" "^- $today idle note" "with no spec the ledger line goes to STATE.md"
+  ( cd "$P" && sh "$STATE_BIN" set spec docs/game-dev/specs/2026-09-13-player-dash.md )
+  ( cd "$P" && sh "$STATE_BIN" ledger "spec written docs/game-dev/specs/2026-09-13-player-dash.md" )
+  assert_file "$P/.studio/ledger/player-dash.md" "with a spec the ledger line goes to the feature file"
+  assert_contains "$P/.studio/ledger/player-dash.md" "^- $today spec written" "the feature ledger line is dated"
+  assert_contains "$P/.studio/ledger/player-dash.md" "^# Ledger — player-dash" "the feature ledger has a title"
+  assert_not_contains "$P/.studio/STATE.md" "spec written" "STATE.md does not carry feature lines"
+  ( cd "$P" && sh "$STATE_BIN" show ) > "$TMP/fl-show.out"
+  assert_contains "$TMP/fl-show.out" "^stage: idle" "show prints the pointer"
+  assert_contains "$TMP/fl-show.out" "^## Feature ledger: player-dash" "show names the feature ledger"
+  assert_contains "$TMP/fl-show.out" "spec written" "show prints the feature ledger"
+}
+
+test_state_ledger_per_branch() {
+  P="$(fresh_project fb)"
+  ( cd "$P" && git init -q && git -c user.name=t -c user.email=t@t commit -q --allow-empty -m init ) 2>/dev/null
+  ( cd "$P" && sh "$STATE_BIN" init >/dev/null )
+  ( cd "$P" && sh "$STATE_BIN" set spec docs/game-dev/specs/2026-09-13-a.md && sh "$STATE_BIN" ledger "A1" )
+  ( cd "$P" && git worktree add -q "$TMP/fb-linked" -b b ) >/dev/null 2>&1
+  ( cd "$TMP/fb-linked" && sh "$STATE_BIN" set spec docs/game-dev/specs/2026-09-13-b.md && sh "$STATE_BIN" ledger "B1" )
+  assert_file "$P/.studio/ledger/a.md" "feature a's ledger is in the main checkout"
+  assert_file "$TMP/fb-linked/.studio/ledger/b.md" "feature b's ledger is in the worktree"
+  assert_missing "$P/.studio/ledger/b.md" "feature b's ledger is not in the main checkout"
+  assert_eq "docs/game-dev/specs/2026-09-13-b.md" "$(cd "$P" && sh "$STATE_BIN" get spec)" "the pointer is shared"
+}
+
+test_state_check() {
+  P="$(fresh_project chk)"
+  ( cd "$P" && sh "$STATE_BIN" init >/dev/null )
+  assert_status 0 "check passes on a fresh state" -- sh -c "cd '$P' && sh '$STATE_BIN' check"
+  ( cd "$P" && sh "$STATE_BIN" set spec docs/game-dev/specs/2026-09-13-dash.md )
+  status=0
+  ( cd "$P" && sh "$STATE_BIN" check ) > "$TMP/chk.out" 2>&1 || status=$?
+  assert_eq "1" "$status" "check fails when the spec file is missing"
+  assert_contains "$TMP/chk.out" "spec file missing: docs/game-dev/specs/2026-09-13-dash.md" "check names the missing spec"
+  mkdir -p "$P/docs/game-dev/specs" "$P/docs/game-dev/plans"
+  printf '# spec\n' > "$P/docs/game-dev/specs/2026-09-13-dash.md"
+  printf '# plan\n' > "$P/docs/game-dev/plans/2026-09-13-dash.md"
+  ( cd "$P" && sh "$STATE_BIN" set plan docs/game-dev/plans/2026-09-13-dash.md && sh "$STATE_BIN" set task 2/5 )
+  assert_status 0 "check passes with files present and no ledger" -- sh -c "cd '$P' && sh '$STATE_BIN' check"
+  ( cd "$P" && sh "$STATE_BIN" ledger "T1 complete abc..def" && sh "$STATE_BIN" ledger "T3 complete def..fed" )
+  status=0
+  ( cd "$P" && sh "$STATE_BIN" check ) > "$TMP/chk2.out" 2>&1 || status=$?
+  assert_eq "1" "$status" "check fails when the ledger is ahead of task"
+  assert_contains "$TMP/chk2.out" "ledger says T3 complete but task is 2/5" "check explains the mismatch"
+  assert_status 0 "check --rebuild succeeds" -- sh -c "cd '$P' && sh '$STATE_BIN' check --rebuild"
+  assert_eq "3/5" "$(cd "$P" && sh "$STATE_BIN" get task)" "check --rebuild sets task from the ledger"
+  ( cd "$P" && sh "$STATE_BIN" set task 4/5 )
+  ( cd "$P" && sh "$STATE_BIN" check ) > "$TMP/chk3.out" 2>&1
+  assert_contains "$TMP/chk3.out" "note" "a ledger behind task is a note, not a failure"
+  ( cd "$P" && sh "$STATE_BIN" set task 6/5 )
+  assert_status 1 "check fails when n > N" -- sh -c "cd '$P' && sh '$STATE_BIN' check"
+}
+
+test_state_reset() {
+  P="$(fresh_project rst)"
+  ( cd "$P" && sh "$STATE_BIN" init >/dev/null )
+  ( cd "$P" && sh "$STATE_BIN" set stage plan && sh "$STATE_BIN" set spec docs/s/2026-09-13-dash.md \
+      && sh "$STATE_BIN" set plan docs/p/2026-09-13-dash.md && sh "$STATE_BIN" set task 1/3 \
+      && sh "$STATE_BIN" ledger "T1 complete x" )
+  assert_file "$P/.studio/ledger/dash.md" "the feature ledger exists before reset"
+  assert_status 0 "reset succeeds" -- sh -c "cd '$P' && sh '$STATE_BIN' reset"
+  assert_eq "idle" "$(cd "$P" && sh "$STATE_BIN" get stage)" "reset returns to idle"
+  assert_eq "-" "$(cd "$P" && sh "$STATE_BIN" get spec)" "reset clears spec"
+  assert_eq "-" "$(cd "$P" && sh "$STATE_BIN" get plan)" "reset clears plan"
+  assert_eq "-" "$(cd "$P" && sh "$STATE_BIN" get task)" "reset clears task"
+  assert_missing "$P/.studio/ledger/dash.md" "reset removes the feature ledger"
+  assert_contains "$P/.studio/STATE.md" "abandoned docs/s/2026-09-13-dash.md" "reset records the abandoned spec"
+  ( cd "$P" && sh "$STATE_BIN" set spec docs/s/2026-09-13-keep.md && sh "$STATE_BIN" ledger "K1" )
+  ( cd "$P" && sh "$STATE_BIN" reset --keep-ledger )
+  assert_file "$P/.studio/ledger/keep.md" "reset --keep-ledger keeps the feature ledger"
+  assert_status 1 "reset rejects an unknown flag" -- sh -c "cd '$P' && sh '$STATE_BIN' reset --nope"
+}
+
 run_tests test_state_needs_init test_state_init test_state_get_set test_state_validation \
   test_state_ledger test_state_ledger_keeps_all_words test_state_ledger_folds_newlines \
   test_state_set_keeps_backslashes test_state_show test_state_resolves_to_main_checkout \
   test_state_init_writes_config_ledger_and_gitignore_once test_state_init_gitignore_appends_safely \
   test_state_root_outside_git_is_quiet \
-  test_state_set_hardening
+  test_state_set_hardening \
+  test_state_feature_ledger test_state_ledger_per_branch test_state_check test_state_reset
