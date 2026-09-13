@@ -1,0 +1,119 @@
+#!/bin/sh
+# Repository lint for every studio: plugin manifests, skill and agent
+# frontmatter, external references, and bin/ syntax. Runs without a config
+# root; nothing here installs anything.
+set -u
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+. "$REPO_ROOT/tests/assert.sh"
+. "$REPO_ROOT/lib/common.sh"
+
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
+
+# first_field FILE KEY — the value of a single-line "KEY: value" frontmatter
+# field; empty when absent.
+first_field() {
+  sed -n "s/^$2:[[:space:]]*//p" "$1" | head -n 1
+}
+
+# valid_json FILE — jq when present, otherwise a shape check: first non-blank
+# character '{', last '}'.
+valid_json() {
+  if command -v jq >/dev/null 2>&1; then
+    jq -e . "$1" >/dev/null 2>&1
+  else
+    _first="$(tr -d '[:space:]' < "$1" | cut -c1)"
+    _last="$(tr -d '[:space:]' < "$1" | tail -c 1)"
+    [ "$_first" = "{" ] && [ "$_last" = "}" ]
+  fi
+}
+
+test_plugin_manifests() {
+  for dir in "$REPO_ROOT"/studios/*/; do
+    name="$(basename "$dir")"
+    manifest="$dir/.claude-plugin/plugin.json"
+    assert_status 0 "$name plugin.json is valid JSON" -- valid_json "$manifest"
+    assert_eq "$name" "$(json_field "$manifest" name)" "$name plugin.json name is the studio name"
+    TESTS_RUN=$((TESTS_RUN + 1))
+    if [ -n "$(json_field "$manifest" description)" ]; then
+      _pass "$name plugin.json has a description"
+    else
+      _fail "$name plugin.json has a description"
+    fi
+  done
+}
+
+test_skill_frontmatter() {
+  for f in "$REPO_ROOT"/studios/*/skills/*/SKILL.md; do
+    [ -f "$f" ] || continue
+    dir="$(basename "$(dirname "$f")")"
+    studio="$(basename "$(dirname "$(dirname "$(dirname "$f")")")")"
+    assert_eq "---" "$(head -n 1 "$f")" "$studio:$dir starts with frontmatter"
+    assert_eq "$dir" "$(first_field "$f" name)" "$studio:$dir frontmatter name matches its directory"
+    TESTS_RUN=$((TESTS_RUN + 1))
+    case "$(first_field "$f" description)" in
+      "Use when"*) _pass "$studio:$dir description starts with 'Use when'" ;;
+      *) _fail "$studio:$dir description starts with 'Use when'" ;;
+    esac
+  done
+}
+
+test_agent_frontmatter() {
+  for f in "$REPO_ROOT"/studios/*/agents/*.md; do
+    [ -f "$f" ] || continue
+    stem="$(basename "$f" .md)"
+    studio="$(basename "$(dirname "$(dirname "$f")")")"
+    assert_eq "$stem" "$(first_field "$f" name)" "$studio:$stem frontmatter name matches its file"
+    TESTS_RUN=$((TESTS_RUN + 1))
+    case "$(first_field "$f" description)" in
+      "Use when"*) _pass "$studio:$stem description starts with 'Use when'" ;;
+      *) _fail "$studio:$stem description starts with 'Use when'" ;;
+    esac
+    assert_contains "$f" "^tools: " "$studio:$stem declares tools"
+    assert_eq "inherit" "$(first_field "$f" model)" "$studio:$stem uses model: inherit"
+  done
+}
+
+# Every superpowers: or godot-prompter: name a studio references must be
+# declared in its requires.txt, so the doctor can check it against the cache.
+test_external_references_declared() {
+  for dir in "$REPO_ROOT"/studios/*/; do
+    name="$(basename "$dir")"
+    refs="$(grep -rhoE '(superpowers|godot-prompter):[a-z0-9-]+' \
+      "$dir/skills" "$dir/agents" "$dir/engines" 2>/dev/null | sort -u || true)"
+    for ref in $refs; do
+      TESTS_RUN=$((TESTS_RUN + 1))
+      if grep -qE "^(skill|agent)[[:space:]]+$ref\$" "$dir/requires.txt"; then
+        _pass "$name declares $ref in requires.txt"
+      else
+        _fail "$name declares $ref in requires.txt"
+      fi
+    done
+  done
+}
+
+# Every plugin requires.txt declares must be enabled by the studio's own
+# settings.json, or a fresh install fails the doctor immediately.
+test_required_plugins_enabled() {
+  for dir in "$REPO_ROOT"/studios/*/; do
+    name="$(basename "$dir")"
+    for req in $(requires_of "$dir/requires.txt" plugin); do
+      assert_contains "$dir/settings.json" "\"$req\"[[:space:]]*:[[:space:]]*true" \
+        "$name settings.json enables $req"
+    done
+  done
+}
+
+test_bin_syntax() {
+  for f in "$REPO_ROOT"/studios/*/bin/* "$REPO_ROOT"/studios/*/engines/*/*.sh "$REPO_ROOT"/studios/*/hooks/*.sh; do
+    [ -f "$f" ] || continue
+    case "$(basename "$f")" in .gitkeep) continue ;; esac
+    rel="${f#"$REPO_ROOT"/}"
+    assert_status 0 "$rel parses as POSIX sh" -- sh -n "$f"
+    TESTS_RUN=$((TESTS_RUN + 1))
+    if [ -x "$f" ]; then _pass "$rel is executable"; else _fail "$rel is executable"; fi
+  done
+}
+
+run_tests test_plugin_manifests test_skill_frontmatter test_agent_frontmatter \
+  test_external_references_declared test_required_plugins_enabled test_bin_syntax
