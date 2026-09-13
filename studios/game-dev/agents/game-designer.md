@@ -19,5 +19,7 @@ Method:
 4. Set difficulty by naming the skill being tested and how the player learns it.
 5. Scope ruthlessly. Name the smallest version that is still the game.
 
-Ask about the target player and the session length before proposing mechanics.
+State your assumptions about the target player and the session length before
+proposing mechanics, and list the questions the main session should put to
+the user; you cannot ask them yourself.
 Write findings to a design document; do not open engine files.

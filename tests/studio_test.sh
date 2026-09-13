@@ -115,5 +115,25 @@ test_bin_syntax() {
   done
 }
 
+# Every Role the plan and execute tables offer must be dispatchable: a
+# shipped agent file, or one of the roles execute maps to a godot-prompter
+# agent or general-purpose until Plan 2 ships the studio's own.
+test_role_agents_exist() {
+  interim=" gameplay-programmer architect ui-designer level-designer "
+  for f in "$REPO_ROOT/studios/game-dev/skills/plan/SKILL.md" "$REPO_ROOT/studios/game-dev/skills/execute/SKILL.md"; do
+    skill="$(basename "$(dirname "$f")")"
+    for role in $(sed -n 's/^| `game-dev:\([a-z0-9-]*\)`.*/\1/p' "$f" | sort -u); do
+      case "$interim" in *" $role "*) continue ;; esac
+      assert_file "$REPO_ROOT/studios/game-dev/agents/$role.md" "$skill Role game-dev:$role is a shipped agent"
+    done
+  done
+  assert_missing "$REPO_ROOT/studios/game-dev/agents/game-feel-tuner.md" "game-feel-tuner was renamed to feel-tuner"
+  assert_missing "$REPO_ROOT/studios/game-dev/agents/2d-art-pipeline.md" "2d-art-pipeline was renamed to tech-artist"
+  assert_contains "$REPO_ROOT/studios/game-dev/agents/feel-tuner.md" "^tools: .*Bash" "feel-tuner can run the game"
+  assert_not_contains "$REPO_ROOT/studios/game-dev/agents/game-designer.md" "^Ask about" \
+    "game-designer states assumptions instead of asking (a subagent cannot ask)"
+}
+
 run_tests test_plugin_manifests test_skill_frontmatter test_agent_frontmatter \
-  test_external_references_declared test_required_plugins_enabled test_bin_syntax
+  test_external_references_declared test_required_plugins_enabled test_bin_syntax \
+  test_role_agents_exist

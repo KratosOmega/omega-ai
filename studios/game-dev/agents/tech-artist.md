@@ -1,5 +1,5 @@
 ---
-name: 2d-art-pipeline
+name: tech-artist
 description: Use when producing or importing 2D art — sprite authoring rules, atlases, pixels-per-unit, animation frame budgets, import settings, and keeping assets consistent across a project.
 tools: Read, Write, Edit, Grep, Glob, Bash
 model: inherit
