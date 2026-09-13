@@ -641,6 +641,28 @@ test_resolve_studio_target_failure_is_not_masked() {
     "sync-memory does not fall through to the missing-memory message"
 }
 
+# CLAUDE.md and settings.json used to be written through whatever was at the
+# destination: a symlink there (a user's own link into ~/.claude, say) had
+# the linked file overwritten while the link survived. install_entries
+# removes its destination first; the two rendered files must do the same.
+test_install_replaces_symlinked_files() {
+  mkdir -p "$TMP/outside-cfg" "$TMP/sym"
+  printf 'my global claude.md\n' > "$TMP/outside-cfg/CLAUDE.md"
+  printf '{"mine":true}\n' > "$TMP/outside-cfg/settings.json"
+  ln -s "$TMP/outside-cfg/CLAUDE.md" "$TMP/sym/CLAUDE.md"
+  ln -s "$TMP/outside-cfg/settings.json" "$TMP/sym/settings.json"
+  sh "$REPO_ROOT/install.sh" general --target "$TMP/sym" --shim-dir "$TMP/bin-sym" >/dev/null 2>&1
+  assert_eq "my global claude.md" "$(cat "$TMP/outside-cfg/CLAUDE.md")" \
+    "the file a CLAUDE.md link pointed at is untouched"
+  assert_eq '{"mine":true}' "$(cat "$TMP/outside-cfg/settings.json")" \
+    "the file a settings.json link pointed at is untouched"
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if [ -L "$TMP/sym/CLAUDE.md" ]; then _fail "CLAUDE.md is a regular file after install"; else _pass "CLAUDE.md is a regular file after install"; fi
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if [ -L "$TMP/sym/settings.json" ]; then _fail "settings.json is a regular file after install"; else _pass "settings.json is a regular file after install"; fi
+  assert_contains "$TMP/sym/CLAUDE.md" "General Studio" "CLAUDE.md is rendered in place"
+}
+
 run_tests test_studio_contract test_install_unknown_studio test_install_guard \
   test_install_guards_shim_dir test_install_refuses_traversal_target \
   test_install_refuses_traversal_shim_dir test_install_refuses_symlinked_target \
@@ -652,4 +674,5 @@ run_tests test_studio_contract test_install_unknown_studio test_install_guard \
   test_option_value_required test_uninstall test_uninstall_scopes_manifest_entries \
   test_uninstall_skips_traversal_manifest_entries test_uninstall_refuses_empty_shim_name \
   test_uninstall_purge test_two_studios_independent test_all_scripts_validate_the_studio \
-  test_install_normalizes_name_and_target test_resolve_studio_target_failure_is_not_masked
+  test_install_normalizes_name_and_target test_resolve_studio_target_failure_is_not_masked \
+  test_install_replaces_symlinked_files
