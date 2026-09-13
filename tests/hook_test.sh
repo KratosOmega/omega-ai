@@ -38,7 +38,8 @@ test_hook_files() {
   assert_contains "$STUDIO_DIR/hooks/bootstrap.md" "stage skills own the workflow" "bootstrap carries the precedence rule"
   assert_contains "$STUDIO_DIR/hooks/bootstrap.md" 'invoke `game-dev:brainstorm` instead' \
     "bootstrap redirects superpowers' brainstorming"
-  assert_contains "$STUDIO_DIR/hooks/bootstrap.md" "--inline" "bootstrap says where godot-prompter skills run in inline mode"
+  assert_contains "$STUDIO_DIR/hooks/bootstrap.md" 'in the main session in `--inline` mode' \
+    "bootstrap says where godot-prompter skills run in inline mode"
   assert_contains "$STUDIO_DIR/hooks/bootstrap.md" "/game-dev:studio" "bootstrap lists the router"
   assert_contains "$STUDIO_DIR/hooks/hooks.json" '"PreToolUse"' "hooks.json registers PreToolUse"
   assert_contains "$STUDIO_DIR/hooks/hooks.json" 'Edit|Write|MultiEdit' "the guard matches the file-writing tools"
