@@ -3,7 +3,9 @@
 # compact). Prints one line naming the five skills and the absolute path of
 # omega-mode — plain claude has no PATH entry for it — and, when the session
 # has modes set, the "Omega modes:" block from omega-mode brief. Also prunes
-# mode files older than seven days: a crashed session never ran SessionEnd.
+# mode files older than seven days, never the current session's — a resumed
+# or compacted session older than seven days must still find its modes — as
+# a crashed session never ran SessionEnd.
 #
 # Exit 0 always: on SessionStart a non-zero exit would drop the context.
 # Self-contained on purpose: in copy mode the plugin root has no lib/.
@@ -23,7 +25,11 @@ sid="$(printf '%s' "$input" | tr '\n' ' ' \
 [ -n "$sid" ] || sid="${CLAUDE_CODE_SESSION_ID:-}"
 
 if [ -d "$DIR" ]; then
-  find "$DIR" -type f -mtime +7 -exec rm -f {} + 2>/dev/null || true
+  if [ -n "$sid" ]; then
+    find "$DIR" -type f ! -name "$sid" -mtime +7 -exec rm -f {} + 2>/dev/null || true
+  else
+    find "$DIR" -type f -mtime +7 -exec rm -f {} + 2>/dev/null || true
+  fi
 fi
 
 text="Omega global skills: /omega:handoff, /omega:parallel [N|off], /omega:local-merge [off], /omega:integration <start|add|status|finish>, /omega:autopilot [off]. Mode tool: $MODE (set | clear | show | path | brief)."

@@ -124,6 +124,10 @@ test_mode_validation() {
   assert_status 1 "clear without a mode exits 1" -- mode --session t9 clear
   assert_status 1 "clear with two modes exits 1" -- mode --session t9 clear parallel autopilot
   assert_missing "$CFG/omega/modes/t9" "a refused set writes nothing"
+  assert_status 1 "HOME and CLAUDE_CONFIG_DIR both unset exits 1" -- \
+    env -u HOME -u CLAUDE_CONFIG_DIR sh "$MODE" --session x show
+  env -u HOME -u CLAUDE_CONFIG_DIR sh "$MODE" --session x show >/dev/null 2> "$TMP/nodir.err"
+  assert_contains "$TMP/nodir.err" "no config dir" "the message names the config dir"
 }
 
 test_mode_brief() {
@@ -227,9 +231,17 @@ test_session_start_prunes_old_files() {
   printf 'parallel\n' > "$CFG/omega/modes/old"
   touch -t 202001010000 "$CFG/omega/modes/old"
   printf 'parallel\n' > "$CFG/omega/modes/fresh"
+  # The current session's own file, also older than seven days: a resumed or
+  # compacted session must still find its modes, so prune never removes it.
+  printf 'parallel\n' > "$CFG/omega/modes/s2"
+  eight_days_ago="$(date -v-8d +%Y%m%d%H%M 2>/dev/null || date -d '-8 days' +%Y%m%d%H%M)"
+  touch -t "$eight_days_ago" "$CFG/omega/modes/s2"
   hook session-start.sh '{"session_id":"s2","hook_event_name":"SessionStart","source":"startup"}'
   assert_missing "$CFG/omega/modes/old" "a mode file older than seven days is pruned"
   assert_file "$CFG/omega/modes/fresh" "a fresh mode file survives"
+  assert_file "$CFG/omega/modes/s2" "the current session's file older than seven days survives"
+  context > "$TMP/ctx-s2.txt"
+  assert_contains "$TMP/ctx-s2.txt" "Omega modes:" "the surviving current-session file's Omega modes: block is printed"
 }
 
 test_prompt_submit() {
@@ -286,6 +298,48 @@ test_prompt_submit() {
   assert_status 0 "prompt-submit exits 0 with empty stdin" -- hook_status prompt-submit.sh ''
   hook prompt-submit.sh ''
   assert_eq "" "$(cat "$TMP/hook.out")" "empty stdin: prompt-submit prints nothing"
+
+  # --- Envelope anchored on the prompt value, not the flattened JSON: a
+  # prompt that merely mentions a tag (pasted test fixture text) must not be
+  # read as one. Session p2, fresh, so these do not depend on p1's history.
+  mode --session p2 clear --all
+  hook prompt-submit.sh '{"session_id":"p2","hook_event_name":"UserPromptSubmit","prompt":"this test fails: <command-name>/omega:autopilot</command-name>"}'
+  assert_eq "" "$(mode --session p2 show)" "pasted text with the envelope not at the start sets nothing"
+
+  hook prompt-submit.sh '{"session_id":"p2","hook_event_name":"UserPromptSubmit","prompt":"   <command-message>parallel</command-message>   <command-name>/omega:parallel</command-name>"}'
+  assert_eq "parallel" "$(mode --session p2 show)" \
+    "an envelope preceded by <command-message> and whitespace still sets the mode"
+  mode --session p2 clear parallel
+
+  hook prompt-submit.sh '{"session_id":"p2","hook_event_name":"UserPromptSubmit","prompt":"<command-name>/omega:parallel</command-name><command-args>0</command-args>"}'
+  assert_eq "" "$(mode --session p2 show)" "/omega:parallel 0 sets nothing"
+  hook prompt-submit.sh '{"session_id":"p2","hook_event_name":"UserPromptSubmit","prompt":"<command-name>/omega:parallel</command-name><command-args>007</command-args>"}'
+  assert_eq "" "$(mode --session p2 show)" "/omega:parallel 007 sets nothing (leading zero)"
+
+  mode --session p2 set local-merge
+  mode --session p2 set autopilot
+  hook prompt-submit.sh '{"session_id":"p2","hook_event_name":"UserPromptSubmit","prompt":"<command-name>/omega:local-merge</command-name><command-args>off</command-args>"}'
+  assert_not_contains "$CFG/omega/modes/p2" "^local-merge$" "/omega:local-merge off clears local-merge"
+  assert_contains "$CFG/omega/modes/p2" "^autopilot$" "/omega:local-merge off leaves autopilot alone"
+  hook prompt-submit.sh '{"session_id":"p2","hook_event_name":"UserPromptSubmit","prompt":"<command-name>/omega:autopilot</command-name><command-args>off</command-args>"}'
+  assert_missing "$CFG/omega/modes/p2" "/omega:autopilot off clears autopilot (the last mode)"
+
+  hook prompt-submit.sh '{"session_id":"p2","hook_event_name":"UserPromptSubmit","prompt":"<command-name>/omega:integration</command-name><command-args>start ..</command-args>"}'
+  assert_eq "" "$(mode --session p2 show)" "/omega:integration start .. sets nothing"
+
+  # A <scheduled-task> prompt changes no mode but still gets the block.
+  mode --session p2 set parallel
+  hook prompt-submit.sh '{"session_id":"p2","hook_event_name":"UserPromptSubmit","prompt":"<scheduled-task id=\"y\"><command-name>/omega:parallel</command-name><command-args>off</command-args></scheduled-task>"}'
+  assert_eq "parallel" "$(mode --session p2 show)" \
+    "a scheduled-task prompt with parallel set leaves the mode unchanged"
+  context > "$TMP/ctx-sched.txt"
+  assert_contains "$TMP/ctx-sched.txt" "Omega modes:" "a scheduled-task prompt still receives the Omega modes: block"
+  mode --session p2 clear --all
+
+  # Happy path: no stray stderr.
+  hook prompt-submit.sh '{"session_id":"p2","hook_event_name":"UserPromptSubmit","prompt":"<command-message>parallel</command-message>\n<command-name>/omega:parallel</command-name>\n<command-args>3</command-args>"}'
+  assert_eq "" "$(cat "$TMP/hook.err")" "the happy path leaves stderr empty"
+  mode --session p2 clear --all
 }
 
 test_session_end() {

@@ -9,7 +9,8 @@
 # The hook turns the mode commands into omega-mode calls, so a typed command
 # changes the mode before the model reads the skill, and then — only when a
 # mode is active — prints the "Omega modes:" block as the turn's additional
-# context. Any other prompt changes nothing; with no mode it prints nothing.
+# context. Any other prompt changes nothing; a <scheduled-task> prompt never
+# changes a mode but still sees the block; with no mode it prints nothing.
 #
 # Exit 0 always. Self-contained on purpose: in copy mode the plugin root has
 # no lib/.
@@ -29,28 +30,49 @@ sid="$(printf '%s' "$input" | tr '\n' ' ' \
 # not.
 flat="$(printf '%s' "$input" | tr '\n\t' '  ' | sed -e 's/\\n/ /g' -e 's/\\t/ /g')"
 
-# Unattended scheduled-task runs never change a mode.
+# The prompt's own value, not the whole flattened JSON — a prompt that merely
+# *mentions* an envelope tag (a developer pasting a line of
+# tests/omega_test.sh) must not be read as one. The envelope itself never
+# contains a quote, so stopping at the next '"' is correct for the envelope
+# case; a pasted prompt that stops early there simply does not begin with
+# the tag checked below.
+prompt_val="$(printf '%s' "$flat" \
+  | sed -n 's/.*"prompt"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"
+prompt_val="$(printf '%s' "$prompt_val" | sed -e 's/^[[:space:]]*//')"
+# A typed command's envelope may be preceded by its <command-message>; skip
+# it and any whitespace after it so the check below sees <command-name>
+# first when the envelope is really there.
+envelope="$(printf '%s' "$prompt_val" \
+  | sed -e 's/^<command-message>[^<]*<\/command-message>[[:space:]]*//')"
+
+# Unattended scheduled-task runs never change a mode. This only turns off
+# the envelope handling below; the Omega modes: block is still printed when
+# a mode is set.
 case "$flat" in
-  *'<scheduled-task'*) exit 0 ;;
+  *'<scheduled-task'*) envelope="" ;;
 esac
 
-skill="$(printf '%s' "$flat" \
-  | sed -n 's/.*<command-name>[[:space:]]*\/omega:\([a-z-]*\)[[:space:]]*<\/command-name>.*/\1/p' | head -n 1)"
+skill=""
+case "$envelope" in
+  '<command-name>'*)
+    skill="$(printf '%s' "$envelope" \
+      | sed -n 's/.*<command-name>[[:space:]]*\/omega:\([a-z-]*\)[[:space:]]*<\/command-name>.*/\1/p' | head -n 1)" ;;
+esac
 if [ -n "$skill" ]; then
-  args="$(printf '%s' "$flat" | sed -n 's/.*<command-args>\(.*\)<\/command-args>.*/\1/p' | head -n 1)"
+  args="$(printf '%s' "$envelope" | sed -n 's/.*<command-args>\(.*\)<\/command-args>.*/\1/p' | head -n 1)"
   args="$(printf '%s' "$args" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
   case "$skill" in
     parallel)
       case "$args" in
-        off) sh "$MODE" --session "$sid" clear parallel ;;
-        '') sh "$MODE" --session "$sid" set parallel ;;
-        *[!0-9]*) ;;
-        *) sh "$MODE" --session "$sid" set parallel "max=$args" ;;
+        off) sh "$MODE" --session "$sid" clear parallel >/dev/null ;;
+        '') sh "$MODE" --session "$sid" set parallel >/dev/null ;;
+        *[!0-9]*|0*) ;;
+        *) sh "$MODE" --session "$sid" set parallel "max=$args" >/dev/null ;;
       esac ;;
     local-merge|autopilot)
       case "$args" in
-        off) sh "$MODE" --session "$sid" clear "$skill" ;;
-        '') sh "$MODE" --session "$sid" set "$skill" ;;
+        off) sh "$MODE" --session "$sid" clear "$skill" >/dev/null ;;
+        '') sh "$MODE" --session "$sid" set "$skill" >/dev/null ;;
       esac ;;
     integration)
       # Only `start <slug>` sets the mode here. `finish` clears it from inside
@@ -60,8 +82,8 @@ if [ -n "$skill" ]; then
         start\ *)
           slug="$(printf '%s' "${args#start}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]].*$//')"
           case "$slug" in
-            ''|*[!A-Za-z0-9._-]*) ;;
-            *) sh "$MODE" --session "$sid" set integration "slug=$slug" ;;
+            ''|.|..|*[!A-Za-z0-9._-]*) ;;
+            *) sh "$MODE" --session "$sid" set integration "slug=$slug" >/dev/null ;;
           esac ;;
       esac ;;
   esac

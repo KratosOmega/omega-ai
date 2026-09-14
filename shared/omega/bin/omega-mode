@@ -18,6 +18,8 @@
 #
 # Self-contained on purpose: in copy mode the plugin root has no lib/.
 set -u
+# The kv loop below word-splits a line on spaces; never let it glob one too.
+set -f
 
 usage() {
   cat >&2 <<'USAGE'
@@ -56,7 +58,16 @@ case "$SESSION" in
   .|..|*[!A-Za-z0-9._-]*) die "invalid session id: $SESSION" ;;
 esac
 
-DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/omega/modes"
+# The "/.claude" fallback below is absolute on its own, so checking $DIR
+# for a leading "/" (next) cannot tell an unset HOME apart from one set
+# normally; catch both unset here first, before HOME's absence is silently
+# read as "/.claude".
+[ -n "${CLAUDE_CONFIG_DIR:-}" ] || [ -n "${HOME:-}" ] || die "no config dir: set CLAUDE_CONFIG_DIR or HOME"
+DIR="${CLAUDE_CONFIG_DIR:-${HOME:-}/.claude}/omega/modes"
+case "$DIR" in
+  /*) ;;
+  *) die "no config dir: set CLAUDE_CONFIG_DIR or HOME" ;;
+esac
 FILE="$DIR/$SESSION"
 
 # valid_mode NAME — lowercase letters, digits and dashes; starts with a
@@ -108,11 +119,11 @@ mode_set() {
       $1 == m { if (!done) { print l; done = 1 }; next }
       { print }
       END { if (!done) print l }
-    ' "$FILE" > "$_tmp"
+    ' "$FILE" > "$_tmp" || { rm -f "$_tmp"; die "cannot write $FILE"; }
   else
-    printf '%s\n' "$_line" > "$_tmp"
+    printf '%s\n' "$_line" > "$_tmp" || { rm -f "$_tmp"; die "cannot write $FILE"; }
   fi
-  mv "$_tmp" "$FILE"
+  mv "$_tmp" "$FILE" || { rm -f "$_tmp"; die "cannot write $FILE"; }
 }
 
 mode_clear() {
@@ -124,9 +135,9 @@ mode_clear() {
   valid_mode "$1" || die "invalid mode name: $1"
   [ -f "$FILE" ] || return 0
   _tmp="$FILE.tmp.$$"
-  awk -v m="$1" '$1 != m' "$FILE" > "$_tmp"
+  awk -v m="$1" '$1 != m' "$FILE" > "$_tmp" || { rm -f "$_tmp"; die "cannot write $FILE"; }
   if [ -s "$_tmp" ]; then
-    mv "$_tmp" "$FILE"
+    mv "$_tmp" "$FILE" || { rm -f "$_tmp"; die "cannot write $FILE"; }
   else
     rm -f "$_tmp" "$FILE"
   fi
