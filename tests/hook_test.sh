@@ -147,6 +147,44 @@ test_guard_state_blocks_direct_writes() {
   assert_eq "0" "$status" "guard exits 0 on empty input"
 }
 
+# A wrong CLAUDE_PLUGIN_ROOT used to emit an empty context with exit 0, so the
+# studio was silently not loaded.
+test_hook_fails_without_bootstrap() {
+  mkdir -p "$TMP/noboot-root/hooks" "$TMP/noboot"
+  cp "$STUDIO_DIR/studio.json" "$TMP/noboot-root/"
+  status=0
+  ( cd "$TMP/noboot" && CLAUDE_PLUGIN_ROOT="$TMP/noboot-root" sh "$HOOK" ) > "$TMP/noboot.out" 2> "$TMP/noboot.err" || status=$?
+  assert_eq "1" "$status" "hook exits 1 when bootstrap.md is missing"
+  assert_contains "$TMP/noboot.err" "bootstrap.md" "hook names the missing file"
+  assert_not_contains "$TMP/noboot.out" "additionalContext" "hook emits no empty context"
+}
+
+test_hook_strips_control_characters() {
+  mkdir -p "$TMP/ctl/.studio"
+  printf '{ "engine": "god\fot4" }\n' > "$TMP/ctl/.studio/config.json"
+  run_hook "$TMP/ctl"
+  if command -v jq >/dev/null 2>&1; then
+    assert_status 0 "a control character in config.json still yields valid JSON" -- jq -e . "$TMP/hook.out"
+  fi
+  assert_not_contains "$TMP/hook.out" '"additionalContext":""' "the context is not emptied"
+  context "$TMP/hook.out" > "$TMP/ctx7.txt"
+  assert_contains "$TMP/ctx7.txt" "godot4 · 2D" "the control character is dropped from the value"
+}
+
+test_hook_reports_stage() {
+  mkdir -p "$TMP/staged"
+  ( cd "$TMP/staged" && sh "$STUDIO_DIR/bin/studio-state" init >/dev/null && sh "$STUDIO_DIR/bin/studio-state" set stage plan )
+  run_hook "$TMP/staged"
+  context "$TMP/hook.out" > "$TMP/ctx8.txt"
+  assert_contains "$TMP/ctx8.txt" "Studio state: stage plan" "context reports the current stage"
+  mkdir -p "$TMP/unstaged"
+  run_hook "$TMP/unstaged"
+  context "$TMP/hook.out" > "$TMP/ctx9.txt"
+  assert_not_contains "$TMP/ctx9.txt" "Studio state:" "no stage line without state"
+  assert_eq "" "$(cat "$TMP/hook.err")" "the hook is silent on stderr without state"
+}
+
 run_tests test_hook_files test_hook_output_shape test_hook_defaults_from_studio_json \
   test_hook_reads_project_config test_hook_partial_config_falls_back test_hook_escapes_json \
-  test_hook_fills_config_value_with_metacharacters test_guard_state_blocks_direct_writes
+  test_hook_fills_config_value_with_metacharacters test_guard_state_blocks_direct_writes \
+  test_hook_fails_without_bootstrap test_hook_strips_control_characters test_hook_reports_stage

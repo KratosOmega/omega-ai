@@ -20,4 +20,4 @@ Stages are installed in phases. A stage that is not in your skill list is not in
 
 ## State
 
-If `.studio/STATE.md` exists, read it and report the current stage and the next step in one line before doing anything else. If it does not exist and this is a Godot project (`project.godot` present), suggest `/game-dev:studio`.
+When `.studio/STATE.md` exists, a line naming the current stage (`stage <stage>`) follows this bootstrap; `/game-dev:studio` names the next step from it. When it does not exist and this is a Godot project (`project.godot` present), `/game-dev:studio` initialises it.
