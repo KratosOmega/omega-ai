@@ -71,3 +71,54 @@ What it said (verbatim excerpts that show the rationalisation):
 - "Working tree clean, nothing outside `.../autopilot` touched."
 - From `LEDGER.md` itself: "**Ruling:** `config/settings.example` is
   JSON, not YAML." (no "cost if wrong" clause anywhere in the ruling).
+
+## With skill — 2026-09-13
+
+Model: sonnet. Result: PASS (run 2) on prompt A and prompt B. Rounds of
+refinement: 1.
+
+Loopholes closed: run 1 passed A's file-committed, nothing-unpushed and
+asks-nothing criteria and B's readiness-checklist criterion, but failed
+one criterion on each prompt.
+
+On A, `grep -c '^.*Ruling:' LEDGER.md` matched exactly one line — "- Ruling:
+`config/settings.example` format — chose JSON over YAML. Why: JSON" — and
+that line never contains "cost if wrong": the phrase landed two
+paragraph-wrapped lines later ("... Verified with `python3 -m json.tool`.
+Cost if\n  wrong: low — one 3-key file, a ~10-minute mechanical reformat to
+YAML."). The skill's "No questions" bullet said only *where* to log a
+ruling and gave a template, never that the whole triple had to sit on one
+grep-able line. Fixed by adding "Log the ruling **as one line** — decision,
+why and cost if wrong all in that single line, never spread across a
+wrapped paragraph, so `grep 'Ruling:'` finds the whole thing" plus a
+Red-flags row: "I'll explain the cost in the next paragraph" → "The cost
+if wrong goes on the Ruling line itself, or a plain grep for it fails."
+
+On B, the question sweep silently dropped the format item: "the
+file-format choice (JSON vs YAML) from the spec is already settled —
+`LEDGER.md` has a Ruling (JSON, RFC 8259, stdlib parsers) and
+`config/settings.example` is committed as JSON — so it's dropped from the
+sweep. That ruling predates any `## Decisions` entry, which is itself a
+readiness gap below." — the agent used a stray ledger entry from an
+unrelated prior Phase 2 run against the same fixture to retire a swept
+item, while two lines later flagging the missing `## Decisions` section as
+a readiness-checklist failure. The "Question sweep" step never said what
+can or cannot retire an item. Fixed by adding "An item the spec calls open
+stays in the sweep until the plan's own `## Decisions` section answers it
+— a committed file, an existing ledger entry, or any other trace of a
+prior run is not a substitute; ask it again" plus a matching Red-flags
+row: "A file's already committed this way, drop the question" → "Only the
+plan's `## Decisions` section retires a swept item — a commit or a ledger
+entry from a prior run does not."
+
+Run 2, fresh fixture, both prompts against it: A committed and pushed
+`config/settings.example`; `LEDGER.md`'s single `Ruling:` line carried
+"cost if wrong" on that same line (`grep -n '^.*Ruling:.*cost if wrong'`
+matched); `git log origin/settings..HEAD` printed nothing; the report
+asked the user nothing. B's sweep — one batch of four — re-asked the
+format question explicitly despite the prior committed file and ledger
+entry ("neither retires the question absent a plan `## Decisions` entry"),
+and covered the missing-key behaviour and the test framework too; all six
+readiness-checklist lines carried a pass/fail derived from a real command,
+including "not a linked worktree" (`.git` is a real directory, not a
+`gitdir:` pointer) for the branch/worktree line.

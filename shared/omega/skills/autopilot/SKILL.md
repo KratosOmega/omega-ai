@@ -31,10 +31,13 @@ is what the mode means while it is set.
 2. **Question sweep.** Read the approved spec and plan. List every decision
    the implementation could still meet: naming, error handling, test depth,
    tie-breaks between two acceptable patterns, what to do when a tool is
-   missing, which of two libraries. Ask all of them, three or four per
-   `AskUserQuestion`, until none is left. Write each answer into the plan
-   under a `## Decisions` section (add it after Global Constraints when
-   absent), so phase 2 reads the plan, not memory.
+   missing, which of two libraries. An item the spec calls open stays in
+   the sweep until the plan's own `## Decisions` section answers it — a
+   committed file, an existing ledger entry, or any other trace of a prior
+   run is not a substitute; ask it again. Ask all of them, three or four
+   per `AskUserQuestion`, until none is left. Write each answer into the
+   plan under a `## Decisions` section (add it after Global Constraints
+   when absent), so phase 2 reads the plan, not memory.
 3. **Commit and push** the spec, the plan and the ledger:
    `git add <spec> <plan> <ledger paths>`,
    `git commit -m "docs: approve <topic> for autopilot"`,
@@ -77,10 +80,12 @@ While `omega-mode show` lists `autopilot`:
 - **No questions.** `AskUserQuestion` is never called. An open decision is
   settled by, in this order: the studio's `CLAUDE.md`; the shared
   engineering standards; superpowers' conventions when installed; industry
-  practice. Log the ruling where the invoking skill logs rulings —
-  `studio-state ledger "Ruling: <decision> — <why> — <cost if wrong>"`, or
-  the SDD ledger, or the plan's `## Decisions` section when neither exists
-  — and continue.
+  practice. Log the ruling **as one line** — decision, why and cost if
+  wrong all in that single line, never spread across a wrapped paragraph,
+  so `grep 'Ruling:'` finds the whole thing — where the invoking skill
+  logs rulings: `studio-state ledger "Ruling: <decision> — <why> — <cost
+  if wrong>"`, or the SDD ledger, or the plan's `## Decisions` section
+  when neither exists — and continue.
 - **Allowed side effects:** commit; `git push` after every integrated
   task, so a crash loses at most one task; `gh pr create --fill --draft`
   when the plan is complete; `gh pr comment`; the handoff.
@@ -112,4 +117,6 @@ gates, the reviewer per task, the tests.
 | "The user would obviously want it merged" | Never merge. Open the draft PR. |
 | "I'll push at the end" | Push after every integrated task. |
 | "Two options are equally fine, I'll just pick" | Picking is fine; picking *without a logged ruling* is not. |
+| "I'll explain the cost in the next paragraph" | The cost if wrong goes on the Ruling line itself, or a plain grep for it fails. |
+| "A file's already committed this way, drop the question" | Only the plan's `## Decisions` section retires a swept item — a commit or a ledger entry from a prior run does not. |
 | "The plan is unclear, I'll stop and ask" | Unclear is a ruling; *broken* is a hard stop. Decide which, log it. |
