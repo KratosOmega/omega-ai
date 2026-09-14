@@ -160,6 +160,18 @@ test_plan_skill_contract() {
   assert_not_contains "$S/plan/SKILL.md" "a GUT test named" "plan does not hard-code GUT"
 }
 
+# Behaviour the review fixed, pinned as a text contract on the brainstorm
+# stage skill.
+test_brainstorm_skill_contract() {
+  S="$REPO_ROOT/studios/game-dev/skills"
+  assert_contains "$S/brainstorm/SKILL.md" "## Tuning knobs" "brainstorm's spec template exposes tuning knobs"
+  assert_contains "$S/brainstorm/SKILL.md" "## Milestone gate" "brainstorm's spec template carries the gate"
+  assert_contains "$S/brainstorm/SKILL.md" "game-dev:game-designer" "brainstorm dispatches the game designer"
+  assert_not_contains "$S/brainstorm/SKILL.md" "godot-brainstorming" "brainstorm does not hand a subagent an interactive skill"
+  assert_contains "$S/brainstorm/SKILL.md" "docs(specs): approve" "brainstorm commits at the approval gate"
+}
+
 run_tests test_plugin_manifests test_skill_frontmatter test_agent_frontmatter \
   test_external_references_declared test_required_plugins_enabled test_bin_syntax \
-  test_role_agents_exist test_stage_skill_contracts test_plan_skill_contract
+  test_role_agents_exist test_stage_skill_contracts test_plan_skill_contract \
+  test_brainstorm_skill_contract
