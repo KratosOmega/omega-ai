@@ -212,9 +212,10 @@ shared/omega/                    the omega global plugin, loaded by every shim
 ## Docs
 
 `docs/game-dev/` holds the game studio's design spec, implementation plans,
-approval artifacts and progress log; `docs/omega/` holds the same for the
-global plugin, plus `pressure/` — the scenarios each skill was tested
-against. `docs/superpowers/` holds the earlier profiles installer design.
+approval artifacts and progress log; `docs/omega/` holds the global
+plugin's design spec, implementation plans and progress log, plus
+`pressure/` — the scenarios each skill was tested against.
+`docs/superpowers/` holds the earlier profiles installer design.
 
 ## Tests
 

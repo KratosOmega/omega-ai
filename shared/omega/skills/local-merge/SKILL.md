@@ -73,14 +73,15 @@ Ask once, showing the green result and the strategy. On yes:
 gh pr merge <n> --admin --<strategy> --delete-branch
 ```
 
-When `omega-mode show` lists `autopilot`, skip this step: the PR stays
-open, the CI result goes into `gh pr comment <n> --body "<result>"`, and
-the morning report says so.
-
-Then `git fetch origin` and verify the merge landed:
+After a merge, `git fetch origin` and verify it landed:
 `git log --oneline -1 origin/<base>` names the merge or squash commit.
 Hand back to the invoking skill's own cleanup — worktree removal, its
 `stage` write, its progress update.
+
+When `omega-mode show` lists `autopilot`, skip this step: the PR stays
+open, the CI result goes into `gh pr comment <n> --body "<result>"`, and
+the morning report says so. Nothing merged, nothing to verify — the
+procedure ends here.
 
 ## What this changes, and what it never changes
 

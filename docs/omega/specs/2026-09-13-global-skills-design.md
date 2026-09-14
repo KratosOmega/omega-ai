@@ -275,7 +275,10 @@ is known: `prompt-submit.sh` calls it rather than editing the file itself.
   command to the hook as an envelope, not the literal text:
   `<command-name>/omega:parallel</command-name><command-args>3</command-args>`.
   The hook recognises `/omega:parallel [N|off]`, `/omega:local-merge [off]`,
-  `/omega:autopilot [off]` and `/omega:integration start <slug>` only —
+  `/omega:autopilot off` (a bare `/omega:autopilot` sets nothing — the
+  skill sets the mode at the end of phase 1, so an unfinished question
+  sweep never reads as unattended) and `/omega:integration start <slug>`
+  only —
   `finish` is handled by the skill, which clears the mode only after every
   story row is merged, and a refused finish keeps the mode — and calls
   `omega-mode set` or `clear` accordingly, so a typed command changes the
@@ -625,8 +628,10 @@ studio scope: omega has no `requires.txt` or `settings.json`.
   days is pruned on SessionStart; `session-end.sh` deletes the session file.
 - `prompt-submit.sh` fed the envelope for `/omega:parallel 3` writes
   `parallel max=3`; `/omega:parallel off` clears it; `/omega:integration start
-  ui-rework` writes `integration slug=ui-rework`; a foreign command envelope
-  changes nothing; a `<scheduled-task>` prompt changes no mode.
+  ui-rework` writes `integration slug=ui-rework`; a bare `/omega:autopilot`
+  writes nothing and `/omega:autopilot off` clears the mode; a foreign
+  command envelope changes nothing; a `<scheduled-task>` prompt changes no
+  mode.
 - `.claude-plugin/marketplace.json` is valid JSON, names `omega`, and its
   `source` resolves to `shared/omega`.
 - Text contracts, one block per skill: `handoff` mentions `wip:`,

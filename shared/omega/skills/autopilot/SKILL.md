@@ -23,6 +23,10 @@ is what the mode means while it is set.
 
 ## Phase 1 — pre-flight, interactive
 
+Phase 1 runs with no `autopilot` mode: `omega-mode show` must not list
+it; when it does (a previous run's leftover), `omega-mode clear autopilot`
+first.
+
 1. **Design and plan as the studio does.** `/game-dev:brainstorm` then
    `/game-dev:plan` in the game studio; `superpowers:brainstorming` then
    `superpowers:writing-plans` when installed and no studio is present;
@@ -88,7 +92,9 @@ While `omega-mode show` lists `autopilot`:
   when neither exists — and continue.
 - **Allowed side effects:** commit; `git push` after every integrated
   task, so a crash loses at most one task; `gh pr create --fill --draft`
-  when the plan is complete; `gh pr comment`; the handoff.
+  when the plan is complete — base per `omega:local-merge` §3 (the
+  integration branch when an `integration` mode is set, else `main`);
+  `gh pr comment`; the handoff.
 - **Forbidden:** never merge — with `local-merge` set, its merge step is
   skipped and reported; never force-push; never delete a remote branch; no
   destructive or security-sensitive operation; no reading or writing of
@@ -120,3 +126,4 @@ gates, the reviewer per task, the tests.
 | "I'll explain the cost in the next paragraph" | The cost if wrong goes on the Ruling line itself, or a plain grep for it fails. |
 | "A file's already committed this way, drop the question" | Only the plan's `## Decisions` section retires a swept item — a commit or a ledger entry from a prior run does not. |
 | "The plan is unclear, I'll stop and ask" | Unclear is a ruling; *broken* is a hard stop. Decide which, log it. |
+| The hook block already says `autopilot` while questions are still open | Clear it; the mode is set only when the checklist passes. |

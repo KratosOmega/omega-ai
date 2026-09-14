@@ -16,8 +16,10 @@ the with-skill result — in `pressure/`.
 
 ### 2026-09-13 — Plan 2 (Skills) delivered
 
-- Five skills replace the stubs, each opened by `omega-mode set` (the mode
-  skills) and carrying the precedence contract.
+- Five skills replace the stubs, each opened by `omega-mode` (`parallel`
+  and `local-merge` set their mode first, `integration` reads it,
+  `autopilot` sets it when phase 1's checklist passes) and carrying the
+  precedence contract.
 - Each skill was run against a throwaway repository without the skill
   (baseline), then with it; results in `pressure/<skill>.md`.
 - Text contracts: `tests/omega_contracts/<skill>_contract.sh`, run by

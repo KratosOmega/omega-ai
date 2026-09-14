@@ -265,8 +265,16 @@ test_prompt_submit() {
   hook prompt-submit.sh '{"session_id":"p1","hook_event_name":"UserPromptSubmit","prompt":"<command-name>/omega:parallel</command-name><command-args>off</command-args>"}'
   assert_not_contains "$CFG/omega/modes/p1" "^parallel" "/omega:parallel off clears parallel"
 
-  hook prompt-submit.sh '{"session_id":"p1","hook_event_name":"UserPromptSubmit","prompt":"<command-message>autopilot</command-message>\n<command-name>/omega:autopilot</command-name>"}'
-  assert_contains "$CFG/omega/modes/p1" "^autopilot$" "an envelope without command-args sets the bare mode"
+  mode --session p1 clear local-merge
+  hook prompt-submit.sh '{"session_id":"p1","hook_event_name":"UserPromptSubmit","prompt":"<command-message>local-merge</command-message>\n<command-name>/omega:local-merge</command-name>"}'
+  assert_contains "$CFG/omega/modes/p1" "^local-merge$" "an envelope without command-args sets the bare mode"
+
+  # A typed /omega:autopilot arms nothing; the skill sets the mode after
+  # pre-flight. Session p3 has no file, so its absence is the proof.
+  hook prompt-submit.sh '{"session_id":"p3","hook_event_name":"UserPromptSubmit","prompt":"<command-message>autopilot</command-message>\n<command-name>/omega:autopilot</command-name>"}'
+  assert_missing "$CFG/omega/modes/p3" "a typed /omega:autopilot arms nothing; the skill sets the mode after pre-flight"
+  hook prompt-submit.sh '{"session_id":"p3","hook_event_name":"UserPromptSubmit","prompt":"<command-name>/omega:autopilot</command-name><command-args></command-args>"}'
+  assert_missing "$CFG/omega/modes/p3" "/omega:autopilot with empty command-args arms nothing either"
 
   hook prompt-submit.sh '{"session_id":"p1","hook_event_name":"UserPromptSubmit","prompt":"<command-name>/omega:parallel</command-name><command-args>  </command-args>"}'
   assert_contains "$CFG/omega/modes/p1" "^parallel$" "whitespace-only args set the bare mode"
@@ -303,7 +311,7 @@ test_prompt_submit() {
   # prompt that merely mentions a tag (pasted test fixture text) must not be
   # read as one. Session p2, fresh, so these do not depend on p1's history.
   mode --session p2 clear --all
-  hook prompt-submit.sh '{"session_id":"p2","hook_event_name":"UserPromptSubmit","prompt":"this test fails: <command-name>/omega:autopilot</command-name>"}'
+  hook prompt-submit.sh '{"session_id":"p2","hook_event_name":"UserPromptSubmit","prompt":"this test fails: <command-name>/omega:local-merge</command-name>"}'
   assert_eq "" "$(mode --session p2 show)" "pasted text with the envelope not at the start sets nothing"
 
   hook prompt-submit.sh '{"session_id":"p2","hook_event_name":"UserPromptSubmit","prompt":"   <command-message>parallel</command-message>   <command-name>/omega:parallel</command-name>"}'
@@ -360,13 +368,19 @@ test_session_end() {
 # tests/omega_contracts/, each defining test_<skill>_contract. One file per
 # skill so five skill tasks can add theirs without editing the same file.
 test_skill_contracts() {
+  ran=0
   for c in "$REPO_ROOT"/tests/omega_contracts/*_contract.sh; do
     [ -f "$c" ] || continue
     . "$c"
     # local-merge_contract.sh defines test_local_merge_contract: a POSIX
     # function name has no hyphen (dash rejects one).
-    "test_$(basename "$c" _contract.sh | tr - _)_contract"
+    fn="test_$(basename "$c" _contract.sh | tr - _)_contract"
+    command -v "$fn" >/dev/null 2>&1 || { _fail "$c defines $fn"; continue; }
+    "$fn"
+    ran=$((ran + 1))
   done
+  # Bump when a skill is added.
+  assert_eq 5 "$ran" "five skill contracts ran"
 }
 
 run_tests test_plugin_files test_skill_stubs test_marketplace \

@@ -9,8 +9,12 @@
 # The hook turns the mode commands into omega-mode calls, so a typed command
 # changes the mode before the model reads the skill, and then — only when a
 # mode is active — prints the "Omega modes:" block as the turn's additional
-# context. Any other prompt changes nothing; a <scheduled-task> prompt never
-# changes a mode but still sees the block; with no mode it prints nothing.
+# context. /omega:autopilot is the exception: only `off` acts here. The
+# skill sets the mode itself at the end of its phase 1, once the readiness
+# checklist passes; a typed command must not make the question sweep read
+# as unattended. Any other prompt changes nothing; a <scheduled-task>
+# prompt never changes a mode but still sees the block; with no mode it
+# prints nothing.
 #
 # Exit 0 always. Self-contained on purpose: in copy mode the plugin root has
 # no lib/.
@@ -69,10 +73,16 @@ if [ -n "$skill" ]; then
         *[!0-9]*|0*) ;;
         *) sh "$MODE" --session "$sid" set parallel "max=$args" >/dev/null ;;
       esac ;;
-    local-merge|autopilot)
+    local-merge)
       case "$args" in
-        off) sh "$MODE" --session "$sid" clear "$skill" >/dev/null ;;
-        '') sh "$MODE" --session "$sid" set "$skill" >/dev/null ;;
+        off) sh "$MODE" --session "$sid" clear local-merge >/dev/null ;;
+        '') sh "$MODE" --session "$sid" set local-merge >/dev/null ;;
+      esac ;;
+    autopilot)
+      # `off` only: a bare /omega:autopilot arms nothing. The skill sets the
+      # mode after its pre-flight, so open questions never run unattended.
+      case "$args" in
+        off) sh "$MODE" --session "$sid" clear autopilot >/dev/null ;;
       esac ;;
     integration)
       # Only `start <slug>` sets the mode here. `finish` clears it from inside
