@@ -112,10 +112,17 @@ test_install_copy_mode() {
   assert_contains "$TMP/bin-cp/claude-gd" "OMEGA_STUDIO_ROOT=\"$TMP/cp/studio\"" \
     "copy-mode shim points the studio root at the snapshot"
   assert_contains "$TMP/cp/.omega-ai-manifest" "$TMP/cp/studio" "manifest records the snapshot"
+  assert_file "$TMP/cp/omega/.claude-plugin/plugin.json" "copy mode snapshots the global plugin under the target"
+  assert_file "$TMP/cp/omega/bin/omega-mode" "the global snapshot carries omega-mode"
+  assert_file "$TMP/cp/omega/hooks/hooks.json" "the global snapshot carries the hooks"
+  assert_contains "$TMP/bin-cp/claude-gd" "OMEGA_GLOBAL_ROOT=\"$TMP/cp/omega\"" \
+    "copy-mode shim points the global root at the snapshot"
+  assert_contains "$TMP/cp/.omega-ai-manifest" "$TMP/cp/omega" "manifest records the global snapshot"
   assert_eq "# mode=copy" "$(sed -n '1p' "$TMP/cp/.omega-ai-manifest")" "copy mode is recorded in the manifest"
   # The snapshot is a manifest entry, so uninstall removes it with the rest.
   sh "$REPO_ROOT/uninstall.sh" game-dev --target "$TMP/cp" --shim-dir "$TMP/bin-cp" >/dev/null
   assert_missing "$TMP/cp/studio" "uninstall removes the copy-mode snapshot"
+  assert_missing "$TMP/cp/omega" "uninstall removes the global plugin snapshot"
 }
 
 # A reinstall with a different --shim-dir must remove the shim the previous
@@ -195,14 +202,19 @@ test_shim() {
   sh "$REPO_ROOT/install.sh" game-dev --target "$TMP/gd" --shim-dir "$TMP/bin" >/dev/null 2>&1
   assert_file "$TMP/bin/claude-gd" "writes the shim"
   assert_contains "$TMP/bin/claude-gd" "CLAUDE_CONFIG_DIR=\"$TMP/gd\"" "shim sets CLAUDE_CONFIG_DIR to the target"
-  assert_contains "$TMP/bin/claude-gd" "PATH=\"$TMP/gd/bin:\$PATH\"" "shim prefixes PATH with the target bin"
+  assert_contains "$TMP/bin/claude-gd" "PATH=\"$TMP/gd/bin:\$OMEGA_GLOBAL_ROOT/bin:\$PATH\"" \
+    "shim prefixes PATH with the target bin and the global plugin's bin"
   assert_contains "$TMP/bin/claude-gd" "OMEGA_STUDIO_ROOT=\"$REPO_ROOT/studios/game-dev\"" \
     "shim exports the studio root"
-  assert_contains "$TMP/bin/claude-gd" "exec claude --plugin-dir \"\$OMEGA_STUDIO_ROOT\" \"\$@\"" \
-    "shim loads the studio as a plugin and passes arguments through"
+  assert_contains "$TMP/bin/claude-gd" "OMEGA_GLOBAL_ROOT=\"$REPO_ROOT/shared/omega\"" \
+    "shim exports the global plugin root"
+  assert_contains "$TMP/bin/claude-gd" "export OMEGA_STUDIO_ROOT OMEGA_GLOBAL_ROOT" "shim exports both roots"
+  assert_contains "$TMP/bin/claude-gd" "exec claude --plugin-dir \"\$OMEGA_STUDIO_ROOT\" --plugin-dir \"\$OMEGA_GLOBAL_ROOT\" \"\$@\"" \
+    "shim loads the studio and the global plugin and passes arguments through"
   TESTS_RUN=$((TESTS_RUN + 1))
   if [ -x "$TMP/bin/claude-gd" ]; then _pass "shim is executable"; else _fail "shim is executable"; fi
   assert_contains "$TMP/gd/.omega-ai-manifest" "bin/claude-gd" "manifest records the shim"
+  assert_missing "$TMP/gd/omega" "symlink mode puts nothing of the global plugin under the target"
 }
 
 test_doctor() {
@@ -211,6 +223,16 @@ test_doctor() {
   sh "$REPO_ROOT/doctor.sh" general --target "$TMP/gen" > "$TMP/doctor.out" 2>&1
   assert_contains "$TMP/doctor.out" "$TMP/gen" "doctor reports the resolved config root"
   assert_contains "$TMP/doctor.out" "leakage: none" "doctor finds no leak into ~/.claude"
+  assert_contains "$TMP/doctor.out" "global plugin: omega 0.1.0   skills 5  hooks present" \
+    "doctor reports the global plugin as the shim loads it"
+  assert_contains "$TMP/doctor.out" "shim:         ok" "doctor accepts the two-plugin shim"
+  # A shim from before the global plugin: the doctor names the gap and fails.
+  sed 's/ --plugin-dir "\$OMEGA_GLOBAL_ROOT"//' "$TMP/bin/claude-gen" > "$TMP/bin/claude-gen.old"
+  mv "$TMP/bin/claude-gen.old" "$TMP/bin/claude-gen"
+  assert_status 1 "doctor fails on a shim without the global plugin" -- \
+    sh "$REPO_ROOT/doctor.sh" general --target "$TMP/gen"
+  sh "$REPO_ROOT/doctor.sh" general --target "$TMP/gen" > "$TMP/doctor2.out" 2>&1
+  assert_contains "$TMP/doctor2.out" "shim:         stale (no global plugin)" "doctor names the missing global plugin"
   assert_status 1 "doctor fails on a missing root" -- \
     sh "$REPO_ROOT/doctor.sh" general --target "$TMP/absent"
 }
@@ -923,7 +945,23 @@ test_install_reports_doctor_result_last() {
   assert_contains "$TMP/last2.out" "doctor found problems" "the failure is stated after the doctor report"
 }
 
+# The pre-flight check runs before the previous install is removed: a
+# checkout without the global plugin must fail without touching the target.
+test_install_requires_global_plugin() {
+  sh "$REPO_ROOT/install.sh" general --target "$TMP/req" --shim-dir "$TMP/bin-req" >/dev/null 2>&1
+  assert_file "$TMP/req/CLAUDE.md" "baseline install succeeds"
+  cp -R "$REPO_ROOT" "$TMP/repo-no-omega"
+  rm -rf "$TMP/repo-no-omega/shared/omega"
+  status=0
+  ( sh "$TMP/repo-no-omega/install.sh" general --target "$TMP/req" --shim-dir "$TMP/bin-req" >/dev/null 2>"$TMP/req.err" ) || status=$?
+  assert_eq "1" "$status" "install refuses a checkout without shared/omega"
+  assert_contains "$TMP/req.err" "shared/omega" "the refusal names the global plugin"
+  assert_file "$TMP/req/CLAUDE.md" "the previous install is left in place"
+  assert_file "$TMP/bin-req/claude-gen" "the previous shim is left in place"
+}
+
 run_tests test_studio_contract test_install_unknown_studio test_install_guard \
+  test_install_requires_global_plugin \
   test_install_guards_shim_dir test_install_refuses_traversal_target \
   test_install_refuses_traversal_shim_dir test_install_refuses_symlinked_target \
   test_install_dry_run test_install_content \
