@@ -78,6 +78,44 @@ resolved to the project's main checkout from any worktree — and
 feature. Both are written only through `studio-state`; a hook blocks direct
 edits.
 
+## Global skills
+
+`shared/omega/` is a second plugin every studio shim loads — the shim passes
+`--plugin-dir` twice, the studio and then `shared/omega` — so `claude-gd`
+and `claude-gen` both carry these five skills beside their own:
+
+| Command | Does |
+|---|---|
+| `/omega:handoff` | Finds a safe stopping point, commits and pushes everything, writes `docs/handoffs/<date>-<branch>.md`, and prints the prompt that resumes the work in a new session |
+| `/omega:parallel [N]` | Runs a plan's independent tasks concurrently — one worktree and one reviewer per task, cherry-picked back — capped at N when given; `off` clears it |
+| `/omega:local-merge` | Skips GitHub checks: runs the project's local CI and merges through `gh pr merge --admin` on exit 0, with the strategy the project uses; `off` clears it |
+| `/omega:integration start\|add\|status\|finish` | An `integration/<slug>` branch several stories merge into, tracked in `docs/integrations/<slug>.md`, landed on `main` as one |
+| `/omega:autopilot` | Asks every open decision up front, then runs unattended: rulings logged, a push after every task, a draft PR, never a merge, and a handoff at the end; `off` clears it |
+
+They are overlays. Each changes how work is scheduled, saved, merged or
+stopped — never what a studio does or in which order — and composes with
+whatever skill is running. `parallel`, `local-merge`, `integration` and
+`autopilot` set a **mode**: a line in
+`${CLAUDE_CONFIG_DIR:-~/.claude}/omega/modes/<session_id>`, written by
+`shared/omega/bin/omega-mode`. While any mode is set, a hook prints
+`Omega modes: parallel max=3 · local-merge` at the top of every turn, so a
+mode survives compaction; the file is deleted when the session ends, and
+`/omega:handoff` names the modes to re-run in its resume prompt.
+
+For plain `claude`, install the plugin yourself — the installer never writes
+to `~/.claude`:
+
+```sh
+claude plugin marketplace add /path/to/omega-ai
+claude plugin install omega@omega-ai        # then `claude plugin update omega` after a pull
+```
+
+Or load it live while editing the skills:
+
+```sh
+alias claude-omega='claude --plugin-dir /path/to/omega-ai/shared/omega'
+```
+
 ## Check
 
 ```sh
@@ -174,9 +212,9 @@ shared/omega/                    the omega global plugin, loaded by every shim
 ## Docs
 
 `docs/game-dev/` holds the game studio's design spec, implementation plans,
-approval artifacts and progress log. `docs/omega/` holds the global plugin's
-design spec, implementation plans and progress log. `docs/superpowers/` holds
-the earlier profiles installer design.
+approval artifacts and progress log; `docs/omega/` holds the same for the
+global plugin, plus `pressure/` — the scenarios each skill was tested
+against. `docs/superpowers/` holds the earlier profiles installer design.
 
 ## Tests
 
