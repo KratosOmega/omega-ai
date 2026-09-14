@@ -106,9 +106,12 @@ user in the next batch.
 Save to `docs/game-dev/specs/YYYY-MM-DD-<topic>.md` in the game project
 (create the directory if needed). Use these top-level headings, in this
 order, and no others — except that the **Design** section may nest
-`game-dev:game-design-doc`'s own headings (Pitch, Core loop, Player verbs,
-Progression, Failure, Scope) when folding in the designer's document rather
-than dropping them:
+`game-dev:game-design-doc`'s own headings one level down (`### Pitch`,
+`### Core loop`, `### Player verbs`, `### Progression`, `### Failure`,
+`### Scope`) when folding in the designer's document, rather than dropping
+them. The top-level `## Player verbs` stays the delta for this feature and
+is what the plan binds to; a nested `### Player verbs` is the designer's
+full verb list, for reference only.
 
 ```markdown
 # <Feature> — Spec
@@ -208,7 +211,8 @@ Run `studio-state set spec <spec path>` and
 > section to change.
 
 Revise on request and re-render. On approval: change the spec's `Status:` to
-`Approved` and commit it — `git add <spec path> && git commit -m
-"docs(specs): approve <topic>"` — then run `studio-state ledger "spec
-approved <spec path>"`, and tell the user the next command is
-`/game-dev:plan`. Do not invoke it yourself.
+`Approved`, run `studio-state ledger "spec approved <spec path>"`, commit the
+spec and the state that must travel with it —
+`git add <spec path> .studio/ledger .studio/config.json && git commit -m "docs(specs): approve <topic>"` —
+and tell the user the next command is `/game-dev:plan`. Do not invoke it
+yourself.
