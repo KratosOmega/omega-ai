@@ -291,9 +291,13 @@ is known: `prompt-submit.sh` calls it rather than editing the file itself.
 
 When the model invokes a mode skill through the Skill tool, the hook never
 saw a command (a resume prompt that says "run /omega:parallel 3" is typed by
-the user, so the hook does see that one). Every mode skill therefore begins
-with `omega-mode set <mode> …` (or `clear`), so both paths converge on the
-file.
+the user, so the hook does see that one). Every mode skill therefore opens
+by running `omega-mode`, so both paths converge on the file: `parallel` and
+`local-merge` begin with `omega-mode set <mode> …` (or `clear`);
+`integration` begins with `omega-mode show` and sets the mode in `start`
+(recovering the slug from the checked-out branch or `status <slug>` when
+no line is set); `autopilot` clears a leftover mode first and sets it only
+when phase 1's readiness checklist passes.
 
 The rule lines are short and fixed, one per mode; the block prints only the
 lines of the modes that are set:
