@@ -89,13 +89,13 @@ commits not yet on the integration branch.
 5. Land it through `omega:local-merge` §4 and §5, confirmation included.
    When `omega-mode show` lists `autopilot`, the PR stays open and `finish`
    stops here, saying so.
-6. Delete the integration branch where it still exists —
-   `local-merge`'s merge may already have removed it with
+6. `git switch main`. Delete the integration branch where it still
+   exists — `local-merge`'s merge may already have removed it with
    `--delete-branch`: `git ls-remote --exit-code --heads origin
    integration/<slug> >/dev/null 2>&1 && git push origin --delete
    integration/<slug>`; `git show-ref --verify --quiet
    refs/heads/integration/<slug> && git branch -D integration/<slug>`.
-   Then `git switch main` and `omega-mode clear integration`.
+   Then `omega-mode clear integration`.
 
 ## What this changes, and what it never changes
 
