@@ -233,6 +233,8 @@ shim_owned() {
 # so a crafted "<target>/memory/sub/" would delete through a link into the
 # repository while canon_path still judges it in scope. The installer never
 # records a trailing slash.
+#
+# Under DRY_RUN=1 every removal is printed, not performed.
 manifest_remove() {
   _m="$1"; _scope_root="$2"; _shim="$3"
   [ -f "$_m" ] || return 0
@@ -254,7 +256,7 @@ manifest_remove() {
       warn "skipping manifest entry outside $_scope_root: $_entry"
       continue
     fi
-    rm -rf "$_entry"
+    run rm -rf "$_entry"
   done < "$_m"
-  rm -f "$_m"
+  run rm -f "$_m"
 }

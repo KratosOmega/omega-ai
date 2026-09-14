@@ -110,13 +110,16 @@ if [ "$DRY_RUN" != "1" ]; then
   # settings.json is the one installed file Claude Code mutates in-session,
   # and the previous manifest records it — so a differing copy is preserved
   # before the old entries are removed, never silently discarded.
-  if [ -f "$STUDIO_DIR/settings.json" ] && [ -f "$TARGET/settings.json" ] \
-    && ! cmp -s "$STUDIO_DIR/settings.json" "$TARGET/settings.json"; then
+  if [ -f "$TARGET/settings.json" ] && ! cmp -s "$STUDIO_DIR/settings.json" "$TARGET/settings.json"; then
     backup="$TARGET/settings.json.bak-$(date +%Y%m%d%H%M%S)"
     cp "$TARGET/settings.json" "$backup"
     warn "existing settings.json differed; backed up to $backup"
   fi
-  manifest_remove "$MANIFEST" "$TARGET" "$SHIM_PATH"
+fi
+# Remove what the previous manifest recorded before writing anything else
+# (printed, not performed, in a dry run).
+manifest_remove "$MANIFEST" "$TARGET" "$SHIM_PATH"
+if [ "$DRY_RUN" != "1" ]; then
   # The pre-plugin layout linked skills, agents, commands and hooks into the
   # root; removing those entries leaves their directories behind, empty.
   # rmdir takes only an empty directory, so one that still holds user files
@@ -214,12 +217,16 @@ else
   log "mcp:      none registered (arrives with the engine toolkit)"
 fi
 
-log ""
-log "Installed. Launch with: $SHIM_NAME"
-
 if [ "$DRY_RUN" = "1" ]; then
+  log ""
   log "(dry run complete)"
 else
   log ""
-  sh "$REPO_ROOT/doctor.sh" "$STUDIO" --target "$TARGET"
+  if sh "$REPO_ROOT/doctor.sh" "$STUDIO" --target "$TARGET"; then
+    log ""
+    log "Installed. Launch with: $SHIM_NAME"
+  else
+    warn "installed, but doctor found problems (see above) — fix them before launching $SHIM_NAME"
+    exit 1
+  fi
 fi

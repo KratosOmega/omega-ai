@@ -879,6 +879,34 @@ test_doctor_inspects_copy_mode_snapshot() {
   assert_contains "$TMP/dcp2.out" "no plugin manifest at $TMP/dcp/studio" "doctor names the missing snapshot manifest"
 }
 
+# "--dry-run prints every action" was false on a reinstall: the removal of
+# the previous install's entries was skipped silently.
+test_install_dry_run_previews_removal() {
+  sh "$REPO_ROOT/install.sh" general --target "$TMP/dryre" --shim-dir "$TMP/bin-dryre" >/dev/null 2>&1
+  before="$(wc -l < "$TMP/dryre/.omega-ai-manifest" | tr -d ' ')"
+  sh "$REPO_ROOT/install.sh" general --target "$TMP/dryre" --shim-dir "$TMP/bin-dryre" --dry-run > "$TMP/dryre.out" 2>&1
+  assert_contains "$TMP/dryre.out" "DRY  rm -rf $TMP/dryre/CLAUDE.md" "dry run previews the removal of a recorded entry"
+  assert_file "$TMP/dryre/CLAUDE.md" "dry run removes nothing"
+  assert_eq "$before" "$(wc -l < "$TMP/dryre/.omega-ai-manifest" | tr -d ' ')" "dry run leaves the manifest alone"
+  assert_file "$TMP/bin-dryre/claude-gen" "dry run keeps the shim"
+}
+
+# "Installed." used to print before the doctor ran, then the doctor failed.
+test_install_reports_doctor_result_last() {
+  sh "$REPO_ROOT/install.sh" general --target "$TMP/last" --shim-dir "$TMP/bin-last" > "$TMP/last.out" 2>&1
+  assert_eq "Installed. Launch with: claude-gen" "$(tail -n 1 "$TMP/last.out")" "a clean install ends with the launch line"
+  SB="$TMP/sandbox-last"
+  mkdir -p "$SB"
+  cp -R "$REPO_ROOT/lib" "$REPO_ROOT/shared" "$REPO_ROOT/studios" "$SB/"
+  cp "$REPO_ROOT/install.sh" "$REPO_ROOT/doctor.sh" "$SB/"
+  printf '{ "name": "wrong", "version": "0.1.0", "description": "x" }\n' > "$SB/studios/general/.claude-plugin/plugin.json"
+  status=0
+  sh "$SB/install.sh" general --target "$TMP/last2" --shim-dir "$TMP/bin-last2" > "$TMP/last2.out" 2>&1 || status=$?
+  assert_eq "1" "$status" "an install whose doctor fails exits 1"
+  assert_not_contains "$TMP/last2.out" "Installed. Launch with" "no launch line is printed when the doctor fails"
+  assert_contains "$TMP/last2.out" "doctor found problems" "the failure is stated after the doctor report"
+}
+
 run_tests test_studio_contract test_install_unknown_studio test_install_guard \
   test_install_guards_shim_dir test_install_refuses_traversal_target \
   test_install_refuses_traversal_shim_dir test_install_refuses_symlinked_target \
@@ -896,4 +924,5 @@ run_tests test_studio_contract test_install_unknown_studio test_install_guard \
   test_doctor_fails_on_missing_files test_doctor_detects_leak_through_symlinked_dot_claude test_doctor_matches_plugin_ids_literally test_doctor_flags_stale_layout \
   test_reinstall_keeps_previous_install_when_studio_is_broken test_install_path_with_space \
   test_uninstall_keeps_shim_of_another_root \
-  test_doctor_shim_identity test_doctor_inspects_copy_mode_snapshot
+  test_doctor_shim_identity test_doctor_inspects_copy_mode_snapshot \
+  test_install_dry_run_previews_removal test_install_reports_doctor_result_last
