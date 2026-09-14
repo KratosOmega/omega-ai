@@ -108,7 +108,7 @@ Then run `studio-state set stage plan`, `studio-state set plan <plan path>`,
 
 On approval: change the plan's `Status:` line to `Approved`, commit it so it
 travels into the execution worktree —
-`git add <plan path> .studio/ledger .studio/config.json && git commit -m "docs(plans): approve <topic>"` —
+`git add <plan path> && git commit -m "docs(plans): approve <topic>"` —
 then run `studio-state ledger "plan approved <plan path>"` and tell the user
 the next command is `/game-dev:execute` (subagent-driven by default;
 `--inline` for checkpointed execution in this session). Do not invoke it
