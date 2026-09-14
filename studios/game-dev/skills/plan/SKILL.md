@@ -12,7 +12,9 @@ description: Use when an approved spec exists and needs an implementation plan �
 - `studio-state get spec` names a file that exists, and the ledger has a
   `spec approved` line for it. If not, stop and say the spec must be approved
   first (`/game-dev:brainstorm`). The user may approve it now in one word;
-  then record `studio-state ledger "spec approved <path>"` and continue.
+  then change the spec's `Status:` line to `Approved`, record
+  `studio-state ledger "spec approved <path>"` and continue (the gate in §5
+  commits the spec alongside the plan).
 - Read the spec in full and the project `CLAUDE.md`. The milestone gate and
   its exit criteria come from `docs/game-dev/PROGRESS.md` when the project has
   one, otherwise from the spec's **Milestone gate** section.
@@ -107,9 +109,11 @@ Then run `studio-state set stage plan`, `studio-state set plan <plan path>`,
 > task to change.
 
 On approval: change the plan's `Status:` line to `Approved`, run
-`studio-state ledger "plan approved <plan path>"`, then commit the plan and
-the state that must travel with it into the execution worktree —
-`git add <plan path> .studio/ledger .studio/config.json && git commit -m "docs(plans): approve <topic>"` —
+`studio-state ledger "plan approved <plan path>"`, then commit the plan, the
+spec and the state that must travel with them into the execution worktree —
+`git add <spec path> <plan path> .studio/ledger .studio/config.json && git commit -m "docs(plans): approve <topic>"`
+(a no-op for an already-committed, unchanged spec; it captures the spec
+approved in §0) —
 and tell the user the next command is `/game-dev:execute` (subagent-driven by
 default; `--inline` for checkpointed execution in this session). Do not invoke
 it yourself.

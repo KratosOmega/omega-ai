@@ -25,7 +25,8 @@ Run `studio-state show` from the project root.
 - **Exit 1 (no `.studio/`):** this project has no studio state yet.
   - If `project.godot` exists here, ask with one `AskUserQuestion` whether to
     initialise studio state in this project. On yes, run `studio-state init`
-    and continue with stage `idle`. On no, stop.
+    and continue with stage `idle`. On no, continue to §3 without state;
+    `/game-dev:brainstorm` runs without it and says so.
   - If there is no `project.godot`, say that this is not a Godot project. If a
     `game-dev:scaffold` skill is in your skill list, offer it; otherwise ask
     the user to create the Godot project first and come back.

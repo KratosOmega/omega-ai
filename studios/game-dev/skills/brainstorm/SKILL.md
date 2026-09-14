@@ -212,7 +212,9 @@ Run `studio-state set spec <spec path>` and
 
 Revise on request and re-render. On approval: change the spec's `Status:` to
 `Approved`, run `studio-state ledger "spec approved <spec path>"`, commit the
-spec and the state that must travel with it —
-`git add <spec path> .studio/ledger .studio/config.json && git commit -m "docs(specs): approve <topic>"` —
-and tell the user the next command is `/game-dev:plan`. Do not invoke it
-yourself.
+spec, its artifact (§6) and the state that must travel with them —
+`git add <spec path> docs/game-dev/artifacts/YYYY-MM-DD-<topic>.html .gitignore .studio/ledger .studio/config.json && git commit -m "docs(specs): approve <topic>"` —
+and tell the user the next command is `/game-dev:plan`. Without studio
+state (§0), drop `.gitignore` and the two `.studio/` paths from that
+`git add`; the spec and its artifact still commit. Do not invoke the next
+command yourself.
