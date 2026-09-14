@@ -7,12 +7,15 @@ description: Use when several related stories must land on main together rather 
 
 **Announce at start:** "Using omega:integration <verb>."
 
-Verbs: `start <slug> [goal…]`, `add <branch-or-ticket>`, `status`,
+Verbs: `start <slug> [goal…]`, `add <branch-or-ticket>`, `status [<slug>]`,
 `finish`. No verb: print the four verbs and stop.
 
 Run first: `omega-mode show` — the line `integration slug=<slug>` names
-the current set; `add`, `status` and `finish` need it and refuse without
-it. `start` sets it (its step 6). `omega-mode` is on `PATH` inside a
+the current set; `add`, `status` and `finish` need it. When no
+`integration` line is set, recover the slug from the checked-out
+`integration/<slug>` branch or from `status <slug>`, then run
+`omega-mode set integration slug=<slug>`. Refuse only when neither names
+a set. `start` sets it (its step 6). `omega-mode` is on `PATH` inside a
 studio; the session-start line names its path otherwise.
 
 > This mode changes how work is scheduled, saved, merged or stopped. It never
@@ -25,7 +28,10 @@ studio; the session-start line names its path otherwise.
 
 ## `start <slug> [goal…]`
 
-1. `git fetch origin`.
+1. `git fetch origin`. When `integration/<slug>` already exists (locally
+   or on `origin`: `git ls-remote --exit-code --heads origin
+   integration/<slug>`), skip steps 2–5, `git switch integration/<slug>`
+   (tracking the remote when only it exists), and go to step 6.
 2. `git switch -c integration/<slug> origin/main`.
 3. Write `docs/integrations/<slug>.md`; the goal is the text after the
    slug, or the slug itself when none was given:
@@ -56,8 +62,8 @@ studio; the session-start line names its path otherwise.
 3. Append the row `| <branch> | <branch> | <ticket> | - | planned | - |`.
    A dependency the user named goes into *Depends on* as the other story's
    branch.
-4. On the integration branch: `git commit -m "docs(integration): add <branch>"`
-   and `git push`.
+4. On the integration branch: `git add docs/integrations/<slug>.md`,
+   `git commit -m "docs(integration): add <branch>"` and `git push`.
 
 ## Story flow
 
@@ -69,9 +75,11 @@ the row to `merged` with the PR number, commit
 `docs(integration): <branch> merged (#<n>)` on the integration branch, and
 push.
 
-## `status`
+## `status [<slug>]`
 
-Print the table; `gh pr list --base integration/<slug>`; and, for every row
+The slug is the mode's; with no `integration` line, the argument names
+the set and the mode is set from it, as above. Print the table;
+`gh pr list --base integration/<slug>`; and, for every row
 not `merged`, `git rev-list --count integration/<slug>..<branch>` — the
 commits not yet on the integration branch.
 
@@ -83,19 +91,22 @@ commits not yet on the integration branch.
    `git merge-base --is-ancestor origin/main integration/<slug>` fails,
    `git merge origin/main`, resolve conflicts on the integration branch,
    and run the tests.
-3. Run the local CI procedure — `omega:local-merge` §1 and §2.
+3. Run the local CI procedure — `omega:local-merge` §1 and §2 — the
+   procedure, not the mode: do not run `omega-mode set local-merge`.
 4. `gh pr create --fill --base main --head integration/<slug>` when no PR
    exists for the branch.
-5. Land it through `omega:local-merge` §4 and §5, confirmation included.
+5. Land it through `omega:local-merge` §4 and §5, confirmation included —
+   the procedure, not the mode: do not run `omega-mode set local-merge`.
    When `omega-mode show` lists `autopilot`, the PR stays open and `finish`
    stops here, saying so.
-6. `git switch main`. Delete the integration branch where it still
-   exists — `local-merge`'s merge may already have removed it with
-   `--delete-branch`: `git ls-remote --exit-code --heads origin
-   integration/<slug> >/dev/null 2>&1 && git push origin --delete
-   integration/<slug>`; `git show-ref --verify --quiet
-   refs/heads/integration/<slug> && git branch -D integration/<slug>`.
-   Then `omega-mode clear integration`.
+6. `git switch main 2>/dev/null || git switch --detach origin/main`
+   (`main` is often checked out in another worktree). Delete the
+   integration branch where it still exists — `local-merge`'s merge may
+   already have removed it with `--delete-branch`: `git ls-remote
+   --exit-code --heads origin integration/<slug> >/dev/null 2>&1 && git
+   push origin --delete integration/<slug>`; `git show-ref --verify
+   --quiet refs/heads/integration/<slug> && git branch -D
+   integration/<slug>`. Then `omega-mode clear integration`.
 
 ## What this changes, and what it never changes
 

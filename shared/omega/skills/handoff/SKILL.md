@@ -19,8 +19,8 @@ Dispatch nothing new. If a subagent is still running, ask once with
 - **Wait for the current task to finish** — let the running implementer or
   reviewer complete, and record its result exactly as the invoking skill
   would have (its review, its state write, its ledger line).
-- **Stop now** — stop the agents; whatever is on disk is handed off as
-  in-progress.
+- **Stop now** — stop them with the `TaskStop` tool (one call per running
+  agent); whatever is on disk is handed off as in-progress.
 
 When `omega-mode show` lists `autopilot`, do not ask: the current task
 finishes.
@@ -53,6 +53,10 @@ finishes.
    - tests green and no task half done: a normal message;
    - tests red, or a task half done: `wip: <what was being done>`, with a
      body that lists the failing tests and the unfinished files.
+
+   When `git status --porcelain` prints nothing and `git log
+   origin/<branch>..HEAD` is empty, there is nothing to commit — skip to
+   §4; never use `--allow-empty`.
 4. `git push -u origin <branch>`.
 5. Verify and show: `git status --porcelain` prints nothing;
    `git log origin/<branch>..HEAD` prints nothing.
@@ -92,14 +96,15 @@ Print it last, short enough to paste:
 ```
 Resume <branch> in <worktree path>.
 Read docs/handoffs/<file>.md first.
-Run: /omega:parallel 3, /omega:local-merge, /omega:integration status.
+Run: /omega:parallel 3, /omega:local-merge, /omega:integration status <slug>.
 Optional: /omega:autopilot
 Continue with /game-dev:execute — resume at task 4/6.
 ```
 
 - `Run:` lists every active mode except `autopilot`, with its arguments;
-  an `integration` mode becomes `/omega:integration status` — the branch
-  already exists.
+  an `integration` mode becomes `/omega:integration status <slug>`, the
+  slug from the `integration slug=<slug>` line the inventory (§2) read —
+  the branch already exists.
 - `Optional:` appears only when `autopilot` was active. The resumed session
   runs attended unless the user types it.
 - The last line names the studio command that was running and where it
