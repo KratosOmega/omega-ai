@@ -13,8 +13,9 @@ description: Use when an approved spec exists and needs an implementation plan �
   `spec approved` line for it. If not, stop and say the spec must be approved
   first (`/game-dev:brainstorm`). The user may approve it now in one word;
   then record `studio-state ledger "spec approved <path>"` and continue.
-- Read the spec in full, the project `CLAUDE.md`, and the milestone gate in
-  `docs/game-dev/PROGRESS.md`.
+- Read the spec in full and the project `CLAUDE.md`. The milestone gate and
+  its exit criteria come from `docs/game-dev/PROGRESS.md` when the project has
+  one, otherwise from the spec's **Milestone gate** section.
 
 ## 1. Format
 
@@ -29,13 +30,14 @@ the self-review. Two studio rules override its defaults:
   ```markdown
   ### Task 3: Input action and buffer window
   Role: game-dev:gameplay-programmer
-  Verify: unit
+  Verify: unit+playtest
   Files: src/player/dash_state.gd, tests/unit/test_dash_input.gd
   ```
 
 The plan header's **Spec:** line points at the approved spec, and its
 **Global Constraints** copy the spec's feel targets and acceptance criteria
-verbatim, plus the project's architecture rules from `CLAUDE.md`.
+verbatim, plus the project's architecture rules from `CLAUDE.md`. The header
+also carries a `Status:` line, `Draft (awaiting approval)` until the gate.
 
 ## 2. Roles
 
@@ -56,27 +58,33 @@ verbatim, plus the project's architecture rules from `CLAUDE.md`.
 ## 3. Verify
 
 `Verify:` names how the task's deliverable is checked, and binds the
-implementer:
+implementer. It is one kind or several joined with `+` (`unit+playtest`):
 
-- `unit` — a GUT test named in `Files:` is written first and fails before the
-  implementation exists (`superpowers:test-driven-development` is mandatory).
-  Use it for numbers, state transitions, cooldowns, collisions, signal
-  emission, Resource loading.
+- `unit` — a test named in `Files:` is written first and fails before the
+  implementation exists (`superpowers:test-driven-development` is
+  mandatory). The framework is the project's (`tests` in
+  `.studio/config.json`; default GUT); test files go where
+  `godot-prompter:godot-testing` says the runner finds them. Use it for
+  numbers, state transitions, cooldowns, collisions, signal emission,
+  Resource loading.
 - `playtest` — the task states, in its own text, the playtest item it will
   produce: the action, the expected perceptual result, and what a failure
-  looks like. No unit test is required. Use it for snappiness, readability,
-  timing, camera behaviour.
+  looks like. Use it for snappiness, readability, timing, camera behaviour.
 - `visual` — the user looks at it; no automated check. Use it for art
   placement, UI layout, particle look.
 
-A task that mixes kinds is two tasks.
+A task that introduces or changes a tunable value (a cooldown, a window, a
+speed, a curve) always includes `unit`: the number is tested, the feel is
+played. A task that mixes deliverables of different kinds is two tasks; a
+task with one deliverable checked two ways is one task with two kinds.
 
 ## 4. Producer scope pass
 
 Before saving, run the scope pass. (The `game-dev:producer` agent takes this
 over in Plan 2 of the studio; until then, do it here.) For every task ask:
 
-1. Does the current milestone gate's exit criteria need this task?
+1. Does the current milestone gate's exit criteria (from `PROGRESS.md`, or
+   the spec's **Milestone gate** section) need this task?
 2. Would the feature be playable end to end without it?
 
 A task that fails 1 and passes 2 moves to a `## Backlog` section at the end
@@ -98,7 +106,10 @@ Then run `studio-state set stage plan`, `studio-state set plan <plan path>`,
 > Plan at `<path>`: N tasks, K cut to backlog. Reply **approve**, or name the
 > task to change.
 
-On approval run `studio-state ledger "plan approved <plan path>"` and tell
-the user the next command is `/game-dev:execute` (subagent-driven by
-default; `--inline` for checkpointed execution in this session). Do not
-invoke it yourself.
+On approval: change the plan's `Status:` line to `Approved`, commit it so it
+travels into the execution worktree —
+`git add <plan path> .studio/ledger .studio/config.json && git commit -m "docs(plans): approve <topic>"` —
+then run `studio-state ledger "plan approved <plan path>"` and tell the user
+the next command is `/game-dev:execute` (subagent-driven by default;
+`--inline` for checkpointed execution in this session). Do not invoke it
+yourself.

@@ -151,6 +151,15 @@ test_stage_skill_contracts() {
   assert_contains "$S/execute/SKILL.md" "GODOT_PATH" "execute's smoke boot resolves the binary via GODOT_PATH"
 }
 
+# Behaviour Task 18 pinned as text contracts on the plan skill.
+test_plan_skill_contract() {
+  S="$REPO_ROOT/studios/game-dev/skills"
+  assert_contains "$S/plan/SKILL.md" "unit+playtest" "plan allows combined verify kinds"
+  assert_contains "$S/plan/SKILL.md" "git commit" "plan commits at the approval gate"
+  assert_contains "$S/plan/SKILL.md" "Milestone gate" "plan reads gate criteria from the spec when PROGRESS.md is absent"
+  assert_not_contains "$S/plan/SKILL.md" "a GUT test named" "plan does not hard-code GUT"
+}
+
 run_tests test_plugin_manifests test_skill_frontmatter test_agent_frontmatter \
   test_external_references_declared test_required_plugins_enabled test_bin_syntax \
-  test_role_agents_exist test_stage_skill_contracts
+  test_role_agents_exist test_stage_skill_contracts test_plan_skill_contract
