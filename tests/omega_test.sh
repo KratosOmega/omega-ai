@@ -356,7 +356,20 @@ test_session_end() {
   assert_file "$CFG/omega/modes/e2" "session-end leaves other sessions' files alone"
 }
 
+# Text contracts on the omega skills, one file per skill under
+# tests/omega_contracts/, each defining test_<skill>_contract. One file per
+# skill so five skill tasks can add theirs without editing the same file.
+test_skill_contracts() {
+  for c in "$REPO_ROOT"/tests/omega_contracts/*_contract.sh; do
+    [ -f "$c" ] || continue
+    . "$c"
+    # local-merge_contract.sh defines test_local_merge_contract: a POSIX
+    # function name has no hyphen (dash rejects one).
+    "test_$(basename "$c" _contract.sh | tr - _)_contract"
+  done
+}
+
 run_tests test_plugin_files test_skill_stubs test_marketplace \
   test_mode_round_trip test_mode_validation test_mode_brief \
   test_hooks_json test_session_start test_session_start_prunes_old_files \
-  test_prompt_submit test_session_end
+  test_prompt_submit test_session_end test_skill_contracts
