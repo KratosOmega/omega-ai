@@ -368,8 +368,11 @@ omega-ai/
 identity line from `.studio/config.json` in the current directory when that
 file exists (falling back to the studio defaults), JSON-escapes the result,
 and prints `{"hookSpecificOutput": {"hookEventName": "SessionStart",
-"additionalContext": "<escaped bootstrap text>"}}`. It is the only hook the
-studio installs; nothing runs on every tool call.
+"additionalContext": "<escaped bootstrap text>"}}`. The studio installs one
+other hook: a PreToolUse guard (`hooks/guard-state.sh`, on `Edit`, `Write`
+and `MultiEdit`) that rejects direct edits of `.studio/STATE.md` and
+`.studio/ledger/*.md`, so studio state is written only through
+`studio-state`. Nothing else runs on every tool call.
 
 `bootstrap.md` contains, in order:
 
@@ -382,9 +385,12 @@ studio installs; nothing runs on every tool call.
    `game-dev:brainstorm` instead.
 3. **Stage list** with one line each: studio, brainstorm, plan, execute,
    review, playtest, ship, retro, scaffold.
-4. **State instruction.** "If `.studio/STATE.md` exists, read it and report the
-   current stage and the next step in one line before doing anything else. If
-   it does not exist and this is a Godot project, suggest `/game-dev:studio`."
+4. **State instruction.** When `.studio/STATE.md` exists, the SessionStart
+   hook (`hooks/session-start.sh`) reads the stage from `studio-state` and
+   appends a line naming it (`Studio state: stage <stage>`) after the
+   bootstrap text; the model reports that stage and lets `/game-dev:studio`
+   name the next step from it. When it does not exist and this is a Godot
+   project (`project.godot` present), `/game-dev:studio` initialises it.
 
 ## Workflow
 
@@ -407,7 +413,10 @@ Reads `.studio/STATE.md` and `PROGRESS.md`; prints the stage, the milestone,
 and the next step. With freeform text it routes: a feature or system request
 → `brainstorm`; "feels wrong / floaty / laggy" → `playtest` (feel pass); "is
 this done?" → `review`; "new project" → `scaffold`. It never does the work
-itself. Without `.studio/` it offers `scaffold` or `brainstorm`.
+itself. Without `.studio/` in a Godot project it asks once whether to
+initialise studio state; on no it continues to freeform routing without
+state (`brainstorm` runs without it and says so). Without `project.godot`
+it offers `scaffold`.
 
 ### `/game-dev:brainstorm`
 
@@ -654,12 +663,15 @@ skill; the prefix is written once per cell for readability.
 brainstorm dispatches `game-dev:game-designer` and, on the architectural
 path, `godot-prompter:godot-game-architect` for the `architect` role;
 execute dispatches `godot-prompter:godot-game-dev` for
-`gameplay-programmer` and `godot-prompter:godot-ui-designer` for
-`ui-designer`, the shipped `game-dev:feel-tuner` and `game-dev:tech-artist`
-as themselves, and `general-purpose` for `level-designer`; the per-task
-reviewer is `godot-prompter:godot-code-reviewer`. The godot-prompter agents
-get the studio persona prepended. Plan 2 replaces these with the studio's
-own agents.
+`gameplay-programmer`, `godot-prompter:godot-game-architect` for
+`architect` (opened with the studio's architect persona line) and
+`godot-prompter:godot-ui-designer` for `ui-designer`, the shipped
+`game-dev:feel-tuner` and `game-dev:tech-artist` as themselves, and
+`general-purpose` for `level-designer`; the per-task reviewer is
+`godot-prompter:godot-code-reviewer`. The godot-prompter agents get the
+studio persona prepended. Plan runs the producer scope pass inline
+instead of dispatching `game-dev:producer`. Plan 2 replaces these with the
+studio's own agents.
 
 When `.studio/config.json` sets `language: csharp`, `gameplay-programmer`
 routes engine work to `godot-prompter:godot-csharp-engineer` instead of the
@@ -715,7 +727,7 @@ engine from `.studio/config.json` in the current project (falling back to
 | `studio-test` | `[PATH]` — a test directory or file, default the whole suite | 0 all passed · 1 failures · 2 engine not found · 3 test framework not installed | One summary line `studio-test: N passed, M failed`; JUnit XML at `.studio/reports/test-<timestamp>.xml`; failing test names echoed |
 | `studio-run` | `[--scene RES_PATH] [--seconds N] [--windowed]` — default the main scene, 10 s, headless | 0 clean · 1 script errors in the log · 2 engine not found | Full log at `.studio/reports/run-<timestamp>.log`; last 40 lines echoed; error lines echoed first |
 | `studio-lint` | `[PATH]` | 0 clean · 1 findings · 3 linter not installed (prints the install hint) | Findings as `path:line: message` |
-| `studio-state` | `get KEY` · `set KEY VALUE` · `ledger TEXT` · `show` · `init` | 0 · 1 no `.studio/` (except `init`) | `get` prints the value; `show` prints the file |
+| `studio-state` | `root [--work]` · `init` · `show` · `get KEY` · `set KEY VALUE` · `ledger TEXT` · `check [--rebuild]` · `reset [--keep-ledger]` | 0 · 1 no `.studio/` (except `init` and `root`), bad key or value, or a `check` mismatch | `get` prints the value; `show` prints the file, then the feature ledger; `root` prints the main checkout that holds `STATE.md` (`--work`: the checkout the command runs in); `check` prints `check: ok` or one `check:` line per mismatch |
 | `studio-scaffold` | `DIR [--name NAME]` | 0 · 1 target exists and is not empty | Created tree listed |
 
 `.studio/reports/` is git-ignored by the scaffold.
