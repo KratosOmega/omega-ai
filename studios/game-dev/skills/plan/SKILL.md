@@ -106,10 +106,10 @@ Then run `studio-state set stage plan`, `studio-state set plan <plan path>`,
 > Plan at `<path>`: N tasks, K cut to backlog. Reply **approve**, or name the
 > task to change.
 
-On approval: change the plan's `Status:` line to `Approved`, commit it so it
-travels into the execution worktree —
-`git add <plan path> && git commit -m "docs(plans): approve <topic>"` —
-then run `studio-state ledger "plan approved <plan path>"` and tell the user
-the next command is `/game-dev:execute` (subagent-driven by default;
-`--inline` for checkpointed execution in this session). Do not invoke it
-yourself.
+On approval: change the plan's `Status:` line to `Approved`, run
+`studio-state ledger "plan approved <plan path>"`, then commit the plan and
+the state that must travel with it into the execution worktree —
+`git add <plan path> .studio/ledger .studio/config.json && git commit -m "docs(plans): approve <topic>"` —
+and tell the user the next command is `/game-dev:execute` (subagent-driven by
+default; `--inline` for checkpointed execution in this session). Do not invoke
+it yourself.
