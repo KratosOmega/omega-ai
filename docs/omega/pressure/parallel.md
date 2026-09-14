@@ -62,3 +62,21 @@ What it said (verbatim excerpts that show the rationalisation):
   branch `dash-task-1`, based on `dash`). Make all edits and commits
   inside this worktree — never in the primary repo checkout at
   `.../parallel/repo`, and never on the `dash` branch directly."
+
+## With skill — 2026-09-13
+
+Model: sonnet. Result: PASS (run 2). Rounds of refinement: 1.
+Loopholes closed: run 1 passed criteria 1, 2 and 4 but failed criterion 3
+— both briefs opened their isolation clause with "Work only in" (the
+literal phrase capitalized as a section heading would read), so the
+case-sensitive `grep -l 'work only in'` matched neither file even though
+the worktree path and branch name were both present. `SKILL.md` §3 said
+only "in these words: work only in `<scratchpad>/wt/task-<n>`…", which
+reads as prose the agent is free to capitalize at a sentence or heading
+start. Changed it to require the phrase verbatim and lower-case even
+where it opens a line or section, spelling out the wrong form
+("Work only in") to rule out: "The brief says, verbatim and lower-case
+even where it opens a line or a section — never capitalized into "Work
+only in" as a heading would read: work only in
+`<scratchpad>/wt/task-<n>`; …". Run 2, with the changed skill and a fresh
+fixture, passed all four criteria.

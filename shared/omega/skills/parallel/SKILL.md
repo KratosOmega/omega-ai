@@ -58,10 +58,12 @@ branch's HEAD at dispatch time:
 git worktree add <scratchpad>/wt/task-<n> -b parallel/<feature>/task-<n> <feature-branch>
 ```
 
-The brief says, in these words: work only in `<scratchpad>/wt/task-<n>`;
-commit only on `parallel/<feature>/task-<n>`; never touch another path;
-never run `omega-mode set` or `clear` — a subagent shares this session's
-id and would change its modes. The implementer's model is whatever the
+The brief says, verbatim and lower-case even where it opens a line or a
+section — never capitalized into "Work only in" as a heading would read:
+work only in `<scratchpad>/wt/task-<n>`; commit only on
+`parallel/<feature>/task-<n>`; never touch another path; never run
+`omega-mode set` or `clear` — a subagent shares this session's id and
+would change its modes. The implementer's model is whatever the
 invoking skill would choose — `superpowers:subagent-driven-development`'s
 Model Selection when installed — with one floor: never below the mid tier
 (sonnet) for an agent working in a per-task worktree. The cheapest tier has
