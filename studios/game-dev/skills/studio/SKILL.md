@@ -17,9 +17,11 @@ Run `studio-state show` from the project root.
 
 - **Exit 0:** parse the header fields (`stage`, `spec`, `plan`, `task`,
   `last_playtest`, `milestone`) and the ledger lines. Then run
-  `studio-state check`: on exit 1 append its first line to the state line as
-  `· check: <message>`; offer `studio-state check --rebuild` only when the
-  message says so, and only after the user agrees.
+  `studio-state check`: on exit 1, end the state line with ` · ` followed by
+  the first line of its output verbatim (it already carries its own
+  `check:` prefix, e.g. `check: ledger says T3 complete but task is 2/6 —
+  run check --rebuild`); offer `studio-state check --rebuild` only when that
+  line says so, and only after the user agrees.
 - **Exit 1 (no `.studio/`):** this project has no studio state yet.
   - If `project.godot` exists here, ask with one `AskUserQuestion` whether to
     initialise studio state in this project. On yes, run `studio-state init`
@@ -36,8 +38,8 @@ milestone gate and its exit criteria; quote the gate name in the report.
 Print one line of state, then one line naming the next stage:
 
 ```
-Stage: execute · Milestone: prototype · Spec: docs/game-dev/specs/2026-09-13-dash.md · Plan: docs/game-dev/plans/2026-09-13-dash.md · Task: 3/6
-Next: /game-dev:execute — resume at task 3 of 6
+Stage: execute · Milestone: prototype · Spec: docs/game-dev/specs/2026-09-13-dash.md · Plan: docs/game-dev/plans/2026-09-13-dash.md · Task: 2/6 · check: ledger says T3 complete but task is 2/6 — run check --rebuild
+Next: /game-dev:execute — resume at task 2 of 6
 ```
 
 The next stage follows from the current one:
@@ -45,7 +47,7 @@ The next stage follows from the current one:
 | `stage` | Next | Unless |
 |---------|------|--------|
 | `idle` | `/game-dev:brainstorm` | — |
-| `brainstorm` | `/game-dev:plan` | `spec` is `-` — then treat the stage as `idle` (a brainstorm that never reached a spec). Or the ledger has no `spec approved <path>` line for the current `spec` value — then: "spec awaiting approval; reply approve to `/game-dev:brainstorm` or re-run it" |
+| `brainstorm` | `/game-dev:plan` | `spec` is `-` — then the project is effectively idle: report `Stage: idle` and `Next: /game-dev:brainstorm` (a brainstorm that never reached a spec). Or the ledger has no `spec approved <path>` line for the current `spec` value — then: "spec awaiting approval; reply approve to `/game-dev:brainstorm` or re-run it" |
 | `plan` | `/game-dev:execute` | the ledger has no `plan approved <path>` line for the current `plan` value — same pattern |
 | `execute` | `/game-dev:execute` (resume) | `task` is `N/N` — then `/game-dev:review` |
 | `review` | `/game-dev:playtest` | — |
@@ -57,7 +59,8 @@ The next stage follows from the current one:
 dropped or the plan is too broken to follow, confirm with one
 `AskUserQuestion` (keep the ledger, or remove it), run `studio-state reset`
 (`--keep-ledger` when asked), and name `/game-dev:brainstorm` as the next
-command. The `abandoned <spec>` line stays in `STATE.md`'s ledger.
+command. The `abandoned <spec>` line stays in `STATE.md`'s ledger (when a
+spec was set).
 
 If the next stage's skill is not in your skill list, say which stage it is
 and that it is not installed yet. Do not improvise the stage.
@@ -90,7 +93,8 @@ paraphrase a request into a different one.
 - Never do the stage's work here. The router's whole output is the state
   line, the next-step line, and the hand-off.
 - Never write to `.studio/` except through `studio-state init` (after the
-  user says yes), `studio-state reset` (after the user confirms), and the
-  `studio-state ledger` line of the bug route.
+  user says yes), `studio-state check --rebuild` (after the user agrees),
+  `studio-state reset` (after the user confirms), and the `studio-state
+  ledger` line of the bug route.
 - Always end by naming the exact command to run next, even when it is the one
   you just invoked.
