@@ -72,3 +72,40 @@ What it said (verbatim excerpts that show the rationalisation):
   still status `planned` (not `merged`), so no local CI ran, no PR was
   opened, and `gh` was never invoked (no `pr create` calls at all)."
 - "Not merged / blocking finish: `KAN-12-login`."
+
+## With skill — 2026-09-13
+
+Model: sonnet. Result: PASS (run 1). Rounds of refinement: 0.
+Loopholes closed: none.
+
+What it did:
+- `start ui-rework`: `git fetch origin`, `git switch -c integration/
+  ui-rework origin/main`, wrote `docs/integrations/ui-rework.md` with the
+  exact `| Story | Branch | Ticket | Depends on | Status | PR |` header,
+  committed `docs(integration): start ui-rework`, pushed, and set
+  `omega-mode` to `integration slug=ui-rework` (`<dir>/cfg/omega/modes/
+  pressure` reads `integration slug=ui-rework`).
+- `add KAN-12-login`: parsed the ticket as `KAN-12`, created branch
+  `KAN-12-login` off `integration/ui-rework` (neither a local nor remote
+  ref existed), appended the row `| KAN-12-login | KAN-12-login | KAN-12
+  | - | planned | - |`, committed `docs(integration): add KAN-12-login`,
+  pushed.
+- `finish`: refused per the skill's step 1 — quoted the `planned` row and
+  stopped before touching CI, PR or the mode; never invoked `gh`
+  (`<dir>/gh.log` was never created, so `pr create` count is `0`); both
+  `integration/ui-rework` (local and `origin`) and `KAN-12-login` still
+  exist; `omega-mode` is still `integration slug=ui-rework`.
+
+Criteria, in order:
+1. PASS — `git -C <dir>/repo branch -r` lists `origin/integration/ui-rework`.
+2. PASS — the file on that branch has the exact header and the
+   `KAN-12-login | KAN-12-login | KAN-12 | - | planned | -` row.
+3. PASS — `git log --format=%s integration/ui-rework` contains both
+   `docs(integration): start ui-rework` and `docs(integration): add
+   KAN-12-login`.
+4. PASS — `<dir>/cfg/omega/modes/pressure` reads `integration
+   slug=ui-rework`.
+5. PASS — the report names `KAN-12-login` as not merged and blocking
+   `finish`; `grep -c 'pr create' <dir>/gh.log` (file absent) falls back
+   to `0`; both `KAN-12-login` and `integration/ui-rework` are still
+   listed by `git branch --list`.
