@@ -23,10 +23,12 @@ This creates `~/.claude-gamedev` with a rendered `CLAUDE.md`, a copied
 at `~/.local/bin/claude-gd`; records the mode and the shim path in
 `~/.claude-gamedev/.omega-ai-manifest`; and runs `doctor.sh`. The shim
 launches Claude Code with `CLAUDE_CONFIG_DIR` pointing at the config root, the
-studio's `bin/` on `PATH`, and `--plugin-dir` pointing at `studios/game-dev/`,
-so the studio's skills, agents and hooks load straight from this checkout —
-edit a skill and it is live in the next session. The rendered `CLAUDE.md`
-imports `memory/MEMORY.md`, the studio's own memory (see Memory below).
+studio's `bin/` and the global plugin's `bin/` on `PATH`, and two
+`--plugin-dir` flags — `studios/game-dev/` and `shared/omega/`, the `omega`
+global plugin every studio loads — so the studio's skills, agents and hooks
+and the `/omega:*` skills load straight from this checkout — edit a skill and
+it is live in the next session. The rendered `CLAUDE.md` imports
+`memory/MEMORY.md`, the studio's own memory (see Memory below).
 
 Add `~/.local/bin` to your `PATH` if it is not there already. Then:
 
@@ -39,7 +41,8 @@ The first `claude-gd` launch fetches the plugins the studio depends on
 (superpowers, godot-prompter) into the isolated config root.
 
 Options: `--mode copy` for a frozen snapshot (the studio is copied to
-`~/.claude-gamedev/studio/` and loaded from there), `--target DIR` for a
+`~/.claude-gamedev/studio/`, the global plugin to `~/.claude-gamedev/global/`,
+and both are loaded from there), `--target DIR` for a
 different config root, `--shim-dir DIR` for a different shim location,
 `--no-mcp` (accepted now; MCP registration arrives with the engine toolkit
 in Plan 2), and `--dry-run` to see every action — including the removal of
@@ -75,6 +78,44 @@ resolved to the project's main checkout from any worktree — and
 feature. Both are written only through `studio-state`; a hook blocks direct
 edits.
 
+## Global skills
+
+`shared/omega/` is a second plugin every studio shim loads — the shim passes
+`--plugin-dir` twice, the studio and then `shared/omega` — so `claude-gd`
+and `claude-gen` both carry these five skills beside their own:
+
+| Command | Does |
+|---|---|
+| `/omega:handoff` | Finds a safe stopping point, commits and pushes everything, writes `docs/handoffs/<date>-<branch>.md`, and prints the prompt that resumes the work in a new session |
+| `/omega:parallel [N]` | Runs a plan's independent tasks concurrently — one worktree and one reviewer per task, cherry-picked back — capped at N when given; `off` clears it |
+| `/omega:local-merge` | Skips GitHub checks: runs the project's local CI and merges through `gh pr merge --admin` on exit 0, with the strategy the project uses; `off` clears it |
+| `/omega:integration start\|add\|status\|finish` | An `integration/<slug>` branch several stories merge into, tracked in `docs/integrations/<slug>.md`, landed on `main` as one |
+| `/omega:autopilot` | Asks every open decision up front, then runs unattended: rulings logged, a push after every task, a draft PR, never a merge, and a handoff at the end; `off` clears it |
+
+They are overlays. Each changes how work is scheduled, saved, merged or
+stopped — never what a studio does or in which order — and composes with
+whatever skill is running. `parallel`, `local-merge`, `integration` and
+`autopilot` set a **mode**: a line in
+`${CLAUDE_CONFIG_DIR:-~/.claude}/omega/modes/<session_id>`, written by
+`shared/omega/bin/omega-mode`. While any mode is set, a hook prints
+`Omega modes: parallel max=3 · local-merge` at the top of every turn, so a
+mode survives compaction; the file is deleted when the session ends, and
+`/omega:handoff` names the modes to re-run in its resume prompt.
+
+For plain `claude`, install the plugin yourself — the installer never writes
+to `~/.claude`:
+
+```sh
+claude plugin marketplace add /path/to/omega-ai
+claude plugin install omega@omega-ai        # then `claude plugin update omega` after a pull
+```
+
+Or load it live while editing the skills:
+
+```sh
+alias claude-omega='claude --plugin-dir /path/to/omega-ai/shared/omega'
+```
+
 ## Check
 
 ```sh
@@ -82,13 +123,16 @@ edits.
 ```
 
 Reports the config root, the plugin directory the shim loads and its skill /
-agent counts, every plugin `requires.txt` declares (enabled? fetched? which
+agent counts, the global plugin (`global plugin: omega 0.1.0   skills 5  hooks
+present`), every plugin `requires.txt` declares (enabled? fetched? which
 version?), the shim the install recorded (present? launches this root?
-loads the plugin?), whether that shim's directory is on `PATH`, any stale
+loads both plugins?), whether that shim's directory is on `PATH`, any stale
 layout from the earlier installer, and whether anything leaks back into
 `~/.claude`. Exits non-zero on a missing `CLAUDE.md` or `settings.json`, a
-name mismatch, a missing plugin, a stale or foreign shim, a stale layout, or
-a leak. `--target DIR` checks a root installed elsewhere.
+name mismatch, a missing plugin, a missing or misnamed global plugin, a stale
+or foreign shim (including one written before the global plugin existed —
+reinstall to fix it), a stale layout, or a leak. `--target DIR` checks a root
+installed elsewhere.
 
 ## Uninstall
 
@@ -155,13 +199,23 @@ studios/<name>/
 ├── skills/ agents/ hooks/       plugin content, loaded live via --plugin-dir
 ├── bin/                         toolkit, linked into the config root and put on PATH
 └── CLAUDE.md settings.json memory/   installed into the config root
+
+shared/omega/                    the omega global plugin, loaded by every shim
+├── .claude-plugin/plugin.json   name "omega" → the /omega: namespace
+├── skills/                      handoff, parallel, local-merge, integration, autopilot
+├── hooks/                       SessionStart, UserPromptSubmit, SessionEnd: the mode line
+└── bin/omega-mode               the mode file's one writer; on PATH inside every studio
+
+.claude-plugin/marketplace.json  publishes omega for plain claude (claude plugin marketplace add <repo>)
 ```
 
 ## Docs
 
 `docs/game-dev/` holds the game studio's design spec, implementation plans,
-approval artifacts and progress log. `docs/superpowers/` holds the earlier
-profiles installer design.
+approval artifacts and progress log; `docs/omega/` holds the global
+plugin's design spec, implementation plans and progress log, plus
+`pressure/` — the scenarios each skill was tested against.
+`docs/superpowers/` holds the earlier profiles installer design.
 
 ## Tests
 

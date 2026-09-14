@@ -31,6 +31,10 @@ MANIFEST="$TARGET/.omega-ai-manifest"
 # and is treated as symlink mode.
 MODE="$(manifest_meta "$MANIFEST" mode)"
 if [ "$MODE" = "copy" ]; then PLUGIN_DIR="$TARGET/studio"; else PLUGIN_DIR="$STUDIO_DIR"; fi
+# The global plugin, as the shim loads it: the snapshot in copy mode, the
+# checkout otherwise.
+if [ "$MODE" = "copy" ]; then GLOBAL_DIR="$TARGET/global"; else GLOBAL_DIR="$REPO_ROOT/shared/omega"; fi
+GLOBAL_JSON="$GLOBAL_DIR/.claude-plugin/plugin.json"
 PLUGIN_JSON="$PLUGIN_DIR/.claude-plugin/plugin.json"
 REQUIRES="$STUDIO_DIR/requires.txt"
 RECORDED_SHIM="$(manifest_meta "$MANIFEST" shim)"
@@ -72,6 +76,25 @@ if [ -f "$PLUGIN_JSON" ]; then
   fi
 else
   warn "no plugin manifest at $PLUGIN_JSON"
+  failed=1
+fi
+
+if [ -f "$GLOBAL_JSON" ]; then
+  gname="$(json_field "$GLOBAL_JSON" name)"
+  gver="$(json_field "$GLOBAL_JSON" version)"
+  ghooks="none"
+  [ -f "$GLOBAL_DIR/hooks/hooks.json" ] && ghooks="present"
+  log "global plugin: ${gname:-?} ${gver:-?}   skills $(count_skills "$GLOBAL_DIR")  hooks $ghooks"
+  if [ "$gname" != "omega" ]; then
+    warn "global plugin name '$gname' is not 'omega' — its skills would load under the wrong prefix"
+    failed=1
+  fi
+  if [ "$ghooks" != "present" ]; then
+    warn "global plugin has no hooks/hooks.json — modes would not be injected"
+    failed=1
+  fi
+else
+  warn "no global plugin manifest at $GLOBAL_JSON — run install.sh $STUDIO again"
   failed=1
 fi
 
@@ -128,6 +151,9 @@ elif ! shim_owned "$RECORDED_SHIM" "$TARGET"; then
   failed=1
 elif ! grep -q -- '--plugin-dir' "$RECORDED_SHIM"; then
   log "shim:         stale (no --plugin-dir) $RECORDED_SHIM — run install.sh $STUDIO"
+  failed=1
+elif ! grep -qF -- '--plugin-dir "$OMEGA_GLOBAL_ROOT"' "$RECORDED_SHIM"; then
+  log "shim:         stale (no global plugin) $RECORDED_SHIM — run install.sh $STUDIO"
   failed=1
 else
   log "shim:         ok $RECORDED_SHIM"

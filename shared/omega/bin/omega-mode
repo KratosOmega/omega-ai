@@ -1,0 +1,187 @@
+#!/bin/sh
+# omega-mode — the one writer of the omega mode file.
+#
+#   omega-mode [--session ID] set   <mode> [key=value ...]   add or replace the mode's line, in place
+#   omega-mode [--session ID] clear <mode> | --all           remove one mode, or the file
+#   omega-mode [--session ID] show                           print the file's lines; nothing when no mode
+#   omega-mode [--session ID] path                           print the mode file's path
+#   omega-mode [--session ID] brief                          print the "Omega modes:" block the hooks inject
+#
+# The file is ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/omega/modes/<session id>,
+# one mode per line: the mode name, then optional key=value pairs. The
+# session id is --session when given, else $CLAUDE_CODE_SESSION_ID (set in
+# the Bash tool's environment; the hooks pass the id they read from stdin).
+# An empty file is deleted, never left behind.
+#
+# Exit codes: 0 ok (show, brief and clear exit 0 even with no file); 1 for
+# a usage error, no session id, or an invalid session id, mode name or pair.
+#
+# Self-contained on purpose: in copy mode the plugin root has no lib/.
+set -u
+# The kv loop below word-splits a line on spaces; never let it glob one too.
+set -f
+
+usage() {
+  cat >&2 <<'USAGE'
+usage: omega-mode [--session ID] set <mode> [key=value ...]
+       omega-mode [--session ID] clear <mode> | --all
+       omega-mode [--session ID] show
+       omega-mode [--session ID] path
+       omega-mode [--session ID] brief
+USAGE
+  exit 1
+}
+die() { printf 'omega-mode: %s\n' "$*" >&2; exit 1; }
+
+# --session may appear anywhere on the line. Each original argument is taken
+# from the front once and, unless it is the option or its value, appended to
+# the back; after the loop "$@" is the line without the option, in order.
+SESSION="${CLAUDE_CODE_SESSION_ID:-}"
+n=$#
+i=0
+while [ "$i" -lt "$n" ]; do
+  a="$1"; shift; i=$((i + 1))
+  if [ "$a" = "--session" ]; then
+    [ "$i" -lt "$n" ] && [ -n "$1" ] || die "missing value for --session"
+    SESSION="$1"; shift; i=$((i + 1))
+  else
+    set -- "$@" "$a"
+  fi
+done
+
+[ $# -ge 1 ] || usage
+VERB="$1"; shift
+case "$VERB" in set|clear|show|path|brief) ;; *) usage ;; esac
+
+[ -n "$SESSION" ] || die "no session id: set CLAUDE_CODE_SESSION_ID or pass --session <id>"
+case "$SESSION" in
+  .|..|*[!A-Za-z0-9._-]*) die "invalid session id: $SESSION" ;;
+esac
+
+# The "/.claude" fallback below is absolute on its own, so checking $DIR
+# for a leading "/" (next) cannot tell an unset HOME apart from one set
+# normally; catch both unset here first, before HOME's absence is silently
+# read as "/.claude".
+[ -n "${CLAUDE_CONFIG_DIR:-}" ] || [ -n "${HOME:-}" ] || die "no config dir: set CLAUDE_CONFIG_DIR or HOME"
+DIR="${CLAUDE_CONFIG_DIR:-${HOME:-}/.claude}/omega/modes"
+case "$DIR" in
+  /*) ;;
+  *) die "no config dir: set CLAUDE_CONFIG_DIR or HOME" ;;
+esac
+FILE="$DIR/$SESSION"
+
+# valid_mode NAME — lowercase letters, digits and dashes; starts with a
+# letter; no trailing dash.
+valid_mode() {
+  case "$1" in
+    ''|*[!a-z0-9-]*|*-) return 1 ;;
+  esac
+  case "$1" in
+    [a-z]*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# kv PAIRS KEY — the value of KEY in a space-separated list of key=value
+# pairs; empty when absent. Word splitting is the point: values carry no
+# whitespace (set refuses them).
+kv() {
+  for _p in $1; do
+    case "$_p" in
+      "$2="*) printf '%s' "${_p#*=}"; return 0 ;;
+    esac
+  done
+  return 0
+}
+
+mode_set() {
+  [ $# -ge 1 ] || usage
+  _mode="$1"; shift
+  valid_mode "$_mode" || die "invalid mode name: $_mode (lowercase letters, digits and dashes)"
+  _line="$_mode"
+  for _kv in "$@"; do
+    case "$_kv" in
+      [a-z]*=?*) ;;
+      *) die "expected key=value, got: $_kv" ;;
+    esac
+    case "$_kv" in
+      *[!A-Za-z0-9=._/:@+-]*) die "a value may use only A-Z a-z 0-9 . _ / : @ + - : $_kv" ;;
+    esac
+    _line="$_line $_kv"
+  done
+  mkdir -p "$DIR" || die "cannot create $DIR"
+  _tmp="$FILE.tmp.$$"
+  # Replace the mode's line where it stands so the file keeps its order;
+  # append when the mode is new. awk -v processes backslash escapes, which
+  # the character check above has already excluded.
+  if [ -f "$FILE" ]; then
+    awk -v m="$_mode" -v l="$_line" '
+      $1 == m { if (!done) { print l; done = 1 }; next }
+      { print }
+      END { if (!done) print l }
+    ' "$FILE" > "$_tmp" || { rm -f "$_tmp"; die "cannot write $FILE"; }
+  else
+    printf '%s\n' "$_line" > "$_tmp" || { rm -f "$_tmp"; die "cannot write $FILE"; }
+  fi
+  mv "$_tmp" "$FILE" || { rm -f "$_tmp"; die "cannot write $FILE"; }
+}
+
+mode_clear() {
+  [ $# -eq 1 ] || usage
+  if [ "$1" = "--all" ]; then
+    rm -f "$FILE"
+    return 0
+  fi
+  valid_mode "$1" || die "invalid mode name: $1"
+  [ -f "$FILE" ] || return 0
+  _tmp="$FILE.tmp.$$"
+  awk -v m="$1" '$1 != m' "$FILE" > "$_tmp" || { rm -f "$_tmp"; die "cannot write $FILE"; }
+  if [ -s "$_tmp" ]; then
+    mv "$_tmp" "$FILE" || { rm -f "$_tmp"; die "cannot write $FILE"; }
+  else
+    rm -f "$_tmp" "$FILE"
+  fi
+}
+
+mode_show() {
+  [ -f "$FILE" ] && cat "$FILE"
+  return 0
+}
+
+# The rule lines are the summary of the precedence contract every mode skill
+# carries; they are fixed text so the hooks never invent them.
+mode_brief() {
+  [ -s "$FILE" ] || return 0
+  _heads="$(awk 'BEGIN { ORS = "" } NR > 1 { printf " · " } { printf "%s", $0 }' "$FILE")"
+  printf 'Omega modes: %s\n' "$_heads"
+  while IFS= read -r _l; do
+    _m="${_l%% *}"
+    _rest=""
+    case "$_l" in *" "*) _rest="${_l#* }" ;; esac
+    case "$_m" in
+      parallel)
+        _n="$(kv "$_rest" max)"
+        if [ -n "$_n" ]; then
+          printf "  parallel: dispatch up to %s ready tasks at once, each in its own worktree; review each; cherry-pick onto the feature branch; the invoking skill's bookkeeping is unchanged.\n" "$_n"
+        else
+          printf "  parallel: dispatch every ready task at once, each in its own worktree; review each; cherry-pick onto the feature branch; the invoking skill's bookkeeping is unchanged.\n"
+        fi ;;
+      local-merge)
+        printf "  local-merge: skip GitHub checks; run the project's local CI; merge through gh pr merge --admin only on exit 0; PR base is the integration branch when one is set.\n" ;;
+      integration)
+        _slug="$(kv "$_rest" slug)"
+        [ -n "$_slug" ] || _slug="<slug>"
+        printf '  integration: story branches PR into integration/%s; docs/integrations/%s.md is the set; finish only when every row is merged.\n' "$_slug" "$_slug" ;;
+      autopilot)
+        printf '  autopilot: never AskUserQuestion — rule by the standards, log the ruling with its cost if wrong, continue; commit, push and open a PR, never merge; end with handoff.\n' ;;
+    esac
+  done < "$FILE"
+}
+
+case "$VERB" in
+  set)   mode_set "$@" ;;
+  clear) mode_clear "$@" ;;
+  show)  [ $# -eq 0 ] || usage; mode_show ;;
+  path)  [ $# -eq 0 ] || usage; printf '%s\n' "$FILE" ;;
+  brief) [ $# -eq 0 ] || usage; mode_brief ;;
+esac
