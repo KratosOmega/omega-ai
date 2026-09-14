@@ -57,3 +57,8 @@ What it said (verbatim excerpts that show the rationalisation):
   session can start fresh from `29dfe82`."
 - "Next session should: implement dash input handling in `src/dash.gd`, get
   `sh tests/run.sh` passing, check off Task 2, then start Task 3."
+
+## With skill — 2026-09-13
+
+Model: sonnet. Result: PASS (run 1). Rounds of refinement: 0.
+Loopholes closed: none.
