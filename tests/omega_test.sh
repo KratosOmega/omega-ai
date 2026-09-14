@@ -156,5 +156,153 @@ test_mode_brief() {
   assert_eq "5" "$(wc -l < "$TMP/brief3.txt" | tr -d ' ')" "an unknown mode gets no rule line"
 }
 
+# hook NAME JSON — run a hook as Claude Code would: the JSON on stdin, the
+# plugin root and the temporary config root in the environment, no session
+# id in the environment so the one in the JSON is what counts. Output lands
+# in $TMP/hook.out, stderr in $TMP/hook.err.
+hook() {
+  printf '%s' "$2" | CLAUDE_PLUGIN_ROOT="$OMEGA" CLAUDE_CONFIG_DIR="$CFG" CLAUDE_CODE_SESSION_ID= \
+    sh "$OMEGA/hooks/$1" > "$TMP/hook.out" 2> "$TMP/hook.err"
+}
+
+# hook_status NAME JSON — the hook's exit status, for assert_status.
+hook_status() {
+  printf '%s' "$2" | CLAUDE_PLUGIN_ROOT="$OMEGA" CLAUDE_CONFIG_DIR="$CFG" CLAUDE_CODE_SESSION_ID= \
+    sh "$OMEGA/hooks/$1" >/dev/null 2>&1
+}
+
+# context — the additionalContext string of $TMP/hook.out, unescaped via jq
+# when present; otherwise the raw JSON (still greppable for plain fragments).
+context() {
+  if command -v jq >/dev/null 2>&1; then
+    jq -r '.hookSpecificOutput.additionalContext' "$TMP/hook.out"
+  else
+    cat "$TMP/hook.out"
+  fi
+}
+
+test_hooks_json() {
+  h="$OMEGA/hooks/hooks.json"
+  assert_file "$h" "omega has hooks.json"
+  assert_status 0 "hooks.json is valid JSON" -- valid_json "$h"
+  assert_contains "$h" '"SessionStart"' "hooks.json registers SessionStart"
+  assert_contains "$h" 'startup|resume|clear|compact' "SessionStart matches startup, resume, clear and compact"
+  assert_contains "$h" 'CLAUDE_PLUGIN_ROOT}/hooks/session-start.sh' "SessionStart runs session-start.sh from the plugin root"
+  assert_contains "$h" '"UserPromptSubmit"' "hooks.json registers UserPromptSubmit"
+  assert_contains "$h" 'CLAUDE_PLUGIN_ROOT}/hooks/prompt-submit.sh' "UserPromptSubmit runs prompt-submit.sh from the plugin root"
+  assert_contains "$h" '"SessionEnd"' "hooks.json registers SessionEnd"
+  assert_contains "$h" 'CLAUDE_PLUGIN_ROOT}/hooks/session-end.sh' "SessionEnd runs session-end.sh from the plugin root"
+}
+
+test_session_start() {
+  rm -rf "$CFG"
+  assert_status 0 "session-start exits 0 with no mode file" -- \
+    hook_status session-start.sh '{"session_id":"s1","hook_event_name":"SessionStart","source":"startup"}'
+  hook session-start.sh '{"session_id":"s1","hook_event_name":"SessionStart","source":"startup"}'
+  assert_status 0 "session-start output is valid JSON" -- valid_json "$TMP/hook.out"
+  assert_eq "1" "$(wc -l < "$TMP/hook.out" | tr -d ' ')" "session-start output is a single line"
+  assert_contains "$TMP/hook.out" '"hookEventName":"SessionStart"' "output names the SessionStart event"
+  context > "$TMP/ctx.txt"
+  assert_contains "$TMP/ctx.txt" "Omega global skills: /omega:handoff, /omega:parallel \[N|off\], /omega:local-merge \[off\], /omega:integration <start|add|status|finish>, /omega:autopilot \[off\]\." \
+    "context names the five skills"
+  assert_contains "$TMP/ctx.txt" "Mode tool: $OMEGA/bin/omega-mode (set | clear | show | path | brief)\." "context names the omega-mode path"
+  assert_not_contains "$TMP/ctx.txt" "Omega modes:" "no modes block when no mode is set"
+  mode --session s1 set parallel max=3
+  mode --session s1 set local-merge
+  hook session-start.sh '{"session_id":"s1","hook_event_name":"SessionStart","source":"compact"}'
+  assert_status 0 "session-start output with modes is valid JSON" -- valid_json "$TMP/hook.out"
+  context > "$TMP/ctx.txt"
+  assert_contains "$TMP/ctx.txt" "Omega modes: parallel max=3 · local-merge" "the modes block names the active modes"
+  assert_contains "$TMP/ctx.txt" "  parallel: dispatch up to 3 ready tasks" "the modes block carries the parallel rule"
+  assert_contains "$TMP/ctx.txt" "  local-merge: skip GitHub checks" "the modes block carries the local-merge rule"
+  assert_file "$CFG/omega/modes/s1" "session-start leaves the mode file alone"
+  hook session-start.sh ''
+  assert_status 0 "session-start exits 0 with empty stdin" -- hook_status session-start.sh ''
+  assert_status 0 "session-start output with empty stdin is valid JSON" -- valid_json "$TMP/hook.out"
+}
+
+test_session_start_prunes_old_files() {
+  rm -rf "$CFG"
+  mkdir -p "$CFG/omega/modes"
+  printf 'parallel\n' > "$CFG/omega/modes/old"
+  touch -t 202001010000 "$CFG/omega/modes/old"
+  printf 'parallel\n' > "$CFG/omega/modes/fresh"
+  hook session-start.sh '{"session_id":"s2","hook_event_name":"SessionStart","source":"startup"}'
+  assert_missing "$CFG/omega/modes/old" "a mode file older than seven days is pruned"
+  assert_file "$CFG/omega/modes/fresh" "a fresh mode file survives"
+}
+
+test_prompt_submit() {
+  rm -rf "$CFG"
+  hook prompt-submit.sh '{"session_id":"p1","hook_event_name":"UserPromptSubmit","prompt":"<command-message>parallel</command-message>\n<command-name>/omega:parallel</command-name>\n<command-args>3</command-args>"}'
+  assert_eq "parallel max=3" "$(mode --session p1 show)" "/omega:parallel 3 sets parallel max=3"
+  assert_status 0 "prompt-submit output with a mode is valid JSON" -- valid_json "$TMP/hook.out"
+  assert_eq "1" "$(wc -l < "$TMP/hook.out" | tr -d ' ')" "prompt-submit output is a single line"
+  assert_contains "$TMP/hook.out" '"hookEventName":"UserPromptSubmit"' "output names the UserPromptSubmit event"
+  context > "$TMP/ctx.txt"
+  assert_contains "$TMP/ctx.txt" "Omega modes: parallel max=3" "the turn's context carries the modes block"
+  assert_contains "$TMP/ctx.txt" "  parallel: dispatch up to 3 ready tasks" "the turn's context carries the rule line"
+  assert_not_contains "$TMP/ctx.txt" "Omega global skills:" "prompt-submit does not repeat the skills line"
+
+  hook prompt-submit.sh '{"session_id":"p1","hook_event_name":"UserPromptSubmit","prompt":"<command-message>local-merge</command-message>\n<command-name>/omega:local-merge</command-name>\n<command-args></command-args>"}'
+  assert_eq "$(printf 'parallel max=3\nlocal-merge')" "$(mode --session p1 show)" "/omega:local-merge with empty args sets local-merge"
+
+  hook prompt-submit.sh '{"session_id":"p1","hook_event_name":"UserPromptSubmit","prompt":"<command-message>integration</command-message>\n<command-name>/omega:integration</command-name>\n<command-args>start ui-rework</command-args>"}'
+  assert_contains "$CFG/omega/modes/p1" "^integration slug=ui-rework$" "/omega:integration start <slug> sets the slug"
+
+  hook prompt-submit.sh '{"session_id":"p1","hook_event_name":"UserPromptSubmit","prompt":"<command-name>/omega:parallel</command-name><command-args>off</command-args>"}'
+  assert_not_contains "$CFG/omega/modes/p1" "^parallel" "/omega:parallel off clears parallel"
+
+  hook prompt-submit.sh '{"session_id":"p1","hook_event_name":"UserPromptSubmit","prompt":"<command-message>autopilot</command-message>\n<command-name>/omega:autopilot</command-name>"}'
+  assert_contains "$CFG/omega/modes/p1" "^autopilot$" "an envelope without command-args sets the bare mode"
+
+  hook prompt-submit.sh '{"session_id":"p1","hook_event_name":"UserPromptSubmit","prompt":"<command-name>/omega:parallel</command-name><command-args>  </command-args>"}'
+  assert_contains "$CFG/omega/modes/p1" "^parallel$" "whitespace-only args set the bare mode"
+  mode --session p1 clear parallel
+
+  before="$(mode --session p1 show)"
+  hook prompt-submit.sh '{"session_id":"p1","hook_event_name":"UserPromptSubmit","prompt":"<command-message>caveman</command-message>\n<command-name>/caveman</command-name>\n<command-args>off</command-args>"}'
+  assert_eq "$before" "$(mode --session p1 show)" "a foreign command envelope changes nothing"
+  hook prompt-submit.sh '{"session_id":"p1","hook_event_name":"UserPromptSubmit","prompt":"<scheduled-task id=\"x\"><command-name>/omega:parallel</command-name><command-args>off</command-args></scheduled-task>"}'
+  assert_eq "$before" "$(mode --session p1 show)" "a scheduled-task prompt changes nothing"
+  hook prompt-submit.sh '{"session_id":"p1","hook_event_name":"UserPromptSubmit","prompt":"please run /omega:parallel 4 for me"}'
+  assert_eq "$before" "$(mode --session p1 show)" "plain text naming a command changes nothing"
+  hook prompt-submit.sh '{"session_id":"p1","hook_event_name":"UserPromptSubmit","prompt":"<command-name>/omega:parallel</command-name><command-args>lots</command-args>"}'
+  assert_eq "$before" "$(mode --session p1 show)" "a non-numeric parallel argument changes nothing"
+  hook prompt-submit.sh '{"session_id":"p1","hook_event_name":"UserPromptSubmit","prompt":"<command-name>/omega:integration</command-name><command-args>finish</command-args>"}'
+  assert_eq "$before" "$(mode --session p1 show)" "/omega:integration finish leaves the mode to the skill"
+  hook prompt-submit.sh '{"session_id":"p1","hook_event_name":"UserPromptSubmit","prompt":"<command-name>/omega:integration</command-name><command-args>start bad/slug</command-args>"}'
+  assert_eq "$before" "$(mode --session p1 show)" "a slug with a slash changes nothing"
+  hook prompt-submit.sh '{"session_id":"p1","hook_event_name":"UserPromptSubmit","prompt":"<command-name>/omega:handoff</command-name>"}'
+  assert_eq "$before" "$(mode --session p1 show)" "/omega:handoff changes nothing"
+  assert_status 0 "prompt-submit exits 0 on a foreign command" -- \
+    hook_status prompt-submit.sh '{"session_id":"p1","hook_event_name":"UserPromptSubmit","prompt":"<command-name>/caveman</command-name>"}'
+
+  mode --session p1 clear --all
+  hook prompt-submit.sh '{"session_id":"p1","hook_event_name":"UserPromptSubmit","prompt":"hello"}'
+  assert_eq "" "$(cat "$TMP/hook.out")" "no mode set: prompt-submit prints nothing"
+  assert_status 0 "prompt-submit exits 0 with no mode" -- \
+    hook_status prompt-submit.sh '{"session_id":"p1","hook_event_name":"UserPromptSubmit","prompt":"hi"}'
+  assert_status 0 "prompt-submit exits 0 with empty stdin" -- hook_status prompt-submit.sh ''
+  hook prompt-submit.sh ''
+  assert_eq "" "$(cat "$TMP/hook.out")" "empty stdin: prompt-submit prints nothing"
+}
+
+test_session_end() {
+  rm -rf "$CFG"
+  mode --session e1 set parallel
+  hook session-end.sh '{"session_id":"e1","hook_event_name":"SessionEnd","reason":"exit"}'
+  assert_missing "$CFG/omega/modes/e1" "session-end deletes the session's mode file"
+  assert_eq "" "$(cat "$TMP/hook.out")" "session-end prints nothing"
+  assert_status 0 "session-end exits 0 when there is no file" -- \
+    hook_status session-end.sh '{"session_id":"e1","hook_event_name":"SessionEnd","reason":"exit"}'
+  assert_status 0 "session-end exits 0 with empty stdin" -- hook_status session-end.sh ''
+  mode --session e2 set parallel
+  hook session-end.sh '{"session_id":"e1","hook_event_name":"SessionEnd","reason":"exit"}'
+  assert_file "$CFG/omega/modes/e2" "session-end leaves other sessions' files alone"
+}
+
 run_tests test_plugin_files test_skill_stubs test_marketplace \
-  test_mode_round_trip test_mode_validation test_mode_brief
+  test_mode_round_trip test_mode_validation test_mode_brief \
+  test_hooks_json test_session_start test_session_start_prunes_old_files \
+  test_prompt_submit test_session_end
