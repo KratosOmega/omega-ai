@@ -24,7 +24,9 @@ the with-skill result — in `pressure/`.
   (baseline), then with it; results in `pressure/<skill>.md`.
 - Text contracts: `tests/omega_contracts/<skill>_contract.sh`, run by
   `tests/omega_test.sh`.
-- Plan: `plans/2026-09-13-plan-2-skills.md`.
+- Plan: `plans/2026-09-13-plan-2-skills.md`. Landed with Plan 1 in one PR:
+  https://github.com/KratosOmega/omega-ai/pull/2 (merged to `main` with
+  `gh pr merge --admin --merge` after `sh tests/run_all.sh` exited 0).
 
 ### 2026-09-13 — Plan 1 (Foundation) delivered
 
