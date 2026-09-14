@@ -8,8 +8,12 @@ description: Use when several related stories must land on main together rather 
 **Announce at start:** "Using omega:integration <verb>."
 
 Verbs: `start <slug> [goal…]`, `add <branch-or-ticket>`, `status`,
-`finish`. No verb: print the four verbs and stop. `omega-mode` is on
-`PATH` inside a studio; the session-start line names its path otherwise.
+`finish`. No verb: print the four verbs and stop.
+
+Run first: `omega-mode show` — the line `integration slug=<slug>` names
+the current set; `add`, `status` and `finish` need it and refuse without
+it. `start` sets it (its step 6). `omega-mode` is on `PATH` inside a
+studio; the session-start line names its path otherwise.
 
 > This mode changes how work is scheduled, saved, merged or stopped. It never
 > removes a gate: approvals, reviewers, tests, `Verify:` rules and the
@@ -85,9 +89,13 @@ commits not yet on the integration branch.
 5. Land it through `omega:local-merge` §4 and §5, confirmation included.
    When `omega-mode show` lists `autopilot`, the PR stays open and `finish`
    stops here, saying so.
-6. After the merge: `git push origin --delete integration/<slug>`,
-   `git switch main`, `git branch -D integration/<slug>`, and
-   `omega-mode clear integration`.
+6. Delete the integration branch where it still exists —
+   `local-merge`'s merge may already have removed it with
+   `--delete-branch`: `git ls-remote --exit-code --heads origin
+   integration/<slug> >/dev/null 2>&1 && git push origin --delete
+   integration/<slug>`; `git show-ref --verify --quiet
+   refs/heads/integration/<slug> && git branch -D integration/<slug>`.
+   Then `git switch main` and `omega-mode clear integration`.
 
 ## What this changes, and what it never changes
 
