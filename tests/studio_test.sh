@@ -1,6 +1,7 @@
 #!/bin/sh
-# Repository lint for every studio: plugin manifests, skill and agent
-# frontmatter, external references, and bin/ syntax. Runs without a config
+# Repository lint for every studio and the omega global plugin: plugin
+# manifests, skill and agent frontmatter, external references, and bin/ and
+# hook syntax. Runs without a config
 # root; nothing here installs anything.
 set -u
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -29,7 +30,7 @@ valid_json() {
 }
 
 test_plugin_manifests() {
-  for dir in "$REPO_ROOT"/studios/*/; do
+  for dir in "$REPO_ROOT"/studios/*/ "$REPO_ROOT"/shared/omega/; do
     name="$(basename "$dir")"
     manifest="$dir/.claude-plugin/plugin.json"
     assert_status 0 "$name plugin.json is valid JSON" -- valid_json "$manifest"
@@ -44,7 +45,7 @@ test_plugin_manifests() {
 }
 
 test_skill_frontmatter() {
-  for f in "$REPO_ROOT"/studios/*/skills/*/SKILL.md; do
+  for f in "$REPO_ROOT"/studios/*/skills/*/SKILL.md "$REPO_ROOT"/shared/omega/skills/*/SKILL.md; do
     [ -f "$f" ] || continue
     dir="$(basename "$(dirname "$f")")"
     studio="$(basename "$(dirname "$(dirname "$(dirname "$f")")")")"
@@ -105,7 +106,8 @@ test_required_plugins_enabled() {
 }
 
 test_bin_syntax() {
-  for f in "$REPO_ROOT"/studios/*/bin/* "$REPO_ROOT"/studios/*/engines/*/*.sh "$REPO_ROOT"/studios/*/hooks/*.sh; do
+  for f in "$REPO_ROOT"/studios/*/bin/* "$REPO_ROOT"/studios/*/engines/*/*.sh "$REPO_ROOT"/studios/*/hooks/*.sh \
+           "$REPO_ROOT"/shared/omega/bin/* "$REPO_ROOT"/shared/omega/hooks/*.sh; do
     [ -f "$f" ] || continue
     case "$(basename "$f")" in .gitkeep) continue ;; esac
     rel="${f#"$REPO_ROOT"/}"

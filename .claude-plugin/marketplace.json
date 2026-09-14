@@ -1,0 +1,12 @@
+{
+  "name": "omega-ai",
+  "owner": { "name": "omega-ai" },
+  "plugins": [
+    {
+      "name": "omega",
+      "description": "Global overlay skills for any studio: handoff, parallel, local-merge, integration, autopilot.",
+      "version": "0.1.0",
+      "source": "./shared/omega"
+    }
+  ]
+}
