@@ -843,6 +843,42 @@ test_uninstall_keeps_shim_of_another_root() {
   assert_missing "$TMP/bin-shared/claude-gen" "uninstall without --shim-dir removes the recorded shim"
 }
 
+# "shim on PATH: yes" used to be `command -v <name>` — it reported the user's
+# pre-plugin shim (no --plugin-dir, another root) as a working install.
+test_doctor_shim_identity() {
+  sh "$REPO_ROOT/install.sh" general --target "$TMP/dsi" --shim-dir "$TMP/bin-dsi" >/dev/null 2>&1
+  sh "$REPO_ROOT/doctor.sh" general --target "$TMP/dsi" > "$TMP/dsi.out" 2>&1
+  assert_contains "$TMP/dsi.out" "shim:         ok $TMP/bin-dsi/claude-gen" "doctor reports the recorded shim as ok"
+  printf '#!/usr/bin/env sh\nCLAUDE_CONFIG_DIR="%s" exec claude "$@"\n' "$TMP/dsi" > "$TMP/bin-dsi/claude-gen"
+  status=0
+  sh "$REPO_ROOT/doctor.sh" general --target "$TMP/dsi" > "$TMP/dsi2.out" 2>&1 || status=$?
+  assert_eq "1" "$status" "doctor fails on a shim without --plugin-dir"
+  assert_contains "$TMP/dsi2.out" "shim:         stale (no --plugin-dir)" "doctor names the stale shim"
+  printf '#!/usr/bin/env sh\nCLAUDE_CONFIG_DIR="/elsewhere" exec claude --plugin-dir x "$@"\n' > "$TMP/bin-dsi/claude-gen"
+  status=0
+  sh "$REPO_ROOT/doctor.sh" general --target "$TMP/dsi" > "$TMP/dsi3.out" 2>&1 || status=$?
+  assert_eq "1" "$status" "doctor fails on a shim that launches another root"
+  assert_contains "$TMP/dsi3.out" "shim:         stale (launches another root)" "doctor names the foreign shim"
+  rm "$TMP/bin-dsi/claude-gen"
+  status=0
+  sh "$REPO_ROOT/doctor.sh" general --target "$TMP/dsi" > "$TMP/dsi4.out" 2>&1 || status=$?
+  assert_eq "1" "$status" "doctor fails on a missing shim"
+  assert_contains "$TMP/dsi4.out" "shim:         MISSING" "doctor reports the missing shim"
+}
+
+# Counts and the plugin manifest were read from the checkout even in copy
+# mode, so a deleted snapshot still reported "skills 8 agents 3".
+test_doctor_inspects_copy_mode_snapshot() {
+  sh "$REPO_ROOT/install.sh" game-dev --target "$TMP/dcp" --shim-dir "$TMP/bin-dcp" --mode copy >/dev/null 2>&1
+  sh "$REPO_ROOT/doctor.sh" game-dev --target "$TMP/dcp" > "$TMP/dcp.out" 2>&1
+  assert_contains "$TMP/dcp.out" "plugin dir:   $TMP/dcp/studio" "doctor inspects the snapshot in copy mode"
+  rm -rf "$TMP/dcp/studio"
+  status=0
+  sh "$REPO_ROOT/doctor.sh" game-dev --target "$TMP/dcp" > "$TMP/dcp2.out" 2>&1 || status=$?
+  assert_eq "1" "$status" "doctor fails when the snapshot is gone"
+  assert_contains "$TMP/dcp2.out" "no plugin manifest at $TMP/dcp/studio" "doctor names the missing snapshot manifest"
+}
+
 run_tests test_studio_contract test_install_unknown_studio test_install_guard \
   test_install_guards_shim_dir test_install_refuses_traversal_target \
   test_install_refuses_traversal_shim_dir test_install_refuses_symlinked_target \
@@ -859,4 +895,5 @@ run_tests test_studio_contract test_install_unknown_studio test_install_guard \
   test_uninstall_purge_requires_manifest test_uninstall_purge_symlinked_target \
   test_doctor_fails_on_missing_files test_doctor_detects_leak_through_symlinked_dot_claude test_doctor_matches_plugin_ids_literally test_doctor_flags_stale_layout \
   test_reinstall_keeps_previous_install_when_studio_is_broken test_install_path_with_space \
-  test_uninstall_keeps_shim_of_another_root
+  test_uninstall_keeps_shim_of_another_root \
+  test_doctor_shim_identity test_doctor_inspects_copy_mode_snapshot

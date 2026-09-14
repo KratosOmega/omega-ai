@@ -25,19 +25,26 @@ STUDIO_DIR="$REPO_ROOT/studios/$STUDIO"
 TARGET="$(resolve_studio_target "$STUDIO_DIR" "$TARGET_OVERRIDE")"
 TARGET="$(canon_path "$TARGET")"
 SHIM_NAME="$(json_field "$STUDIO_DIR/studio.json" shim)"
-PLUGIN_JSON="$STUDIO_DIR/.claude-plugin/plugin.json"
+MANIFEST="$TARGET/.omega-ai-manifest"
+# What the shim actually loads: the snapshot in copy mode, the checkout
+# otherwise. The manifest header says which; an older manifest says nothing
+# and is treated as symlink mode.
+MODE="$(manifest_meta "$MANIFEST" mode)"
+if [ "$MODE" = "copy" ]; then PLUGIN_DIR="$TARGET/studio"; else PLUGIN_DIR="$STUDIO_DIR"; fi
+PLUGIN_JSON="$PLUGIN_DIR/.claude-plugin/plugin.json"
 REQUIRES="$STUDIO_DIR/requires.txt"
+RECORDED_SHIM="$(manifest_meta "$MANIFEST" shim)"
 failed=0
 
 log "studio:       $STUDIO"
 log "config root:  $TARGET"
+log "plugin dir:   $PLUGIN_DIR"
 [ -d "$TARGET" ] || die "config root does not exist — run install.sh $STUDIO"
 
 if [ -f "$TARGET/CLAUDE.md" ]; then log "CLAUDE.md:    present"; else log "CLAUDE.md:    MISSING"; failed=1; fi
 if [ -f "$TARGET/settings.json" ]; then log "settings:     present"; else log "settings:     MISSING"; failed=1; fi
 
-# Plugin content is counted in the studio directory, which is what the shim's
-# --plugin-dir loads; nothing under the config root carries it.
+# Plugin content is counted where the shim loads it from (see PLUGIN_DIR).
 count_skills() {
   _n=0
   for _d in "$1"/skills/*/; do
@@ -57,8 +64,8 @@ if [ -f "$PLUGIN_JSON" ]; then
   pname="$(json_field "$PLUGIN_JSON" name)"
   pver="$(json_field "$PLUGIN_JSON" version)"
   hooks_state="none"
-  [ -f "$STUDIO_DIR/hooks/hooks.json" ] && hooks_state="present"
-  log "plugin:       ${pname:-?} ${pver:-?}   skills $(count_skills "$STUDIO_DIR")  agents $(count_agents "$STUDIO_DIR")  hooks $hooks_state"
+  [ -f "$PLUGIN_DIR/hooks/hooks.json" ] && hooks_state="present"
+  log "plugin:       ${pname:-?} ${pver:-?}   skills $(count_skills "$PLUGIN_DIR")  agents $(count_agents "$PLUGIN_DIR")  hooks $hooks_state"
   if [ "$pname" != "$STUDIO" ]; then
     warn "plugin name '$pname' does not match studio '$STUDIO' — skills would load under the wrong prefix"
     failed=1
@@ -108,10 +115,27 @@ done
 [ "$listed" = "1" ] || log "  (none)"
 
 log "launch:       $SHIM_NAME"
-if command -v "$SHIM_NAME" >/dev/null 2>&1; then
-  log "shim on PATH: yes ($(command -v "$SHIM_NAME"))"
+# The shim the manifest recorded is the one this install wrote; `command -v`
+# would happily report an older shim of the same name on PATH.
+if [ -z "$RECORDED_SHIM" ]; then
+  log "shim:         not recorded — manifest predates this installer; run install.sh $STUDIO again"
+  failed=1
+elif [ ! -f "$RECORDED_SHIM" ]; then
+  log "shim:         MISSING $RECORDED_SHIM — run install.sh $STUDIO"
+  failed=1
+elif ! shim_owned "$RECORDED_SHIM" "$TARGET"; then
+  log "shim:         stale (launches another root) $RECORDED_SHIM — run install.sh $STUDIO"
+  failed=1
+elif ! grep -q -- '--plugin-dir' "$RECORDED_SHIM"; then
+  log "shim:         stale (no --plugin-dir) $RECORDED_SHIM — run install.sh $STUDIO"
+  failed=1
 else
-  log "shim on PATH: no — add your shim directory to PATH"
+  log "shim:         ok $RECORDED_SHIM"
+  shim_dir="$(dirname "$RECORDED_SHIM")"
+  case ":$PATH:" in
+    *":$shim_dir:"*) log "shim on PATH: yes" ;;
+    *) log "shim on PATH: no — add $shim_dir to PATH" ;;
+  esac
 fi
 
 # The pre-plugin installer linked skills/, agents/, commands/ and hooks/ into
