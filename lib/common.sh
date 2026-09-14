@@ -20,6 +20,16 @@ need_value() {
   [ -n "${2:-}" ] || die "missing value for $1"
 }
 
+# studio_arg NAME — the studio name as typed, with a trailing slash stripped
+# (tab completion adds one; it used to install fine and then fail the
+# doctor's name check). A name with a slash inside it, or an empty one, dies.
+studio_arg() {
+  _s="${1%/}"
+  [ -n "$_s" ] || die "no studio given"
+  case "$_s" in */*) die "studio must be a name, not a path: $1" ;; esac
+  printf '%s\n' "$_s"
+}
+
 # json_field FILE KEY — value of a flat JSON string key; empty when absent.
 json_field() {
   sed -n 's/.*"'"$2"'"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$1" | head -n 1
@@ -90,14 +100,35 @@ canon_path() {
 # user's existing setup. $HOME and the repository root are canonicalized for the
 # same reason: comparing a resolved path against an unresolved one is a
 # false negative whenever either side crosses a symlink.
+#
+# The target is checked by where it *points*: canon_path leaves a final
+# symlink undereferenced, so the "/." suffix makes it an ancestor and resolves
+# it physically. Without that, `--target ~/evil` with `evil -> studios/general`
+# passes and a wet install renders the studio's CLAUDE.md onto itself. The
+# dereferenced form is used for this comparison only — callers keep the path
+# as given, so uninstall still deletes a link and never what it points at. A
+# target that does not exist yet has nothing to dereference and passes as
+# before. $HOME and the repository root get the same treatment so a symlinked
+# spelling of either side cannot make the comparison miss.
+#
+# ~/.claude is refused both as spelled and as resolved: when it is itself a
+# symlink (dotfiles-style ~/.claude -> ~/dotfiles/claude), the dereferenced
+# target names the destination, which the textual pattern never matches — so
+# the destination is refused too. The textual pattern stays for a ~/.claude
+# that does not exist yet. $_home is stripped of a trailing slash after
+# canonicalizing so HOME=/ yields "/.claude", never a "//.claude" that
+# matches nothing.
 guard_target() {
-  _t="$(canon_path "${1%/}")"
-  _repo="$(canon_path "${2%/}")"
-  _home="$(canon_path "${HOME%/}")"
-  [ -n "$_t" ] || die "install target is empty"
+  _raw="${1%/}"
+  [ -n "$_raw" ] || die "install target is empty"
+  _t="$(canon_path "$_raw/.")"
+  _repo="$(canon_path "${2%/}/.")"
+  _home="$(canon_path "${HOME%/}/.")"
+  _home="${_home%/}"
+  _claude="$(canon_path "$_home/.claude/.")"
   [ "$_t" != "$_home" ] || die "refusing to install into your home directory"
   case "$_t" in
-    "$_home/.claude"|"$_home/.claude"/*)
+    "$_home/.claude"|"$_home/.claude"/*|"$_claude"|"$_claude"/*)
       die "refusing to install into ~/.claude — that is your existing setup" ;;
   esac
   case "$_t" in
@@ -106,22 +137,30 @@ guard_target() {
   return 0
 }
 
-# resolve_profile_target PROFILE_DIR [OVERRIDE] — print the profile's config
-# root. OVERRIDE wins when given; otherwise profile.json's target is used.
-# Dies when the profile, its profile.json, or the resolved target is missing.
-resolve_profile_target() {
-  _pdir="${1%/}"
+# resolve_studio_target STUDIO_DIR [OVERRIDE] — print the studio's config
+# root. OVERRIDE wins when given; otherwise studio.json's target is used.
+# Dies when the studio, its studio.json, or the resolved target is missing.
+resolve_studio_target() {
+  _sdir="${1%/}"
   _override="${2:-}"
-  _pname="$(basename "$_pdir")"
-  [ -d "$_pdir" ] || die "unknown profile: $_pname"
-  [ -f "$_pdir/profile.json" ] || die "profile has no profile.json: $_pname"
+  _sname="$(basename "$_sdir")"
+  [ -d "$_sdir" ] || die "unknown studio: $_sname"
+  [ -f "$_sdir/studio.json" ] || die "studio has no studio.json: $_sname"
   if [ -n "$_override" ]; then
     _resolved="$(expand_path "$_override")"
   else
-    _resolved="$(expand_path "$(json_field "$_pdir/profile.json" target)")"
+    _resolved="$(expand_path "$(json_field "$_sdir/studio.json" target)")"
   fi
-  [ -n "$_resolved" ] || die "profile.json declares no target: $_pname"
+  [ -n "$_resolved" ] || die "studio.json declares no target: $_sname"
   printf '%s\n' "$_resolved"
+}
+
+# requires_of FILE KIND — print the names a requires.txt declares for KIND
+# (plugin, skill, or agent), one per line. A missing file prints nothing, so
+# a studio with no dependencies needs only an empty requires.txt.
+requires_of() {
+  [ -f "$1" ] || return 0
+  awk -v kind="$2" '$1 == kind { print $2 }' "$1"
 }
 
 # install_entries SRC_DIR DEST_DIR MODE — install each child of SRC_DIR into
@@ -150,4 +189,74 @@ manifest_add() {
     return 0
   fi
   printf '%s\n' "$2" >> "$1"
+}
+
+# manifest_meta MANIFEST KEY — the value of the header line "# KEY=value"
+# the installer writes (mode, shim); empty when the manifest or the key is
+# absent. One key per line, so a shim path with a space survives.
+manifest_meta() {
+  [ -f "$1" ] || return 0
+  sed -n "s/^# $2=//p" "$1" | head -n 1
+}
+
+# shim_owned SHIM TARGET — SHIM launches Claude Code against TARGET. Two
+# studios can share a shim directory and a root can be reinstalled at another
+# target; a shim that points elsewhere is not this root's to delete.
+shim_owned() {
+  [ -f "$1" ] && grep -qF "CLAUDE_CONFIG_DIR=\"$2\"" "$1"
+}
+
+# manifest_remove MANIFEST TARGET SHIM_PATH — delete every path the manifest
+# records that lies under TARGET, plus the shim at SHIM_PATH, then delete the
+# manifest itself. A missing manifest is a no-op.
+#
+# Header lines ("# key=value") are metadata, never paths.
+#
+# The manifest lives inside a user-writable root and can be stale from an
+# install that used a different --target or --shim-dir, so entries outside
+# TARGET are skipped with a warning. Scope is decided on the canonical form of
+# both sides: a '..' spelling such as "$TARGET/../.claude/settings.json"
+# matches "$TARGET/*" textually while pointing outside the root entirely. The
+# removal itself uses the entry exactly as written, so a path the kernel
+# cannot resolve deletes nothing rather than deleting the folded path instead.
+# SHIM_PATH is canonicalized for the same reason: on macOS a shim under
+# $TMPDIR is spelled /var/... while its recorded entry folds to /private/var/...
+#
+# The scope root is resolved physically ("/." makes its final component an
+# ancestor for canon_path): entries under a symlinked root (`--target ~/link`)
+# canonicalize through the link to the real directory, so the scope must be
+# the real directory too — otherwise every entry looks outside scope and the
+# cleanup is a silent no-op. A root that does not exist yet stays textual.
+#
+# An entry with a trailing slash is skipped outright: `rm -rf link/` follows
+# a symlink and deletes the linked directory's contents (leaving the link),
+# so a crafted "<target>/memory/sub/" would delete through a link into the
+# repository while canon_path still judges it in scope. The installer never
+# records a trailing slash.
+#
+# Under DRY_RUN=1 every removal is printed, not performed.
+manifest_remove() {
+  _m="$1"; _scope_root="$2"; _shim="$3"
+  [ -f "$_m" ] || return 0
+  _scope_canon="$(canon_path "${_scope_root%/}/.")"
+  _shim_canon="$(canon_path "$_shim")"
+  while IFS= read -r _entry; do
+    [ -n "$_entry" ] || continue
+    case "$_entry" in '#'*) continue ;; esac
+    case "$_entry" in
+      */) warn "skipping manifest entry with trailing slash: $_entry"; continue ;;
+    esac
+    _entry_canon="$(canon_path "$_entry")"
+    _in_scope=0
+    case "$_entry_canon" in
+      "${_scope_canon%/}"/*) _in_scope=1 ;;
+    esac
+    if [ -n "$_shim_canon" ] && [ "$_entry_canon" = "$_shim_canon" ]; then _in_scope=1; fi
+    if [ "$_in_scope" != "1" ]; then
+      warn "skipping manifest entry outside $_scope_root: $_entry"
+      continue
+    fi
+    run rm -rf "$_entry"
+  done < "$_m"
+  run rm -f "$_m"
 }

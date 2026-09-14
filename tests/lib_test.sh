@@ -33,7 +33,7 @@ test_guard_target_rejects() {
   assert_status 1 "rejects ~/.claude" -- guard_target "$HOME/.claude" "$REPO_ROOT"
   assert_status 1 "rejects ~/.claude with slash" -- guard_target "$HOME/.claude/" "$REPO_ROOT"
   assert_status 1 "rejects empty target" -- guard_target "" "$REPO_ROOT"
-  assert_status 1 "rejects in-repo target" -- guard_target "$REPO_ROOT/profiles" "$REPO_ROOT"
+  assert_status 1 "rejects in-repo target" -- guard_target "$REPO_ROOT/studios" "$REPO_ROOT"
 }
 
 # A shim directory goes through the same guard, so a descendant of ~/.claude
@@ -55,6 +55,76 @@ test_guard_target_accepts() {
     guard_target "$HOME/.claude-gamedev/bin" "$REPO_ROOT"
 }
 
+# A target that is itself a symlink into somewhere dangerous must be judged
+# by where it points, not by the link's own path: a wet install through
+# `--target evil` with `evil -> studios/general` would overwrite the studio's
+# CLAUDE.md inside the repository. Only the checked path is dereferenced; a
+# target that does not exist yet still passes exactly as before.
+test_guard_target_derefs_symlinked_target() {
+  FAKE="$TMP/fakehome-link"
+  mkdir -p "$FAKE/.claude/plugins" "$TMP/gt/safe"
+  ln -s "$REPO_ROOT/studios/general" "$TMP/gt/into-repo"
+  ln -s "$FAKE/.claude" "$TMP/gt/into-claude"
+  ln -s "$FAKE/.claude/plugins" "$TMP/gt/into-claude-child"
+  ln -s "$FAKE" "$TMP/gt/into-home"
+  ln -s "$TMP/gt/safe" "$TMP/gt/into-safe"
+
+  assert_status 1 "rejects a target that links into the repository" -- \
+    guard_target "$TMP/gt/into-repo" "$REPO_ROOT"
+  assert_status 1 "rejects a target that links into the repository, with a trailing slash" -- \
+    guard_target "$TMP/gt/into-repo/" "$REPO_ROOT"
+  status=0
+  ( HOME="$FAKE"; guard_target "$TMP/gt/into-claude" "$REPO_ROOT" >/dev/null 2>&1 ) || status=$?
+  assert_eq "1" "$status" "rejects a target that links to ~/.claude"
+  status=0
+  ( HOME="$FAKE"; guard_target "$TMP/gt/into-claude-child" "$REPO_ROOT" >/dev/null 2>&1 ) || status=$?
+  assert_eq "1" "$status" "rejects a target that links to a child of ~/.claude"
+  status=0
+  ( HOME="$FAKE"; guard_target "$TMP/gt/into-home" "$REPO_ROOT" >/dev/null 2>&1 ) || status=$?
+  assert_eq "1" "$status" "rejects a target that links to the home directory"
+
+  assert_status 0 "accepts a target that links to a safe directory" -- \
+    guard_target "$TMP/gt/into-safe" "$REPO_ROOT"
+  assert_status 0 "still accepts a target that does not exist yet" -- \
+    guard_target "$TMP/gt/fresh" "$REPO_ROOT"
+  assert_status 1 "still rejects an empty target" -- guard_target "" "$REPO_ROOT"
+  assert_missing "$TMP/gt/fresh" "guard_target creates nothing"
+}
+
+# ~/.claude itself may be a symlink (dotfiles-style ~/.claude -> ~/dotfiles/claude).
+# The dereferenced target then names the link's destination, which the
+# textual "$HOME/.claude" pattern never matches — so the guard must refuse the
+# destination as well, while the link and its children stay refused. HOME=/
+# must still refuse /.claude rather than build a "//.claude" pattern.
+test_guard_target_rejects_symlinked_dot_claude() {
+  FAKE="$TMP/fakehome-dotfiles"
+  mkdir -p "$FAKE/dotfiles/claude/sub"
+  ln -s "$FAKE/dotfiles/claude" "$FAKE/.claude"
+
+  status=0
+  ( HOME="$FAKE"; guard_target "$FAKE/.claude" "$REPO_ROOT" >/dev/null 2>&1 ) || status=$?
+  assert_eq "1" "$status" "rejects ~/.claude when it is a symlink"
+  status=0
+  ( HOME="$FAKE"; guard_target "$FAKE/.claude/sub" "$REPO_ROOT" >/dev/null 2>&1 ) || status=$?
+  assert_eq "1" "$status" "rejects a child of a symlinked ~/.claude"
+  status=0
+  ( HOME="$FAKE"; guard_target "$FAKE/dotfiles/claude" "$REPO_ROOT" >/dev/null 2>&1 ) || status=$?
+  assert_eq "1" "$status" "rejects the directory a symlinked ~/.claude points at"
+  status=0
+  ( HOME="$FAKE"; guard_target "$FAKE/dotfiles/claude/sub" "$REPO_ROOT" >/dev/null 2>&1 ) || status=$?
+  assert_eq "1" "$status" "rejects a child of that directory"
+  status=0
+  ( HOME="$FAKE"; guard_target "$FAKE/dotfiles" "$REPO_ROOT" >/dev/null 2>&1 ) || status=$?
+  assert_eq "0" "$status" "still accepts the destination's parent"
+
+  status=0
+  ( HOME="/"; guard_target "/.claude" "$REPO_ROOT" >/dev/null 2>&1 ) || status=$?
+  assert_eq "1" "$status" "rejects /.claude when HOME is /"
+  status=0
+  ( HOME="/"; guard_target "/.claude/sub" "$REPO_ROOT" >/dev/null 2>&1 ) || status=$?
+  assert_eq "1" "$status" "rejects a child of /.claude when HOME is /"
+}
+
 test_need_value() {
   assert_status 1 "rejects an empty option value" -- need_value --target ""
   assert_status 1 "rejects an absent option value" -- need_value --target
@@ -64,28 +134,44 @@ test_need_value() {
   assert_contains "$TMP/need.out" "missing value for --target" "names the flag it is missing"
 }
 
-test_resolve_profile_target() {
-  mkdir -p "$TMP/profiles/good" "$TMP/profiles/bare"
-  cat > "$TMP/profiles/good/profile.json" <<'JSON'
+test_resolve_studio_target() {
+  mkdir -p "$TMP/studios/good" "$TMP/studios/bare"
+  cat > "$TMP/studios/good/studio.json" <<'JSON'
 { "name": "good", "target": "~/.claude-good", "shim": "claude-good" }
 JSON
-  assert_eq "$HOME/.claude-good" "$(resolve_profile_target "$TMP/profiles/good" "")" \
-    "resolves the target from profile.json"
-  assert_eq "$TMP/override" "$(resolve_profile_target "$TMP/profiles/good" "$TMP/override")" \
-    "an override wins over profile.json"
-  assert_eq "$HOME/ovr" "$(resolve_profile_target "$TMP/profiles/good" '~/ovr')" \
+  assert_eq "$HOME/.claude-good" "$(resolve_studio_target "$TMP/studios/good" "")" \
+    "resolves the target from studio.json"
+  assert_eq "$TMP/override" "$(resolve_studio_target "$TMP/studios/good" "$TMP/override")" \
+    "an override wins over studio.json"
+  assert_eq "$HOME/ovr" "$(resolve_studio_target "$TMP/studios/good" '~/ovr')" \
     "an override is tilde-expanded"
-  assert_status 1 "rejects an unknown profile directory" -- \
-    resolve_profile_target "$TMP/profiles/absent" ""
-  assert_status 1 "rejects a profile with no profile.json" -- \
-    resolve_profile_target "$TMP/profiles/bare" ""
-  printf '{ "name": "empty" }\n' > "$TMP/profiles/bare/profile.json"
-  assert_status 1 "rejects a profile.json with no target" -- \
-    resolve_profile_target "$TMP/profiles/bare" ""
+  assert_status 1 "rejects an unknown studio directory" -- \
+    resolve_studio_target "$TMP/studios/absent" ""
+  assert_status 1 "rejects a studio with no studio.json" -- \
+    resolve_studio_target "$TMP/studios/bare" ""
+  printf '{ "name": "empty" }\n' > "$TMP/studios/bare/studio.json"
+  assert_status 1 "rejects a studio.json with no target" -- \
+    resolve_studio_target "$TMP/studios/bare" ""
+}
+
+test_requires_of() {
+  cat > "$TMP/requires.txt" <<'REQ'
+plugin superpowers@claude-plugins-official
+plugin godot-prompter@skillsmith
+skill  superpowers:test-driven-development
+agent  godot-prompter:godot-csharp-engineer
+REQ
+  assert_eq "superpowers@claude-plugins-official
+godot-prompter@skillsmith" "$(requires_of "$TMP/requires.txt" plugin)" "lists the plugin lines"
+  assert_eq "superpowers:test-driven-development" "$(requires_of "$TMP/requires.txt" skill)" \
+    "lists the skill lines"
+  assert_eq "godot-prompter:godot-csharp-engineer" "$(requires_of "$TMP/requires.txt" agent)" \
+    "lists the agent lines"
+  assert_eq "" "$(requires_of "$TMP/absent.txt" plugin)" "a missing file lists nothing"
 }
 
 test_run_dry() {
-  DRY_RUN=1 run touch "$TMP/should-not-exist"
+  DRY_RUN=1 run touch "$TMP/should-not-exist" 2>/dev/null
   assert_missing "$TMP/should-not-exist" "dry run creates nothing"
   DRY_RUN=0 run touch "$TMP/should-exist"
   assert_file "$TMP/should-exist" "wet run creates the file"
@@ -113,6 +199,117 @@ test_canon_path() {
   assert_missing "$TMP/canon/nope" "canon_path creates nothing"
 }
 
+test_manifest_remove() {
+  mkdir -p "$TMP/mr/root/memory" "$TMP/mr/bin" "$TMP/mr/outside"
+  printf 'x\n' > "$TMP/mr/root/memory/a.md"
+  printf 'x\n' > "$TMP/mr/root/CLAUDE.md"
+  printf 'x\n' > "$TMP/mr/bin/claude-x"
+  printf 'x\n' > "$TMP/mr/outside/keep.md"
+  printf 'x\n' > "$TMP/mr/root/user-data.md"
+  {
+    printf '%s\n' "$TMP/mr/root/memory/a.md"
+    printf '%s\n' "$TMP/mr/root/CLAUDE.md"
+    printf '%s\n' "$TMP/mr/bin/claude-x"
+    printf '%s\n' "$TMP/mr/outside/keep.md"
+    printf '%s\n' "$TMP/mr/root/../outside/keep.md"
+  } > "$TMP/mr/root/.omega-ai-manifest"
+  manifest_remove "$TMP/mr/root/.omega-ai-manifest" "$TMP/mr/root" "$TMP/mr/bin/claude-x" 2>"$TMP/mr/err"
+  assert_missing "$TMP/mr/root/memory/a.md" "removes an in-scope entry"
+  assert_missing "$TMP/mr/root/CLAUDE.md" "removes a second in-scope entry"
+  assert_missing "$TMP/mr/bin/claude-x" "removes the named shim"
+  assert_file "$TMP/mr/outside/keep.md" "keeps an entry outside the target"
+  assert_file "$TMP/mr/root/user-data.md" "keeps files the manifest never recorded"
+  assert_missing "$TMP/mr/root/.omega-ai-manifest" "removes the manifest itself"
+  assert_contains "$TMP/mr/err" "skipping manifest entry" "warns about the skipped entry"
+  assert_status 0 "a missing manifest is not an error" -- manifest_remove "$TMP/mr/none" "$TMP/mr/root" ""
+}
+
+# A config root reached through a symlink (`--target ~/link`, link -> real
+# dir) must still have its entries removed. Entries canonicalize through the
+# link to the real directory, so the scope must be the real directory too —
+# otherwise every entry looks "outside scope" and cleanup silently does
+# nothing. The link itself is never an entry, so it stays.
+test_manifest_remove_through_symlinked_root() {
+  mkdir -p "$TMP/sr/real/memory" "$TMP/sr/bin" "$TMP/sr/outside"
+  ln -s "$TMP/sr/real" "$TMP/sr/link"
+  printf 'x\n' > "$TMP/sr/link/memory/a.md"
+  printf 'x\n' > "$TMP/sr/link/CLAUDE.md"
+  printf 'x\n' > "$TMP/sr/real/settings.json"
+  printf 'x\n' > "$TMP/sr/bin/claude-x"
+  printf 'x\n' > "$TMP/sr/outside/keep.md"
+  printf 'x\n' > "$TMP/sr/real/user-data.md"
+  {
+    printf '%s\n' "$TMP/sr/link/memory/a.md"
+    printf '%s\n' "$TMP/sr/link/CLAUDE.md"
+    printf '%s\n' "$TMP/sr/real/settings.json"
+    printf '%s\n' "$TMP/sr/bin/claude-x"
+    printf '%s\n' "$TMP/sr/outside/keep.md"
+    printf '%s\n' "$TMP/sr/link/../outside/keep.md"
+  } > "$TMP/sr/link/.omega-ai-manifest"
+  manifest_remove "$TMP/sr/link/.omega-ai-manifest" "$TMP/sr/link" "$TMP/sr/bin/claude-x" 2>"$TMP/sr/err"
+  assert_missing "$TMP/sr/real/memory/a.md" "removes an entry recorded through the link"
+  assert_missing "$TMP/sr/real/CLAUDE.md" "removes a second entry recorded through the link"
+  assert_missing "$TMP/sr/real/settings.json" "removes an entry recorded by its real path"
+  assert_missing "$TMP/sr/bin/claude-x" "removes the named shim"
+  assert_symlink "$TMP/sr/link" "the root link itself stays"
+  assert_file "$TMP/sr/outside/keep.md" "keeps an entry outside the real root"
+  assert_file "$TMP/sr/real/user-data.md" "keeps files the manifest never recorded"
+  assert_missing "$TMP/sr/real/.omega-ai-manifest" "removes the manifest itself"
+  assert_contains "$TMP/sr/err" "skipping manifest entry" "warns about the skipped entries"
+  assert_status 0 "a root that does not exist yet is still accepted" -- \
+    manifest_remove "$TMP/sr/none/.omega-ai-manifest" "$TMP/sr/none" ""
+}
+
+# A trailing slash on an entry that names a symlink makes `rm -rf` follow the
+# link: BSD rm deletes the linked directory's contents and leaves the link.
+# canon_path keeps the final component undereferenced, so the entry looks in
+# scope while the deletion lands wherever the link points — in symlink mode,
+# inside the repository. Such an entry must be skipped, not removed.
+test_manifest_remove_skips_trailing_slash() {
+  mkdir -p "$TMP/ts/root/memory" "$TMP/ts/linked"
+  printf 'x\n' > "$TMP/ts/linked/keep.md"
+  ln -s "$TMP/ts/linked" "$TMP/ts/root/memory/sub"
+  printf 'x\n' > "$TMP/ts/root/CLAUDE.md"
+  {
+    printf '%s\n' "$TMP/ts/root/memory/sub/"
+    printf '%s\n' "$TMP/ts/root/CLAUDE.md"
+  } > "$TMP/ts/root/.omega-ai-manifest"
+  manifest_remove "$TMP/ts/root/.omega-ai-manifest" "$TMP/ts/root" "" 2>"$TMP/ts/err"
+  assert_file "$TMP/ts/linked/keep.md" "a trailing-slash entry never deletes through the link"
+  assert_symlink "$TMP/ts/root/memory/sub" "the link itself is left alone"
+  assert_contains "$TMP/ts/err" "trailing slash" "warns about the skipped entry"
+  assert_missing "$TMP/ts/root/CLAUDE.md" "other in-scope entries are still removed"
+  assert_missing "$TMP/ts/root/.omega-ai-manifest" "the manifest is still removed"
+}
+
+test_studio_arg() {
+  assert_eq "general" "$(studio_arg general)" "studio_arg passes a plain name through"
+  assert_eq "general" "$(studio_arg general/)" "studio_arg strips a trailing slash"
+  assert_status 1 "studio_arg refuses a path" -- studio_arg studios/general
+  assert_status 1 "studio_arg refuses an empty name" -- studio_arg ""
+}
+
+test_manifest_header() {
+  mkdir -p "$TMP/mh/root"
+  printf '# mode=copy\n# shim=/some where/claude-x\n%s\n' "$TMP/mh/root/file" > "$TMP/mh/root/.omega-ai-manifest"
+  printf 'x\n' > "$TMP/mh/root/file"
+  assert_eq "copy" "$(manifest_meta "$TMP/mh/root/.omega-ai-manifest" mode)" "manifest_meta reads the mode"
+  assert_eq "/some where/claude-x" "$(manifest_meta "$TMP/mh/root/.omega-ai-manifest" shim)" \
+    "manifest_meta reads a shim path with a space"
+  assert_eq "" "$(manifest_meta "$TMP/mh/root/.omega-ai-manifest" nope)" "manifest_meta prints nothing for an absent key"
+  assert_eq "" "$(manifest_meta "$TMP/mh/none" mode)" "manifest_meta prints nothing for a missing manifest"
+  manifest_remove "$TMP/mh/root/.omega-ai-manifest" "$TMP/mh/root" "" 2> "$TMP/mh/warn.out"
+  assert_missing "$TMP/mh/root/file" "manifest_remove still removes the entries"
+  assert_not_contains "$TMP/mh/warn.out" "skipping" "manifest_remove does not treat header lines as entries"
+  printf '#!/bin/sh\nCLAUDE_CONFIG_DIR="/roots/a" exec claude "$@"\n' > "$TMP/mh/shim"
+  assert_status 0 "shim_owned accepts the shim of its root" -- shim_owned "$TMP/mh/shim" /roots/a
+  assert_status 1 "shim_owned rejects the shim of another root" -- shim_owned "$TMP/mh/shim" /roots/b
+  assert_status 1 "shim_owned rejects a missing shim" -- shim_owned "$TMP/mh/none" /roots/a
+}
+
 run_tests test_json_field test_expand_path test_canon_path test_guard_target_rejects \
   test_guard_target_rejects_descendants_of_dot_claude test_guard_target_accepts \
-  test_need_value test_resolve_profile_target test_run_dry
+  test_guard_target_derefs_symlinked_target test_guard_target_rejects_symlinked_dot_claude \
+  test_need_value test_resolve_studio_target test_requires_of test_run_dry \
+  test_manifest_remove test_manifest_remove_through_symlinked_root \
+  test_manifest_remove_skips_trailing_slash test_studio_arg test_manifest_header

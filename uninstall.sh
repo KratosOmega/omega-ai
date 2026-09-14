@@ -3,7 +3,7 @@ set -eu
 REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
 . "$REPO_ROOT/lib/common.sh"
 
-PROFILE=""
+STUDIO=""
 TARGET_OVERRIDE=""
 SHIM_DIR="$HOME/.local/bin"
 PURGE=0
@@ -19,17 +19,25 @@ while [ $# -gt 0 ]; do
       need_value --shim-dir "$2"; SHIM_DIR="$2"; shift 2 ;;
     --purge) PURGE=1; shift ;;
     --yes) ASSUME_YES=1; shift ;;
-    -h|--help) log "Usage: uninstall.sh <profile> [--target DIR] [--shim-dir DIR] [--purge] [--yes]"; exit 0 ;;
+    -h|--help) log "Usage: uninstall.sh <studio> [--target DIR] [--shim-dir DIR] [--purge] [--yes]   (--shim-dir only for installs made before the manifest recorded the shim)"; exit 0 ;;
     -*) die "unknown option: $1" ;;
-    *) [ -z "$PROFILE" ] || die "only one profile at a time"; PROFILE="$1"; shift ;;
+    *) [ -z "$STUDIO" ] || die "only one studio at a time"; STUDIO="$1"; shift ;;
   esac
 done
-[ -n "$PROFILE" ] || die "no profile given"
+[ -n "$STUDIO" ] || die "no studio given"
+STUDIO="$(studio_arg "$STUDIO")"
 
-PROFILE_DIR="$REPO_ROOT/profiles/$PROFILE"
-TARGET="$(resolve_profile_target "$PROFILE_DIR" "$TARGET_OVERRIDE")"
+STUDIO_DIR="$REPO_ROOT/studios/$STUDIO"
+# Two assignments, not one nested substitution — see install.sh for why: a
+# single `canon_path "$(resolve_studio_target ...)"` masks the inner die
+# under `set -e`.
+TARGET="$(resolve_studio_target "$STUDIO_DIR" "$TARGET_OVERRIDE")"
+TARGET="$(canon_path "$TARGET")"
 SHIM_DIR="$(canon_path "$(expand_path "$SHIM_DIR")")"
-SHIM_NAME="$(json_field "$PROFILE_DIR/profile.json" shim)"
+SHIM_NAME="$(json_field "$STUDIO_DIR/studio.json" shim)"
+# An empty name would make SHIM_PATH the shim directory itself, which
+# manifest_remove would then treat as a removable entry.
+[ -n "$SHIM_NAME" ] || die "studio.json has no shim name"
 
 # Guard both paths this script deletes from.
 guard_target "$TARGET" "$REPO_ROOT"
@@ -37,48 +45,42 @@ guard_target "$SHIM_DIR" "$REPO_ROOT"
 [ -d "$TARGET" ] || die "nothing installed at $TARGET"
 
 MANIFEST="$TARGET/.omega-ai-manifest"
-SHIM_PATH="${SHIM_DIR%/}/$SHIM_NAME"
-TARGET_CANON="$(canon_path "$TARGET")"
+# The shim the install recorded wins over the derived path; a manifest from
+# the previous installer records none, and --shim-dir is the fallback.
+SHIM_PATH="$(manifest_meta "$MANIFEST" shim)"
+if [ -n "$SHIM_PATH" ]; then
+  guard_target "$(dirname "$SHIM_PATH")" "$REPO_ROOT"
+else
+  SHIM_PATH="${SHIM_DIR%/}/$SHIM_NAME"
+fi
+if [ -f "$SHIM_PATH" ] && ! shim_owned "$SHIM_PATH" "$TARGET"; then
+  warn "shim $SHIM_PATH launches another config root; keeping it"
+  SHIM_PATH=""
+fi
 
 if [ "$PURGE" = "1" ]; then
+  # Only a root this installer wrote may be purged; the manifest is the proof.
+  [ -f "$MANIFEST" ] || die "no manifest at $MANIFEST — not an omega-ai config root, refusing to purge"
   if [ "$ASSUME_YES" != "1" ]; then
     printf 'Delete the entire config root %s, including sessions and history? [y/N] ' "$TARGET"
     read -r reply
     case "$reply" in y|Y) ;; *) die "aborted" ;; esac
   fi
-  rm -rf "$TARGET"
-  if [ -n "$SHIM_NAME" ]; then rm -f "$SHIM_PATH"; fi
+  # rm -rf on a symlink removes the link and keeps the directory: purge the
+  # directory the target names, then the link that named it.
+  real="$(canon_path "$TARGET/.")"
+  rm -rf "$real"
+  if [ -L "$TARGET" ]; then rm -f "$TARGET"; fi
+  [ -z "$SHIM_PATH" ] || rm -f "$SHIM_PATH"
   log "purged $TARGET"
   exit 0
 fi
 
 if [ -f "$MANIFEST" ]; then
-  # The manifest lives inside a user-writable root and can be stale from an
-  # install that used a different --target or --shim-dir. Delete only what this
-  # invocation is responsible for: entries under TARGET, plus its own shim.
-  while IFS= read -r entry; do
-    [ -n "$entry" ] || continue
-    # Scope is decided on the canonical form of both sides: a '..' spelling
-    # such as "$TARGET/../.claude/settings.json" matches "$TARGET/*" textually
-    # while pointing outside the config root entirely. The removal below still
-    # uses the entry exactly as written, so a path the kernel cannot resolve
-    # deletes nothing rather than deleting the folded path instead.
-    entry_canon="$(canon_path "$entry")"
-    in_scope=0
-    case "$entry_canon" in
-      "${TARGET_CANON%/}"/*) in_scope=1 ;;
-    esac
-    if [ -n "$SHIM_NAME" ] && [ "$entry_canon" = "$SHIM_PATH" ]; then in_scope=1; fi
-    if [ "$in_scope" != "1" ]; then
-      warn "skipping manifest entry outside $TARGET: $entry"
-      continue
-    fi
-    rm -rf "$entry"
-  done < "$MANIFEST"
-  rm -f "$MANIFEST"
+  manifest_remove "$MANIFEST" "$TARGET" "$SHIM_PATH"
 else
   warn "no manifest at $MANIFEST — removing nothing"
 fi
 
-if [ -n "$SHIM_NAME" ]; then rm -f "$SHIM_PATH"; fi
-log "uninstalled $PROFILE from $TARGET (user data kept; use --purge to remove everything)"
+[ -z "$SHIM_PATH" ] || rm -f "$SHIM_PATH"
+log "uninstalled $STUDIO from $TARGET (user data kept; use --purge to remove everything)"

@@ -1,0 +1,640 @@
+<title>omega-ai Game Studio</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+  :root {
+    --bg: #F2F4F7;
+    --surface: #FFFFFF;
+    --surface-2: #E9EDF2;
+    --ink: #1A222D;
+    --ink-2: #4A5563;
+    --ink-3: #7A8493;
+    --line: #D5DBE3;
+    --accent: #0F7C86;
+    --accent-ink: #FFFFFF;
+    --accent-soft: #D8EEF0;
+    --gate: #B86E00;
+    --gate-soft: #FBEBD1;
+    --term-bg: #1A222D;
+    --term-ink: #E4E9F0;
+    --term-dim: #8A96A6;
+    --term-accent: #6ED3DC;
+    --term-gate: #F2B233;
+    --shadow: 0 1px 2px rgba(20, 30, 45, .06), 0 6px 20px rgba(20, 30, 45, .05);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0F141A;
+      --surface: #161D26;
+      --surface-2: #1E2732;
+      --ink: #E6EAF0;
+      --ink-2: #B2BAC6;
+      --ink-3: #7F8A98;
+      --line: #2A3542;
+      --accent: #4FC3CF;
+      --accent-ink: #0B1216;
+      --accent-soft: #143A3F;
+      --gate: #F2B233;
+      --gate-soft: #3A2C10;
+      --term-bg: #0A0E13;
+      --term-ink: #E4E9F0;
+      --term-dim: #7F8A98;
+      --term-accent: #6ED3DC;
+      --term-gate: #F2B233;
+      --shadow: 0 1px 2px rgba(0,0,0,.4), 0 6px 20px rgba(0,0,0,.35);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0F141A;
+    --surface: #161D26;
+    --surface-2: #1E2732;
+    --ink: #E6EAF0;
+    --ink-2: #B2BAC6;
+    --ink-3: #7F8A98;
+    --line: #2A3542;
+    --accent: #4FC3CF;
+    --accent-ink: #0B1216;
+    --accent-soft: #143A3F;
+    --gate: #F2B233;
+    --gate-soft: #3A2C10;
+    --term-bg: #0A0E13;
+    --term-ink: #E4E9F0;
+    --term-dim: #7F8A98;
+    --term-accent: #6ED3DC;
+    --term-gate: #F2B233;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 6px 20px rgba(0,0,0,.35);
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: "Atkinson Hyperlegible", "Helvetica Neue", Arial, sans-serif;
+    font-size: 16px;
+    line-height: 1.55;
+    padding-block: 40px 96px;
+    padding-inline: 20px;
+  }
+  .page { max-width: 880px; margin-inline: auto; }
+  h1, h2, h3 {
+    font-family: "Bricolage Grotesque", "Helvetica Neue", Arial, sans-serif;
+    font-weight: 700;
+    line-height: 1.15;
+    text-wrap: balance;
+    margin: 0;
+  }
+  h1 { font-size: clamp(34px, 5vw, 48px); letter-spacing: -0.01em; }
+  h2 { font-size: 26px; margin-block: 56px 14px; padding-top: 24px; border-top: 1px solid var(--line); }
+  h3 { font-size: 18px; margin-block: 24px 8px; }
+  p { margin-block: 0 14px; max-width: 68ch; }
+  ul, ol { margin-block: 0 14px; padding-inline-start: 22px; max-width: 70ch; }
+  li { margin-block: 3px; }
+  li > ul { margin-top: 4px; }
+  a { color: var(--accent); }
+  code, pre, .mono { font-family: "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace; }
+  code { font-size: 0.88em; background: var(--surface-2); padding: 1px 5px; border-radius: 4px; }
+  pre { margin: 0 0 16px; }
+  pre code { background: none; padding: 0; font-size: 13px; }
+  .eyebrow {
+    font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--ink-3); font-weight: 700; margin-bottom: 6px;
+  }
+  .lede { font-size: 19px; color: var(--ink-2); max-width: 62ch; margin-top: 14px; }
+  .meta { display: flex; flex-wrap: wrap; gap: 8px 20px; margin-top: 18px; font-size: 14px; color: var(--ink-3); }
+  .meta b { color: var(--ink-2); font-weight: 700; }
+
+  /* decisions grid */
+  .decisions {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 10px;
+    margin-block: 16px 8px;
+  }
+  .decision { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 12px 14px; }
+  .decision .k { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--ink-3); font-weight: 700; }
+  .decision .v { margin-top: 3px; font-size: 15px; }
+
+  /* three-column comparison */
+  .cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; margin-block: 14px 8px; }
+  .col { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 16px 18px; }
+  .col h3 { margin-top: 0; font-size: 17px; }
+  .col .tag { display: inline-block; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; font-weight: 700; padding: 2px 8px; border-radius: 999px; margin-bottom: 10px; }
+  .tag.keep { background: var(--accent-soft); color: var(--accent); }
+  .tag.change { background: var(--gate-soft); color: var(--gate); }
+  .col ul { padding-inline-start: 18px; font-size: 15px; }
+
+  /* tables */
+  .tbl-wrap { overflow-x: auto; margin-block: 12px 18px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); }
+  table { border-collapse: collapse; width: 100%; font-size: 14.5px; }
+  th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--ink-3); background: var(--surface-2); }
+  tr:last-child td { border-bottom: none; }
+  td code { white-space: nowrap; }
+
+  /* figures */
+  figure { margin: 18px 0 22px; }
+  figure svg { width: 100%; height: auto; display: block; color: var(--ink); }
+  figcaption { font-size: 13.5px; color: var(--ink-2); margin-top: 8px; max-width: 70ch; }
+  .fig-wrap { overflow-x: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 14px; }
+
+  /* terminal */
+  .term {
+    background: var(--term-bg); color: var(--term-ink); border-radius: 8px;
+    padding: 16px 18px; font-size: 13px; line-height: 1.5; overflow-x: auto;
+    box-shadow: var(--shadow); margin-block: 10px 18px;
+  }
+  .term .p { color: var(--term-accent); }
+  .term .d { color: var(--term-dim); }
+  .term .g { color: var(--term-gate); }
+  .term .u { color: #fff; font-weight: 600; }
+  .term-title { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--ink-3); font-weight: 700; margin-top: 18px; }
+
+  /* tree */
+  .tree { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 14px 16px; overflow-x: auto; font-size: 13px; line-height: 1.5; }
+  .tree .c { color: var(--ink-3); }
+  .tree .n { color: var(--accent); font-weight: 600; }
+
+  /* callouts */
+  .gate-note { border-left: 3px solid var(--gate); background: var(--gate-soft); padding: 10px 14px; border-radius: 0 6px 6px 0; margin-block: 12px 18px; max-width: 72ch; }
+  .gate-note b { color: var(--gate); }
+  .approve {
+    background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 18px 20px; margin-top: 20px;
+  }
+  .approve ol { margin: 0; }
+  .approve li { margin-block: 5px; }
+  .phase { display: grid; grid-template-columns: 90px 1fr; gap: 12px; padding: 12px 0; border-top: 1px solid var(--line); }
+  .phase:last-child { border-bottom: 1px solid var(--line); }
+  .phase .n { font-family: "Bricolage Grotesque", sans-serif; font-weight: 700; font-size: 20px; color: var(--accent); }
+  .phase p { margin-bottom: 4px; }
+  @media (max-width: 480px) { .phase { grid-template-columns: 1fr; gap: 4px; } }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+</style>
+
+<div class="page">
+  <div class="eyebrow">Design proposal · for approval</div>
+  <h1>omega-ai Game Studio</h1>
+  <p class="lede">A Claude Code plugin that turns <code>claude-gd</code> into a small game studio: eight stage skills you drive by hand, ten role agents that run long sessions, and a toolkit that can build, test and boot a Godot project. Composed from superpowers (process) and gstack (roles, hand-offs) — adjusted for how games actually get made.</p>
+  <div class="meta">
+    <span><b>Repo</b> omega-ai</span>
+    <span><b>Studio</b> game-dev</span>
+    <span><b>Engine</b> Godot 4.x · 2D · GDScript · GUT</span>
+    <span><b>Date</b> 2026-09-13</span>
+  </div>
+
+  <h2>1 · Decisions locked in clarification</h2>
+  <p>Everything below follows from these. Change one here and the rest of the page changes with it.</p>
+  <div class="decisions">
+    <div class="decision"><div class="k">Foundation</div><div class="v">Evolve existing <code>profiles/</code> installer into <code>studios/</code></div></div>
+    <div class="decision"><div class="k">Isolation</div><div class="v"><code>~/.claude-gamedev</code>, launched by <code>claude-gd</code>; <code>~/.claude</code> never touched</div></div>
+    <div class="decision"><div class="k">Packaging</div><div class="v">Plugin named <code>game-dev</code>, loaded live with <code>--plugin-dir</code></div></div>
+    <div class="decision"><div class="k">Naming</div><div class="v"><code>/game-dev:plan</code>, agent <code>game-dev:reviewer</code></div></div>
+    <div class="decision"><div class="k">Composition</div><div class="v">Own pipeline skills; delegate mechanics to superpowers, engine to godot-prompter</div></div>
+    <div class="decision"><div class="k">Stages</div><div class="v">brainstorm → plan → execute → review → playtest → ship → retro</div></div>
+    <div class="decision"><div class="k">Spec review</div><div class="v">Markdown in repo + rendered Artifact page for approval</div></div>
+    <div class="decision"><div class="k">Execution</div><div class="v">Subagent-driven by default; inline only when you ask</div></div>
+    <div class="decision"><div class="k">Roles</div><div class="v">10 agents across design, engineering, art/feel, production</div></div>
+    <div class="decision"><div class="k">Toolkits</div><div class="v">bin/ helpers, project scaffold, session hook, optional godot-mcp</div></div>
+    <div class="decision"><div class="k">State & memory</div><div class="v"><code>.studio/STATE.md</code> per project; retro writes isolated memory</div></div>
+    <div class="decision"><div class="k">Docs</div><div class="v"><code>docs/game-dev/{specs,plans,artifacts,PROGRESS.md}</code></div></div>
+    <div class="decision"><div class="k">Extensibility</div><div class="v">Engine / dimension / language seams; Godot 2D is the first pack</div></div>
+    <div class="decision"><div class="k">Copilot</div><div class="v">Portable SKILL.md format; no installer yet</div></div>
+  </div>
+
+  <h2>2 · What we took, what we changed</h2>
+  <p>The two reference frameworks answer different questions. superpowers answers <em>how to work</em>; gstack answers <em>who does the work and what they hand each other</em>. Neither knows what a playtest is.</p>
+  <div class="cols">
+    <div class="col">
+      <h3>From superpowers</h3>
+      <span class="tag keep">Take</span>
+      <ul>
+        <li>Skill-first discipline: check for a skill before any action</li>
+        <li>Brainstorm gate — no code before an approved design</li>
+        <li>Spec → plan → fresh subagent per task → reviewer per task</li>
+        <li>Red/green TDD, verification-before-completion, git worktrees</li>
+        <li>Writing skills as TDD on documentation</li>
+      </ul>
+      <span class="tag change">Change</span>
+      <ul>
+        <li>TDD is mandatory only for tasks tagged <code>Verify: unit</code>. Feel, animation and layout tasks get playtest criteria instead — a unit test cannot tell you a dash feels floaty.</li>
+        <li>Brainstorm gains GDD-lite sections: core-loop delta, player verbs, feel targets, not-doing list.</li>
+        <li>A playtest stage exists at all.</li>
+      </ul>
+    </div>
+    <div class="col">
+      <h3>From gstack</h3>
+      <span class="tag keep">Take</span>
+      <ul>
+        <li>Named specialists with a persona and an output contract</li>
+        <li>Each stage writes a file the next stage reads</li>
+        <li>Decision-brief format for every approval question (stakes, recommendation, options)</li>
+        <li>QA loop: find → fix → regression test → re-verify</li>
+        <li>Router skill, retro and learnings that compound</li>
+      </ul>
+      <span class="tag change">Change</span>
+      <ul>
+        <li>CEO "think bigger" becomes producer "cut to the vertical slice". Games die of scope, not of timidity.</li>
+        <li>Browser QA becomes headless Godot runs plus a human playtest script.</li>
+        <li>Dropped: Bun binaries, browser daemon, telemetry, design-html, security audit. Nothing to compile, nothing phoning home.</li>
+      </ul>
+    </div>
+    <div class="col">
+      <h3>From the industry</h3>
+      <span class="tag keep">Baked in</span>
+      <ul>
+        <li>Vertical slice before content; milestone gates prototype → vertical slice → alpha → beta → gold tracked in <code>PROGRESS.md</code></li>
+        <li>GDD-lite as a living decision log, not a 40-page dream</li>
+        <li>Playtests state a hypothesis first ("expected perceptual change"), then measure</li>
+        <li>Feel targets in real units: input latency ≤ 2 frames at 60 fps, coyote time ≈ 0.1 s, frame budget 16.6 ms</li>
+        <li>Data-driven tuning: numbers live in <code>Resource</code> files a designer edits without a programmer</li>
+        <li>Import settings and project settings are code — versioned and reviewed</li>
+      </ul>
+    </div>
+  </div>
+
+  <h2>3 · Setup: how the studio reaches a session</h2>
+  <p>One command installs a studio. The config directory holds only what Claude Code must own (settings, rendered instructions, memory, plugin cache). Skills, agents, hooks and tools stay in the repo and load live through <code>--plugin-dir</code>, so an edit to a skill is active in the next session with no reinstall.</p>
+
+  <figure>
+    <div class="fig-wrap">
+    <svg viewBox="0 0 960 372" role="img" aria-label="install.sh links the omega-ai repo into an isolated config directory; the claude-gd shim launches Claude Code against that directory and loads the game-dev plugin live from the repo; the user's existing ~/.claude is never read or written." xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+        </marker>
+        <marker id="arr-acc" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="#0F7C86"/>
+        </marker>
+      </defs>
+      <g font-family="JetBrains Mono, Menlo, monospace" font-size="12" fill="currentColor">
+        <!-- repo box -->
+        <rect x="20" y="60" width="260" height="210" rx="6" fill="none" stroke="currentColor" stroke-width="1.5"/>
+        <text x="34" y="84" font-weight="700" font-family="Bricolage Grotesque, sans-serif" font-size="14">omega-ai repo</text>
+        <text x="34" y="108">studios/game-dev/</text>
+        <text x="48" y="128" opacity=".8">.claude-plugin/plugin.json</text>
+        <text x="48" y="146" opacity=".8">skills/  agents/  hooks/</text>
+        <text x="48" y="164" opacity=".8">bin/  engines/godot/</text>
+        <text x="48" y="182" opacity=".8">CLAUDE.md  settings.json</text>
+        <text x="48" y="200" opacity=".8">memory/  studio.json</text>
+        <text x="34" y="228">studios/general/</text>
+        <text x="34" y="250">docs/game-dev/</text>
+
+        <!-- config box -->
+        <rect x="360" y="60" width="250" height="210" rx="6" fill="none" stroke="currentColor" stroke-width="1.5"/>
+        <text x="374" y="84" font-weight="700" font-family="Bricolage Grotesque, sans-serif" font-size="14">~/.claude-gamedev</text>
+        <text x="374" y="108">CLAUDE.md</text><text x="480" y="108" opacity=".6">rendered</text>
+        <text x="374" y="128">settings.json</text><text x="480" y="128" opacity=".6">copied</text>
+        <text x="374" y="148">memory/</text><text x="480" y="148" opacity=".6">linked</text>
+        <text x="374" y="168">bin/</text><text x="480" y="168" opacity=".6">linked</text>
+        <text x="374" y="196">plugins/cache/</text>
+        <text x="388" y="214" opacity=".8">superpowers</text>
+        <text x="388" y="232" opacity=".8">godot-prompter</text>
+        <text x="374" y="256" opacity=".8">sessions/  history</text>
+
+        <!-- session box -->
+        <rect x="690" y="60" width="250" height="210" rx="6" fill="none" stroke="#0F7C86" stroke-width="2"/>
+        <text x="704" y="84" font-weight="700" font-family="Bricolage Grotesque, sans-serif" font-size="14" fill="#0F7C86">claude-gd session</text>
+        <text x="704" y="110">game-dev:*</text><text x="810" y="110" opacity=".6">live from repo</text>
+        <text x="704" y="130">superpowers:*</text><text x="810" y="130" opacity=".6">from cache</text>
+        <text x="704" y="150">godot-prompter:*</text><text x="836" y="150" opacity=".6">cache</text>
+        <text x="704" y="178">PATH += bin/</text>
+        <text x="704" y="198">studio-test · studio-run</text>
+        <text x="704" y="226">mcp: godot</text><text x="800" y="226" opacity=".6">optional</text>
+        <text x="704" y="252" opacity=".8">.studio/STATE.md read</text>
+
+        <!-- arrows -->
+        <line x1="280" y1="120" x2="358" y2="120" stroke="currentColor" stroke-width="1.5" marker-end="url(#arr)"/>
+        <text x="284" y="112" font-size="11">install.sh</text>
+        <text x="284" y="138" font-size="11" opacity=".7">symlink|copy</text>
+
+        <line x1="610" y1="140" x2="688" y2="140" stroke="currentColor" stroke-width="1.5" marker-end="url(#arr)"/>
+        <text x="614" y="132" font-size="11">CLAUDE_CONFIG_DIR</text>
+
+        <path d="M280,80 C320,22 650,22 688,80" fill="none" stroke="#0F7C86" stroke-width="2" marker-end="url(#arr-acc)"/>
+        <text x="420" y="34" font-size="11" fill="#0F7C86">shim: claude --plugin-dir studios/game-dev  (no copy, edits live)</text>
+
+        <!-- untouched box -->
+        <rect x="360" y="306" width="250" height="46" rx="6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="6 5" opacity=".7"/>
+        <text x="374" y="326" font-weight="700" font-family="Bricolage Grotesque, sans-serif" font-size="14" opacity=".8">~/.claude</text>
+        <text x="374" y="344" font-size="11" opacity=".7">your existing setup — never read, never written</text>
+        <line x1="485" y1="270" x2="485" y2="300" stroke="currentColor" stroke-width="1.5" stroke-dasharray="3 4" opacity=".6"/>
+        <text x="494" y="290" font-size="11" opacity=".7">guard_target refuses</text>
+      </g>
+    </svg>
+    </div>
+    <figcaption>Installer writes to the config directory only. The shim passes both the config directory and the plugin directory, so skills, agents, hooks and tools come straight from the repository on every launch.</figcaption>
+  </figure>
+
+  <div class="term-title">Install and check</div>
+  <pre class="term"><span class="p">$</span> <span class="u">./install.sh game-dev</span>
+studio:   game-dev
+target:   /Users/xinli/.claude-gamedev
+mode:     symlink
+plugin:   /Users/xinli/Documents/GameDev/_practice/omega-ai/studios/game-dev
+shim:     /Users/xinli/.local/bin/claude-gd
+<span class="d">render  CLAUDE.md          (shared/CLAUDE.part.md + studios/game-dev/CLAUDE.md)
+copy    settings.json      (enables superpowers, godot-prompter)
+link    memory/ bin/
+write   claude-gd          CLAUDE_CONFIG_DIR + --plugin-dir + PATH
+mcp     godot              node v24 found → claude mcp add godot (GODOT_PATH=/Applications/Godot_mono.app/…)</span>
+
+Installed. Launch with: claude-gd
+
+<span class="p">$</span> <span class="u">./doctor.sh game-dev</span>
+config root     /Users/xinli/.claude-gamedev
+plugin          game-dev 0.1.0   skills 13  agents 10  hooks 1
+plugins         superpowers@claude-plugins-official 6.3.0 ✓   godot-prompter@skillsmith 1.9.0 ✓
+delegations     superpowers:test-driven-development ✓  superpowers:systematic-debugging ✓
+                superpowers:using-git-worktrees ✓  superpowers:verification-before-completion ✓
+                godot-prompter:godot-code-review ✓  godot-prompter:godot-testing ✓  (+6)
+engine          Godot 4.3.stable.mono at /Applications/Godot_mono.app/Contents/MacOS/Godot
+mcp             godot (npx @coding-solo/godot-mcp) ✓
+shim on PATH    ✓
+leaks into ~/.claude   none</pre>
+
+  <h3>Repository layout after this work</h3>
+  <div class="tree"><pre>omega-ai/
+├── install.sh  uninstall.sh  doctor.sh  sync-memory.sh   <span class="c"># studio-aware; profile.json → studio.json</span>
+├── lib/common.sh
+├── shared/CLAUDE.part.md                                 <span class="c"># merged into every studio's CLAUDE.md</span>
+├── studios/
+│   ├── <span class="n">game-dev/</span>                                     <span class="c"># a Claude Code plugin + studio manifest</span>
+│   │   ├── .claude-plugin/plugin.json                    <span class="c"># name: game-dev → /game-dev:* namespace</span>
+│   │   ├── studio.json                                   <span class="c"># target, shim, required plugins, engine defaults</span>
+│   │   ├── CLAUDE.md  settings.json  memory/MEMORY.md
+│   │   ├── hooks/hooks.json  hooks/session-start.sh  hooks/bootstrap.md
+│   │   ├── skills/                                       <span class="c"># stage skills + domain skills (flat, one dir each)</span>
+│   │   │   ├── studio/ brainstorm/ plan/ execute/ review/ playtest/ ship/ retro/ scaffold/
+│   │   │   └── gdd/ core-loop/ game-feel/ sprite-pipeline/ vertical-slice/ tuning-data/
+│   │   ├── agents/                                       <span class="c"># 10 roles, one .md each</span>
+│   │   ├── bin/                                          <span class="c"># studio-test studio-run studio-lint studio-state studio-scaffold</span>
+│   │   └── engines/godot/                                <span class="c"># GUIDE.md resolve.sh test.sh run.sh lint.sh template/</span>
+│   └── general/                                          <span class="c"># minimal second studio; proves the multi-studio path</span>
+├── docs/
+│   ├── <span class="n">game-dev/</span>                                     <span class="c"># this studio's own evolution</span>
+│   │   ├── specs/  plans/  artifacts/  PROGRESS.md
+│   └── superpowers/                                      <span class="c"># installer history from 2026-09-04, unchanged</span>
+└── tests/                                                <span class="c"># POSIX sh, no deps; extended for plugin, shim, lint, doctor</span></pre></div>
+
+  <h2>4 · Workflow: the studio sprint</h2>
+  <p>Every stage is a skill you can call by name. Each one reads the file the previous stage wrote and writes one of its own, so a stage can be re-run, skipped when it does not apply, or picked up in a new session. Three points require your explicit approval — marked in amber.</p>
+
+  <figure>
+    <div class="fig-wrap">
+    <svg viewBox="0 0 960 330" role="img" aria-label="Seven stages in sequence: brainstorm writes a spec and artifact page and waits for approval; plan writes a plan and waits for approval; execute produces a ledger and commits; review produces review notes; playtest produces a report and waits for sign-off; ship opens a PR; retro writes memory. The studio router reads STATE.md and points at the next stage." xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <marker id="arr2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+        </marker>
+      </defs>
+      <g font-family="JetBrains Mono, Menlo, monospace" font-size="12" fill="currentColor">
+        <!-- router bar -->
+        <rect x="20" y="20" width="920" height="40" rx="6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="6 5"/>
+        <text x="36" y="45" font-weight="700" font-family="Bricolage Grotesque, sans-serif" font-size="14">/game-dev:studio</text>
+        <text x="200" y="45" opacity=".8">reads .studio/STATE.md → names the next stage · routes freeform text · shows milestone (prototype / vertical slice / alpha / beta / gold)</text>
+
+        <!-- row 1: brainstorm, plan, execute, review -->
+        <g transform="translate(0,0)">
+          <rect x="20" y="100" width="180" height="56" rx="6" fill="none" stroke="currentColor" stroke-width="1.5"/>
+          <text x="32" y="122" font-weight="700" font-family="Bricolage Grotesque, sans-serif" font-size="14">brainstorm</text>
+          <text x="32" y="142" font-size="11" opacity=".8">questions · GDD-lite · spec</text>
+
+          <rect x="260" y="100" width="180" height="56" rx="6" fill="none" stroke="currentColor" stroke-width="1.5"/>
+          <text x="272" y="122" font-weight="700" font-family="Bricolage Grotesque, sans-serif" font-size="14">plan</text>
+          <text x="272" y="142" font-size="11" opacity=".8">tasks · Role · Verify · scope cut</text>
+
+          <rect x="500" y="100" width="180" height="56" rx="6" fill="none" stroke="currentColor" stroke-width="1.5"/>
+          <text x="512" y="122" font-weight="700" font-family="Bricolage Grotesque, sans-serif" font-size="14">execute</text>
+          <text x="512" y="142" font-size="11" opacity=".8">subagent per task · TDD</text>
+
+          <rect x="740" y="100" width="180" height="56" rx="6" fill="none" stroke="currentColor" stroke-width="1.5"/>
+          <text x="752" y="122" font-weight="700" font-family="Bricolage Grotesque, sans-serif" font-size="14">review</text>
+          <text x="752" y="142" font-size="11" opacity=".8">spec compliance · Godot checklist</text>
+
+          <!-- arrows row 1 -->
+          <line x1="200" y1="128" x2="258" y2="128" stroke="currentColor" stroke-width="1.5" marker-end="url(#arr2)"/>
+          <text x="204" y="118" font-size="10">spec.md</text>
+          <polygon points="229,128 235,120 241,128 235,136" fill="#B86E00"/>
+          <text x="204" y="150" font-size="10" fill="#B86E00">approve</text>
+
+          <line x1="440" y1="128" x2="498" y2="128" stroke="currentColor" stroke-width="1.5" marker-end="url(#arr2)"/>
+          <text x="444" y="118" font-size="10">plan.md</text>
+          <polygon points="469,128 475,120 481,128 475,136" fill="#B86E00"/>
+          <text x="444" y="150" font-size="10" fill="#B86E00">approve</text>
+
+          <line x1="680" y1="128" x2="738" y2="128" stroke="currentColor" stroke-width="1.5" marker-end="url(#arr2)"/>
+          <text x="684" y="118" font-size="10">commits</text>
+          <text x="684" y="150" font-size="10" opacity=".7">+ ledger</text>
+        </g>
+
+        <!-- connector review -> playtest (down and back left) -->
+        <path d="M830,156 L830,186 L110,186 L110,212" fill="none" stroke="currentColor" stroke-width="1.5" marker-end="url(#arr2)"/>
+        <text x="460" y="180" font-size="10">review notes → fixes committed</text>
+
+        <!-- row 2: playtest, ship, retro -->
+        <rect x="20" y="214" width="180" height="56" rx="6" fill="none" stroke="currentColor" stroke-width="1.5"/>
+        <text x="32" y="236" font-weight="700" font-family="Bricolage Grotesque, sans-serif" font-size="14">playtest</text>
+        <text x="32" y="256" font-size="11" opacity=".8">studio-test · studio-run · script</text>
+
+        <rect x="260" y="214" width="180" height="56" rx="6" fill="none" stroke="currentColor" stroke-width="1.5"/>
+        <text x="272" y="236" font-weight="700" font-family="Bricolage Grotesque, sans-serif" font-size="14">ship</text>
+        <text x="272" y="256" font-size="11" opacity=".8">verify · PR · PROGRESS.md</text>
+
+        <rect x="500" y="214" width="180" height="56" rx="6" fill="none" stroke="currentColor" stroke-width="1.5"/>
+        <text x="512" y="236" font-weight="700" font-family="Bricolage Grotesque, sans-serif" font-size="14">retro</text>
+        <text x="512" y="256" font-size="11" opacity=".8">learnings → memory/</text>
+
+        <line x1="200" y1="242" x2="258" y2="242" stroke="currentColor" stroke-width="1.5" marker-end="url(#arr2)"/>
+        <text x="204" y="232" font-size="10">report.md</text>
+        <polygon points="229,242 235,234 241,242 235,250" fill="#B86E00"/>
+        <text x="204" y="264" font-size="10" fill="#B86E00">sign-off</text>
+
+        <line x1="440" y1="242" x2="498" y2="242" stroke="currentColor" stroke-width="1.5" marker-end="url(#arr2)"/>
+        <text x="444" y="232" font-size="10">PR link</text>
+
+        <!-- bug loop from playtest back to execute -->
+        <path d="M110,270 L110,300 L590,300 L590,160" fill="none" stroke="currentColor" stroke-width="1.2" stroke-dasharray="4 4" marker-end="url(#arr2)"/>
+        <text x="200" y="294" font-size="10" opacity=".8">bugs found → fix + regression test → re-run playtest</text>
+
+        <!-- state file note -->
+        <rect x="740" y="214" width="180" height="56" rx="6" fill="none" stroke="currentColor" stroke-width="1" stroke-dasharray="3 4" opacity=".8"/>
+        <text x="752" y="236" font-size="12" font-weight="700">.studio/STATE.md</text>
+        <text x="752" y="256" font-size="11" opacity=".8">stage · spec · plan · task 3/7</text>
+      </g>
+    </svg>
+    </div>
+    <figcaption>Each arrow carries a file. Amber diamonds are the three human gates: spec approval, plan approval, playtest sign-off. The dashed loop is the QA cycle borrowed from gstack — a playtest failure goes back to execute with a regression test attached.</figcaption>
+  </figure>
+
+  <div class="tbl-wrap"><table>
+    <thead><tr><th>Stage skill</th><th>What it does</th><th>Reads</th><th>Writes</th><th>Delegates to</th></tr></thead>
+    <tbody>
+      <tr><td><code>/game-dev:studio</code></td><td>Router. Reads state, names the next stage, routes freeform text ("add a dash" → brainstorm; "it feels floaty" → playtest). Shows milestone.</td><td>STATE.md</td><td>—</td><td>—</td></tr>
+      <tr><td><code>/game-dev:brainstorm</code></td><td>Batched clarifying questions, spike/bounded/architectural classification, 2–3 approaches, spec with GDD-lite sections and a test strategy (which behaviour gets unit tests, which gets playtest criteria). Renders spec as an Artifact page; waits for approval.</td><td>GDD, PROGRESS.md</td><td><code>docs/game-dev/specs/</code>, artifact export</td><td>game-dev:gdd, core-loop, game-feel</td></tr>
+      <tr><td><code>/game-dev:plan</code></td><td>superpowers plan format plus per-task <code>Role:</code> and <code>Verify: unit | playtest | visual</code>. Producer pass cuts anything outside the vertical slice. Waits for approval.</td><td>spec.md</td><td><code>docs/game-dev/plans/</code>, STATE.md</td><td>game-dev:producer</td></tr>
+      <tr><td><code>/game-dev:execute</code></td><td>Subagent-driven: fresh role agent per task with only the task and the spec excerpt it needs; TDD when <code>Verify: unit</code>; reviewer agent after each task; ledger of rulings. <code>--inline</code> switches to checkpointed inline execution.</td><td>plan.md</td><td>commits, ledger in STATE.md</td><td>role agents; superpowers TDD, worktrees, debugging</td></tr>
+      <tr><td><code>/game-dev:review</code></td><td>Whole-branch review by the reviewer agent: spec compliance, Godot anti-patterns (inheritance chains, cross-system references, magic numbers outside Resources), performance smells. Fix loop.</td><td>spec, diff</td><td>review notes, fix commits</td><td>godot-prompter:godot-code-review</td></tr>
+      <tr><td><code>/game-dev:playtest</code></td><td>Runs <code>studio-test</code> (GUT headless) and <code>studio-run</code> (boots the scene, captures errors). Builds a playtest script from the spec's feel targets and acceptance criteria; you play, it asks per item; failures become bugs → fix → regression test → re-run.</td><td>spec, plan</td><td><code>docs/game-dev/playtests/</code></td><td>game-dev:playtester, feel-tuner</td></tr>
+      <tr><td><code>/game-dev:ship</code></td><td>verification-before-completion, finish the branch (PR or merge), update PROGRESS.md milestone.</td><td>everything above</td><td>PR, PROGRESS.md</td><td>superpowers verification, finishing-a-development-branch</td></tr>
+      <tr><td><code>/game-dev:retro</code></td><td>What worked, what to change, durable decisions → memory files in the studio's isolated memory dir. <code>sync-memory.sh game-dev</code> commits them.</td><td>ledger, playtests</td><td><code>memory/*.md</code></td><td>—</td></tr>
+      <tr><td><code>/game-dev:scaffold</code></td><td>New Godot 2D project from <code>engines/godot/template</code>: folder layout, EventBus autoload, GUT installed, <code>.studio/</code>, <code>docs/game-dev/</code>, project CLAUDE.md, gdlint config.</td><td>—</td><td>project tree</td><td>godot-prompter:godot-project-setup</td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="gate-note"><b>Precedence rule</b> (injected by the session hook): <code>game-dev:*</code> stage skills own the workflow. superpowers skills run only when a stage skill names them. godot-prompter skills run inside role agents for engine work. If superpowers' own bootstrap says "invoke brainstorming", invoke <code>game-dev:brainstorm</code> instead.</div>
+
+  <h2>5 · A session, end to end</h2>
+  <p>Your most frequent loop — plan, then execute — as it would look. Trimmed; the real session has the full question batches and ledger.</p>
+
+  <div class="term-title">Plan</div>
+  <pre class="term"><span class="p">$</span> <span class="u">claude-gd</span>
+<span class="d">[game-dev studio] Godot 4.3 · 2D · GDScript · GUT   .studio/STATE.md: stage=idle  milestone=prototype</span>
+
+<span class="p">&gt;</span> <span class="u">/game-dev:brainstorm add a dash ability for the player</span>
+Classification: bounded — player controller exists, this adds one verb.
+<span class="d">[batch 1/2 — 4 questions: trigger input, distance in tiles, cooldown, i-frames?]
+[batch 2/2 — 3 questions: through gaps? cancel jump? feel reference game?]</span>
+Approaches: A velocity impulse (simplest) · B state-machine Dash state (recommended, fits existing FSM) · C tween position (worst: skips physics)
+Spec written: docs/game-dev/specs/2026-09-13-player-dash.md
+  core-loop delta · player verbs (+dash) · feel targets: 3 tiles / 0.15 s, ≤2 frames input latency, 0.6 s cooldown
+  test strategy: cooldown + distance = unit (GUT); snappiness + readability = playtest
+  not doing: air dash, dash attack
+Artifact: https://claude.ai/code/artifact/…  <span class="g">◆ awaiting your approval</span>
+
+<span class="p">&gt;</span> <span class="u">approved</span>
+<span class="p">&gt;</span> <span class="u">/game-dev:plan</span>
+Producer pass: 7 tasks → 6 (cut "dash trail particles" — outside vertical slice, moved to backlog)
+Plan written: docs/game-dev/plans/2026-09-13-player-dash.md
+  T1 DashState in player FSM          Role: gameplay-programmer  Verify: unit
+  T2 dash tuning Resource             Role: gameplay-programmer  Verify: unit
+  T3 input action + buffer window     Role: gameplay-programmer  Verify: unit
+  T4 dash animation + hold frame      Role: feel-tuner           Verify: playtest
+  T5 camera look-ahead on dash        Role: feel-tuner           Verify: playtest
+  T6 SFX hook via EventBus            Role: gameplay-programmer  Verify: unit
+STATE.md: stage=plan  plan=…player-dash.md  <span class="g">◆ awaiting your approval</span></pre>
+
+  <div class="term-title">Execute · review · playtest · ship</div>
+  <pre class="term"><span class="p">&gt;</span> <span class="u">approved</span>
+<span class="p">&gt;</span> <span class="u">/game-dev:execute</span>
+Mode: subagent-driven (default). Worktree: .claude/worktrees/player-dash
+<span class="d">T1 → game-dev:gameplay-programmer   RED tests/unit/test_dash_state.gd (3 failing) → GREEN → studio-test ✓ 3/3
+   → game-dev:reviewer               spec ✓  no cross-system refs ✓  1 note: cooldown literal → moved to DashTuning.tres
+T2 → gameplay-programmer  … ✓        T3 … ✓        T4 → game-dev:feel-tuner  anticipation 2f · hold 1f · recovery 3f
+T5 → feel-tuner  look-ahead 24px, 0.08 s ease  T6 … ✓
+Ruling: T3 buffer window 0.1 s (spec said "short"); logged in ledger.</span>
+6/6 tasks · 14 commits · STATE.md: stage=review
+
+<span class="p">&gt;</span> <span class="u">/game-dev:review</span>
+Branch review: 2 findings, both fixed (unused signal; dash usable while dead). Tests 41 → 47.
+
+<span class="p">&gt;</span> <span class="u">/game-dev:playtest</span>
+studio-test  47/47 ✓          studio-run --scene res://levels/test_dash.tscn --seconds 20  no errors
+Playtest script (5 items, from spec feel targets):
+  P1 dash 3 tiles in 0.15 s   P2 dash through 1-tile gap   P3 cooldown readable
+  P4 input feels immediate     P5 hold frame reads on hit
+<span class="d">[you play — one question per item]</span>
+P4 FAIL "slight delay" → hypothesis: input handled in _process → moved to _physics_process → regression test added → re-run P4 ✓
+Report: docs/game-dev/playtests/2026-09-13-player-dash.md  <span class="g">◆ sign-off</span>
+
+<span class="p">&gt;</span> <span class="u">/game-dev:ship</span>
+Verification: tests ✓ lint ✓ run ✓   PR #12 opened   PROGRESS.md: prototype → vertical slice (dash was the last verb)
+
+<span class="p">&gt;</span> <span class="u">/game-dev:retro</span>
+Memory: input-in-physics-process.md, dash-tuning-defaults.md → ~/.claude-gamedev/memory/   (sync-memory.sh game-dev to commit)</pre>
+
+  <h2>6 · Roles: the ten agents</h2>
+  <p>Agents are the long-session workforce. A stage skill dispatches them with a fresh context and exactly the task in hand; they never inherit your conversation. Each has a persona, the skills it may call, and an output contract — the file or commit it must leave behind.</p>
+  <div class="tbl-wrap"><table>
+    <thead><tr><th>Agent</th><th>Owns</th><th>Dispatched by</th><th>Output contract</th></tr></thead>
+    <tbody>
+      <tr><td><code>game-dev:game-designer</code></td><td>Core loop, mechanics, progression, GDD-lite. Engine-agnostic. Never opens engine files.</td><td>brainstorm (design pass)</td><td>GDD sections in the spec</td></tr>
+      <tr><td><code>game-dev:level-designer</code></td><td>Level layout, pacing, teaching sequence, tile rules.</td><td>brainstorm, execute</td><td>level spec, TileMap authoring notes</td></tr>
+      <tr><td><code>game-dev:architect</code></td><td>Scene tree, state machines, signal/event-bus topology, Resource schemas.</td><td>brainstorm (architectural path), plan</td><td>architecture section, task decomposition</td></tr>
+      <tr><td><code>game-dev:gameplay-programmer</code></td><td>Implements tasks in GDScript with TDD. Calls godot-prompter skills for engine patterns.</td><td>execute</td><td>commits + passing tests</td></tr>
+      <tr><td><code>game-dev:tech-artist</code></td><td>Sprite pipeline, atlases, import settings, pixels-per-unit, animation frame budgets.</td><td>execute</td><td>assets + versioned import settings</td></tr>
+      <tr><td><code>game-dev:feel-tuner</code></td><td>Input latency, forgiveness windows, acceleration curves, animation timing, camera, then juice — in that order.</td><td>execute, playtest</td><td>tuning values in Resources + hypothesis log</td></tr>
+      <tr><td><code>game-dev:ui-designer</code></td><td>Control-tree HUD and menus, themes, responsive layout.</td><td>execute</td><td>UI scenes + theme resource</td></tr>
+      <tr><td><code>game-dev:producer</code></td><td>Scope: vertical slice first, cut lists, milestone gates, backlog.</td><td>plan, ship</td><td>cut list, PROGRESS.md update</td></tr>
+      <tr><td><code>game-dev:playtester</code></td><td>Playtest script from spec criteria, runs the session, files bugs with repro steps.</td><td>playtest</td><td>playtest report</td></tr>
+      <tr><td><code>game-dev:reviewer</code></td><td>Spec compliance + Godot best-practice review. No praise, one line per finding.</td><td>execute (per task), review</td><td>findings list, fix commits</td></tr>
+    </tbody>
+  </table></div>
+  <p>The existing three agents (<code>game-designer</code>, <code>2d-art-pipeline</code>, <code>game-feel-tuner</code>) and four skills migrate into this set with their content kept.</p>
+
+  <h2>7 · Toolkits</h2>
+  <h3>bin/ — verbs the skills call, never the engine directly</h3>
+  <div class="tbl-wrap"><table>
+    <thead><tr><th>Command</th><th>Does</th><th>Godot adapter</th></tr></thead>
+    <tbody>
+      <tr><td><code>studio-test [path]</code></td><td>Run the project's test suite headless; exit non-zero on failure; JUnit XML for the ledger.</td><td><code>godot --headless -s addons/gut/gut_cmdln.gd -gexit</code></td></tr>
+      <tr><td><code>studio-run [--scene S] [--seconds N]</code></td><td>Boot the project or one scene for N seconds, capture stdout/stderr, fail on script errors.</td><td><code>godot --headless --quit-after</code> / windowed with timeout</td></tr>
+      <tr><td><code>studio-lint</code></td><td>gdlint + gdformat check when installed; clear install hint when not.</td><td>gdtoolkit (pip)</td></tr>
+      <tr><td><code>studio-state get|set KEY [VALUE]</code></td><td>Read/write <code>.studio/STATE.md</code> fields so every skill updates state the same way.</td><td>—</td></tr>
+      <tr><td><code>studio-scaffold DIR</code></td><td>Materialise <code>engines/godot/template</code> into a new project.</td><td>template copy + GUT addon</td></tr>
+    </tbody>
+  </table></div>
+  <p>Engine resolution order: <code>$GODOT_PATH</code> → <code>/Applications/Godot*.app/Contents/MacOS/Godot</code> → <code>godot</code> on PATH. Your machine resolves to <code>Godot_mono.app</code>.</p>
+
+  <h3>Hooks</h3>
+  <p>One <code>SessionStart</code> hook, modelled on superpowers'. It injects <code>hooks/bootstrap.md</code>: the studio identity line, the precedence rule, the stage list, and "read <code>.studio/STATE.md</code> if present". No PreToolUse or PostToolUse hooks — nothing runs on every tool call.</p>
+
+  <h3>MCP (optional)</h3>
+  <p><code>godot-mcp</code> (Coding-Solo, MIT) gives the session: launch editor, run project with debug output capture, create scenes and nodes, UID maintenance. It needs Node ≥ 18. The installer registers it at user scope inside the studio's config directory (<code>claude mcp add godot -- npx -y @coding-solo/godot-mcp</code> with <code>GODOT_PATH</code> set) only when Node is present; <code>--no-mcp</code> skips it. It is deliberately not in the plugin's <code>.mcp.json</code>, so a machine without Node never sees a startup failure.</p>
+
+  <h3>Scaffold</h3>
+  <p><code>engines/godot/template</code> is a runnable Godot 4 2D project: <code>src/</code> by feature, <code>autoloads/EventBus.gd</code>, <code>resources/tuning/</code>, <code>tests/unit/</code> with GUT, <code>project.godot</code> with base resolution and stretch mode set, nearest-neighbour filtering, a project <code>CLAUDE.md</code> carrying the studio standards, <code>.studio/config.json</code>, <code>docs/game-dev/</code>, <code>.gitignore</code>, <code>.gdlintrc</code>.</p>
+
+  <h2>8 · Extensibility seams</h2>
+  <p>Godot 2D GDScript is the first pack, not the design. Three seams keep 3D, another language, or another engine from being a rewrite.</p>
+  <div class="tree"><pre><span class="c"># per-project</span> .studio/config.json
+{ "engine": "godot4", "dimension": "2d", "language": "gdscript", "tests": "gut" }
+
+<span class="c"># per-studio</span> studios/game-dev/engines/&lt;engine&gt;/
+GUIDE.md        <span class="c"># which external skills to call for this engine (godot → godot-prompter:*)</span>
+resolve.sh      <span class="c"># find the engine binary</span>
+test.sh run.sh lint.sh   <span class="c"># the studio-* verbs dispatch here by config.engine</span>
+template/       <span class="c"># scaffold source</span></pre></div>
+  <ul>
+    <li><b>Dimension.</b> Domain skills carry a 2D section now; a 3D section is added to the same skill (camera, lighting, mesh pipeline). <code>config.dimension</code> tells the skill which to read. New 3D-only skills get a <code>3d-</code> prefix.</li>
+    <li><b>Language.</b> <code>config.language</code> routes the gameplay-programmer to <code>godot-prompter:godot-csharp-engineer</code> and the test verb to gdUnit4. The stage skills never mention a language.</li>
+    <li><b>Engine.</b> A Unity pack is <code>engines/unity/</code> with the same four files plus a GUIDE naming the Unity skills. Stage skills, roles, state and docs layout do not change.</li>
+    <li><b>Another studio.</b> <code>studios/&lt;name&gt;/</code> with its own <code>studio.json</code>; the installer has no per-studio branches.</li>
+  </ul>
+
+  <h2>9 · State, docs and memory</h2>
+  <ul>
+    <li><b>State</b> lives in the game project: <code>.studio/STATE.md</code> with <code>stage</code>, <code>spec</code>, <code>plan</code>, <code>task</code>, <code>last_playtest</code>, and the execute ledger. Every stage updates it through <code>studio-state</code>; the router reads it; a new session resumes from it. That is the whole of what we borrow from GSD.</li>
+    <li><b>Docs</b> follow one layout in both places. This repo: <code>docs/game-dev/{specs,plans,artifacts,PROGRESS.md}</code> tracks the studio's own evolution — this page is its first artifact. A game project: <code>docs/game-dev/{specs,plans,playtests,artifacts}</code> plus <code>PROGRESS.md</code> with the milestone gate.</li>
+    <li><b>Memory</b> is isolated by construction: the game studio's memory directory is <code>~/.claude-gamedev/memory/</code>, a different config root from any other studio. <code>sync-memory.sh game-dev</code> copies only into <code>studios/game-dev/memory/</code>. The retro skill is the one writer.</li>
+  </ul>
+
+  <h2>10 · Testing the framework itself</h2>
+  <p>The existing POSIX shell harness in <code>tests/</code> stays and grows. No Bun, no Node required to test.</p>
+  <ul>
+    <li>Install into a temp target: rendered CLAUDE.md, copied settings, linked memory and bin, shim contains <code>--plugin-dir</code> and the PATH prefix; uninstall leaves nothing.</li>
+    <li>Plugin manifest is valid JSON with <code>name: game-dev</code>; every <code>skills/*/SKILL.md</code> and <code>agents/*.md</code> has frontmatter whose <code>name</code> matches its directory and a description that starts with "Use when".</li>
+    <li>Doctor fails when a delegated skill name (<code>superpowers:…</code>, <code>godot-prompter:…</code>) is not present in the plugin cache.</li>
+    <li>All <code>bin/</code> and <code>engines/*/</code> scripts pass <code>sh -n</code>; <code>studio-scaffold</code> into a temp dir produces the expected tree; <code>studio-test</code> against the template runs when Godot is found and reports "skipped: no Godot" otherwise.</li>
+    <li>Skill behaviour is verified the superpowers way: a pressure scenario run without the skill (baseline), then with it — documented per skill in <code>docs/game-dev/</code>.</li>
+  </ul>
+
+  <h2>11 · Delivery in three plans</h2>
+  <p>One design spec, three sequenced implementation plans. Each plan ends with a working <code>claude-gd</code>.</p>
+  <div class="phase"><div class="n">1</div><div><p><b>Foundation.</b> <code>profiles/</code> → <code>studios/</code>, plugin packaging, shim with <code>--plugin-dir</code> and PATH, installer / uninstaller / doctor / tests updated, session hook, <code>docs/game-dev/</code>, <code>.studio/STATE.md</code> + <code>studio-state</code>, and the four skills your daily loop needs: <code>studio</code>, <code>brainstorm</code>, <code>plan</code>, <code>execute</code>.</p><p class="d" style="color:var(--ink-3)">Exit: plan and execute a feature in an existing Godot project through claude-gd.</p></div></div>
+  <div class="phase"><div class="n">2</div><div><p><b>Quality loop.</b> Ten role agents, <code>review</code>, <code>playtest</code>, <code>ship</code>, <code>retro</code>, <code>bin/</code> verbs with the Godot adapter, optional godot-mcp registration, doctor delegation check.</p><p style="color:var(--ink-3)">Exit: the full session in §5 runs end to end.</p></div></div>
+  <div class="phase"><div class="n">3</div><div><p><b>Content.</b> <code>scaffold</code> + template project, migrate the four existing skills and add <code>vertical-slice</code>, <code>tuning-data</code>, <code>milestone-gates</code>; <code>PROGRESS.md</code> conventions; <code>general</code> studio parity; skill pressure tests.</p><p style="color:var(--ink-3)">Exit: a new game project from zero to first playtest using only studio commands.</p></div></div>
+
+  <div class="approve">
+    <div class="eyebrow">Approval checklist</div>
+    <p>Reply with a number to challenge that section, or "approve all" to move to the written spec.</p>
+    <ol>
+      <li>Decisions summary matches what you meant</li>
+      <li>Take / change from superpowers, gstack, industry</li>
+      <li>Setup mechanism and repository layout</li>
+      <li>Workflow stages, gates, precedence rule</li>
+      <li>Session demo reflects your daily loop</li>
+      <li>Ten roles and their output contracts</li>
+      <li>Toolkits: bin verbs, hook, optional MCP, scaffold</li>
+      <li>Extensibility seams</li>
+      <li>State, docs, memory</li>
+      <li>Framework test plan</li>
+      <li>Three-plan delivery order</li>
+    </ol>
+  </div>
+</div>

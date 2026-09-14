@@ -1,6 +1,6 @@
-# 2D Game Development Profile
+# 2D Game Development Studio
 
-This profile is for building 2D games. The default engine is Godot 4.x; design
+This studio is for building 2D games. The default engine is Godot 4.x; design
 and pipeline work that does not depend on an engine is engine-agnostic and
 should stay that way.
 
@@ -8,8 +8,10 @@ should stay that way.
 
 - Composition over inheritance. A behavior belongs in its own node or component
   that can be attached, not in a deepening base class.
-- Decouple systems with signals and a global event bus. A system should not hold
-  a reference to another system just to notify it.
+- Decouple systems with signals: a child reports up with a signal, a parent
+  calls down. The global `EventBus` carries only cross-cutting events that have
+  no ownership path. A system should not hold a reference to another system
+  just to notify it.
 - Keep data in `Resource` files, not in code. Items, enemies, levels, and tuning
   values are data a designer can edit without a programmer.
 - Model state explicitly with a state machine. Distinguish the gameplay state
@@ -23,7 +25,8 @@ should stay that way.
   the engine's own conventions.
 - Profile before optimizing. Godot's profiler names the frame cost; guesses do
   not.
-- Write tests with GUT or gdUnit4 for logic that is not visual.
+- Write tests with the configured test framework (`tests` in
+  `.studio/config.json`; GUT by default) for logic that is not visual.
 - When a request would lead to an anti-pattern, say so and propose the standard
   alternative instead of silently implementing it.
 

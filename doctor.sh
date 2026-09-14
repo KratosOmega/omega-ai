@@ -3,71 +3,193 @@ set -eu
 REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
 . "$REPO_ROOT/lib/common.sh"
 
-PROFILE=""
+STUDIO=""
 TARGET_OVERRIDE=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --target)
       [ $# -ge 2 ] || die "missing value for --target"
       need_value --target "$2"; TARGET_OVERRIDE="$2"; shift 2 ;;
-    -h|--help) log "Usage: doctor.sh <profile> [--target DIR]"; exit 0 ;;
+    -h|--help) log "Usage: doctor.sh <studio> [--target DIR]"; exit 0 ;;
     -*) die "unknown option: $1" ;;
-    *) [ -z "$PROFILE" ] || die "only one profile at a time"; PROFILE="$1"; shift ;;
+    *) [ -z "$STUDIO" ] || die "only one studio at a time"; STUDIO="$1"; shift ;;
   esac
 done
-[ -n "$PROFILE" ] || die "no profile given"
+[ -n "$STUDIO" ] || die "no studio given"
+STUDIO="$(studio_arg "$STUDIO")"
 
-PROFILE_DIR="$REPO_ROOT/profiles/$PROFILE"
-TARGET="$(resolve_profile_target "$PROFILE_DIR" "$TARGET_OVERRIDE")"
-SHIM_NAME="$(json_field "$PROFILE_DIR/profile.json" shim)"
+STUDIO_DIR="$REPO_ROOT/studios/$STUDIO"
+# Two assignments, not one nested substitution — see install.sh for why: a
+# single `canon_path "$(resolve_studio_target ...)"` masks the inner die
+# under `set -e`.
+TARGET="$(resolve_studio_target "$STUDIO_DIR" "$TARGET_OVERRIDE")"
+TARGET="$(canon_path "$TARGET")"
+SHIM_NAME="$(json_field "$STUDIO_DIR/studio.json" shim)"
+MANIFEST="$TARGET/.omega-ai-manifest"
+# What the shim actually loads: the snapshot in copy mode, the checkout
+# otherwise. The manifest header says which; an older manifest says nothing
+# and is treated as symlink mode.
+MODE="$(manifest_meta "$MANIFEST" mode)"
+if [ "$MODE" = "copy" ]; then PLUGIN_DIR="$TARGET/studio"; else PLUGIN_DIR="$STUDIO_DIR"; fi
+PLUGIN_JSON="$PLUGIN_DIR/.claude-plugin/plugin.json"
+REQUIRES="$STUDIO_DIR/requires.txt"
+RECORDED_SHIM="$(manifest_meta "$MANIFEST" shim)"
+failed=0
 
-log "profile:      $PROFILE"
+log "studio:       $STUDIO"
 log "config root:  $TARGET"
-[ -d "$TARGET" ] || die "config root does not exist — run install.sh $PROFILE"
+log "plugin dir:   $PLUGIN_DIR"
+[ -d "$TARGET" ] || die "config root does not exist — run install.sh $STUDIO"
 
-count() { [ -d "$1" ] && ls -1 "$1" 2>/dev/null | wc -l | tr -d ' ' || printf '0'; }
-log "CLAUDE.md:    $([ -f "$TARGET/CLAUDE.md" ] && printf 'present' || printf 'MISSING')"
-log "settings:     $([ -f "$TARGET/settings.json" ] && printf 'present' || printf 'MISSING')"
-log "agents:       $(count "$TARGET/agents")"
-log "skills:       $(count "$TARGET/skills")"
-log "commands:     $(count "$TARGET/commands")"
-log "hooks:        $(count "$TARGET/hooks")"
+if [ -f "$TARGET/CLAUDE.md" ]; then log "CLAUDE.md:    present"; else log "CLAUDE.md:    MISSING"; failed=1; fi
+if [ -f "$TARGET/settings.json" ]; then log "settings:     present"; else log "settings:     MISSING"; failed=1; fi
 
-if [ -f "$TARGET/settings.json" ]; then
-  log "plugins:"
-  plugins="$(grep -o '"[^"]*@[^"]*"[[:space:]]*:[[:space:]]*true' "$TARGET/settings.json" 2>/dev/null || true)"
-  if [ -n "$plugins" ]; then
-    printf '%s\n' "$plugins" | sed 's/^/  /'
-  else
-    log "  (none)"
+# Plugin content is counted where the shim loads it from (see PLUGIN_DIR).
+count_skills() {
+  _n=0
+  for _d in "$1"/skills/*/; do
+    [ -f "${_d}SKILL.md" ] && _n=$((_n + 1))
+  done
+  printf '%s' "$_n"
+}
+count_agents() {
+  _n=0
+  for _f in "$1"/agents/*.md; do
+    [ -f "$_f" ] && _n=$((_n + 1))
+  done
+  printf '%s' "$_n"
+}
+
+if [ -f "$PLUGIN_JSON" ]; then
+  pname="$(json_field "$PLUGIN_JSON" name)"
+  pver="$(json_field "$PLUGIN_JSON" version)"
+  hooks_state="none"
+  [ -f "$PLUGIN_DIR/hooks/hooks.json" ] && hooks_state="present"
+  log "plugin:       ${pname:-?} ${pver:-?}   skills $(count_skills "$PLUGIN_DIR")  agents $(count_agents "$PLUGIN_DIR")  hooks $hooks_state"
+  if [ "$pname" != "$STUDIO" ]; then
+    warn "plugin name '$pname' does not match studio '$STUDIO' — skills would load under the wrong prefix"
+    failed=1
   fi
+else
+  warn "no plugin manifest at $PLUGIN_JSON"
+  failed=1
 fi
 
+# Required plugins: declared in requires.txt, enabled in settings.json, and
+# fetched into the config root's plugin cache on first launch.
+log "plugins:"
+listed=0
+# grep_escape STRING — escape BRE metacharacters so a plugin id (data, not a
+# pattern) matches only itself: an unescaped '.' would match any character
+# and a two-stage grep (id line, then a ": true" line) would lose adjacency —
+# "foo.bar@m": false next to "other@x": true would read as foo.bar@m enabled.
+grep_escape() { printf '%s' "$1" | sed 's/[][\.*^$/]/\\&/g'; }
+required="$(requires_of "$REQUIRES" plugin | tr '\n' ' ')"
+for req in $required; do
+  listed=1
+  rname="${req%@*}"
+  rmarket="${req#*@}"
+  if grep -q "\"$(grep_escape "$req")\"[[:space:]]*:[[:space:]]*true" "$TARGET/settings.json" 2>/dev/null; then
+    cache="$TARGET/plugins/cache/$rmarket/$rname"
+    if [ -d "$cache" ]; then
+      versions="$(ls -1 "$cache" 2>/dev/null | tr '\n' ' ')"
+      log "  $req ok ${versions% }"
+    else
+      log "  $req enabled, not yet fetched — launch $SHIM_NAME once"
+    fi
+  else
+    log "  $req NOT ENABLED in settings.json"
+    failed=1
+  fi
+done
+# Plugins enabled beyond the declared ones are listed too, so the report
+# shows everything a session will load.
+others="$(grep -o '"[^"]*@[^"]*"[[:space:]]*:[[:space:]]*true' "$TARGET/settings.json" 2>/dev/null \
+  | sed 's/"\([^"]*\)".*/\1/' || true)"
+for p in $others; do
+  case " $required" in
+    *" $p "*) ;;
+    *) listed=1; log "  $p (enabled, not declared in requires.txt)" ;;
+  esac
+done
+[ "$listed" = "1" ] || log "  (none)"
+
 log "launch:       $SHIM_NAME"
-if command -v "$SHIM_NAME" >/dev/null 2>&1; then
-  log "shim on PATH: yes ($(command -v "$SHIM_NAME"))"
+# The shim the manifest recorded is the one this install wrote; `command -v`
+# would happily report an older shim of the same name on PATH.
+if [ -z "$RECORDED_SHIM" ]; then
+  log "shim:         not recorded — manifest predates this installer; run install.sh $STUDIO again"
+  failed=1
+elif [ ! -f "$RECORDED_SHIM" ]; then
+  log "shim:         MISSING $RECORDED_SHIM — run install.sh $STUDIO"
+  failed=1
+elif ! shim_owned "$RECORDED_SHIM" "$TARGET"; then
+  log "shim:         stale (launches another root) $RECORDED_SHIM — run install.sh $STUDIO"
+  failed=1
+elif ! grep -q -- '--plugin-dir' "$RECORDED_SHIM"; then
+  log "shim:         stale (no --plugin-dir) $RECORDED_SHIM — run install.sh $STUDIO"
+  failed=1
 else
-  log "shim on PATH: no — add your shim directory to PATH"
+  log "shim:         ok $RECORDED_SHIM"
+  shim_dir="$(dirname "$RECORDED_SHIM")"
+  case ":$PATH:" in
+    *":$shim_dir:"*) log "shim on PATH: yes" ;;
+    *) log "shim on PATH: no — add $shim_dir to PATH" ;;
+  esac
+fi
+
+# The pre-plugin installer linked skills/, agents/, commands/ and hooks/ into
+# the root; any symlink under those, or a dangling link directly under the
+# root, is that layout left behind — a reinstall removes what its manifest
+# recorded.
+stale=""
+for d in skills agents commands hooks; do
+  for l in "$TARGET/$d"/*; do
+    [ -L "$l" ] && stale="$stale $d/$(basename "$l")"
+  done
+done
+for l in "$TARGET"/*; do
+  if [ -L "$l" ] && [ ! -e "$l" ]; then stale="$stale $(basename "$l")"; fi
+done
+if [ -n "$stale" ]; then
+  warn "stale layout from a previous installer:$stale — run install.sh $STUDIO again"
+  failed=1
 fi
 
 # Leakage check: nothing inside this root may resolve into ~/.claude, and the
-# root itself may not be ~/.claude. Both the exact path and any descendant
-# count as a leak. Known limits: only symlinks are inspected, to a depth of 3.
-# The case patterns below carry a leading '(' because bash 3.2 mis-parses an
-# unbalanced ')' inside a command substitution; POSIX allows the open paren.
+# root itself may not be ~/.claude. Both sides are canonical: ~/.claude may
+# itself be a symlink (dotfiles), and a link destination may be spelled with
+# '..'. Only symlinks are inspected, to a depth of 3.
+home_canon="$(canon_path "${HOME%/}/.")"
+home_canon="${home_canon%/}"
+claude_canon="$(canon_path "$home_canon/.claude/.")"
+# is_leak CANONICAL_PATH — inside ~/.claude, as spelled or as resolved. The
+# leading '(' on each pattern is the bash-3.2-in-a-command-substitution
+# workaround already used below: an unbalanced ')' inside $(...) is otherwise
+# mis-parsed, so every case arm's paren is balanced explicitly.
+is_leak() {
+  case "$1" in
+    ("$home_canon/.claude"|"$home_canon/.claude"/*|"$claude_canon"|"$claude_canon"/*) return 0 ;;
+  esac
+  return 1
+}
 leaks="$(find "$TARGET" -maxdepth 3 -type l -print 2>/dev/null | while IFS= read -r link; do
   dest="$(readlink "$link" 2>/dev/null || true)"
-  case "${dest%/}" in
-    ("${HOME%/}/.claude"|"${HOME%/}/.claude"/*) printf '%s -> %s\n' "$link" "$dest" ;;
-  esac
+  case "$dest" in (/*) ;; (*) dest="$(dirname "$link")/$dest" ;; esac
+  if is_leak "$(canon_path "$dest")"; then printf '%s -> %s\n' "$link" "$dest"; fi
 done)"
-case "${TARGET%/}" in
-  "${HOME%/}/.claude"|"${HOME%/}/.claude"/*) leaks="$leaks
-config root is inside ~/.claude: $TARGET" ;;
-esac
+if is_leak "$(canon_path "${TARGET%/}/.")"; then
+  leaks="$leaks
+config root is inside ~/.claude: $TARGET"
+fi
 if [ -n "$(printf '%s' "$leaks" | tr -d '[:space:]')" ]; then
   log "leakage:"
   printf '%s\n' "$leaks" | sed 's/^/  /'
   exit 1
 fi
 log "leakage: none"
+
+if [ "$failed" != "0" ]; then
+  log "doctor: FAILED (see warnings above)"
+  exit 1
+fi

@@ -1,0 +1,262 @@
+#!/bin/sh
+# studio-state — read and write the studio's state the same way from every
+# skill. Two roots: the stage/task pointer (.studio/STATE.md) lives in the
+# project's main checkout, so a linked git worktree edits the same file and
+# one project has one stage; the feature ledger, config.json and the spec and
+# plan paths live in the checkout the command runs in, so they travel with
+# the branch.
+#
+#   studio-state root [--work]   print the pointer's root, or the working root
+#   studio-state init            create .studio/ (STATE.md, config.json, ledger/)
+#   studio-state show            print STATE.md, then the current feature ledger
+#   studio-state get KEY         print one field
+#   studio-state set KEY VALUE   replace one field; '-' clears it
+#   studio-state ledger TEXT     append a dated line to the feature ledger
+#                                (.studio/ledger/<feature>.md when spec is set,
+#                                else STATE.md's own ledger)
+#   studio-state check [--rebuild]      verify state against files and ledger;
+#                                       --rebuild sets task from the ledger
+#   studio-state reset [--keep-ledger]  back to idle; drops the feature ledger
+#                                       unless --keep-ledger
+#
+# Keys: stage spec plan task last_playtest milestone
+# Exit: 0 ok · 1 no .studio/ (except init and root), bad key, bad value, bad
+# usage, or a check that found a mismatch
+set -eu
+
+# The pointer's root is the main worktree, always listed first by
+# `git worktree list` (correct from the main checkout or any linked
+# worktree). That listing instead reports a bare repository's or a
+# submodule's own git-dir — not a worktree — when there is no ordinary
+# worktree to report, so trust the candidate only when it owns a `.git` entry
+# of its own; otherwise fall back to the working root, and outside a
+# repository — or a bare one, which has no working root either — to the
+# current directory. Every git call is guarded so a missing repository, an
+# unborn HEAD, or a bare repository never aborts the script under `set -eu`.
+_wt="$(git worktree list --porcelain 2>/dev/null | sed -n '1s/^worktree //p')"
+WORK_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+if [ -n "$_wt" ] && [ -e "$_wt/.git" ]; then
+  STATE_ROOT="$_wt"
+else
+  STATE_ROOT="$WORK_ROOT"
+fi
+[ -n "$STATE_ROOT" ] || STATE_ROOT="$(pwd -P)"
+[ -n "$WORK_ROOT" ] || WORK_ROOT="$(pwd -P)"
+STATE="$STATE_ROOT/.studio/STATE.md"
+CONFIG="$WORK_ROOT/.studio/config.json"
+LEDGER_DIR="$WORK_ROOT/.studio/ledger"
+KEYS="stage spec plan task last_playtest milestone"
+STAGES="idle brainstorm plan execute review playtest ship retro"
+MILESTONES="prototype vertical-slice alpha beta gold"
+
+usage() {
+  printf 'usage: studio-state root [--work] | init | show | get KEY | set KEY VALUE | ledger TEXT | check [--rebuild] | reset [--keep-ledger]\nkeys: %s\n' "$KEYS" >&2
+  exit 1
+}
+
+fail() { printf 'studio-state: %s\n' "$*" >&2; exit 1; }
+
+# in_list WORD LIST — succeed when WORD is one of the space-separated LIST.
+in_list() {
+  for _w in $2; do [ "$_w" = "$1" ] && return 0; done
+  return 1
+}
+
+need_state() {
+  [ -f "$STATE" ] || fail "no $STATE here — run 'studio-state init' in the project root"
+}
+
+# write_field KEY VALUE — replace the first "KEY: " header line. Only that
+# line is replaced; ledger lines start with "- " and can never match. The
+# value travels through the environment, not `awk -v`, which would turn a
+# "\n" in a path into a real newline and split the header.
+write_field() {
+  _tmp="$STATE.tmp.$$"
+  STUDIO_STATE_VALUE="$2" awk -v k="$1" '
+    BEGIN { done = 0 }
+    !done && $0 ~ ("^" k ": ") { print k ": " ENVIRON["STUDIO_STATE_VALUE"]; done = 1; next }
+    { print }
+  ' "$STATE" > "$_tmp"
+  mv "$_tmp" "$STATE"
+}
+
+# set_field KEY VALUE — write_field guarded by the same damaged-file check
+# `set` uses, so a header line that went missing is never silently skipped.
+set_field() {
+  grep -q "^$1: " "$STATE" || fail "no '$1:' line in $STATE — the file is damaged; restore the header"
+  write_field "$1" "$2"
+}
+
+# field KEY — the current value of a header field.
+field() { sed -n "s/^$1: //p" "$STATE" | head -n 1; }
+
+# feature_slug — the ledger file stem for the current spec: its basename
+# without .md and without a leading YYYY-MM-DD-; empty when no spec is set.
+feature_slug() {
+  _spec="$(field spec)"
+  case "$_spec" in ''|-) return 0 ;; esac
+  basename "$_spec" | sed -e 's/\.md$//' -e 's/^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}-//'
+}
+
+# ledger_file — where a ledger line goes: the feature ledger when a spec is
+# set, else STATE.md's own ledger section.
+ledger_file() {
+  _slug="$(feature_slug)"
+  if [ -n "$_slug" ]; then printf '%s\n' "$LEDGER_DIR/$_slug.md"; else printf '%s\n' "$STATE"; fi
+}
+
+cmd="${1:-}"
+[ -n "$cmd" ] || usage
+
+case "$cmd" in
+  root)
+    case "${2:-}" in
+      '') printf '%s\n' "$STATE_ROOT" ;;
+      --work) printf '%s\n' "$WORK_ROOT" ;;
+      *) usage ;;
+    esac
+    ;;
+  init)
+    [ ! -f "$STATE" ] || fail "$STATE already exists"
+    mkdir -p "$STATE_ROOT/.studio" "$LEDGER_DIR"
+    cat > "$STATE" <<'EOF'
+# Studio State
+
+stage: idle
+spec: -
+plan: -
+task: -
+last_playtest: -
+milestone: prototype
+
+## Ledger
+
+EOF
+    # The studio defaults; the session hook reads this file for its identity
+    # line and a project overrides keys here.
+    if [ ! -f "$CONFIG" ]; then
+      printf '{ "engine": "godot4", "dimension": "2d", "language": "gdscript", "tests": "gut" }\n' > "$CONFIG"
+    fi
+    # The pointer is local to this checkout: ignore it once, where it lives.
+    if [ -e "$STATE_ROOT/.git" ]; then
+      _gi="$STATE_ROOT/.gitignore"
+      if ! grep -qxF '.studio/STATE.md' "$_gi" 2>/dev/null; then
+        # A gitignore missing its trailing newline would otherwise run
+        # together with the appended line.
+        if [ -s "$_gi" ] && [ -n "$(tail -c 1 "$_gi")" ]; then
+          printf '\n' >> "$_gi"
+        fi
+        printf '.studio/STATE.md\n' >> "$_gi"
+      fi
+    fi
+    printf 'initialised %s\n' "$STATE"
+    ;;
+  get)
+    need_state
+    key="${2:-}"
+    in_list "$key" "$KEYS" || usage
+    field "$key"
+    ;;
+  set)
+    need_state
+    [ $# -eq 3 ] || usage
+    key="$2"
+    # A real newline in a value would split the header into two lines.
+    val="$(printf '%s' "$3" | tr '\n\r' '  ')"
+    in_list "$key" "$KEYS" || usage
+    [ -n "$val" ] || usage
+    case "$key" in
+      stage) in_list "$val" "$STAGES" || fail "stage must be one of: $STAGES" ;;
+      milestone) in_list "$val" "$MILESTONES" || fail "milestone must be one of: $MILESTONES" ;;
+      task)
+        case "$val" in
+          -) ;;
+          *) printf '%s' "$val" | grep -qE '^[0-9]+/[0-9]+$' || fail "task must be n/N or -" ;;
+        esac ;;
+    esac
+    set_field "$key" "$val"
+    ;;
+  show)
+    need_state
+    cat "$STATE"
+    _lf="$(ledger_file)"
+    if [ "$_lf" != "$STATE" ] && [ -f "$_lf" ]; then
+      printf '\n## Feature ledger: %s\n\n' "$(basename "$_lf" .md)"
+      cat "$_lf"
+    fi
+    ;;
+  ledger)
+    need_state
+    shift
+    # All remaining words form the entry, so an unquoted call keeps its text;
+    # an embedded newline is folded to a space so an entry stays one line.
+    text="$(printf '%s' "$*" | tr '\n' ' ')"
+    [ -n "$text" ] || usage
+    _lf="$(ledger_file)"
+    if [ "$_lf" != "$STATE" ] && [ ! -f "$_lf" ]; then
+      mkdir -p "$LEDGER_DIR"
+      printf '# Ledger — %s\n\n' "$(basename "$_lf" .md)" > "$_lf"
+    fi
+    printf -- '- %s %s\n' "$(date +%Y-%m-%d)" "$text" >> "$_lf"
+    ;;
+  check)
+    need_state
+    [ $# -le 2 ] || usage
+    rebuild=0
+    case "${2:-}" in '') ;; --rebuild) rebuild=1 ;; *) usage ;; esac
+    problems=0
+    for k in spec plan; do
+      v="$(field "$k")"
+      case "$v" in ''|-) continue ;; esac
+      case "$v" in /*) f="$v" ;; *) f="$WORK_ROOT/$v" ;; esac
+      if [ ! -f "$f" ]; then printf 'check: %s file missing: %s\n' "$k" "$v"; problems=1; fi
+    done
+    # The highest "T<n> complete" in the ledger is what has actually shipped.
+    _lf="$(ledger_file)"
+    done_n=0
+    if [ -f "$_lf" ]; then
+      done_n="$(sed -n 's/^- [0-9-]* T\([0-9]*\) complete.*/\1/p' "$_lf" | sort -n | tail -n 1)"
+      done_n="${done_n:-0}"
+    fi
+    task="$(field task)"
+    case "$task" in
+      ''|-) ;;
+      *)
+        n="${task%%/*}"; N="${task#*/}"
+        if [ "$n" -gt "$N" ]; then printf 'check: task %s has n > N\n' "$task"; problems=1; fi
+        if [ "$done_n" -gt "$n" ]; then
+          if [ "$rebuild" = "1" ]; then
+            set_field task "$done_n/$N"
+            printf 'check: task rebuilt to %s/%s from the ledger\n' "$done_n" "$N"
+          else
+            printf 'check: ledger says T%s complete but task is %s — run check --rebuild\n' "$done_n" "$task"
+            problems=1
+          fi
+        elif [ "$done_n" -lt "$n" ]; then
+          printf 'check: note — ledger has T%s complete, task is %s (execute may be on another branch)\n' "$done_n" "$task"
+        fi ;;
+    esac
+    [ "$problems" = "0" ] && printf 'check: ok\n'
+    exit "$problems"
+    ;;
+  reset)
+    need_state
+    [ $# -le 2 ] || usage
+    keep=0
+    case "${2:-}" in '') ;; --keep-ledger) keep=1 ;; *) usage ;; esac
+    spec="$(field spec)"
+    _lf="$(ledger_file)"
+    if [ "$_lf" != "$STATE" ]; then
+      if [ "$keep" = "0" ] && [ -f "$_lf" ]; then rm -f "$_lf"; fi
+      printf -- '- %s abandoned %s\n' "$(date +%Y-%m-%d)" "$spec" >> "$STATE"
+    fi
+    set_field stage idle
+    set_field spec -
+    set_field plan -
+    set_field task -
+    printf 'reset to idle\n'
+    ;;
+  *)
+    usage
+    ;;
+esac
