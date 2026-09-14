@@ -171,7 +171,18 @@ test_brainstorm_skill_contract() {
   assert_contains "$S/brainstorm/SKILL.md" "docs(specs): approve" "brainstorm commits at the approval gate"
 }
 
+# Behaviour this review pass added to the router: reconciling with
+# `studio-state check`, treating an empty brainstorm as idle, the abandon
+# route, and the bug route starting from a failing test.
+test_studio_skill_contract() {
+  S="$REPO_ROOT/studios/game-dev/skills"
+  assert_contains "$S/studio/SKILL.md" "studio-state check" "the router reconciles state with the repository"
+  assert_contains "$S/studio/SKILL.md" "studio-state reset" "the router can abandon a feature"
+  assert_contains "$S/studio/SKILL.md" "failing test" "the bug route starts from a failing test"
+}
+
 run_tests test_plugin_manifests test_skill_frontmatter test_agent_frontmatter \
   test_external_references_declared test_required_plugins_enabled test_bin_syntax \
   test_role_agents_exist test_stage_skill_contracts test_plan_skill_contract \
-  test_brainstorm_skill_contract
+  test_brainstorm_skill_contract \
+  test_studio_skill_contract
