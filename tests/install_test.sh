@@ -113,6 +113,22 @@ test_install_copy_mode() {
     "copy-mode shim points the studio root at the snapshot"
   assert_contains "$TMP/cp/.omega-ai-manifest" "$TMP/cp/studio" "manifest records the snapshot"
   assert_eq "# mode=copy" "$(sed -n '1p' "$TMP/cp/.omega-ai-manifest")" "copy mode is recorded in the manifest"
+  # The snapshot is a manifest entry, so uninstall removes it with the rest.
+  sh "$REPO_ROOT/uninstall.sh" game-dev --target "$TMP/cp" --shim-dir "$TMP/bin-cp" >/dev/null
+  assert_missing "$TMP/cp/studio" "uninstall removes the copy-mode snapshot"
+}
+
+# A reinstall with a different --shim-dir must remove the shim the previous
+# manifest recorded, not skip it as out of scope: the installer used to pass
+# the new shim path to manifest_remove, orphaning the old one.
+test_install_reinstall_new_shim_dir_removes_old_shim() {
+  sh "$REPO_ROOT/install.sh" general --target "$TMP/t" --shim-dir "$TMP/bin1" >/dev/null 2>&1
+  assert_file "$TMP/bin1/claude-gen" "first install writes the shim in bin1"
+  sh "$REPO_ROOT/install.sh" general --target "$TMP/t" --shim-dir "$TMP/bin2" >/dev/null 2>&1
+  assert_missing "$TMP/bin1/claude-gen" "reinstall removes the shim the previous manifest recorded"
+  assert_file "$TMP/bin2/claude-gen" "reinstall writes the shim in the new directory"
+  assert_eq "# shim=$TMP/bin2/claude-gen" "$(sed -n '2p' "$TMP/t/.omega-ai-manifest")" \
+    "the manifest records the new shim path"
 }
 
 # A reinstall must not leave links from an earlier layout behind: the
@@ -912,6 +928,7 @@ run_tests test_studio_contract test_install_unknown_studio test_install_guard \
   test_install_refuses_traversal_shim_dir test_install_refuses_symlinked_target \
   test_install_dry_run test_install_content \
   test_install_precedence test_install_copy_mode test_install_reinstall_cleans_stale_entries \
+  test_install_reinstall_new_shim_dir_removes_old_shim \
   test_install_accepts_no_mcp test_settings_backup test_shim \
   test_doctor test_doctor_detects_leak test_doctor_reports_no_plugins \
   test_doctor_plugin_report test_doctor_plugin_name_mismatch \

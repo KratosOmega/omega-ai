@@ -117,8 +117,15 @@ if [ "$DRY_RUN" != "1" ]; then
   fi
 fi
 # Remove what the previous manifest recorded before writing anything else
-# (printed, not performed, in a dry run).
-manifest_remove "$MANIFEST" "$TARGET" "$SHIM_PATH"
+# (printed, not performed, in a dry run). The shim to remove is the one the
+# previous manifest recorded, not the one this install will write: a
+# reinstall with a different --shim-dir would otherwise skip the old shim as
+# out of scope and orphan it. A manifest without the header (an install by
+# the previous installer) falls back to the new path. Split assignment so a
+# missing manifest cannot trip `set -e`.
+_prev_shim="$(manifest_meta "$MANIFEST" shim || true)"
+[ -n "$_prev_shim" ] || _prev_shim="$SHIM_PATH"
+manifest_remove "$MANIFEST" "$TARGET" "$_prev_shim"
 if [ "$DRY_RUN" != "1" ]; then
   # The pre-plugin layout linked skills, agents, commands and hooks into the
   # root; removing those entries leaves their directories behind, empty.
