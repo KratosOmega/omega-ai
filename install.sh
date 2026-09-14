@@ -16,7 +16,8 @@ bin/ are placed in the config root.
 Options:
   --mode symlink|copy   symlink (default) keeps the repo as source of truth;
                         copy takes a frozen snapshot: the studio is copied to
-                        <target>/studio and loaded from there
+                        <target>/studio and the omega global plugin to
+                        <target>/global, and both are loaded from there
   --target DIR          override the target from studio.json
   --shim-dir DIR        where to write the launch shim (default ~/.local/bin)
   --no-mcp              never register an MCP server for this studio
@@ -93,7 +94,11 @@ guard_target "$SHIM_DIR" "$REPO_ROOT"
 # on this checkout.
 if [ "$MODE" = "copy" ]; then
   PLUGIN_DIR="$TARGET/studio"
-  GLOBAL_DIR="$TARGET/omega"
+  # Not <target>/omega: that is the runtime mode directory's parent
+  # (${CLAUDE_CONFIG_DIR:-...}/omega/modes/<session_id>), and this install's
+  # `rm -rf "$GLOBAL_DIR"` below would delete every live session's mode file
+  # on a reinstall.
+  GLOBAL_DIR="$TARGET/global"
 else
   PLUGIN_DIR="$STUDIO_DIR"
   GLOBAL_DIR="$GLOBAL_SRC"

@@ -33,7 +33,7 @@ MODE="$(manifest_meta "$MANIFEST" mode)"
 if [ "$MODE" = "copy" ]; then PLUGIN_DIR="$TARGET/studio"; else PLUGIN_DIR="$STUDIO_DIR"; fi
 # The global plugin, as the shim loads it: the snapshot in copy mode, the
 # checkout otherwise.
-if [ "$MODE" = "copy" ]; then GLOBAL_DIR="$TARGET/omega"; else GLOBAL_DIR="$REPO_ROOT/shared/omega"; fi
+if [ "$MODE" = "copy" ]; then GLOBAL_DIR="$TARGET/global"; else GLOBAL_DIR="$REPO_ROOT/shared/omega"; fi
 GLOBAL_JSON="$GLOBAL_DIR/.claude-plugin/plugin.json"
 PLUGIN_JSON="$PLUGIN_DIR/.claude-plugin/plugin.json"
 REQUIRES="$STUDIO_DIR/requires.txt"

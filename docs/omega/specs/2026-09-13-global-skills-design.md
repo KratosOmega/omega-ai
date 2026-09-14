@@ -145,8 +145,9 @@ directory name, as it does for studios.
 
 `install.sh` gains one variable and two flags. In symlink mode
 `GLOBAL_DIR="$REPO_ROOT/shared/omega"`; in copy mode the plugin is snapshotted
-to `$TARGET/omega` (recorded in the manifest like `$TARGET/studio`) and
-`GLOBAL_DIR="$TARGET/omega"`. The shim becomes:
+to `$TARGET/global` (recorded in the manifest like `$TARGET/studio`) and
+`GLOBAL_DIR="$TARGET/global"` — not `$TARGET/omega`, which is the runtime
+mode directory's parent. The shim becomes:
 
 ```sh
 #!/usr/bin/env sh
@@ -263,8 +264,9 @@ is known: `prompt-submit.sh` calls it rather than editing the file itself.
 `hooks/hooks.json` registers three events:
 
 - **SessionStart** (`startup|resume|clear|compact`) runs `session-start.sh`.
-  It prunes mode files older than seven days (`find -mtime +7`), then prints
-  one line naming the plugin's five skills and the absolute path of
+  It prunes mode files older than seven days (`find -mtime +7`), never the
+  current session's, then prints one line naming the plugin's five skills
+  and the absolute path of
   `omega-mode` (`${CLAUDE_PLUGIN_ROOT}/bin/omega-mode`), and, when the
   session's file has lines, `Omega modes: <line> · <line>` followed by one
   rule line per active mode. Output is the same JSON shape the game-dev hook
@@ -273,13 +275,15 @@ is known: `prompt-submit.sh` calls it rather than editing the file itself.
   command to the hook as an envelope, not the literal text:
   `<command-name>/omega:parallel</command-name><command-args>3</command-args>`.
   The hook recognises `/omega:parallel [N|off]`, `/omega:local-merge [off]`,
-  `/omega:autopilot [off]` and `/omega:integration start <slug>` /
-  `finish`, and calls `omega-mode set` or `clear` accordingly, so a typed
-  command changes the mode deterministically before the model reads the
-  skill. It then prints the same `Omega modes:` block as SessionStart —
-  only when at least one mode is active, so a session with no mode pays no
-  tokens. Any other prompt, and any `<scheduled-task>` prompt, leaves the
-  file untouched.
+  `/omega:autopilot [off]` and `/omega:integration start <slug>` only —
+  `finish` is handled by the skill, which clears the mode only after every
+  story row is merged, and a refused finish keeps the mode — and calls
+  `omega-mode set` or `clear` accordingly, so a typed command changes the
+  mode deterministically before the model reads the skill. It then prints
+  the same `Omega modes:` block as SessionStart — only when at least one
+  mode is active, so a session with no mode pays no tokens. Any other
+  prompt leaves the file untouched; a `<scheduled-task>` prompt never
+  changes a mode but still receives the block when a mode is set.
 - **SessionEnd** runs `session-end.sh`, which deletes the session's file.
 
 When the model invokes a mode skill through the Skill tool, the hook never
@@ -622,7 +626,7 @@ studio scope: omega has no `requires.txt` or `settings.json`.
 - `prompt-submit.sh` fed the envelope for `/omega:parallel 3` writes
   `parallel max=3`; `/omega:parallel off` clears it; `/omega:integration start
   ui-rework` writes `integration slug=ui-rework`; a foreign command envelope
-  and a `<scheduled-task>` prompt change nothing.
+  changes nothing; a `<scheduled-task>` prompt changes no mode.
 - `.claude-plugin/marketplace.json` is valid JSON, names `omega`, and its
   `source` resolves to `shared/omega`.
 - Text contracts, one block per skill: `handoff` mentions `wip:`,
@@ -638,7 +642,7 @@ studio scope: omega has no `requires.txt` or `settings.json`.
 `tests/install_test.sh` gains: the symlink-mode shim contains
 `OMEGA_GLOBAL_ROOT="$REPO_ROOT/shared/omega"` and `--plugin-dir
 "$OMEGA_GLOBAL_ROOT"`; the copy-mode install creates
-`$TARGET/omega/.claude-plugin/plugin.json`, the shim points
+`$TARGET/global/.claude-plugin/plugin.json`, the shim points
 `OMEGA_GLOBAL_ROOT` at it, the manifest records it, and uninstall removes it.
 
 ## Docs

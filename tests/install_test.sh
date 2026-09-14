@@ -112,17 +112,32 @@ test_install_copy_mode() {
   assert_contains "$TMP/bin-cp/claude-gd" "OMEGA_STUDIO_ROOT=\"$TMP/cp/studio\"" \
     "copy-mode shim points the studio root at the snapshot"
   assert_contains "$TMP/cp/.omega-ai-manifest" "$TMP/cp/studio" "manifest records the snapshot"
-  assert_file "$TMP/cp/omega/.claude-plugin/plugin.json" "copy mode snapshots the global plugin under the target"
-  assert_file "$TMP/cp/omega/bin/omega-mode" "the global snapshot carries omega-mode"
-  assert_file "$TMP/cp/omega/hooks/hooks.json" "the global snapshot carries the hooks"
-  assert_contains "$TMP/bin-cp/claude-gd" "OMEGA_GLOBAL_ROOT=\"$TMP/cp/omega\"" \
+  assert_file "$TMP/cp/global/.claude-plugin/plugin.json" "copy mode snapshots the global plugin under the target"
+  assert_file "$TMP/cp/global/bin/omega-mode" "the global snapshot carries omega-mode"
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if [ -x "$TMP/cp/global/bin/omega-mode" ]; then
+    _pass "the snapshot's omega-mode is executable"
+  else
+    _fail "the snapshot's omega-mode is executable"
+  fi
+  assert_file "$TMP/cp/global/hooks/hooks.json" "the global snapshot carries the hooks"
+  assert_contains "$TMP/bin-cp/claude-gd" "OMEGA_GLOBAL_ROOT=\"$TMP/cp/global\"" \
     "copy-mode shim points the global root at the snapshot"
-  assert_contains "$TMP/cp/.omega-ai-manifest" "$TMP/cp/omega" "manifest records the global snapshot"
+  assert_contains "$TMP/cp/.omega-ai-manifest" "$TMP/cp/global" "manifest records the global snapshot"
   assert_eq "# mode=copy" "$(sed -n '1p' "$TMP/cp/.omega-ai-manifest")" "copy mode is recorded in the manifest"
+
+  # The runtime mode directory (${CLAUDE_CONFIG_DIR}/omega/modes) sits beside
+  # the global snapshot, not inside it: a reinstall's `rm -rf "$GLOBAL_DIR"`
+  # must never delete a live session's mode file.
+  CLAUDE_CONFIG_DIR="$TMP/cp" sh "$TMP/cp/global/bin/omega-mode" --session cpsess set parallel
+  sh "$REPO_ROOT/install.sh" game-dev --target "$TMP/cp" --shim-dir "$TMP/bin-cp" --mode copy >/dev/null 2>&1
+  assert_file "$TMP/cp/omega/modes/cpsess" "a reinstall keeps live mode files"
+  CLAUDE_CONFIG_DIR="$TMP/cp" sh "$TMP/cp/global/bin/omega-mode" --session cpsess clear --all
+
   # The snapshot is a manifest entry, so uninstall removes it with the rest.
   sh "$REPO_ROOT/uninstall.sh" game-dev --target "$TMP/cp" --shim-dir "$TMP/bin-cp" >/dev/null
   assert_missing "$TMP/cp/studio" "uninstall removes the copy-mode snapshot"
-  assert_missing "$TMP/cp/omega" "uninstall removes the global plugin snapshot"
+  assert_missing "$TMP/cp/global" "uninstall removes the global plugin snapshot"
 }
 
 # A reinstall with a different --shim-dir must remove the shim the previous
@@ -214,7 +229,7 @@ test_shim() {
   TESTS_RUN=$((TESTS_RUN + 1))
   if [ -x "$TMP/bin/claude-gd" ]; then _pass "shim is executable"; else _fail "shim is executable"; fi
   assert_contains "$TMP/gd/.omega-ai-manifest" "bin/claude-gd" "manifest records the shim"
-  assert_missing "$TMP/gd/omega" "symlink mode puts nothing of the global plugin under the target"
+  assert_missing "$TMP/gd/global" "symlink mode puts nothing of the global plugin under the target"
 }
 
 test_doctor() {
@@ -226,12 +241,16 @@ test_doctor() {
   assert_contains "$TMP/doctor.out" "global plugin: omega 0.1.0   skills 5  hooks present" \
     "doctor reports the global plugin as the shim loads it"
   assert_contains "$TMP/doctor.out" "shim:         ok" "doctor accepts the two-plugin shim"
-  # A shim from before the global plugin: the doctor names the gap and fails.
-  sed 's/ --plugin-dir "\$OMEGA_GLOBAL_ROOT"//' "$TMP/bin/claude-gen" > "$TMP/bin/claude-gen.old"
-  mv "$TMP/bin/claude-gen.old" "$TMP/bin/claude-gen"
+  # A shim from before the global plugin: the doctor names the gap and
+  # fails. A second, independent install — never the shared $TMP/bin/claude-gen
+  # the assertions above (and other tests) rely on — is degraded so this
+  # test does not rewrite a fixture other tests use.
+  sh "$REPO_ROOT/install.sh" general --target "$TMP/gen-old" --shim-dir "$TMP/bin-old" >/dev/null 2>&1
+  sed 's/ --plugin-dir "\$OMEGA_GLOBAL_ROOT"//' "$TMP/bin-old/claude-gen" > "$TMP/bin-old/claude-gen.new"
+  mv "$TMP/bin-old/claude-gen.new" "$TMP/bin-old/claude-gen"
   assert_status 1 "doctor fails on a shim without the global plugin" -- \
-    sh "$REPO_ROOT/doctor.sh" general --target "$TMP/gen"
-  sh "$REPO_ROOT/doctor.sh" general --target "$TMP/gen" > "$TMP/doctor2.out" 2>&1
+    sh "$REPO_ROOT/doctor.sh" general --target "$TMP/gen-old"
+  sh "$REPO_ROOT/doctor.sh" general --target "$TMP/gen-old" > "$TMP/doctor2.out" 2>&1
   assert_contains "$TMP/doctor2.out" "shim:         stale (no global plugin)" "doctor names the missing global plugin"
   assert_status 1 "doctor fails on a missing root" -- \
     sh "$REPO_ROOT/doctor.sh" general --target "$TMP/absent"
@@ -950,7 +969,9 @@ test_install_reports_doctor_result_last() {
 test_install_requires_global_plugin() {
   sh "$REPO_ROOT/install.sh" general --target "$TMP/req" --shim-dir "$TMP/bin-req" >/dev/null 2>&1
   assert_file "$TMP/req/CLAUDE.md" "baseline install succeeds"
-  cp -R "$REPO_ROOT" "$TMP/repo-no-omega"
+  mkdir -p "$TMP/repo-no-omega"
+  cp -R "$REPO_ROOT/lib" "$REPO_ROOT/shared" "$REPO_ROOT/studios" "$TMP/repo-no-omega/"
+  cp "$REPO_ROOT/install.sh" "$REPO_ROOT/doctor.sh" "$REPO_ROOT/uninstall.sh" "$TMP/repo-no-omega/"
   rm -rf "$TMP/repo-no-omega/shared/omega"
   status=0
   ( sh "$TMP/repo-no-omega/install.sh" general --target "$TMP/req" --shim-dir "$TMP/bin-req" >/dev/null 2>"$TMP/req.err" ) || status=$?

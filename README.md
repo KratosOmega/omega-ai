@@ -41,7 +41,7 @@ The first `claude-gd` launch fetches the plugins the studio depends on
 (superpowers, godot-prompter) into the isolated config root.
 
 Options: `--mode copy` for a frozen snapshot (the studio is copied to
-`~/.claude-gamedev/studio/`, the global plugin to `~/.claude-gamedev/omega/`,
+`~/.claude-gamedev/studio/`, the global plugin to `~/.claude-gamedev/global/`,
 and both are loaded from there), `--target DIR` for a
 different config root, `--shim-dir DIR` for a different shim location,
 `--no-mcp` (accepted now; MCP registration arrives with the engine toolkit
