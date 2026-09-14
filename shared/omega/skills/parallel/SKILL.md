@@ -42,6 +42,9 @@ earlier task creates depends on that task. Print at most ten lines of the
 table. A plan without `Files:` lines gives no basis for overlap detection:
 every task depends on the one before it — say so, and run sequentially.
 
+`<scratchpad>` is the session's scratchpad directory when Claude Code
+prints one; otherwise `$(mktemp -d)` recorded in `waves.md`.
+
 ## 2. Ready tasks, slots
 
 A task is ready when every task it depends on is integrated (§6) and none
@@ -52,7 +55,14 @@ the next ready task. Slots, not strict waves.
 ## 3. Isolation
 
 Each dispatched task gets its own worktree and branch, cut from the feature
-branch's HEAD at dispatch time:
+branch's HEAD at dispatch time. `git fetch origin` first. When
+`parallel/<feature>/task-<n>` already exists — locally (`git show-ref
+--verify --quiet refs/heads/parallel/<feature>/task-<n>`) or on `origin`
+(`git ls-remote --exit-code --heads origin parallel/<feature>/task-<n>`)
+— a previous session's `handoff` pushed it: `git worktree add
+<scratchpad>/wt/task-<n> parallel/<feature>/task-<n>` (no `-b`; the local
+branch tracks `origin`'s when only that exists), dispatch no implementer,
+and go straight to §5 review. Otherwise:
 
 ```sh
 git worktree add <scratchpad>/wt/task-<n> -b parallel/<feature>/task-<n> <feature-branch>
@@ -79,27 +89,42 @@ a diff; reviewers do.
 ## 5. Review
 
 As soon as an implementer reports, dispatch the invoking skill's reviewer
-on the task branch — the studio's reviewer, or subagent-driven-development's
-task reviewer — with the brief that skill would give it. Fix rounds happen
-in the task worktree, with the loop and the escalation rules the invoking
-skill already has.
+on the task branch, with the brief that skill would give it — the studio's
+reviewer, or `superpowers:subagent-driven-development`'s task reviewer
+when installed; otherwise a fresh `general-purpose` reviewer given the
+task's plan text and
+`git diff <feature-branch>...parallel/<feature>/task-<n>`. Fix rounds
+happen in the task worktree, with the loop and the escalation rules the
+invoking skill already has.
 
 ## 6. Integrate
 
 When the review is clean, in the session worktree:
 
-1. Note the feature HEAD: `before=$(git rev-parse HEAD)`.
-2. `git cherry-pick <first-commit>^..<last-commit>` for the task's commits.
+1. `git status --porcelain` in the session worktree must print nothing.
+   When it does not, the invoking skill's bookkeeping is pending (for
+   example `.studio/ledger/`): commit it with that skill's own commit step,
+   or stop and list the files. Never `reset`. Then note the feature HEAD:
+   `before=$(git rev-parse HEAD)`.
+2. `first=$(git rev-list --reverse <feature-branch>..parallel/<feature>/task-<n> | head -n 1)`,
+   `last=$(git rev-parse parallel/<feature>/task-<n>)`, then
+   `git cherry-pick $first^..$last` (a single commit: `git cherry-pick $last`).
 3. Run the project's tests. On a cherry-pick conflict: `git cherry-pick
    --abort`, dispatch a fix agent to rebase the task branch onto the
    feature branch in the task worktree, then retry from step 1.
-4. Verify: `git log --oneline $before..HEAD` lists exactly the
-   cherry-picked commits, and `git status --porcelain` prints nothing.
-   Anything else means an agent committed on the session branch — tag the
-   stray commit, `git reset --hard $before`, and re-run the task.
+4. Verify: `git status --porcelain` prints nothing. Then `git log
+   --oneline $before..HEAD` must list exactly the cherry-picked commits.
+   Extra commits mean an agent committed on the session branch:
+   `git tag stray/task-<n> HEAD && git reset --hard $before` and redo the
+   cherry-pick. A dirty tree (`git status --porcelain` prints something)
+   is never reset — stop and list the files.
 5. `git worktree remove <scratchpad>/wt/task-<n>` and
    `git branch -D parallel/<feature>/task-<n>` — the commits are on the
-   feature branch now.
+   feature branch now. When `handoff` had pushed it (`git ls-remote
+   --exit-code --heads origin parallel/<feature>/task-<n>`), also
+   `git push origin --delete parallel/<feature>/task-<n>` — except under
+   `autopilot`, which never deletes remote branches (leave it; note it in
+   the handoff).
 6. Only now run the invoking skill's bookkeeping for the task —
    `studio-state set task n/N`, its ledger lines, its checkbox — exactly
    as it would have.
