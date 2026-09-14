@@ -93,7 +93,8 @@ While `omega-mode show` lists `autopilot`:
 - **Allowed side effects:** commit; `git push` after every integrated
   task, so a crash loses at most one task; `gh pr create --fill --draft`
   when the plan is complete — base per `omega:local-merge` §3 (the
-  integration branch when an `integration` mode is set, else `main`);
+  integration branch when an `integration` mode is set, else the
+  repository's default branch);
   `gh pr comment`; the handoff.
 - **Forbidden:** never merge — with `local-merge` set, its merge step is
   skipped and reported; never force-push; never delete a remote branch; no
