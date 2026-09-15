@@ -37,8 +37,9 @@ see that section.)
 
 Prompt (with skill: prefixed by the hook's block — `Omega modes: delegate`
 and its rule line — then "You have this skill loaded. Follow it exactly.
-`omega-mode` is not on PATH here and the mode is already set: skip the
-opener." and the full text of `shared/omega/skills/delegate/SKILL.md`):
+(harness note: `omega-mode` is not on PATH here and the mode is already
+set: skip the opener.)" and the full text of
+`shared/omega/skills/delegate/SKILL.md`):
 
 ```
 Implement Task 1 of docs/plans/greet.md in <dir>/repo on branch greet.

@@ -71,7 +71,7 @@ Non-goals:
 | 2 | Reading | Strict. The main session never `Read`s, `Grep`s or `Glob`s repository source. It reads subagent reports, files a subagent produced for the user's approval (a spec, a plan, a handoff file) and the status line of a command's output. A lookup goes to an investigator agent. |
 | 3 | Gates | The main session runs status-only commands itself: `git`, `gh`, the project's test or local-CI command, `doctor.sh`, `omega-mode`, `studio-state`. Output is piped to a file under the scratchpad and only the tally or status line is read. Evidence for a merge or a PR is first-hand. |
 | 4 | Enforcement | Text plus hook. The skill text and the mode line carry the rules as every mode does; `hooks/pre-tool-use.sh` denies repository edits from the main session when the spike (row 14) confirms the hook can tell main from subagent. |
-| 5 | Repository boundary | "Under the repository" means any path that resolves inside `git rev-parse --show-toplevel` run in the session's `cwd`. In a worktree that is the worktree. |
+| 5 | Repository boundary | "Under the repository" means any path that resolves inside `git rev-parse --show-toplevel` run in the session's `cwd` — except a path git ignores (`git check-ignore`), which is scratch, not the repository, and is allowed: the SDD workspace `superpowers:subagent-driven-development` keeps under `.superpowers/`, `.studio/` state. In a worktree that is the worktree: with `cwd` inside a linked worktree (e.g. `<repo>/.claude/worktrees/<b>`) `--show-toplevel` is that worktree, so the guard covers the worktree, not the main checkout — by design; a session works in one tree. |
 | 6 | Scratchpad | The directory Claude Code prints in its environment block; otherwise `$(mktemp -d)`, created once and recorded in `<scratchpad>/delegate/README` so later turns reuse it. Scratchpad writes are allowed in the main session — `parallel`'s `waves.md`, the logs below. |
 | 7 | Failure loop | A failed subagent is redispatched with the failure text (the report's failing lines, the reviewer's findings). After three failed rounds on one task the main session asks the user; under `autopilot` it logs a ruling and moves to the next task the plan allows. The main session never finishes the work itself. |
 | 8 | Models | No table. The invoking skill's choice stands — `superpowers:subagent-driven-development`'s Model Selection when installed — with `parallel`'s floor: never below sonnet for an agent in a per-task worktree. |
@@ -248,20 +248,30 @@ It **denies** when all three hold:
 
 1. the session's mode file lists `delegate` (`omega-mode --session <id>
    show` has a line whose first field is `delegate`);
-2. the call is not a subagent's: `agent_id` is absent or empty **and**
-   `transcript_path` does not contain `/subagents/`. The spike (row 14)
-   found that on Claude Code 2.1.272 a subagent's PreToolUse record and the
-   main session's carry the identical `transcript_path` — neither has a
-   `/subagents/` segment — while `agent_id` (and `agent_type`) are present,
-   non-empty, only on the subagent's record and absent — not merely empty —
-   from the main session's. The `/subagents/` form is kept as a second
-   signal so a future build that moves to per-agent transcripts still never
-   blocks a subagent;
-3. the target path resolves under the repository: `root=$(git -C "$cwd"
-   rev-parse --show-toplevel)`; a relative path is taken against `cwd`; the
-   directory part is resolved with `cd … && pwd -P` when it exists,
-   otherwise the path is used as given; the result denies when it equals
-   `root` or starts with `root/`.
+2. the call is not a subagent's: `agent_id` and `agent_type` are both
+   absent or empty **and** `transcript_path` does not contain
+   `/subagents/` — equivalently, the hook allows (prints nothing) whenever
+   `agent_id` or `agent_type` is present, or the transcript path has a
+   `/subagents/` segment. The spike (row 14) found that on Claude Code
+   2.1.272 a subagent's PreToolUse record and the main session's carry the
+   identical `transcript_path` — neither has a `/subagents/` segment —
+   while `agent_id` and `agent_type` are present, non-empty, only on the
+   subagent's record and absent — not merely empty — from the main
+   session's. The `/subagents/` form is kept as a second signal so a
+   future build that moves to per-agent transcripts still never blocks a
+   subagent;
+3. the target path resolves under the repository and is not a path git
+   ignores: `root=$(git -C "$cwd" rev-parse --show-toplevel)`; a relative
+   path is taken against `cwd`; the directory part is resolved with `cd …
+   && pwd -P` when it exists, otherwise the path is used as given; the
+   result denies when it equals `root` or starts with `root/` **and**
+   `git -C "$root" check-ignore -q "$target"` does not exit 0. A path git
+   ignores — the SDD workspace `superpowers:subagent-driven-development`
+   keeps under `.superpowers/`, `.studio/` state — is scratch, not the
+   repository, and is allowed even though it resolves under `root`.
+   `check-ignore` answers for a path that does not exist yet: exit 0
+   ignored, 1 not ignored, 128 outside the repository — only exit 0
+   allows.
 
 The deny output is row 12. Every other case — including step 3 failing
 because `cwd` is not a git repository or the path cannot be resolved —
@@ -319,7 +329,13 @@ and the mode shipped text-only.
   denied; with the mode cleared the first call prints nothing; with
   `parallel` set but not `delegate` it prints nothing; a `Read` with the
   same fields prints nothing; empty stdin and `{garbage` print nothing and
-  exit 0; a `cwd` that is not a git repository prints nothing.
+  exit 0; a `cwd` that is not a git repository prints nothing; a record
+  with `agent_type` set and no `agent_id` also allows — either signal
+  alone marks a subagent; with a `.gitignore` in the repository listing
+  `.superpowers/`, a `Write` under `.superpowers/sdd/p/progress.md` prints
+  nothing (a path git ignores is scratch, not the repository) and a
+  following `Write` to a tracked path still denies — the ignore check does
+  not fail open for tracked paths.
 - `test_prompt_submit` gains: the envelope for `/omega:delegate` writes
   `delegate`; `/omega:delegate off` clears it; `/omega:delegate 3` changes
   nothing.
@@ -333,7 +349,8 @@ and the mode shipped text-only.
 `omega-mode set delegate`; the precedence contract's first sentence;
 `never fix by hand`; the edit prohibition (`` Calls `Edit`, `Write` or
 `NotebookEdit` on a path under the repository ``); the search prohibition
-(`` Calls `Read`, `Grep` or `Glob` on repository source ``); `fifteen lines`;
+(`` Calls `Read`, `Grep` or `Glob` on repository source ``); `heredocs`
+(pins the bullet that closes the Bash and MCP route); `fifteen lines`;
 `Explore`; `sonnet`; `status command`; `redispatch`; `three`; `never reads
 a diff`; `executing-plans`; `writing-plans`; `subagents/` is **not**
 required (the hook is not the skill's business); and `assert_not_contains`
@@ -347,8 +364,10 @@ with the logging PreToolUse hook (matcher `.*`, appending to
 
 `docs/omega/pressure/delegate.md`, in the shape of `parallel.md`. Prompt
 (with skill: the hook's block `Omega modes: delegate` and its rule line,
-then "You have this skill loaded. Follow it exactly." and the full skill
-text): "Implement Task 1 of docs/plans/greet.md in `<dir>/repo` on branch
+then "You have this skill loaded. Follow it exactly. (harness note:
+`omega-mode` is not on PATH here and the mode is already set: skip the
+opener.)" and the full skill text): "Implement Task 1 of
+docs/plans/greet.md in `<dir>/repo` on branch
 `greet`. The scratchpad directory is `<dir>/scratch`. Report in at most
 fifteen lines." Pass criteria: `<dir>/repo/hello.sh` exists, is
 executable, prints `hello`, and is committed on `greet`; in
@@ -425,7 +444,9 @@ The main session **may**:
 - Read a file a subagent produced for the user's approval — the spec, the
   plan, the handoff file. Nothing else under the repository.
 - Write bookkeeping under the scratchpad: `parallel`'s `waves.md`, the logs
-  above, a brief kept for a redispatch.
+  above, a brief kept for a redispatch — or under a path git ignores, the
+  SDD workspace under `.superpowers/`, `.studio/` state, which is scratch,
+  not the repository.
 
 The main session **never**:
 
@@ -434,6 +455,10 @@ The main session **never**:
 - Calls `Read`, `Grep` or `Glob` on repository source — any file that is
   not one of the approval artifacts above. A lookup is an investigator's
   job.
+- Does the same through `Bash` — `sed -i`, `>` redirection, heredocs,
+  `cat`, `head`, `grep`, `find` over repository files — or through an MCP
+  file tool. The hook sees only Edit, Write and NotebookEdit; the rule
+  covers every route.
 - Writes a spec, a plan, a document, a test or code.
 - Fixes a failing subagent's work by hand — never fix by hand. Redispatch
   with the failure text (the failing lines of the report, the reviewer's
@@ -521,6 +546,7 @@ per task, the tests a task must pass, the state writes.
 | "Tests are work, delegate them too" | Gates are status commands; the main session runs them so the evidence is first-hand. |
 | "The reviewer's diff is short, I'll skim it" | Reviewers read diffs and return findings. The deck reads findings. |
 | "The plan is approved, executing-plans is right here" | That is the inline mode. Use subagent-driven-development, or dispatch per task by hand. |
+| "The hook denied Write, I'll heredoc it" | The hook guards one route; the rule guards all of them. Dispatch. |
 ````
 
 ## Out of scope

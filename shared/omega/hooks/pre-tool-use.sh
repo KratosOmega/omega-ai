@@ -3,14 +3,18 @@
 # While the session's mode file lists `delegate`, an edit under the
 # repository from the main session is denied: the main session is a command
 # deck and dispatches a subagent instead. A subagent's call carries a
-# non-empty `agent_id` (observed on Claude Code 2.1.272: the subagent's
-# PreToolUse record and the main session's carry the identical
-# transcript_path — no `/subagents/` segment — while agent_id is present
-# only on the subagent's record). The transcript-path form
-# (`<session dir>/subagents/…`) is kept as a second signal, so a future
-# build that moves to per-agent transcripts still never blocks a subagent.
-# A path outside the repository, a session with no such mode, and anything
-# the hook cannot parse are allowed by printing nothing. The mode file is
+# non-empty `agent_id` or `agent_type` (observed on Claude Code 2.1.272:
+# the subagent's PreToolUse record and the main session's carry the
+# identical transcript_path — no `/subagents/` segment — while agent_id and
+# agent_type are present only on the subagent's record). The
+# transcript-path form (`<session dir>/subagents/…`) is kept as a second
+# signal, so a future build that moves to per-agent transcripts still never
+# blocks a subagent.
+# A path git ignores is scratch, not the repository — the SDD workspace
+# under `.superpowers/`, `.studio/` state — and is allowed even though it
+# resolves under the repository root (`git check-ignore` exit 0). A path
+# outside the repository, a session with no such mode, and anything the
+# hook cannot parse are allowed by printing nothing. The mode file is
 # checked first so a session without the mode pays one omega-mode call and
 # no git call.
 #
@@ -48,6 +52,7 @@ sh "$MODE" --session "$sid" show 2>/dev/null \
   | awk '$1 == "delegate" { found = 1 } END { exit !found }' || exit 0
 
 [ -z "$(field agent_id)" ] || exit 0
+[ -z "$(field agent_type)" ] || exit 0
 case "$(field transcript_path)" in
   */subagents/*) exit 0 ;;
 esac
@@ -80,6 +85,7 @@ target="$dir/$rel"
 
 case "$target" in
   "$root"|"$root"/*)
+    git -C "$root" check-ignore -q "$target" 2>/dev/null && exit 0
     printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"omega:delegate — the main session edits nothing under the repository; dispatch a subagent"}}\n' ;;
 esac
 exit 0

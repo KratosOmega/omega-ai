@@ -38,7 +38,9 @@ The main session **may**:
 - Read a file a subagent produced for the user's approval — the spec, the
   plan, the handoff file. Nothing else under the repository.
 - Write bookkeeping under the scratchpad: `parallel`'s `waves.md`, the logs
-  above, a brief kept for a redispatch.
+  above, a brief kept for a redispatch — or under a path git ignores, the
+  SDD workspace under `.superpowers/`, `.studio/` state, which is scratch,
+  not the repository.
 
 The main session **never**:
 
@@ -47,6 +49,10 @@ The main session **never**:
 - Calls `Read`, `Grep` or `Glob` on repository source — any file that is
   not one of the approval artifacts above. A lookup is an investigator's
   job.
+- Does the same through `Bash` — `sed -i`, `>` redirection, heredocs,
+  `cat`, `head`, `grep`, `find` over repository files — or through an MCP
+  file tool. The hook sees only Edit, Write and NotebookEdit; the rule
+  covers every route.
 - Writes a spec, a plan, a document, a test or code.
 - Fixes a failing subagent's work by hand — never fix by hand. Redispatch
   with the failure text (the failing lines of the report, the reviewer's
@@ -134,3 +140,4 @@ per task, the tests a task must pass, the state writes.
 | "Tests are work, delegate them too" | Gates are status commands; the main session runs them so the evidence is first-hand. |
 | "The reviewer's diff is short, I'll skim it" | Reviewers read diffs and return findings. The deck reads findings. |
 | "The plan is approved, executing-plans is right here" | That is the inline mode. Use subagent-driven-development, or dispatch per task by hand. |
+| "The hook denied Write, I'll heredoc it" | The hook guards one route; the rule guards all of them. Dispatch. |

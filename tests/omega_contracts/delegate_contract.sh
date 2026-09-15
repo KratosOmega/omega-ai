@@ -10,6 +10,7 @@ test_delegate_contract() {
   assert_contains "$S" "never fix by hand" "delegate never fixes by hand"
   assert_contains "$S" "Calls \`Edit\`, \`Write\` or \`NotebookEdit\` on a path under the repository" "delegate never edits under the repository"
   assert_contains "$S" "Calls \`Read\`, \`Grep\` or \`Glob\` on repository source" "delegate never searches the repository"
+  assert_contains "$S" "heredocs" "delegate closes the Bash and MCP route"
   assert_contains "$S" "fifteen lines" "delegate caps reports at fifteen lines"
   assert_contains "$S" "Explore" "delegate routes lookups to an investigator"
   assert_contains "$S" "sonnet" "delegate keeps the sonnet floor"

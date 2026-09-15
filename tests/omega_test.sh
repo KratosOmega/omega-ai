@@ -3,7 +3,8 @@
 # manifest, omega-mode, omega-caffeine, and the three hooks. Runs without a
 # config root: omega-mode and the hooks are pointed at a temporary
 # CLAUDE_CONFIG_DIR. omega-caffeine is run with a fake caffeinate first on
-# PATH; every process it starts is killed on exit.
+# PATH; every process it starts is killed on exit. The suite needs `git` on
+# PATH: test_pre_tool_use creates a temporary git repository as `cwd`.
 set -u
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 . "$REPO_ROOT/tests/assert.sh"
@@ -505,6 +506,19 @@ test_pre_tool_use() {
   assert_eq "" "$(cat "$TMP/hook.out")" "a session with no mode file allows"
   hook pre-tool-use.sh '{"session_id":"d1","transcript_path":"'"$main_t"'","cwd":"'"$repo"'","hook_event_name":"PreToolUse","tool_name":"Write","tool_input":{"content":"x"}}'
   assert_eq "" "$(cat "$TMP/hook.out")" "a Write with no file_path allows"
+
+  hook pre-tool-use.sh '{"session_id":"d1","transcript_path":"'"$main_t"'","cwd":"'"$repo"'","hook_event_name":"PreToolUse","agent_type":"general-purpose","tool_name":"Write","tool_input":{"file_path":"'"$repo"'/src/a.gd","content":"x"}}'
+  assert_eq "" "$(cat "$TMP/hook.out")" "a subagent's Write is allowed by agent_type alone"
+
+  # A path git ignores is scratch, not the repository — the SDD workspace
+  # under .superpowers/ must stay writable from the main session even
+  # though it resolves under the repository root.
+  echo ".superpowers/" > "$repo/.gitignore"
+  hook pre-tool-use.sh "$(ptu Write file_path "$repo/.superpowers/sdd/p/progress.md" "$main_t" "$repo" d1)"
+  assert_eq "" "$(cat "$TMP/hook.out")" "a Write under a path git ignores is scratch, not the repository"
+  hook pre-tool-use.sh "$(ptu Write file_path "$repo/src/a.gd" "$main_t" "$repo" d1)"
+  assert_contains "$TMP/hook.out" '"permissionDecision":"deny"' "a tracked path still denies after the ignore check"
+  rm -f "$repo/.gitignore"
 
   mode --session d1 clear delegate
   mode --session d1 set parallel max=2
