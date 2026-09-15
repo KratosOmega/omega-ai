@@ -21,11 +21,18 @@ CFG="$TMP/cfg"
 
 # A fake caffeinate that accepts any arguments and lives for a minute, and a
 # PATH with only the utilities omega-caffeine itself needs — no caffeinate,
-# no systemd-inhibit — for the unsupported case.
+# no systemd-inhibit — for the unsupported case. The fake must not exec its
+# sleep: omega-caffeine recognises its process by the argument list, which
+# is `/bin/sh …/fakebin/caffeinate …` only while the script itself lives.
 mkdir -p "$TMP/fakebin" "$TMP/nobin"
-printf '#!/bin/sh\nexec sleep 60\n' > "$TMP/fakebin/caffeinate"
+cat > "$TMP/fakebin/caffeinate" <<'FAKE'
+#!/bin/sh
+sleep 60 & c=$!
+trap 'kill $c 2>/dev/null; exit 0' TERM INT
+wait $c
+FAKE
 chmod +x "$TMP/fakebin/caffeinate"
-for _u in sh awk sed dirname sleep nohup mkdir mv rm cat; do
+for _u in sh awk sed dirname sleep nohup mkdir mv rm cat ps grep uname; do
   ln -s "$(command -v "$_u")" "$TMP/nobin/$_u"
 done
 
@@ -372,6 +379,7 @@ test_prompt_submit() {
   caffeine --session p2 start >/dev/null
   cp="$(caffeine_pid p2)"
   CAF_PIDS="$CAF_PIDS $cp"
+  assert_status 0 "the keep-awake process is running before /omega:autopilot off" -- kill -0 "$cp"
   hook prompt-submit.sh '{"session_id":"p2","hook_event_name":"UserPromptSubmit","prompt":"<command-name>/omega:autopilot</command-name><command-args>off</command-args>"}'
   assert_missing "$CFG/omega/modes/p2" "/omega:autopilot off clears autopilot (the last mode)"
   wait_dead "$cp"
@@ -490,6 +498,7 @@ test_caffeine() {
   # The timeout argument.
   mode --session c4 set autopilot
   assert_status 1 "start 0 is refused" -- caffeine --session c4 start 0
+  assert_status 1 "start 169 is refused (a week is the cap)" -- caffeine --session c4 start 169
   assert_status 1 "start with a non-numeric timeout is refused" -- caffeine --session c4 start soon
   assert_status 1 "start with two arguments is refused" -- caffeine --session c4 start 1 2
   assert_eq "autopilot" "$(mode --session c4 show)" "a refused start records nothing"
@@ -500,6 +509,33 @@ test_caffeine() {
   caffeine --session c4 stop >/dev/null
   assert_status 1 "no session id exits 1" -- env CLAUDE_CODE_SESSION_ID= CLAUDE_CONFIG_DIR="$CFG" sh "$CAF" status
   assert_status 1 "an unknown verb exits 1" -- caffeine --session c4 brew
+  st=0
+  caffeine --session ../x start >/dev/null 2> "$TMP/caf.err" || st=$?
+  assert_eq 1 "$st" "an omega-mode failure is fatal, not read as autopilot unset"
+  assert_contains "$TMP/caf.err" "invalid session id" "omega-mode's own message is shown"
+  assert_not_contains "$TMP/caf.err" "autopilot is not set" "the failure is not reported as autopilot unset"
+
+  # A recorded pid that now belongs to some other process — a long session
+  # outlives the keep-awake timeout and the number is reused — is neither
+  # trusted nor killed: identity is checked, not just liveness.
+  sleep 60 &
+  fp=$!
+  CAF_PIDS="$CAF_PIDS $fp"
+  mode --session c5 set autopilot "caffeine=$fp"
+  assert_eq "stopped" "$(caffeine --session c5 status)" "status treats a live pid that is not the tool as stopped"
+  assert_status 1 "status exits 1 for a foreign pid" -- caffeine --session c5 status
+  assert_eq "stopped" "$(caffeine --session c5 stop)" "stop prints stopped for a foreign pid"
+  assert_status 0 "stop does not kill a foreign pid" -- kill -0 "$fp"
+  assert_eq "autopilot" "$(mode --session c5 show)" "stop drops the stale key"
+  mode --session c5 set autopilot "caffeine=$fp"
+  caffeine --session c5 start >/dev/null
+  pid5="$(caffeine_pid c5)"
+  CAF_PIDS="$CAF_PIDS $pid5"
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if [ -n "$pid5" ] && [ "$pid5" != "$fp" ]; then _pass "start replaces a foreign pid"; else _fail "start replaces a foreign pid (got '$pid5')"; fi
+  assert_status 0 "start leaves the foreign process alive" -- kill -0 "$fp"
+  caffeine --session c5 stop >/dev/null
+  kill "$fp" 2>/dev/null
 
   # No keep-awake tool on PATH: a warning, never a failure.
   mode --session c3 set autopilot
@@ -516,6 +552,21 @@ test_caffeine() {
   assert_status 0 "stop without a tool exits 0" -- \
     env CLAUDE_CONFIG_DIR="$CFG" PATH="$TMP/nobin" sh "$CAF" --session c3 stop
   reap
+
+  # A pid that cannot be recorded is not left running: the process is
+  # killed and start fails, or a process nobody knows about outlives the run.
+  mode --session c6 set autopilot
+  chmod 555 "$CFG/omega/modes"
+  st=0
+  caffeine --session c6 start > "$TMP/caf.out" 2> "$TMP/caf.err" || st=$?
+  chmod 755 "$CFG/omega/modes"
+  assert_eq 1 "$st" "start exits 1 when the pid cannot be recorded"
+  assert_contains "$TMP/caf.err" "cannot record" "the failure says the pid was not recorded"
+  assert_not_contains "$TMP/caf.out" "running" "a failed start does not claim to be running"
+  assert_eq "autopilot" "$(mode --session c6 show)" "a failed start records no pid"
+  _i=0
+  while pgrep -f "$TMP/fakebin/caffeinate" >/dev/null 2>&1 && [ "$_i" -lt 50 ]; do sleep 0.1; _i=$((_i + 1)); done
+  assert_status 1 "a failed start kills the process it started" -- pgrep -f "$TMP/fakebin/caffeinate"
 }
 
 # Text contracts on the omega skills, one file per skill under
