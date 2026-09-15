@@ -39,6 +39,7 @@ the with-skill result — in `pressure/`.
   SessionEnd and the typed off, the copy-mode snapshot check in
   `tests/install_test.sh`, and the autopilot contract. The pressure
   scenario's prompt B and pass criteria were extended, not re-run.
+- PR: https://github.com/KratosOmega/omega-ai/pull/3
 
 ### 2026-09-13 — Plan 2 (Skills) delivered
 
