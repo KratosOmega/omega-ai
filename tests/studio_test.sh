@@ -183,8 +183,16 @@ test_studio_skill_contract() {
   assert_contains "$S/studio/SKILL.md" "failing test" "the bug route starts from a failing test"
 }
 
+# The game-dev studio ships exactly these role agents; the list grows task by
+# task in Plan 2 until all ten are present.
+test_game_dev_agent_roster() {
+  for a in game-designer level-designer architect producer; do
+    assert_file "$REPO_ROOT/studios/game-dev/agents/$a.md" "game-dev has the $a agent"
+  done
+}
+
 run_tests test_plugin_manifests test_skill_frontmatter test_agent_frontmatter \
   test_external_references_declared test_required_plugins_enabled test_bin_syntax \
   test_role_agents_exist test_stage_skill_contracts test_plan_skill_contract \
   test_brainstorm_skill_contract \
-  test_studio_skill_contract
+  test_studio_skill_contract test_game_dev_agent_roster
