@@ -60,15 +60,16 @@ test_plugin_files() {
   assert_eq "omega" "$(json_field "$OMEGA/.claude-plugin/plugin.json" name)" \
     "omega plugin.json names the omega namespace"
   assert_eq "0.1.0" "$(json_field "$OMEGA/.claude-plugin/plugin.json" version)" "omega plugin.json is version 0.1.0"
-  for s in handoff parallel local-merge integration autopilot; do
+  for s in handoff parallel local-merge integration autopilot delegate; do
     assert_file "$OMEGA/skills/$s/SKILL.md" "omega ships the $s skill"
   done
+  assert_contains "$OMEGA/.claude-plugin/plugin.json" "autopilot, delegate\." "omega plugin.json names the six skills"
   assert_missing "$OMEGA/requires.txt" "omega declares no hard dependencies"
   assert_missing "$OMEGA/settings.json" "omega has no settings.json"
 }
 
 test_skill_stubs() {
-  for s in handoff parallel local-merge integration autopilot; do
+  for s in handoff parallel local-merge integration autopilot delegate; do
     f="$OMEGA/skills/$s/SKILL.md"
     assert_eq "---" "$(head -n 1 "$f")" "omega:$s starts with frontmatter"
     assert_eq "$s" "$(first_field "$f" name)" "omega:$s frontmatter name matches its directory"
@@ -78,7 +79,7 @@ test_skill_stubs() {
       *) _fail "omega:$s description starts with 'Use when'" ;;
     esac
   done
-  for s in parallel local-merge integration autopilot; do
+  for s in parallel local-merge integration autopilot delegate; do
     assert_contains "$OMEGA/skills/$s/SKILL.md" "This mode changes how work is scheduled, saved, merged or stopped." \
       "omega:$s carries the precedence contract"
     assert_contains "$OMEGA/skills/$s/SKILL.md" "omega-mode" "omega:$s sets or clears its mode through omega-mode"
@@ -91,6 +92,7 @@ test_marketplace() {
   assert_status 0 "marketplace.json is valid JSON" -- valid_json "$m"
   assert_eq "omega-ai" "$(json_field "$m" name)" "the marketplace is named omega-ai"
   assert_contains "$m" '"name": "omega"' "the marketplace publishes the omega plugin"
+  assert_contains "$m" 'autopilot, delegate\.' "the marketplace description names the six skills"
   src="$(sed -n 's/.*"source"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$m" | head -n 1)"
   assert_eq "./shared/omega" "$src" "the omega plugin's source is ./shared/omega"
   assert_file "$REPO_ROOT/${src#./}/.claude-plugin/plugin.json" "the marketplace source resolves to the plugin"
@@ -181,8 +183,9 @@ test_mode_brief() {
   mode --session t4 set local-merge
   mode --session t4 set integration slug=ui-rework
   mode --session t4 set autopilot
+  mode --session t4 set delegate
   mode --session t4 brief > "$TMP/brief.txt"
-  assert_eq "Omega modes: parallel max=3 · local-merge · integration slug=ui-rework · autopilot" \
+  assert_eq "Omega modes: parallel max=3 · local-merge · integration slug=ui-rework · autopilot · delegate" \
     "$(head -n 1 "$TMP/brief.txt")" "brief's first line joins the modes with a middle dot"
   assert_contains "$TMP/brief.txt" "^  parallel: dispatch up to 3 ready tasks at once, each in its own worktree; review each; cherry-pick onto the feature branch; the invoking skill's bookkeeping is unchanged\.$" \
     "brief carries the parallel rule with its cap"
@@ -192,7 +195,9 @@ test_mode_brief() {
     "brief carries the integration rule with its slug"
   assert_contains "$TMP/brief.txt" "^  autopilot: never AskUserQuestion — rule by the standards, log the ruling with its cost if wrong, continue; commit, push and open a PR, never merge; end with handoff\.$" \
     "brief carries the autopilot rule"
-  assert_eq "5" "$(wc -l < "$TMP/brief.txt" | tr -d ' ')" "brief is the header plus one line per mode"
+  assert_contains "$TMP/brief.txt" "^  delegate: the main session dispatches, reads reports and runs status commands; every edit, search and document goes to a subagent; never fix by hand\.$" \
+    "brief carries the delegate rule"
+  assert_eq "6" "$(wc -l < "$TMP/brief.txt" | tr -d ' ')" "brief is the header plus one line per mode"
   mode --session t4 set parallel
   mode --session t4 brief > "$TMP/brief2.txt"
   assert_contains "$TMP/brief2.txt" "^  parallel: dispatch every ready task at once, each in its own worktree; review each; cherry-pick onto the feature branch; the invoking skill's bookkeeping is unchanged\.$" \
@@ -200,7 +205,7 @@ test_mode_brief() {
   mode --session t4 set custom-mode key=value
   mode --session t4 brief > "$TMP/brief3.txt"
   assert_contains "$TMP/brief3.txt" "custom-mode key=value" "an unknown mode is listed in the header"
-  assert_eq "5" "$(wc -l < "$TMP/brief3.txt" | tr -d ' ')" "an unknown mode gets no rule line"
+  assert_eq "6" "$(wc -l < "$TMP/brief3.txt" | tr -d ' ')" "an unknown mode gets no rule line"
 }
 
 # hook NAME JSON — run a hook as Claude Code would: the JSON on stdin, the
@@ -250,8 +255,8 @@ test_session_start() {
   assert_eq "1" "$(wc -l < "$TMP/hook.out" | tr -d ' ')" "session-start output is a single line"
   assert_contains "$TMP/hook.out" '"hookEventName":"SessionStart"' "output names the SessionStart event"
   context > "$TMP/ctx.txt"
-  assert_contains "$TMP/ctx.txt" "Omega global skills: /omega:handoff, /omega:parallel \[N|off\], /omega:local-merge \[off\], /omega:integration <start|add|status|finish>, /omega:autopilot \[off\]\." \
-    "context names the five skills"
+  assert_contains "$TMP/ctx.txt" "Omega global skills: /omega:handoff, /omega:parallel \[N|off\], /omega:local-merge \[off\], /omega:integration <start|add|status|finish>, /omega:autopilot \[off\], /omega:delegate \[off\]\." \
+    "context names the six skills"
   assert_contains "$TMP/ctx.txt" "Mode tool: $OMEGA/bin/omega-mode (set | clear | show | path | brief)\." "context names the omega-mode path"
   assert_contains "$TMP/ctx.txt" "Keep-awake: $OMEGA/bin/omega-caffeine (start | stop | status)\." "context names the omega-caffeine path"
   assert_not_contains "$TMP/ctx.txt" "Omega modes:" "no modes block when no mode is set"
@@ -323,6 +328,16 @@ test_prompt_submit() {
   hook prompt-submit.sh '{"session_id":"p1","hook_event_name":"UserPromptSubmit","prompt":"<command-name>/omega:parallel</command-name><command-args>  </command-args>"}'
   assert_contains "$CFG/omega/modes/p1" "^parallel$" "whitespace-only args set the bare mode"
   mode --session p1 clear parallel
+
+  hook prompt-submit.sh '{"session_id":"p1","hook_event_name":"UserPromptSubmit","prompt":"<command-message>delegate</command-message>\n<command-name>/omega:delegate</command-name>\n<command-args></command-args>"}'
+  assert_contains "$CFG/omega/modes/p1" "^delegate$" "/omega:delegate with empty args sets delegate"
+  context > "$TMP/ctx-delegate.txt"
+  assert_contains "$TMP/ctx-delegate.txt" "  delegate: the main session dispatches, reads reports and runs status commands; every edit, search and document goes to a subagent; never fix by hand\." \
+    "the turn's context carries the delegate rule line"
+  hook prompt-submit.sh '{"session_id":"p1","hook_event_name":"UserPromptSubmit","prompt":"<command-name>/omega:delegate</command-name><command-args>3</command-args>"}'
+  assert_contains "$CFG/omega/modes/p1" "^delegate$" "/omega:delegate 3 changes nothing"
+  hook prompt-submit.sh '{"session_id":"p1","hook_event_name":"UserPromptSubmit","prompt":"<command-name>/omega:delegate</command-name><command-args>off</command-args>"}'
+  assert_not_contains "$CFG/omega/modes/p1" "^delegate" "/omega:delegate off clears delegate"
 
   before="$(mode --session p1 show)"
   hook prompt-submit.sh '{"session_id":"p1","hook_event_name":"UserPromptSubmit","prompt":"<command-message>caveman</command-message>\n<command-name>/caveman</command-name>\n<command-args>off</command-args>"}'
