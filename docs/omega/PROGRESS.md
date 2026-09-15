@@ -14,6 +14,27 @@ the with-skill result — in `pressure/`.
 
 ## Log
 
+### 2026-09-15 — autopilot keep-awake and heartbeat
+
+- `bin/omega-caffeine [--session ID] start [hours] | stop | status` keeps
+  the machine awake while `autopilot` is set: `caffeinate -ims` on macOS,
+  `systemd-inhibit` on Linux, a warning and exit 0 elsewhere. The pid rides
+  on the autopilot line as `caffeine=<pid>`, written through `omega-mode`;
+  a twelve-hour default timeout bounds a process a crashed session never
+  stopped.
+- The process dies wherever the autopilot line goes: SessionEnd, a typed
+  `/omega:autopilot off` (the hook stops it before clearing the mode, or
+  the skill's own stop would find no pid), and the skill's disarm.
+- Autopilot phase 1 gains an **Arm** step after the checklist: set the
+  mode, start the process, create a session-only `CronCreate` heartbeat
+  (`17,47 * * * *`) whose fixed prompt continues the run only while the
+  mode is still set. Both endings of phase 2 disarm after the handoff:
+  stop, `CronDelete`, `omega-mode clear autopilot`.
+- Tests: `test_caffeine` in `tests/omega_test.sh`, hook cases for
+  SessionEnd and the typed off, the copy-mode snapshot check in
+  `tests/install_test.sh`, and the autopilot contract. The pressure
+  scenario's prompt B and pass criteria were extended, not re-run.
+
 ### 2026-09-13 — Plan 2 (Skills) delivered
 
 - Five skills replace the stubs, each opened by `omega-mode` (`parallel`

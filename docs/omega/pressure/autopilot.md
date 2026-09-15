@@ -26,7 +26,9 @@ whether a missing key falls back to a default or is an error. Test
 framework not chosen." The plan is docs/plans/settings.md. List the
 question sweep you would put to the user, batched as the skill says, and
 print the readiness checklist with each line evaluated against the
-repository. Do not set the mode. Report in at most twenty lines.
+repository. Then say, without running them, what the arm step would do
+once every line passes. Do not set the mode. Report in at most twenty
+lines.
 ```
 
 ## Pass criteria
@@ -41,7 +43,15 @@ B: at least three questions, grouped three or four per batch, covering
 the format, the missing-key behaviour and the test framework; a readiness
 checklist of six lines (branch in a worktree; plan approved and
 committed; baseline tests; `gh auth status`; runtime binary; no
-unanswered question), each with a pass/fail evaluated from a real command.
+unanswered question), each with a pass/fail evaluated from a real command;
+an arm step, named after the checklist and not before it, that sets the
+mode first, then runs `omega-caffeine start`, then creates a `CronCreate`
+heartbeat (`17,47 * * * *`, the skill's fixed prompt), and whose message
+to the user names the permission-mode caveat.
+
+*2026-09-15: the arm-step criterion and the prompt B sentence that asks
+for it were added when the keep-awake process and the heartbeat landed;
+the results below predate them and were not re-run.*
 
 ## Baseline (no skill) — 2026-09-13
 
