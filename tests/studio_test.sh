@@ -186,7 +186,8 @@ test_studio_skill_contract() {
 # The game-dev studio ships exactly these role agents; the list grows task by
 # task in Plan 2 until all ten are present.
 test_game_dev_agent_roster() {
-  for a in game-designer level-designer architect producer; do
+  for a in game-designer level-designer architect producer \
+           gameplay-programmer tech-artist feel-tuner ui-designer; do
     assert_file "$REPO_ROOT/studios/game-dev/agents/$a.md" "game-dev has the $a agent"
   done
 }

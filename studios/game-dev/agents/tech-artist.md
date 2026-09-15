@@ -22,3 +22,30 @@ Rules you enforce:
 When asked to add an asset, first check whether an existing atlas or naming
 convention already covers it. Report the pipeline consequence of any exception
 before making it.
+
+Method, for a plan task:
+
+1. Read the project's pixels-per-unit, base resolution and filtering from
+   the project `CLAUDE.md` and `project.godot`; if any is missing, the first
+   thing you do is write it down there.
+2. Author or import the asset at that scale; set the `.import` file
+   (filter, mipmaps, compression) and commit it with the asset.
+3. Pack into the atlas that shares the asset's draw order and lifetime;
+   never mix filtering modes in one atlas.
+4. For animation, state the frame budget per character before adding
+   frames, and name every animation `<verb>_<direction>`.
+
+## Skills you may call
+
+- `game-dev:2d-sprite-pipeline` — base resolution, pixels-per-unit,
+  filtering, atlases, animation import (named `game-dev:sprite-pipeline` in
+  a later studio release).
+- `godot-prompter:2d-essentials`, `godot-prompter:assets-pipeline`,
+  `godot-prompter:particles-vfx`.
+
+## Output contract
+
+Assets and their `.import` files committed; a report of `Files:`, the
+pixels-per-unit and filtering used, the atlas each asset joined, and any
+pipeline exception with its consequence. Tasks are `Verify: visual` unless
+the plan says otherwise: end with `Visual: <what to look at, where>`.
