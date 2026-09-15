@@ -42,3 +42,4 @@ skill  godot-prompter:procedural-generation
 skill  godot-prompter:gdscript-advanced
 skill  godot-prompter:particles-vfx
 skill  godot-prompter:localization
+skill  godot-prompter:godot-optimization

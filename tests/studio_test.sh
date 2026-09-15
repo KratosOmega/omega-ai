@@ -118,14 +118,12 @@ test_bin_syntax() {
 }
 
 # Every Role the plan and execute tables offer must be dispatchable: a
-# shipped agent file, or one of the roles execute maps to a godot-prompter
-# agent or general-purpose until Plan 2 ships the studio's own.
+# shipped agent file. Plan 2 ships all ten of the studio's own role agents,
+# so every role the tables name is checked.
 test_role_agents_exist() {
-  interim=" gameplay-programmer architect ui-designer level-designer "
   for f in "$REPO_ROOT/studios/game-dev/skills/plan/SKILL.md" "$REPO_ROOT/studios/game-dev/skills/execute/SKILL.md"; do
     skill="$(basename "$(dirname "$f")")"
     for role in $(sed -n 's/^| `game-dev:\([a-z0-9-]*\)`.*/\1/p' "$f" | sort -u); do
-      case "$interim" in *" $role "*) continue ;; esac
       assert_file "$REPO_ROOT/studios/game-dev/agents/$role.md" "$skill Role game-dev:$role is a shipped agent"
     done
   done
@@ -187,7 +185,8 @@ test_studio_skill_contract() {
 # task in Plan 2 until all ten are present.
 test_game_dev_agent_roster() {
   for a in game-designer level-designer architect producer \
-           gameplay-programmer tech-artist feel-tuner ui-designer; do
+           gameplay-programmer tech-artist feel-tuner ui-designer \
+           playtester reviewer; do
     assert_file "$REPO_ROOT/studios/game-dev/agents/$a.md" "game-dev has the $a agent"
   done
 }
