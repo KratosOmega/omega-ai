@@ -90,7 +90,7 @@ and `claude-gen` both carry these five skills beside their own:
 | `/omega:parallel [N]` | Runs a plan's independent tasks concurrently — one worktree and one reviewer per task, cherry-picked back — capped at N when given; `off` clears it |
 | `/omega:local-merge` | Skips GitHub checks: runs the project's local CI and merges through `gh pr merge --admin` on exit 0, with the strategy the project uses; `off` clears it |
 | `/omega:integration start\|add\|status\|finish` | An `integration/<slug>` branch several stories merge into, tracked in `docs/integrations/<slug>.md`, landed on `main` as one |
-| `/omega:autopilot` | Asks every open decision up front, then runs unattended: rulings logged, a push after every task, a draft PR, never a merge, and a handoff at the end; `off` clears it |
+| `/omega:autopilot` | Asks every open decision up front, then runs unattended: rulings logged, a push after every task, a draft PR, never a merge, and a handoff at the end; keeps the machine awake (`omega-caffeine`) and re-prompts itself every 30 minutes while idle; `off` clears it |
 
 They are overlays. Each changes how work is scheduled, saved, merged or
 stopped — never what a studio does or in which order — and composes with
@@ -204,7 +204,8 @@ shared/omega/                    the omega global plugin, loaded by every shim
 ├── .claude-plugin/plugin.json   name "omega" → the /omega: namespace
 ├── skills/                      handoff, parallel, local-merge, integration, autopilot
 ├── hooks/                       SessionStart, UserPromptSubmit, SessionEnd: the mode line
-└── bin/omega-mode               the mode file's one writer; on PATH inside every studio
+├── bin/omega-mode               the mode file's one writer; on PATH inside every studio
+└── bin/omega-caffeine           autopilot's keep-awake process (caffeinate / systemd-inhibit)
 
 .claude-plugin/marketplace.json  publishes omega for plain claude (claude plugin marketplace add <repo>)
 ```

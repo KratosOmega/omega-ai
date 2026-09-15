@@ -1,0 +1,187 @@
+#!/bin/sh
+# omega-caffeine — keeps the machine awake while autopilot runs.
+#
+#   omega-caffeine [--session ID] start [hours]   start a keep-awake process; no-op when one is alive
+#   omega-caffeine [--session ID] stop            kill it and forget it
+#   omega-caffeine [--session ID] status          running <pid> | stopped | unsupported
+#
+# The keep-awake process is `caffeinate -ims -t <secs>` on macOS (Darwin
+# only: Linux's caffeine package ships an unrelated /usr/bin/caffeinate),
+# else `systemd-inhibit … sleep <secs>` where systemd is; secs is hours ×
+# 3600, hours 12 by default and 168 at most, so a process a crashed session
+# never stopped still ends on its own. Its pid is recorded as
+# `caffeine=<pid>` on the session's `autopilot` line, written through
+# omega-mode (beside this script); the mode file is never written here.
+# A recorded pid counts as running only while a process with that pid
+# exists *and* its argument list names the tool: a session that outlives
+# the timeout may see the number reused, and stop must never signal a
+# stranger. start refuses when autopilot is not set: arming the mode is
+# the skill's decision, never a side effect. With no keep-awake tool on
+# PATH start warns and exits 0: the run still proceeds, the machine may
+# sleep, and the last push bounds the loss. A pid that cannot be recorded
+# is killed again at once — a process nobody knows about must not outlive
+# the run.
+#
+# Exit codes: start 0 when a process is running or no tool exists, 1 on a
+# usage error, when autopilot is not set, or when the pid cannot be
+# recorded; stop 0 unless the mode file cannot be rewritten; status 0
+# while running, 1 otherwise; every verb 1 when omega-mode itself fails.
+# The session id is --session when given, else $CLAUDE_CODE_SESSION_ID.
+#
+# Self-contained on purpose: in copy mode the plugin root has no lib/.
+set -u
+# The pair loop below word-splits a line on spaces; never let it glob one.
+set -f
+
+usage() {
+  cat >&2 <<'USAGE'
+usage: omega-caffeine [--session ID] start [hours]
+       omega-caffeine [--session ID] stop
+       omega-caffeine [--session ID] status
+USAGE
+  exit 1
+}
+die() { printf 'omega-caffeine: %s\n' "$*" >&2; exit 1; }
+
+# --session may appear anywhere on the line; parsed as omega-mode does.
+SESSION="${CLAUDE_CODE_SESSION_ID:-}"
+n=$#
+i=0
+while [ "$i" -lt "$n" ]; do
+  a="$1"; shift; i=$((i + 1))
+  if [ "$a" = "--session" ]; then
+    [ "$i" -lt "$n" ] && [ -n "$1" ] || die "missing value for --session"
+    SESSION="$1"; shift; i=$((i + 1))
+  else
+    set -- "$@" "$a"
+  fi
+done
+
+[ $# -ge 1 ] || usage
+VERB="$1"; shift
+case "$VERB" in start|stop|status) ;; *) usage ;; esac
+[ -n "$SESSION" ] || die "no session id: set CLAUDE_CODE_SESSION_ID or pass --session <id>"
+
+MODE="$(cd "$(dirname "$0")" && pwd)/omega-mode"
+[ -f "$MODE" ] || die "omega-mode not found beside this script: $MODE"
+
+# mode ARGS... — omega-mode for this session.
+mode() { sh "$MODE" --session "$SESSION" "$@"; }
+
+# The autopilot line's pairs (everything after the mode name), the recorded
+# pid, and the pairs without it. Read once; every verb needs them. A
+# failing omega-mode (bad session id, no config dir) is fatal here — it
+# must not read as "autopilot is not set".
+SHOWN="$(mode show)" || die "omega-mode show failed"
+LINE="$(printf '%s\n' "$SHOWN" | awk '$1 == "autopilot" { print; exit }')"
+[ -n "$LINE" ] && AUTOPILOT=1 || AUTOPILOT=0
+PAIRS=""
+case "$LINE" in *" "*) PAIRS="${LINE#* }" ;; esac
+PID=""
+KEEP=""
+for _p in $PAIRS; do
+  case "$_p" in
+    caffeine=*) PID="${_p#caffeine=}" ;;
+    *) KEEP="$KEEP $_p" ;;
+  esac
+done
+
+# alive PID — true when PID names a live process that is the keep-awake
+# tool: caffeinate or systemd-inhibit somewhere in its argument list, as a
+# word or a path's last segment (ps args, not comm: for a script comm is
+# the interpreter on some platforms while args carries the script path
+# everywhere). kill -0 alone would trust a reused pid.
+alive() {
+  case "$1" in ''|*[!0-9]*) return 1 ;; esac
+  kill -0 "$1" 2>/dev/null || return 1
+  ps -o args= -p "$1" 2>/dev/null | grep -Eq '(^|[ /])(caffeinate|systemd-inhibit)( |$)'
+}
+
+# record PID — rewrite the autopilot line: the other pairs, then the pid
+# (none when PID is empty). Word splitting of $KEEP is the point.
+record() {
+  if [ -n "$1" ]; then
+    mode set autopilot $KEEP "caffeine=$1" >/dev/null
+  else
+    mode set autopilot $KEEP >/dev/null
+  fi
+}
+
+# tool — the keep-awake command for this machine, or nothing. caffeinate
+# only on Darwin: Linux's caffeine package ships a different program under
+# the same name.
+tool() {
+  if [ "$(uname -s 2>/dev/null)" = "Darwin" ] && command -v caffeinate >/dev/null 2>&1; then
+    printf 'caffeinate'
+  elif command -v systemd-inhibit >/dev/null 2>&1; then
+    printf 'systemd-inhibit'
+  fi
+}
+
+do_start() {
+  [ $# -le 1 ] || usage
+  HOURS=12
+  if [ $# -eq 1 ]; then
+    case "$1" in
+      ''|*[!0-9]*|0*) die "hours must be a positive integer, got: $1" ;;
+    esac
+    [ "$1" -le 168 ] || die "hours must be at most 168 (a week), got: $1"
+    HOURS="$1"
+  fi
+  [ "$AUTOPILOT" -eq 1 ] || die "autopilot is not set: omega-mode set autopilot first"
+  if alive "$PID"; then
+    printf 'running %s\n' "$PID"
+    return 0
+  fi
+  SECS=$((HOURS * 3600))
+  case "$(tool)" in
+    caffeinate)
+      nohup caffeinate -ims -t "$SECS" >/dev/null 2>&1 &
+      ;;
+    systemd-inhibit)
+      nohup systemd-inhibit --what=idle:sleep --who=omega-autopilot \
+        --why="unattended autopilot run" sleep "$SECS" >/dev/null 2>&1 &
+      ;;
+    *)
+      printf 'omega-caffeine: no keep-awake tool; machine may sleep\n' >&2
+      printf 'unsupported\n'
+      return 0 ;;
+  esac
+  NEW=$!
+  record "$NEW" || { kill "$NEW" 2>/dev/null; die "cannot record pid $NEW; the keep-awake process was killed"; }
+  printf 'running %s\n' "$NEW"
+}
+
+do_stop() {
+  [ $# -eq 0 ] || usage
+  if alive "$PID"; then
+    kill "$PID" 2>/dev/null || true
+  fi
+  # The key goes even when the pid was dead or belonged to something else;
+  # the line stays.
+  if [ "$AUTOPILOT" -eq 1 ] && [ -n "$PID" ]; then
+    record "" || die "cannot rewrite the autopilot line"
+  fi
+  printf 'stopped\n'
+  return 0
+}
+
+do_status() {
+  [ $# -eq 0 ] || usage
+  if alive "$PID"; then
+    printf 'running %s\n' "$PID"
+    return 0
+  fi
+  if [ -n "$(tool)" ]; then
+    printf 'stopped\n'
+  else
+    printf 'unsupported\n'
+  fi
+  return 1
+}
+
+case "$VERB" in
+  start)  do_start "$@" ;;
+  stop)   do_stop "$@" ;;
+  status) do_status "$@" ;;
+esac

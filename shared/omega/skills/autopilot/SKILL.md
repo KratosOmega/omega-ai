@@ -7,8 +7,10 @@ description: Use when a long run must proceed with nobody at the keyboard — an
 
 **Announce at start:** "Using omega:autopilot — pre-flight first."
 
-`off`: `omega-mode clear autopilot`, then stop. `omega-mode` is on `PATH`
-inside a studio; the session-start line names its path otherwise.
+`off`: `omega-caffeine stop`, `CronDelete` the heartbeat (`CronList` finds
+it), `omega-mode clear autopilot`, then stop. `omega-mode` and
+`omega-caffeine` are on `PATH` inside a studio; the session-start line
+names their paths otherwise.
 
 > This mode changes how work is scheduled, saved, merged or stopped. It never
 > removes a gate: approvals, reviewers, tests, `Verify:` rules and the
@@ -24,8 +26,9 @@ is what the mode means while it is set.
 ## Phase 1 — pre-flight, interactive
 
 Phase 1 runs with no `autopilot` mode: `omega-mode show` must not list
-it; when it does (a previous run's leftover), `omega-mode clear autopilot`
-first.
+it; when it does (a previous run's leftover), disarm first — the
+**Disarm** bullet of phase 2: `omega-caffeine stop`, `CronDelete` any
+heartbeat, then `omega-mode clear autopilot`.
 
 1. **Design and plan as the studio does.** `/game-dev:brainstorm` then
    `/game-dev:plan` in the game studio; `superpowers:brainstorming` then
@@ -69,13 +72,35 @@ first.
    - no unanswered question remains — the `## Decisions` section covers
      every item of the sweep.
 
-   A failed line stops here; fix it and print the checklist again. Then
-   `omega-mode set autopilot` and tell the user to start the run —
-   `/game-dev:execute`, or the plan's execution skill — saying in the same
-   message what the run may do (commit; push after every task; open a
-   draft PR; write the handoff) and may not do (merge; force-push; delete
-   a remote branch; destructive or security-sensitive operations; read or
-   write secrets).
+   A failed line stops here; fix it and print the checklist again.
+6. **Arm.** In this order, once every checklist line passes:
+   1. `omega-mode set autopilot`.
+   2. `omega-caffeine start` — report its line. `running <pid>` means the
+      machine stays awake for twelve hours; `unsupported` is a warning,
+      not a stop: the machine may sleep, and the run resumes from the
+      last push.
+   3. `CronCreate` the heartbeat: cron `17,47 * * * *`, recurring, prompt
+      verbatim:
+      `Autopilot heartbeat. Run omega-mode show. If it does not list autopilot: CronDelete this job and stop. Otherwise re-invoke the run's execution skill on the next unfinished task per omega:autopilot phase 2; ask nothing.`
+      It fires only while the session is idle — a turn that ended early
+      gets its nudge within half an hour, a running turn costs nothing —
+      and expires after seven days. The nudge re-invokes the execution
+      skill; it never has the fresh turn do a task by hand, as the
+      precedence block says.
+   4. Tell the user to start the run — `/game-dev:execute`, or the plan's
+      execution skill — saying in the same message what the run may do
+      (commit; push after every task; open a draft PR; write the handoff)
+      and may not do (merge; force-push; delete a remote branch;
+      destructive or security-sensitive operations; read or write
+      secrets), that the permission mode must allow the run's tools
+      unattended — a permission prompt is a question nobody answers — and
+      that if the run is not started by then, the
+      heartbeat starts it at the next :17 or :47 — switch the permission
+      mode before that.
+
+   A resumed session that finds `autopilot` already set (a crash, not a
+   leftover — the handoff file names the run) repeats steps 2–3; the
+   heartbeat is session-only and does not survive a restart.
 
 ## Phase 2 — unattended
 
@@ -103,12 +128,17 @@ While `omega-mode show` lists `autopilot`:
 - **Hard stops:** the invoking skill's own — a destructive or
   security-sensitive operation the plan requires, or a plan too broken to
   follow. On one, run `omega:handoff` without its question (the current
-  task finishes), then stop.
+  task finishes), disarm, then stop.
 - **Completion:** run `omega:handoff`. Its file carries the morning report
   after *Where*: every ruling in order with its cost if wrong, the
-  unverified items, the PR link, the resume prompt.
+  unverified items, the PR link, the resume prompt. Then disarm.
+- **Disarm**, after the handoff on either ending, in this order:
+  `omega-caffeine stop`; `CronDelete` the heartbeat;
+  `omega-mode clear autopilot`. Clearing the mode is what lets a heartbeat
+  that was not deleted end itself: its next firing finds no `autopilot`
+  line and stops.
 
-The run always ends with `omega:handoff`.
+The run always ends with `omega:handoff`, then the disarm.
 
 ## What this changes, and what it never changes
 
@@ -127,4 +157,5 @@ gates, the reviewer per task, the tests.
 | "I'll explain the cost in the next paragraph" | The cost if wrong goes on the Ruling line itself, or a plain grep for it fails. |
 | "A file's already committed this way, drop the question" | Only the plan's `## Decisions` section retires a swept item — a commit or a ledger entry from a prior run does not. |
 | "The plan is unclear, I'll stop and ask" | Unclear is a ruling; *broken* is a hard stop. Decide which, log it. |
-| The hook block already says `autopilot` while questions are still open | Clear it; the mode is set only when the checklist passes. |
+| The hook block already says `autopilot` while questions are still open | Disarm (stop, `CronDelete`, clear); the mode is set only when the checklist passes. |
+| "The run is done, the heartbeat can stay" | A live heartbeat with no run spends a turn every 30 minutes until the session ends. Disarm. |

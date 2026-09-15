@@ -85,7 +85,7 @@ installer.
 | 12 | Merge strategy | Project docs first; else the shape of the last five merged PRs (single-parent merge commits → squash, two parents → merge commit; `phoenix` is squash, `omega-ai` is merge commit); else squash. |
 | 13 | Local CI | Project docs (CLAUDE.md, CONTRIBUTING, docs naming local CI or manual merge) first; then convention (`make ci|test|check`, `scripts/ci*.sh`, `tests/run_all.sh`, `npm test`, `cargo test`); else stop and ask. Never merge unverified. |
 | 14 | Integration | `integration/<slug>` off `origin/main`, tracked in `docs/integrations/<slug>.md` on that branch. Story PRs target the integration branch and land through the local-merge rules. |
-| 15 | Autopilot | Named `autopilot`. Unattended it may commit, push and open a PR; it never merges, even with `local-merge` active. |
+| 15 | Autopilot | Named `autopilot`. Unattended it may commit, push and open a PR; it never merges, even with `local-merge` active. Arming it starts a keep-awake process (`bin/omega-caffeine`: `caffeinate` on macOS, `systemd-inhibit` on Linux, a warning elsewhere) and a session-only `CronCreate` heartbeat that re-prompts the run every 30 minutes while the session is idle; both go when the mode is cleared. |
 | 16 | Story tracker | Detected from the branch: `KAN-<n>` → Jira through the Atlassian MCP when present; a leading `<n>-` or `issue-<n>` → GitHub issue `<n>` through `gh`; otherwise none, recorded in the plan header. |
 | 17 | Unattended decisions | Industry-standard default, chosen from the studio's `CLAUDE.md`, the shared standards and superpowers; every ruling logged with its cost-if-wrong; the morning report lists rulings first. |
 | 18 | Dependencies | `shared/omega` has no `requires.txt`. References to `superpowers:*` are conditional ("when installed"): the `general` studio has no superpowers, and every omega skill must work there. |
@@ -560,9 +560,20 @@ description: Use when a long run must proceed with nobody at the keyboard — as
    feature branch in a worktree; the plan is approved and committed; the
    baseline test run is green; `gh auth status` succeeds; the engine or
    runtime binary the plan needs resolves; no unanswered question remains.
-   Then `omega-mode set autopilot` and tell the user to start the run
-   (`/game-dev:execute`, or the equivalent) — the same message says what the
-   run may and may not do.
+6. **Arm**, in this order: `omega-mode set autopilot`; `omega-caffeine
+   start` (`unsupported` is a warning, not a stop); `CronCreate` the
+   heartbeat — cron `17,47 * * * *`, recurring, the fixed prompt
+   `Autopilot heartbeat. Run omega-mode show. If it does not list autopilot: CronDelete this job and stop. Otherwise re-invoke the run's execution skill on the next unfinished task per omega:autopilot phase 2; ask nothing.`
+   — which re-invokes the execution skill rather than doing a task by
+   hand, fires only while the session is idle, and expires after seven
+   days. Then tell the user to start the run (`/game-dev:execute`, or the
+   equivalent) — the same message says what the run may and may not do,
+   that the permission mode must allow the run's tools unattended (a
+   permission prompt is a question nobody answers), and that if the run is
+   not started by then, the heartbeat starts it at the next :17 or :47 —
+   switch the permission mode before that. A resumed session that finds
+   `autopilot` already set repeats the start and the CronCreate; the
+   heartbeat is session-only and does not survive a restart.
 
 ### Phase 2 — unattended
 
@@ -583,14 +594,19 @@ While `autopilot` is set:
 - **Hard stops:** the invoking skill's own — a destructive or
   security-sensitive operation the plan requires, or a plan too broken to
   follow. On one, run `handoff` without its question (the current task
-  finishes), then stop.
+  finishes), disarm, then stop.
 - **Completion:** run `handoff`. The handoff file's first section after
   *Where* is the **morning report**: every ruling in order with its cost if
-  wrong, the unverified items, the PR link, and the resume prompt.
+  wrong, the unverified items, the PR link, and the resume prompt. Then
+  disarm.
+- **Disarm**, after the handoff on either ending: `omega-caffeine stop`;
+  `CronDelete` the heartbeat; `omega-mode clear autopilot`. The cleared
+  mode is what lets a heartbeat that was not deleted end itself.
 
-`autopilot off` clears the mode. The handoff at the end records it in the
-handoff file and lists it as optional in the resume prompt, so the morning
-session runs attended unless the user re-invokes it.
+`autopilot off` stops the keep-awake process, deletes the heartbeat and
+clears the mode. The handoff at the end records the mode in the handoff
+file and lists it as optional in the resume prompt, so the morning session
+runs attended unless the user re-invokes it.
 
 What it changes: when questions are asked and what happens when one would
 arise; which side effects run unattended. What it never changes: the
