@@ -34,8 +34,8 @@ the with-skill result — in `pressure/`.
 - Pressure scenario `pressure/delegate.md`: baseline FAIL on criteria 2
   and 3; with skill PASS on run 1, 0 rounds of refinement.
 - Spec: `specs/2026-09-15-delegate-mode-design.md`. Plan:
-  `plans/2026-09-15-plan-3-delegate.md`. PR link added at merge by the
-  session driving the plan.
+  `plans/2026-09-15-plan-3-delegate.md`.
+  PR: https://github.com/KratosOmega/omega-ai/pull/4
 
 ### 2026-09-15 — autopilot keep-awake and heartbeat
 
