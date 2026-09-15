@@ -163,6 +163,13 @@ requires_of() {
   awk -v kind="$2" '$1 == kind { print $2 }' "$1"
 }
 
+# engine_dir NAME — the engines/ directory for a configured engine: the name
+# with any trailing version digits removed, so "godot4" dispatches to
+# engines/godot/ and a future "unity6" to engines/unity/ with no code change.
+engine_dir() {
+  printf '%s\n' "$1" | sed 's/[0-9]*$//'
+}
+
 # install_entries SRC_DIR DEST_DIR MODE — install each child of SRC_DIR into
 # DEST_DIR, replacing same-named entries. Prints each destination path.
 install_entries() {

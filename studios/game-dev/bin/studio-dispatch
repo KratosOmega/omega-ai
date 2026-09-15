@@ -1,0 +1,57 @@
+#!/bin/sh
+# studio-dispatch VERB [ARGS...] — run engines/<engine>/<verb>.sh for the
+# engine the current project is configured for. The studio-test, studio-run
+# and studio-lint verbs are two-line wrappers around this script, so the
+# engine's command line appears in exactly one directory.
+#
+# Studio root: $OMEGA_STUDIO_ROOT (the shim exports it), else this script's
+# own home resolved through any symlink. Engine: .studio/config.json in the
+# current directory, else the studio's studio.json. Directory: the engine
+# name with trailing version digits removed (godot4 -> godot).
+#
+# Self-contained on purpose: in copy mode bin/ ships without lib/common.sh.
+# Exit: 2 when the root, the engine, or the adapter is missing.
+set -u
+
+verb="${1:-}"
+[ -n "$verb" ] || { echo "usage: studio-dispatch VERB [ARGS...]" >&2; exit 2; }
+shift
+
+# field FILE KEY — value of a flat JSON string key; empty when absent.
+field() {
+  [ -f "$1" ] || return 0
+  sed -n 's/.*"'"$2"'"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$1" | head -n 1
+}
+
+root="${OMEGA_STUDIO_ROOT:-}"
+if [ -z "$root" ]; then
+  self="$0"
+  while [ -L "$self" ]; do
+    link="$(readlink "$self")"
+    case "$link" in
+      /*) self="$link" ;;
+      *)  self="$(dirname "$self")/$link" ;;
+    esac
+  done
+  root="$(cd "$(dirname "$self")/.." && pwd -P)"
+fi
+if [ ! -f "$root/studio.json" ]; then
+  echo "studio-$verb: no studio at '$root' — set OMEGA_STUDIO_ROOT to the studio directory (the claude-gd shim does this)" >&2
+  exit 2
+fi
+
+engine="$(field .studio/config.json engine)"
+[ -n "$engine" ] || engine="$(field "$root/studio.json" engine)"
+if [ -z "$engine" ]; then
+  echo "studio-$verb: no engine configured in .studio/config.json or studio.json" >&2
+  exit 2
+fi
+
+dir="$(printf '%s' "$engine" | sed 's/[0-9]*$//')"
+adapter="$root/engines/$dir/$verb.sh"
+if [ ! -f "$adapter" ]; then
+  echo "studio-$verb: no adapter for engine $engine at engines/$dir/$verb.sh" >&2
+  exit 2
+fi
+
+exec sh "$adapter" "$@"

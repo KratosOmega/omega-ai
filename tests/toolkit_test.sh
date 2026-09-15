@@ -1,0 +1,135 @@
+#!/bin/sh
+# The studio-* verbs and the Godot adapter, exercised with a stub Godot so no
+# engine is needed. Every project is a fresh temporary directory.
+set -u
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+. "$REPO_ROOT/tests/assert.sh"
+
+STUDIO="$REPO_ROOT/studios/game-dev"
+BIN="$STUDIO/bin"
+# Physical path: the adapter scripts resolve the project with pwd -P, so
+# assertions that quote $TMP must use the same spelling (/var -> /private/var on macOS).
+TMP="$(cd "$(mktemp -d)" && pwd -P)"
+trap 'rm -rf "$TMP"' EXIT
+
+# A stub Godot. It records its arguments, honours --path and
+# -gjunit_xml_file=res://… by writing a JUnit file into the project, prints a
+# SCRIPT ERROR line when STUB_SCRIPT_ERROR=1, sleeps STUB_SLEEP seconds, and
+# exits 1 when STUB_FAILS is greater than 0 (as GUT does with -gexit).
+mkdir -p "$TMP/stub"
+cat > "$TMP/stub/godot" <<'STUB'
+#!/bin/sh
+proj="."; xml=""; want=0
+printf 'stub godot args: %s\n' "$*"
+for a in "$@"; do
+  if [ "$want" = 1 ]; then proj="$a"; want=0; continue; fi
+  case "$a" in
+    --path) want=1 ;;
+    -gjunit_xml_file=res://*) xml="${a#-gjunit_xml_file=res://}" ;;
+  esac
+done
+if [ -n "$xml" ]; then
+  fails="${STUB_FAILS:-0}"
+  mkdir -p "$(dirname "$proj/$xml")"
+  {
+    printf '<testsuites tests="2" failures="%s">\n' "$fails"
+    printf '<testsuite name="res://tests/unit/test_dash.gd">\n'
+    printf '<testcase name="test_cooldown" classname="test_dash"></testcase>\n'
+    if [ "$fails" -gt 0 ]; then
+      printf '<testcase name="test_distance" classname="test_dash"><failure message="expected 3 got 2"/></testcase>\n'
+    else
+      printf '<testcase name="test_distance" classname="test_dash"></testcase>\n'
+    fi
+    printf '</testsuite>\n</testsuites>\n'
+  } > "$proj/$xml"
+fi
+if [ "${STUB_SCRIPT_ERROR:-0}" = 1 ]; then
+  echo "SCRIPT ERROR: Invalid call. Nonexistent function 'dash' in base 'Node2D'."
+fi
+echo "Godot Engine v4.3.stable (stub)"
+sleep "${STUB_SLEEP:-0}"
+[ "${STUB_FAILS:-0}" -eq 0 ]
+STUB
+chmod +x "$TMP/stub/godot"
+GODOT_STUB="$TMP/stub/godot"
+
+# fresh_project NAME — a project directory with project.godot; prints its path.
+fresh_project() {
+  P="$TMP/proj-$1"
+  mkdir -p "$P"
+  printf '[application]\nconfig/name="Stub"\n' > "$P/project.godot"
+  printf '%s\n' "$P"
+}
+
+# with_gut DIR — pretend GUT is installed.
+with_gut() {
+  mkdir -p "$1/addons/gut"
+  : > "$1/addons/gut/gut_cmdln.gd"
+}
+
+# verb DIR NAME ARGS… — run bin/NAME inside DIR with the studio root and the
+# stub Godot set. Output lands in $TMP/out, exit status in $TMP/status.
+verb() {
+  _dir="$1"; _name="$2"; shift 2
+  status=0
+  ( cd "$_dir" && OMEGA_STUDIO_ROOT="$STUDIO" GODOT_PATH="$GODOT_STUB" \
+      STUB_FAILS="${STUB_FAILS:-0}" STUB_SCRIPT_ERROR="${STUB_SCRIPT_ERROR:-0}" STUB_SLEEP="${STUB_SLEEP:-0}" \
+      sh "$BIN/$_name" "$@" ) > "$TMP/out" 2>&1 || status=$?
+  printf '%s\n' "$status" > "$TMP/status"
+}
+
+test_dispatch_rejects_unknown_engine() {
+  P="$(fresh_project unknown-engine)"
+  mkdir -p "$P/.studio"
+  printf '{ "engine": "unity6" }\n' > "$P/.studio/config.json"
+  verb "$P" studio-test
+  assert_eq "2" "$(cat "$TMP/status")" "an engine with no adapter exits 2"
+  assert_contains "$TMP/out" "no adapter for engine unity6" "the message names the engine"
+  assert_contains "$TMP/out" "engines/unity/" "the message names the directory looked for"
+}
+
+test_dispatch_needs_a_studio_root() {
+  P="$(fresh_project no-root)"
+  status=0
+  ( cd "$P" && OMEGA_STUDIO_ROOT="$TMP/nowhere" sh "$BIN/studio-test" ) > "$TMP/out" 2>&1 || status=$?
+  assert_eq "2" "$(printf '%s' "$status")" "a missing studio root exits 2"
+  assert_contains "$TMP/out" "OMEGA_STUDIO_ROOT" "the message names the variable to set"
+}
+
+test_resolve_honours_godot_path() {
+  out="$(GODOT_PATH="$GODOT_STUB" sh "$STUDIO/engines/godot/resolve.sh")"
+  assert_eq "$GODOT_STUB" "$out" "GODOT_PATH wins when executable"
+}
+
+test_resolve_ignores_a_non_executable_godot_path() {
+  : > "$TMP/not-exec"
+  mkdir -p "$TMP/no-apps"
+  status=0
+  out="$(GODOT_PATH="$TMP/not-exec" GODOT_APP_DIR="$TMP/no-apps" PATH="/usr/bin:/bin" \
+    sh "$STUDIO/engines/godot/resolve.sh" 2>"$TMP/err")" || status=$?
+  assert_eq "2" "$status" "a non-executable GODOT_PATH does not resolve"
+  assert_contains "$TMP/err" "no Godot binary found; set GODOT_PATH" "the hint names GODOT_PATH"
+}
+
+test_resolve_finds_an_app_bundle() {
+  mkdir -p "$TMP/apps/Godot_mono.app/Contents/MacOS"
+  cp "$GODOT_STUB" "$TMP/apps/Godot_mono.app/Contents/MacOS/Godot"
+  out="$(GODOT_PATH="" GODOT_APP_DIR="$TMP/apps" PATH="/usr/bin:/bin" sh "$STUDIO/engines/godot/resolve.sh")"
+  assert_eq "$TMP/apps/Godot_mono.app/Contents/MacOS/Godot" "$out" "an app bundle under GODOT_APP_DIR resolves"
+}
+
+test_resolve_finds_godot_on_path() {
+  mkdir -p "$TMP/onpath" "$TMP/no-apps"
+  cp "$GODOT_STUB" "$TMP/onpath/godot"
+  out="$(GODOT_PATH="" GODOT_APP_DIR="$TMP/no-apps" PATH="$TMP/onpath:/usr/bin:/bin" sh "$STUDIO/engines/godot/resolve.sh")"
+  assert_eq "$TMP/onpath/godot" "$out" "godot on PATH resolves last"
+}
+
+test_guide_has_an_install_line() {
+  assert_contains "$STUDIO/engines/godot/GUIDE.md" "^Install: git clone --depth 1" "GUIDE.md carries the GUT install command"
+  assert_contains "$STUDIO/engines/godot/GUIDE.md" "addons/gut" "the install command lands GUT in addons/gut"
+}
+
+run_tests test_dispatch_rejects_unknown_engine test_dispatch_needs_a_studio_root \
+  test_resolve_honours_godot_path test_resolve_ignores_a_non_executable_godot_path \
+  test_resolve_finds_an_app_bundle test_resolve_finds_godot_on_path test_guide_has_an_install_line

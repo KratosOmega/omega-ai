@@ -307,9 +307,17 @@ test_manifest_header() {
   assert_status 1 "shim_owned rejects a missing shim" -- shim_owned "$TMP/mh/none" /roots/a
 }
 
+test_engine_dir() {
+  assert_eq "godot" "$(engine_dir godot4)" "strips the version suffix"
+  assert_eq "unity" "$(engine_dir unity6)" "strips any version suffix"
+  assert_eq "godot" "$(engine_dir godot)" "leaves a bare name alone"
+  assert_eq "" "$(engine_dir '')" "empty in, empty out"
+}
+
 run_tests test_json_field test_expand_path test_canon_path test_guard_target_rejects \
   test_guard_target_rejects_descendants_of_dot_claude test_guard_target_accepts \
   test_guard_target_derefs_symlinked_target test_guard_target_rejects_symlinked_dot_claude \
   test_need_value test_resolve_studio_target test_requires_of test_run_dry \
   test_manifest_remove test_manifest_remove_through_symlinked_root \
-  test_manifest_remove_skips_trailing_slash test_studio_arg test_manifest_header
+  test_manifest_remove_skips_trailing_slash test_studio_arg test_manifest_header \
+  test_engine_dir
