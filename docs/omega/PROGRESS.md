@@ -22,9 +22,14 @@ the with-skill result — in `pressure/`.
   on the autopilot line as `caffeine=<pid>`, written through `omega-mode`;
   a twelve-hour default timeout bounds a process a crashed session never
   stopped.
-- The process dies wherever the autopilot line goes: SessionEnd, a typed
-  `/omega:autopilot off` (the hook stops it before clearing the mode, or
-  the skill's own stop would find no pid), and the skill's disarm.
+- Every path that clears the autopilot line stops the process first:
+  SessionEnd, a typed `/omega:autopilot off` (the hook stops it before
+  clearing the mode, or the skill's own stop would find no pid), and the
+  skill's disarm — which also covers a leftover mode found at pre-flight.
+  A recorded pid counts as running only while the process's argument list
+  names the tool, so a reused pid is never signalled.
+- The heartbeat re-invokes the run's execution skill; the fresh turn never
+  does a task by hand.
 - Autopilot phase 1 gains an **Arm** step after the checklist: set the
   mode, start the process, create a session-only `CronCreate` heartbeat
   (`17,47 * * * *`) whose fixed prompt continues the run only while the

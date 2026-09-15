@@ -562,14 +562,18 @@ description: Use when a long run must proceed with nobody at the keyboard — as
    runtime binary the plan needs resolves; no unanswered question remains.
 6. **Arm**, in this order: `omega-mode set autopilot`; `omega-caffeine
    start` (`unsupported` is a warning, not a stop); `CronCreate` the
-   heartbeat — cron `17,47 * * * *`, recurring, a fixed prompt that
-   continues the run only while `omega-mode show` still lists `autopilot`
-   and otherwise deletes itself; it fires only while the session is idle
-   and expires after seven days. Then tell the user to start the run
-   (`/game-dev:execute`, or the equivalent) — the same message says what the
-   run may and may not do, and that the permission mode must allow the
-   run's tools unattended: a permission prompt is a question nobody
-   answers.
+   heartbeat — cron `17,47 * * * *`, recurring, the fixed prompt
+   `Autopilot heartbeat. Run omega-mode show. If it does not list autopilot: CronDelete this job and stop. Otherwise re-invoke the run's execution skill on the next unfinished task per omega:autopilot phase 2; ask nothing.`
+   — which re-invokes the execution skill rather than doing a task by
+   hand, fires only while the session is idle, and expires after seven
+   days. Then tell the user to start the run (`/game-dev:execute`, or the
+   equivalent) — the same message says what the run may and may not do,
+   that the permission mode must allow the run's tools unattended (a
+   permission prompt is a question nobody answers), and that if the run is
+   not started by then, the heartbeat starts it at the next :17 or :47 —
+   switch the permission mode before that. A resumed session that finds
+   `autopilot` already set repeats the start and the CronCreate; the
+   heartbeat is session-only and does not survive a restart.
 
 ### Phase 2 — unattended
 

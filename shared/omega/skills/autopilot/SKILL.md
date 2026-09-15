@@ -26,8 +26,9 @@ is what the mode means while it is set.
 ## Phase 1 — pre-flight, interactive
 
 Phase 1 runs with no `autopilot` mode: `omega-mode show` must not list
-it; when it does (a previous run's leftover), `omega-mode clear autopilot`
-first.
+it; when it does (a previous run's leftover), disarm first — the
+**Disarm** bullet of phase 2: `omega-caffeine stop`, `CronDelete` any
+heartbeat, then `omega-mode clear autopilot`.
 
 1. **Design and plan as the studio does.** `/game-dev:brainstorm` then
    `/game-dev:plan` in the game studio; `superpowers:brainstorming` then
@@ -80,17 +81,26 @@ first.
       last push.
    3. `CronCreate` the heartbeat: cron `17,47 * * * *`, recurring, prompt
       verbatim:
-      `Autopilot heartbeat. Run omega-mode show. If it does not list autopilot: CronDelete this job and stop. Otherwise continue the run from the next unfinished task per omega:autopilot phase 2; ask nothing.`
+      `Autopilot heartbeat. Run omega-mode show. If it does not list autopilot: CronDelete this job and stop. Otherwise re-invoke the run's execution skill on the next unfinished task per omega:autopilot phase 2; ask nothing.`
       It fires only while the session is idle — a turn that ended early
       gets its nudge within half an hour, a running turn costs nothing —
-      and expires after seven days.
+      and expires after seven days. The nudge re-invokes the execution
+      skill; it never has the fresh turn do a task by hand, as the
+      precedence block says.
    4. Tell the user to start the run — `/game-dev:execute`, or the plan's
       execution skill — saying in the same message what the run may do
       (commit; push after every task; open a draft PR; write the handoff)
       and may not do (merge; force-push; delete a remote branch;
       destructive or security-sensitive operations; read or write
-      secrets), and that the permission mode must allow the run's tools
-      unattended — a permission prompt is a question nobody answers.
+      secrets), that the permission mode must allow the run's tools
+      unattended — a permission prompt is a question nobody answers — and
+      that if the run is not started by then, the
+      heartbeat starts it at the next :17 or :47 — switch the permission
+      mode before that.
+
+   A resumed session that finds `autopilot` already set (a crash, not a
+   leftover — the handoff file names the run) repeats steps 2–3; the
+   heartbeat is session-only and does not survive a restart.
 
 ## Phase 2 — unattended
 
@@ -147,5 +157,5 @@ gates, the reviewer per task, the tests.
 | "I'll explain the cost in the next paragraph" | The cost if wrong goes on the Ruling line itself, or a plain grep for it fails. |
 | "A file's already committed this way, drop the question" | Only the plan's `## Decisions` section retires a swept item — a commit or a ledger entry from a prior run does not. |
 | "The plan is unclear, I'll stop and ask" | Unclear is a ruling; *broken* is a hard stop. Decide which, log it. |
-| The hook block already says `autopilot` while questions are still open | Clear it; the mode is set only when the checklist passes. |
-| "The run is done, the heartbeat can stay" | A live heartbeat with no run spends a turn every 30 minutes until the session ends. Clear the mode. |
+| The hook block already says `autopilot` while questions are still open | Disarm (stop, `CronDelete`, clear); the mode is set only when the checklist passes. |
+| "The run is done, the heartbeat can stay" | A live heartbeat with no run spends a turn every 30 minutes until the session ends. Disarm. |
