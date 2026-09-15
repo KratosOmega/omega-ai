@@ -113,13 +113,15 @@ test_install_copy_mode() {
     "copy-mode shim points the studio root at the snapshot"
   assert_contains "$TMP/cp/.omega-ai-manifest" "$TMP/cp/studio" "manifest records the snapshot"
   assert_file "$TMP/cp/global/.claude-plugin/plugin.json" "copy mode snapshots the global plugin under the target"
-  assert_file "$TMP/cp/global/bin/omega-mode" "the global snapshot carries omega-mode"
-  TESTS_RUN=$((TESTS_RUN + 1))
-  if [ -x "$TMP/cp/global/bin/omega-mode" ]; then
-    _pass "the snapshot's omega-mode is executable"
-  else
-    _fail "the snapshot's omega-mode is executable"
-  fi
+  for tool in omega-mode omega-caffeine; do
+    assert_file "$TMP/cp/global/bin/$tool" "the global snapshot carries $tool"
+    TESTS_RUN=$((TESTS_RUN + 1))
+    if [ -x "$TMP/cp/global/bin/$tool" ]; then
+      _pass "the snapshot's $tool is executable"
+    else
+      _fail "the snapshot's $tool is executable"
+    fi
+  done
   assert_file "$TMP/cp/global/hooks/hooks.json" "the global snapshot carries the hooks"
   assert_contains "$TMP/bin-cp/claude-gd" "OMEGA_GLOBAL_ROOT=\"$TMP/cp/global\"" \
     "copy-mode shim points the global root at the snapshot"
