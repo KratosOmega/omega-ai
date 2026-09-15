@@ -89,6 +89,7 @@ installer.
 | 16 | Story tracker | Detected from the branch: `KAN-<n>` → Jira through the Atlassian MCP when present; a leading `<n>-` or `issue-<n>` → GitHub issue `<n>` through `gh`; otherwise none, recorded in the plan header. |
 | 17 | Unattended decisions | Industry-standard default, chosen from the studio's `CLAUDE.md`, the shared standards and superpowers; every ruling logged with its cost-if-wrong; the morning report lists rulings first. |
 | 18 | Dependencies | `shared/omega` has no `requires.txt`. References to `superpowers:*` are conditional ("when installed"): the `general` studio has no superpowers, and every omega skill must work there. |
+| 19 | Delegate | Named `delegate`. The main session is a command deck — it talks to the user, dispatches subagents, reads their reports and runs status commands; every edit, search and document goes to a subagent, never fixed by hand. Design and decisions in `2026-09-15-delegate-mode-design.md`. |
 
 Three smaller decisions were taken while writing this spec so the plan does
 not have to re-open them. Per-task branches are named

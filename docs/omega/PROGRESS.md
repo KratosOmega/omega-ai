@@ -11,8 +11,31 @@ the with-skill result — in `pressure/`.
 |------|-------|--------|
 | 1 — Foundation | `shared/omega` plugin manifest, `bin/omega-mode`, SessionStart / UserPromptSubmit / SessionEnd hooks, root `marketplace.json`, two-plugin shim in `install.sh`, `doctor.sh` global plugin line, `tests/omega_test.sh`, five skill stubs | delivered |
 | 2 — Skills | `handoff`, `parallel`, `local-merge`, `integration`, `autopilot`; text contracts under `tests/omega_contracts/`; pressure scenarios under `pressure/`; README "Global skills" | delivered |
+| 3 — Delegate | `delegate` mode: skill, brief line, typed command, text contract, pressure scenario; `hooks/pre-tool-use.sh` guard (spike-gated) | delivered |
 
 ## Log
+
+### 2026-09-15 — delegate mode
+
+- `/omega:delegate [off]` sets the sixth mode: the main session talks to
+  the user, dispatches subagents, reads their fifteen-line reports and runs
+  status commands; every edit, search and document goes to a subagent, and
+  a failing agent is redispatched, never fixed by hand — three rounds, then
+  the user (a ruling under `autopilot`).
+- Spike (spec Decisions row 14): the PreToolUse record's `transcript_path`
+  was identical for the main session and a subagent, so it could not
+  distinguish them; `agent_id` and `agent_type` were present only on the
+  subagent's record and were reproducible across two independent runs, so
+  the hook shipped, gating on that signal instead. `hooks/pre-tool-use.sh`
+  denies `Edit`, `Write` and `NotebookEdit` under the repository from the
+  main session while the mode is set; a subagent's call, a path outside
+  the repository, a session without the mode, and anything unparsable are
+  allowed.
+- Pressure scenario `pressure/delegate.md`: baseline FAIL on criteria 2
+  and 3; with skill PASS on run 1, 0 rounds of refinement.
+- Spec: `specs/2026-09-15-delegate-mode-design.md`. Plan:
+  `plans/2026-09-15-plan-3-delegate.md`.
+  PR: https://github.com/KratosOmega/omega-ai/pull/4
 
 ### 2026-09-15 — autopilot keep-awake and heartbeat
 

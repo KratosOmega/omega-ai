@@ -1,6 +1,6 @@
 #!/bin/sh
 # SessionStart hook for the omega global plugin (startup, resume, clear,
-# compact). Prints one line naming the five skills and the absolute paths
+# compact). Prints one line naming the six skills and the absolute paths
 # of omega-mode and omega-caffeine — plain claude has no PATH entry for
 # them — and, when the session has modes set, the "Omega modes:" block from
 # omega-mode brief. Also prunes mode files older than seven days, never the
@@ -33,7 +33,7 @@ if [ -d "$DIR" ]; then
   fi
 fi
 
-text="Omega global skills: /omega:handoff, /omega:parallel [N|off], /omega:local-merge [off], /omega:integration <start|add|status|finish>, /omega:autopilot [off]. Mode tool: $MODE (set | clear | show | path | brief). Keep-awake: $CAFFEINE (start | stop | status)."
+text="Omega global skills: /omega:handoff, /omega:parallel [N|off], /omega:local-merge [off], /omega:integration <start|add|status|finish>, /omega:autopilot [off], /omega:delegate [off]. Mode tool: $MODE (set | clear | show | path | brief). Keep-awake: $CAFFEINE (start | stop | status)."
 if [ -n "$sid" ]; then
   block="$(sh "$MODE" --session "$sid" brief 2>/dev/null || true)"
   if [ -n "$block" ]; then

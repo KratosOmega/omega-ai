@@ -3,7 +3,8 @@
 # manifest, omega-mode, omega-caffeine, and the three hooks. Runs without a
 # config root: omega-mode and the hooks are pointed at a temporary
 # CLAUDE_CONFIG_DIR. omega-caffeine is run with a fake caffeinate first on
-# PATH; every process it starts is killed on exit.
+# PATH; every process it starts is killed on exit. The suite needs `git` on
+# PATH: test_pre_tool_use creates a temporary git repository as `cwd`.
 set -u
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 . "$REPO_ROOT/tests/assert.sh"
@@ -60,15 +61,16 @@ test_plugin_files() {
   assert_eq "omega" "$(json_field "$OMEGA/.claude-plugin/plugin.json" name)" \
     "omega plugin.json names the omega namespace"
   assert_eq "0.1.0" "$(json_field "$OMEGA/.claude-plugin/plugin.json" version)" "omega plugin.json is version 0.1.0"
-  for s in handoff parallel local-merge integration autopilot; do
+  for s in handoff parallel local-merge integration autopilot delegate; do
     assert_file "$OMEGA/skills/$s/SKILL.md" "omega ships the $s skill"
   done
+  assert_contains "$OMEGA/.claude-plugin/plugin.json" "autopilot, delegate\." "omega plugin.json names the six skills"
   assert_missing "$OMEGA/requires.txt" "omega declares no hard dependencies"
   assert_missing "$OMEGA/settings.json" "omega has no settings.json"
 }
 
 test_skill_stubs() {
-  for s in handoff parallel local-merge integration autopilot; do
+  for s in handoff parallel local-merge integration autopilot delegate; do
     f="$OMEGA/skills/$s/SKILL.md"
     assert_eq "---" "$(head -n 1 "$f")" "omega:$s starts with frontmatter"
     assert_eq "$s" "$(first_field "$f" name)" "omega:$s frontmatter name matches its directory"
@@ -78,7 +80,7 @@ test_skill_stubs() {
       *) _fail "omega:$s description starts with 'Use when'" ;;
     esac
   done
-  for s in parallel local-merge integration autopilot; do
+  for s in parallel local-merge integration autopilot delegate; do
     assert_contains "$OMEGA/skills/$s/SKILL.md" "This mode changes how work is scheduled, saved, merged or stopped." \
       "omega:$s carries the precedence contract"
     assert_contains "$OMEGA/skills/$s/SKILL.md" "omega-mode" "omega:$s sets or clears its mode through omega-mode"
@@ -91,6 +93,7 @@ test_marketplace() {
   assert_status 0 "marketplace.json is valid JSON" -- valid_json "$m"
   assert_eq "omega-ai" "$(json_field "$m" name)" "the marketplace is named omega-ai"
   assert_contains "$m" '"name": "omega"' "the marketplace publishes the omega plugin"
+  assert_contains "$m" 'autopilot, delegate\.' "the marketplace description names the six skills"
   src="$(sed -n 's/.*"source"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$m" | head -n 1)"
   assert_eq "./shared/omega" "$src" "the omega plugin's source is ./shared/omega"
   assert_file "$REPO_ROOT/${src#./}/.claude-plugin/plugin.json" "the marketplace source resolves to the plugin"
@@ -181,8 +184,9 @@ test_mode_brief() {
   mode --session t4 set local-merge
   mode --session t4 set integration slug=ui-rework
   mode --session t4 set autopilot
+  mode --session t4 set delegate
   mode --session t4 brief > "$TMP/brief.txt"
-  assert_eq "Omega modes: parallel max=3 · local-merge · integration slug=ui-rework · autopilot" \
+  assert_eq "Omega modes: parallel max=3 · local-merge · integration slug=ui-rework · autopilot · delegate" \
     "$(head -n 1 "$TMP/brief.txt")" "brief's first line joins the modes with a middle dot"
   assert_contains "$TMP/brief.txt" "^  parallel: dispatch up to 3 ready tasks at once, each in its own worktree; review each; cherry-pick onto the feature branch; the invoking skill's bookkeeping is unchanged\.$" \
     "brief carries the parallel rule with its cap"
@@ -192,7 +196,9 @@ test_mode_brief() {
     "brief carries the integration rule with its slug"
   assert_contains "$TMP/brief.txt" "^  autopilot: never AskUserQuestion — rule by the standards, log the ruling with its cost if wrong, continue; commit, push and open a PR, never merge; end with handoff\.$" \
     "brief carries the autopilot rule"
-  assert_eq "5" "$(wc -l < "$TMP/brief.txt" | tr -d ' ')" "brief is the header plus one line per mode"
+  assert_contains "$TMP/brief.txt" "^  delegate: the main session dispatches, reads reports and runs status commands; every edit, search and document goes to a subagent; never fix by hand\.$" \
+    "brief carries the delegate rule"
+  assert_eq "6" "$(wc -l < "$TMP/brief.txt" | tr -d ' ')" "brief is the header plus one line per mode"
   mode --session t4 set parallel
   mode --session t4 brief > "$TMP/brief2.txt"
   assert_contains "$TMP/brief2.txt" "^  parallel: dispatch every ready task at once, each in its own worktree; review each; cherry-pick onto the feature branch; the invoking skill's bookkeeping is unchanged\.$" \
@@ -200,7 +206,7 @@ test_mode_brief() {
   mode --session t4 set custom-mode key=value
   mode --session t4 brief > "$TMP/brief3.txt"
   assert_contains "$TMP/brief3.txt" "custom-mode key=value" "an unknown mode is listed in the header"
-  assert_eq "5" "$(wc -l < "$TMP/brief3.txt" | tr -d ' ')" "an unknown mode gets no rule line"
+  assert_eq "6" "$(wc -l < "$TMP/brief3.txt" | tr -d ' ')" "an unknown mode gets no rule line"
 }
 
 # hook NAME JSON — run a hook as Claude Code would: the JSON on stdin, the
@@ -239,6 +245,9 @@ test_hooks_json() {
   assert_contains "$h" 'CLAUDE_PLUGIN_ROOT}/hooks/prompt-submit.sh' "UserPromptSubmit runs prompt-submit.sh from the plugin root"
   assert_contains "$h" '"SessionEnd"' "hooks.json registers SessionEnd"
   assert_contains "$h" 'CLAUDE_PLUGIN_ROOT}/hooks/session-end.sh' "SessionEnd runs session-end.sh from the plugin root"
+  assert_contains "$h" '"PreToolUse"' "hooks.json registers PreToolUse"
+  assert_contains "$h" '"matcher": "Edit|Write|NotebookEdit"' "PreToolUse matches Edit, Write and NotebookEdit"
+  assert_contains "$h" 'CLAUDE_PLUGIN_ROOT}/hooks/pre-tool-use.sh' "PreToolUse runs pre-tool-use.sh from the plugin root"
 }
 
 test_session_start() {
@@ -250,8 +259,8 @@ test_session_start() {
   assert_eq "1" "$(wc -l < "$TMP/hook.out" | tr -d ' ')" "session-start output is a single line"
   assert_contains "$TMP/hook.out" '"hookEventName":"SessionStart"' "output names the SessionStart event"
   context > "$TMP/ctx.txt"
-  assert_contains "$TMP/ctx.txt" "Omega global skills: /omega:handoff, /omega:parallel \[N|off\], /omega:local-merge \[off\], /omega:integration <start|add|status|finish>, /omega:autopilot \[off\]\." \
-    "context names the five skills"
+  assert_contains "$TMP/ctx.txt" "Omega global skills: /omega:handoff, /omega:parallel \[N|off\], /omega:local-merge \[off\], /omega:integration <start|add|status|finish>, /omega:autopilot \[off\], /omega:delegate \[off\]\." \
+    "context names the six skills"
   assert_contains "$TMP/ctx.txt" "Mode tool: $OMEGA/bin/omega-mode (set | clear | show | path | brief)\." "context names the omega-mode path"
   assert_contains "$TMP/ctx.txt" "Keep-awake: $OMEGA/bin/omega-caffeine (start | stop | status)\." "context names the omega-caffeine path"
   assert_not_contains "$TMP/ctx.txt" "Omega modes:" "no modes block when no mode is set"
@@ -323,6 +332,16 @@ test_prompt_submit() {
   hook prompt-submit.sh '{"session_id":"p1","hook_event_name":"UserPromptSubmit","prompt":"<command-name>/omega:parallel</command-name><command-args>  </command-args>"}'
   assert_contains "$CFG/omega/modes/p1" "^parallel$" "whitespace-only args set the bare mode"
   mode --session p1 clear parallel
+
+  hook prompt-submit.sh '{"session_id":"p1","hook_event_name":"UserPromptSubmit","prompt":"<command-message>delegate</command-message>\n<command-name>/omega:delegate</command-name>\n<command-args></command-args>"}'
+  assert_contains "$CFG/omega/modes/p1" "^delegate$" "/omega:delegate with empty args sets delegate"
+  context > "$TMP/ctx-delegate.txt"
+  assert_contains "$TMP/ctx-delegate.txt" "  delegate: the main session dispatches, reads reports and runs status commands; every edit, search and document goes to a subagent; never fix by hand\." \
+    "the turn's context carries the delegate rule line"
+  hook prompt-submit.sh '{"session_id":"p1","hook_event_name":"UserPromptSubmit","prompt":"<command-name>/omega:delegate</command-name><command-args>3</command-args>"}'
+  assert_contains "$CFG/omega/modes/p1" "^delegate$" "/omega:delegate 3 changes nothing"
+  hook prompt-submit.sh '{"session_id":"p1","hook_event_name":"UserPromptSubmit","prompt":"<command-name>/omega:delegate</command-name><command-args>off</command-args>"}'
+  assert_not_contains "$CFG/omega/modes/p1" "^delegate" "/omega:delegate off clears delegate"
 
   before="$(mode --session p1 show)"
   hook prompt-submit.sh '{"session_id":"p1","hook_event_name":"UserPromptSubmit","prompt":"<command-message>caveman</command-message>\n<command-name>/caveman</command-name>\n<command-args>off</command-args>"}'
@@ -428,6 +447,94 @@ test_session_end() {
   assert_status 1 "session-end kills the session's keep-awake process" -- kill -0 "$p"
   assert_missing "$CFG/omega/modes/e3" "session-end still deletes the mode file"
   assert_eq "" "$(cat "$TMP/hook.out")" "session-end prints nothing after killing the process"
+}
+
+# ptu TOOL KEY PATH TRANSCRIPT CWD SESSION [AGENT_ID] — one PreToolUse record
+# as Claude Code sends it, single-line, for the guard hook. When AGENT_ID is
+# given and non-empty, the record also carries "agent_id" and "agent_type"
+# (before "tool_input") — a subagent's call.
+ptu() {
+  agent=""
+  if [ -n "${7:-}" ]; then
+    agent="\"agent_id\":\"$7\",\"agent_type\":\"general-purpose\","
+  fi
+  printf '{"session_id":"%s","transcript_path":"%s","cwd":"%s","hook_event_name":"PreToolUse",%s"tool_name":"%s","tool_input":{"%s":"%s","content":"x"}}' \
+    "$6" "$4" "$5" "$agent" "$1" "$2" "$3"
+}
+
+test_pre_tool_use() {
+  rm -rf "$CFG"
+  repo="$TMP/ptu-repo"; rm -rf "$repo"; mkdir -p "$repo/src"
+  git -C "$repo" init -q
+  outside="$TMP/ptu-outside"; rm -rf "$outside"; mkdir -p "$outside"
+  main_t="$TMP/x/d1.jsonl"
+  sub_t="$TMP/x/d1/subagents/agent-a1.jsonl"
+  mode --session d1 set delegate
+
+  hook pre-tool-use.sh "$(ptu Write file_path "$repo/src/a.gd" "$main_t" "$repo" d1)"
+  assert_status 0 "a main-session Write under the repository exits 0" -- \
+    hook_status pre-tool-use.sh "$(ptu Write file_path "$repo/src/a.gd" "$main_t" "$repo" d1)"
+  assert_status 0 "the deny output is valid JSON" -- valid_json "$TMP/hook.out"
+  assert_contains "$TMP/hook.out" '"permissionDecision":"deny"' "a main-session Write under the repository is denied"
+  assert_contains "$TMP/hook.out" 'omega:delegate' "the reason names the mode"
+  assert_contains "$TMP/hook.out" '"hookEventName":"PreToolUse"' "the output names the PreToolUse event"
+  assert_eq "1" "$(wc -l < "$TMP/hook.out" | tr -d ' ')" "the deny output is a single line"
+  assert_eq "" "$(cat "$TMP/hook.err")" "the deny path leaves stderr empty"
+
+  hook pre-tool-use.sh "$(ptu Write file_path "$repo/src/a.gd" "$main_t" "$repo" d1 a1)"
+  assert_eq "" "$(cat "$TMP/hook.out")" "a subagent's Write is allowed by its agent_id"
+
+  hook pre-tool-use.sh "$(ptu Write file_path "$repo/src/a.gd" "$sub_t" "$repo" d1)"
+  assert_eq "" "$(cat "$TMP/hook.out")" "a subagents transcript path alone still allows"
+
+  hook pre-tool-use.sh '{"session_id":"d1","transcript_path":"'"$main_t"'","cwd":"'"$repo"'","hook_event_name":"PreToolUse","agent_id":"","tool_name":"Write","tool_input":{"file_path":"'"$repo"'/src/a.gd","content":"x"}}'
+  assert_contains "$TMP/hook.out" '"permissionDecision":"deny"' "an empty agent_id is not a subagent"
+
+  hook pre-tool-use.sh "$(ptu Write file_path "$outside/a.gd" "$main_t" "$repo" d1)"
+  assert_eq "" "$(cat "$TMP/hook.out")" "a Write outside the repository is allowed"
+  hook pre-tool-use.sh "$(ptu Edit file_path "src/a.gd" "$main_t" "$repo" d1)"
+  assert_contains "$TMP/hook.out" '"permissionDecision":"deny"' "a relative path that resolves inside the repository is denied"
+  hook pre-tool-use.sh "$(ptu Edit file_path "src/new/dir/a.gd" "$main_t" "$repo" d1)"
+  assert_contains "$TMP/hook.out" '"permissionDecision":"deny"' "a path in a directory that does not exist yet is still under the repository"
+  hook pre-tool-use.sh "$(ptu NotebookEdit notebook_path "$repo/n.ipynb" "$main_t" "$repo" d1)"
+  assert_contains "$TMP/hook.out" '"permissionDecision":"deny"' "NotebookEdit inside the repository is denied"
+  hook pre-tool-use.sh "$(ptu Read file_path "$repo/src/a.gd" "$main_t" "$repo" d1)"
+  assert_eq "" "$(cat "$TMP/hook.out")" "a Read is never denied"
+  hook pre-tool-use.sh "$(ptu Write file_path "$repo/src/a.gd" "$main_t" "$outside" d1)"
+  assert_eq "" "$(cat "$TMP/hook.out")" "a cwd outside any git repository allows"
+  hook pre-tool-use.sh "$(ptu Write file_path "$repo/src/a.gd" "$main_t" "$repo" d2)"
+  assert_eq "" "$(cat "$TMP/hook.out")" "a session with no mode file allows"
+  hook pre-tool-use.sh '{"session_id":"d1","transcript_path":"'"$main_t"'","cwd":"'"$repo"'","hook_event_name":"PreToolUse","tool_name":"Write","tool_input":{"content":"x"}}'
+  assert_eq "" "$(cat "$TMP/hook.out")" "a Write with no file_path allows"
+
+  hook pre-tool-use.sh '{"session_id":"d1","transcript_path":"'"$main_t"'","cwd":"'"$repo"'","hook_event_name":"PreToolUse","agent_type":"general-purpose","tool_name":"Write","tool_input":{"file_path":"'"$repo"'/src/a.gd","content":"x"}}'
+  assert_eq "" "$(cat "$TMP/hook.out")" "a subagent's Write is allowed by agent_type alone"
+
+  # A path git ignores is scratch, not the repository — the SDD workspace
+  # under .superpowers/ must stay writable from the main session even
+  # though it resolves under the repository root.
+  echo ".superpowers/" > "$repo/.gitignore"
+  hook pre-tool-use.sh "$(ptu Write file_path "$repo/.superpowers/sdd/p/progress.md" "$main_t" "$repo" d1)"
+  assert_eq "" "$(cat "$TMP/hook.out")" "a Write under a path git ignores is scratch, not the repository"
+  hook pre-tool-use.sh "$(ptu Write file_path "$repo/src/a.gd" "$main_t" "$repo" d1)"
+  assert_contains "$TMP/hook.out" '"permissionDecision":"deny"' "a tracked path still denies after the ignore check"
+  rm -f "$repo/.gitignore"
+
+  mode --session d1 clear delegate
+  mode --session d1 set parallel max=2
+  hook pre-tool-use.sh "$(ptu Write file_path "$repo/src/a.gd" "$main_t" "$repo" d1)"
+  assert_eq "" "$(cat "$TMP/hook.out")" "parallel without delegate allows"
+  mode --session d1 clear --all
+  hook pre-tool-use.sh "$(ptu Write file_path "$repo/src/a.gd" "$main_t" "$repo" d1)"
+  assert_eq "" "$(cat "$TMP/hook.out")" "with the mode cleared the same Write allows"
+
+  assert_status 0 "empty stdin exits 0" -- hook_status pre-tool-use.sh ''
+  hook pre-tool-use.sh ''
+  assert_eq "" "$(cat "$TMP/hook.out")" "empty stdin prints nothing"
+  assert_status 0 "garbage stdin exits 0" -- hook_status pre-tool-use.sh '{garbage'
+  hook pre-tool-use.sh '{garbage'
+  assert_eq "" "$(cat "$TMP/hook.out")" "garbage stdin prints nothing"
+  assert_eq "" "$(cat "$TMP/hook.err")" "garbage stdin leaves stderr empty"
 }
 
 test_caffeine() {
@@ -585,10 +692,10 @@ test_skill_contracts() {
     ran=$((ran + 1))
   done
   # Bump when a skill is added.
-  assert_eq 5 "$ran" "five skill contracts ran"
+  assert_eq 6 "$ran" "six skill contracts ran"
 }
 
 run_tests test_plugin_files test_skill_stubs test_marketplace \
   test_mode_round_trip test_mode_validation test_mode_brief \
   test_hooks_json test_session_start test_session_start_prunes_old_files \
-  test_prompt_submit test_session_end test_caffeine test_skill_contracts
+  test_prompt_submit test_session_end test_pre_tool_use test_caffeine test_skill_contracts

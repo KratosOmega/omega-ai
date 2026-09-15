@@ -123,6 +123,12 @@ test_install_copy_mode() {
     fi
   done
   assert_file "$TMP/cp/global/hooks/hooks.json" "the global snapshot carries the hooks"
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if [ -x "$TMP/cp/global/hooks/pre-tool-use.sh" ]; then
+    _pass "the snapshot's pre-tool-use.sh is executable"
+  else
+    _fail "the snapshot's pre-tool-use.sh is executable"
+  fi
   assert_contains "$TMP/bin-cp/claude-gd" "OMEGA_GLOBAL_ROOT=\"$TMP/cp/global\"" \
     "copy-mode shim points the global root at the snapshot"
   assert_contains "$TMP/cp/.omega-ai-manifest" "$TMP/cp/global" "manifest records the global snapshot"
@@ -240,7 +246,7 @@ test_doctor() {
   sh "$REPO_ROOT/doctor.sh" general --target "$TMP/gen" > "$TMP/doctor.out" 2>&1
   assert_contains "$TMP/doctor.out" "$TMP/gen" "doctor reports the resolved config root"
   assert_contains "$TMP/doctor.out" "leakage: none" "doctor finds no leak into ~/.claude"
-  assert_contains "$TMP/doctor.out" "global plugin: omega 0.1.0   skills 5  hooks present" \
+  assert_contains "$TMP/doctor.out" "global plugin: omega 0.1.0   skills 6  hooks present" \
     "doctor reports the global plugin as the shim loads it"
   assert_contains "$TMP/doctor.out" "shim:         ok" "doctor accepts the two-plugin shim"
   # A shim from before the global plugin: the doctor names the gap and

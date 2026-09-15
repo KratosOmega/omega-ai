@@ -4,7 +4,7 @@
   "plugins": [
     {
       "name": "omega",
-      "description": "Global overlay skills for any studio: handoff, parallel, local-merge, integration, autopilot.",
+      "description": "Global overlay skills for any studio: handoff, parallel, local-merge, integration, autopilot, delegate.",
       "version": "0.1.0",
       "source": "./shared/omega"
     }
