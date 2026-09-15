@@ -144,10 +144,10 @@ PLAN
     git -C "$repo" push -q -u origin settings
     ;;
   delegate)
-    # greet: a one-task plan on branch greet. <dir>/cfg is a CLAUDE_CONFIG_DIR
-    # whose settings.json logs every PreToolUse record to <dir>/hook.log, so
-    # what the main session did is on disk, not in its report. <dir>/scratch
-    # is the scratchpad.
+    # greet: a one-task plan on branch greet. <dir>/cfg/settings.json is
+    # passed with `--restricted --settings` (not CLAUDE_CONFIG_DIR) and logs
+    # every PreToolUse record to <dir>/hook.log, so what the main session did
+    # is on disk, not in its report. <dir>/scratch is the scratchpad.
     base
     mkdir -p "$repo/docs/plans" "$dir/cfg" "$dir/scratch"
     cat > "$repo/docs/plans/greet.md" <<'PLAN'
