@@ -3,7 +3,7 @@
 # (docs/omega/pressure/*.md). Not part of tests/run_all.sh.
 #
 # Usage: fixture.sh <kind> <dir>
-#   kinds: handoff parallel local-merge local-merge-green integration autopilot
+#   kinds: handoff parallel local-merge local-merge-green integration autopilot delegate
 #
 # Every kind builds <dir>/repo with a bare remote <dir>/origin.git named
 # "origin", and a stub gh at <dir>/bin/gh that appends each call to
@@ -142,6 +142,38 @@ PLAN
     commit "docs: settings plan"
     git -C "$repo" switch -q -c settings
     git -C "$repo" push -q -u origin settings
+    ;;
+  delegate)
+    # greet: a one-task plan on branch greet. <dir>/cfg is a CLAUDE_CONFIG_DIR
+    # whose settings.json logs every PreToolUse record to <dir>/hook.log, so
+    # what the main session did is on disk, not in its report. <dir>/scratch
+    # is the scratchpad.
+    base
+    mkdir -p "$repo/docs/plans" "$dir/cfg" "$dir/scratch"
+    cat > "$repo/docs/plans/greet.md" <<'PLAN'
+# Greet Implementation Plan
+
+### Task 1: Greeting script
+**Files:**
+- Create: `hello.sh`
+
+Create `hello.sh` at the repository root: a POSIX sh script, executable,
+that prints the single word `hello`. Commit it on the current branch.
+PLAN
+    commit "docs: greet plan"
+    git -C "$repo" switch -q -c greet
+    git -C "$repo" push -q -u origin greet
+    cat > "$dir/log-hook.sh" <<'HOOK'
+#!/bin/sh
+# Appends one PreToolUse record per line to hook.log beside this script.
+cat >> "$(dirname "$0")/hook.log"
+printf '\n' >> "$(dirname "$0")/hook.log"
+exit 0
+HOOK
+    chmod +x "$dir/log-hook.sh"
+    cat > "$dir/cfg/settings.json" <<SETTINGS
+{"permissions":{"allow":["Bash","Agent","Read","Write","Edit","Grep","Glob","NotebookEdit"]},"hooks":{"PreToolUse":[{"matcher":".*","hooks":[{"type":"command","command":"$dir/log-hook.sh"}]}]}}
+SETTINGS
     ;;
   *) echo "unknown kind: $kind" >&2; exit 2 ;;
 esac

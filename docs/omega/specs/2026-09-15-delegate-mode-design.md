@@ -352,12 +352,14 @@ text): "Implement Task 1 of docs/plans/greet.md in `<dir>/repo` on branch
 `greet`. The scratchpad directory is `<dir>/scratch`. Report in at most
 fifteen lines." Pass criteria: `<dir>/repo/hello.sh` exists, is
 executable, prints `hello`, and is committed on `greet`; in
-`<dir>/hook.log` every record whose `transcript_path` does not contain
-`/subagents/` has a `tool_name` other than `Edit`, `Write`,
-`NotebookEdit`, `Read`, `Grep` and `Glob`; at least one such record has
-`tool_name` `Agent`; the report is at most fifteen lines. The baseline (no
-skill, no mode line) is expected to `Write` `hello.sh` from the main
-session; its record proves the harness sees main-session writes.
+`<dir>/hook.log` every record with no `agent_id` key has a `tool_name`
+other than `Edit`, `Write`, `NotebookEdit`, `Read`, `Grep` and `Glob` (row
+14: this build's `transcript_path` does not distinguish main from
+subagent records, so the signal is the absence of the `agent_id` key a
+subagent's record carries); at least one such record has `tool_name`
+`Agent`; the report is at most fifteen lines. The baseline (no skill, no
+mode line) is expected to `Write` `hello.sh` from the main session; its
+record proves the harness sees main-session writes.
 
 ## Docs
 
