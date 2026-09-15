@@ -8,6 +8,8 @@ test_delegate_contract() {
   assert_contains "$S" "This mode changes how work is scheduled, saved, merged or stopped" "delegate carries the precedence contract"
   assert_eq "$(grep '^> ' "$P")" "$(grep '^> ' "$S")" "delegate's precedence block is byte-identical to parallel's"
   assert_contains "$S" "never fix by hand" "delegate never fixes by hand"
+  assert_contains "$S" "Calls \`Edit\`, \`Write\` or \`NotebookEdit\` on a path under the repository" "delegate never edits under the repository"
+  assert_contains "$S" "Calls \`Read\`, \`Grep\` or \`Glob\` on repository source" "delegate never searches the repository"
   assert_contains "$S" "fifteen lines" "delegate caps reports at fifteen lines"
   assert_contains "$S" "Explore" "delegate routes lookups to an investigator"
   assert_contains "$S" "sonnet" "delegate keeps the sonnet floor"
@@ -17,5 +19,5 @@ test_delegate_contract() {
   assert_contains "$S" "never reads a diff" "delegate never reads a diff in the main session"
   assert_contains "$S" "executing-plans" "delegate rules out executing-plans"
   assert_contains "$S" "writing-plans" "delegate routes writing-plans to a planner agent"
-  assert_not_contains "$S" "Work only in" "delegate keeps the isolation phrase lower-case, as parallel's contract guards"
+  assert_not_contains "$S" "Work only in" "delegate keeps the isolation phrase lower-case, the pitfall parallel's own text names"
 }

@@ -331,11 +331,13 @@ and the mode shipped text-only.
 
 `tests/omega_contracts/delegate_contract.sh` asserts the skill contains:
 `omega-mode set delegate`; the precedence contract's first sentence;
-`never fix by hand`; `fifteen lines`; `Explore`; `sonnet`; `status
-command`; `redispatch`; `three`; `never reads a diff`; `executing-plans`;
-`writing-plans`; `subagents/` is **not** required (the hook is not the
-skill's business); and `assert_not_contains` for `Work only in` capitalised,
-as `parallel`'s contract guards.
+`never fix by hand`; the edit prohibition (`` Calls `Edit`, `Write` or
+`NotebookEdit` on a path under the repository ``); the search prohibition
+(`` Calls `Read`, `Grep` or `Glob` on repository source ``); `fifteen lines`;
+`Explore`; `sonnet`; `status command`; `redispatch`; `three`; `never reads
+a diff`; `executing-plans`; `writing-plans`; `subagents/` is **not**
+required (the hook is not the skill's business); and `assert_not_contains`
+for `Work only in` capitalised, the pitfall `parallel`'s own text names.
 
 `tests/pressure/fixture.sh` gains the `delegate` kind: `<dir>/repo` on
 `greet` with `docs/plans/greet.md` holding one task (`Files: hello.sh`;
