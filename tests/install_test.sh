@@ -123,6 +123,12 @@ test_install_copy_mode() {
     fi
   done
   assert_file "$TMP/cp/global/hooks/hooks.json" "the global snapshot carries the hooks"
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if [ -x "$TMP/cp/global/hooks/pre-tool-use.sh" ]; then
+    _pass "the snapshot's pre-tool-use.sh is executable"
+  else
+    _fail "the snapshot's pre-tool-use.sh is executable"
+  fi
   assert_contains "$TMP/bin-cp/claude-gd" "OMEGA_GLOBAL_ROOT=\"$TMP/cp/global\"" \
     "copy-mode shim points the global root at the snapshot"
   assert_contains "$TMP/cp/.omega-ai-manifest" "$TMP/cp/global" "manifest records the global snapshot"

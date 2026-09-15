@@ -80,7 +80,7 @@ Non-goals:
 | 11 | Brief line | `delegate: the main session dispatches, reads reports and runs status commands; every edit, search and document goes to a subagent; never fix by hand.` |
 | 12 | Hook output | On deny: `{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"omega:delegate — the main session edits nothing under the repository; dispatch a subagent"}}` on one line, exit 0. |
 | 13 | Hook fails open | On any other case — no session id, no mode file, `delegate` absent, a subagent's call, a path outside the repository, a path it cannot resolve, `cwd` not in a git repository, empty or unparsable stdin — the hook prints nothing and exits 0. A hook that blocked a subagent or a plain session would be worse than no hook. |
-| 14 | Spike outcome | **Passed** (Claude Code 2.1.272, 2026-09-15, harness: `--restricted --settings` against the user's own config — the throwaway `CLAUDE_CONFIG_DIR` had no credentials on this machine; `--permission-mode acceptEdits` was substituted for `bypassPermissions`, which this build refuses under `--restricted`). `transcript_path` did **not** distinguish the calls: the subagent's `Write` and the main session's `Write` carried the identical path (e.g. `/Users/xinli/.claude/projects/-private-tmp-claude-501--Users-xinli-Documents-GameDev--practice-omega-ai-ec635308-4811-47dd-b5d4-4b3de239deb0-scratchpad-delegate-spike-work/f0b51e18-b05e-4527-abb8-8ce1dfc3c9de.jsonl`) — this build does not split subagent transcripts into a `/subagents/` path. A different field did distinguish them: the subagent's record carried `agent_id` (e.g. `a2019ca04b5b8095d`) and `agent_type` (`general-purpose`); the main session's record had neither key at all. Confirmed reproducible across two independent runs (two different session IDs, two different `agent_id` values, same pattern both times). Record keys: `agent_id, agent_type, cwd, effort, hook_event_name, permission_mode, prompt_id, session_id, tool_input, tool_name, tool_use_id, transcript_path` (`agent_id`/`agent_type` present only on subagent-originated calls). `tool_input` keys: `content, file_path`. The hook ships (Task 3), gating on the presence of `agent_id`/`agent_type` rather than a `transcript_path` shape. |
+| 14 | Spike outcome | **Passed** (Claude Code 2.1.272, 2026-09-15, harness: `--restricted --settings` against the user's own config — the throwaway `CLAUDE_CONFIG_DIR` had no credentials on this machine; `--permission-mode acceptEdits` was substituted for `bypassPermissions`, which this build refuses under `--restricted`). `transcript_path` did **not** distinguish the calls: the subagent's `Write` and the main session's `Write` carried the identical path (e.g. `/Users/xinli/.claude/projects/-private-tmp-claude-501--Users-xinli-Documents-GameDev--practice-omega-ai-ec635308-4811-47dd-b5d4-4b3de239deb0-scratchpad-delegate-spike-work/f0b51e18-b05e-4527-abb8-8ce1dfc3c9de.jsonl`) — this build does not split subagent transcripts into a `/subagents/` path. A different field did distinguish them: the subagent's record carried `agent_id` (e.g. `a2019ca04b5b8095d`) and `agent_type` (`general-purpose`); the main session's record had neither key at all. Confirmed reproducible across two independent runs (two different session IDs, two different `agent_id` values, same pattern both times). Record keys: `agent_id, agent_type, cwd, effort, hook_event_name, permission_mode, prompt_id, session_id, tool_input, tool_name, tool_use_id, transcript_path` (`agent_id`/`agent_type` present only on subagent-originated calls). `tool_input` keys: `content, file_path`. The hook ships (Task 3), gating on the presence of `agent_id`/`agent_type` rather than a `transcript_path` shape. The guard-hook, tests and pressure sections below were rewritten to the `agent_id` signal after this outcome. |
 | 15 | Manifests | `plugin.json`, `marketplace.json`, the SessionStart line and the README all name six skills; the SessionStart line adds `/omega:delegate [off]`. |
 | 16 | Pressure harness | The pressure scenario logs every PreToolUse call through a throwaway `CLAUDE_CONFIG_DIR` whose `settings.json` appends the hook's stdin to a file — the same harness as the spike — so "the main session never edited" is read from a log, not from the model's report. |
 | 17 | Investigators | `Explore` is the investigator; `caveman:cavecrew-investigator` when installed (its output is compressed). An investigator returns locations and facts, never a fix. |
@@ -237,20 +237,26 @@ under `PreToolUse` with matcher `Edit|Write|NotebookEdit`. Self-contained
 POSIX `sh`, `set -u`, no `lib/`, in the style of the three existing hooks.
 
 It reads from the JSON on stdin: `session_id`, `transcript_path`, `cwd`,
-`tool_name`, and `tool_input.file_path` (or `tool_input.notebook_path` for
-`NotebookEdit`). The session id falls back to `$CLAUDE_CODE_SESSION_ID` as
-the other hooks do. Field extraction uses the same `sed -n 's/.*"key"…'`
-pattern as `session-start.sh`; the values the hook needs never contain an
-escaped quote (a path with a `"` in it is not something this repository
-supports anywhere else either).
+`tool_name`, `agent_id`, and `tool_input.file_path` (or
+`tool_input.notebook_path` for `NotebookEdit`). The session id falls back
+to `$CLAUDE_CODE_SESSION_ID` as the other hooks do. Field extraction uses
+the same `sed -n 's/.*"key"…'` pattern as `session-start.sh`; the values
+the hook needs never contain an escaped quote (a path with a `"` in it is
+not something this repository supports anywhere else either).
 
 It **denies** when all three hold:
 
 1. the session's mode file lists `delegate` (`omega-mode --session <id>
    show` has a line whose first field is `delegate`);
-2. `transcript_path` does not contain `/subagents/` — a subagent's
-   transcript lives at `<session dir>/subagents/agent-<id>.jsonl` and the
-   main session's at `<session dir>.jsonl`;
+2. the call is not a subagent's: `agent_id` is absent or empty **and**
+   `transcript_path` does not contain `/subagents/`. The spike (row 14)
+   found that on Claude Code 2.1.272 a subagent's PreToolUse record and the
+   main session's carry the identical `transcript_path` — neither has a
+   `/subagents/` segment — while `agent_id` (and `agent_type`) are present,
+   non-empty, only on the subagent's record and absent — not merely empty —
+   from the main session's. The `/subagents/` form is kept as a second
+   signal so a future build that moves to per-agent transcripts still never
+   blocks a subagent;
 3. the target path resolves under the repository: `root=$(git -C "$cwd"
    rev-parse --show-toplevel)`; a relative path is taken against `cwd`; the
    directory part is resolved with `cd … && pwd -P` when it exists,
@@ -276,14 +282,18 @@ matcher `Write|Edit` whose command appends its stdin and a newline to
 `<dir>/hook.log` and exits 0. Then `claude -p`, with a permission mode that
 allows the calls, is given a prompt that (a) dispatches one
 `general-purpose` subagent with the Agent tool to write `<dir>/sub.txt` and
-(b) afterwards writes `<dir>/main.txt` itself. The log must contain two
-records; the spike passes when the record for `sub.txt` has a
-`transcript_path` containing `/subagents/` and the record for `main.txt`
-does not. Both records' full JSON — field names, not values — go into
-Decisions row 14 together with the Claude Code version. If the subagent's
-record is indistinguishable from the main session's, the hook is dropped:
-rows 4, 12 and 13 are struck through, `hooks.json` and the test file stay
-as they are, and the mode ships text-only.
+(b) afterwards writes `<dir>/main.txt` itself. The log contained two
+records; the spike passed, but not on the signal it set out to check —
+see row 14. Both records carried the identical `transcript_path` (no
+`/subagents/` segment on either), so that signal alone would not have
+distinguished them; `agent_id` (and `agent_type`) did, present and
+non-empty only on the subagent's record and absent — not merely empty —
+from the main session's. Both records' full JSON — field names, not
+values — are recorded in Decisions row 14 together with the Claude Code
+version. Had the subagent's record been indistinguishable from the main
+session's on every field, the hook would have been dropped: rows 4, 12
+and 13 struck through, `hooks.json` and the test file left as they were,
+and the mode shipped text-only.
 
 ## Tests
 
@@ -292,19 +302,24 @@ as they are, and the mode ships text-only.
 - `test_hooks_json` gains: `hooks.json` registers `PreToolUse` with matcher
   `Edit|Write|NotebookEdit` running `pre-tool-use.sh` from the plugin root.
 - `test_pre_tool_use`, new, with a temporary git repository as `cwd` and a
-  temporary `CLAUDE_CONFIG_DIR`: with `delegate` set for session `d1`, a
-  `Write` whose `file_path` is inside the repository and whose
-  `transcript_path` is `<x>/d1.jsonl` prints the deny JSON (valid JSON,
-  `permissionDecision` `deny`, reason contains `omega:delegate`) and exits
-  0; the same call with `transcript_path` `<x>/d1/subagents/agent-a1.jsonl`
-  prints nothing; a `file_path` under a temporary directory outside the
-  repository prints nothing; a relative `file_path` that resolves inside
-  the repository is denied; `NotebookEdit` with `notebook_path` inside the
-  repository is denied; with the mode cleared the first call prints
-  nothing; with `parallel` set but not `delegate` it prints nothing; a
-  `Read` with the same fields prints nothing; empty stdin and `{garbage`
-  print nothing and exit 0; a `cwd` that is not a git repository prints
-  nothing.
+  temporary `CLAUDE_CONFIG_DIR`: with `delegate` set for session `d1`,
+  (a) a `Write` whose `file_path` is inside the repository, whose
+  `transcript_path` is `<x>/d1.jsonl` and which carries no `agent_id`
+  prints the deny JSON (valid JSON, `permissionDecision` `deny`, reason
+  contains `omega:delegate`) and exits 0; (b) the same record but with
+  `agent_id` `a1` and the same main `transcript_path` prints nothing — a
+  subagent's `Write` is allowed by its `agent_id`; (c) no `agent_id` but
+  `transcript_path` `<x>/d1/subagents/agent-a1.jsonl` also prints nothing —
+  a subagent's transcript path alone still allows; (d) a record with
+  `agent_id` set to the empty string and the main `transcript_path` is
+  still denied — an empty `agent_id` is not a subagent. Also: a
+  `file_path` under a temporary directory outside the repository prints
+  nothing; a relative `file_path` that resolves inside the repository is
+  denied; `NotebookEdit` with `notebook_path` inside the repository is
+  denied; with the mode cleared the first call prints nothing; with
+  `parallel` set but not `delegate` it prints nothing; a `Read` with the
+  same fields prints nothing; empty stdin and `{garbage` print nothing and
+  exit 0; a `cwd` that is not a git repository prints nothing.
 - `test_prompt_submit` gains: the envelope for `/omega:delegate` writes
   `delegate`; `/omega:delegate off` clears it; `/omega:delegate 3` changes
   nothing.

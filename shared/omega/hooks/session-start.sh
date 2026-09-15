@@ -1,6 +1,6 @@
 #!/bin/sh
 # SessionStart hook for the omega global plugin (startup, resume, clear,
-# compact). Prints one line naming the five skills and the absolute paths
+# compact). Prints one line naming the six skills and the absolute paths
 # of omega-mode and omega-caffeine — plain claude has no PATH entry for
 # them — and, when the session has modes set, the "Omega modes:" block from
 # omega-mode brief. Also prunes mode files older than seven days, never the

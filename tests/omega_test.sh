@@ -244,6 +244,9 @@ test_hooks_json() {
   assert_contains "$h" 'CLAUDE_PLUGIN_ROOT}/hooks/prompt-submit.sh' "UserPromptSubmit runs prompt-submit.sh from the plugin root"
   assert_contains "$h" '"SessionEnd"' "hooks.json registers SessionEnd"
   assert_contains "$h" 'CLAUDE_PLUGIN_ROOT}/hooks/session-end.sh' "SessionEnd runs session-end.sh from the plugin root"
+  assert_contains "$h" '"PreToolUse"' "hooks.json registers PreToolUse"
+  assert_contains "$h" '"matcher": "Edit|Write|NotebookEdit"' "PreToolUse matches Edit, Write and NotebookEdit"
+  assert_contains "$h" 'CLAUDE_PLUGIN_ROOT}/hooks/pre-tool-use.sh' "PreToolUse runs pre-tool-use.sh from the plugin root"
 }
 
 test_session_start() {
@@ -445,6 +448,81 @@ test_session_end() {
   assert_eq "" "$(cat "$TMP/hook.out")" "session-end prints nothing after killing the process"
 }
 
+# ptu TOOL KEY PATH TRANSCRIPT CWD SESSION [AGENT_ID] — one PreToolUse record
+# as Claude Code sends it, single-line, for the guard hook. When AGENT_ID is
+# given and non-empty, the record also carries "agent_id" and "agent_type"
+# (before "tool_input") — a subagent's call.
+ptu() {
+  agent=""
+  if [ -n "${7:-}" ]; then
+    agent="\"agent_id\":\"$7\",\"agent_type\":\"general-purpose\","
+  fi
+  printf '{"session_id":"%s","transcript_path":"%s","cwd":"%s","hook_event_name":"PreToolUse",%s"tool_name":"%s","tool_input":{"%s":"%s","content":"x"}}' \
+    "$6" "$4" "$5" "$agent" "$1" "$2" "$3"
+}
+
+test_pre_tool_use() {
+  rm -rf "$CFG"
+  repo="$TMP/ptu-repo"; rm -rf "$repo"; mkdir -p "$repo/src"
+  git -C "$repo" init -q
+  outside="$TMP/ptu-outside"; rm -rf "$outside"; mkdir -p "$outside"
+  main_t="$TMP/x/d1.jsonl"
+  sub_t="$TMP/x/d1/subagents/agent-a1.jsonl"
+  mode --session d1 set delegate
+
+  hook pre-tool-use.sh "$(ptu Write file_path "$repo/src/a.gd" "$main_t" "$repo" d1)"
+  assert_status 0 "a main-session Write under the repository exits 0" -- \
+    hook_status pre-tool-use.sh "$(ptu Write file_path "$repo/src/a.gd" "$main_t" "$repo" d1)"
+  assert_status 0 "the deny output is valid JSON" -- valid_json "$TMP/hook.out"
+  assert_contains "$TMP/hook.out" '"permissionDecision":"deny"' "a main-session Write under the repository is denied"
+  assert_contains "$TMP/hook.out" 'omega:delegate' "the reason names the mode"
+  assert_contains "$TMP/hook.out" '"hookEventName":"PreToolUse"' "the output names the PreToolUse event"
+  assert_eq "1" "$(wc -l < "$TMP/hook.out" | tr -d ' ')" "the deny output is a single line"
+  assert_eq "" "$(cat "$TMP/hook.err")" "the deny path leaves stderr empty"
+
+  hook pre-tool-use.sh "$(ptu Write file_path "$repo/src/a.gd" "$main_t" "$repo" d1 a1)"
+  assert_eq "" "$(cat "$TMP/hook.out")" "a subagent's Write is allowed by its agent_id"
+
+  hook pre-tool-use.sh "$(ptu Write file_path "$repo/src/a.gd" "$sub_t" "$repo" d1)"
+  assert_eq "" "$(cat "$TMP/hook.out")" "a subagents transcript path alone still allows"
+
+  hook pre-tool-use.sh '{"session_id":"d1","transcript_path":"'"$main_t"'","cwd":"'"$repo"'","hook_event_name":"PreToolUse","agent_id":"","tool_name":"Write","tool_input":{"file_path":"'"$repo"'/src/a.gd","content":"x"}}'
+  assert_contains "$TMP/hook.out" '"permissionDecision":"deny"' "an empty agent_id is not a subagent"
+
+  hook pre-tool-use.sh "$(ptu Write file_path "$outside/a.gd" "$main_t" "$repo" d1)"
+  assert_eq "" "$(cat "$TMP/hook.out")" "a Write outside the repository is allowed"
+  hook pre-tool-use.sh "$(ptu Edit file_path "src/a.gd" "$main_t" "$repo" d1)"
+  assert_contains "$TMP/hook.out" '"permissionDecision":"deny"' "a relative path that resolves inside the repository is denied"
+  hook pre-tool-use.sh "$(ptu Edit file_path "src/new/dir/a.gd" "$main_t" "$repo" d1)"
+  assert_contains "$TMP/hook.out" '"permissionDecision":"deny"' "a path in a directory that does not exist yet is still under the repository"
+  hook pre-tool-use.sh "$(ptu NotebookEdit notebook_path "$repo/n.ipynb" "$main_t" "$repo" d1)"
+  assert_contains "$TMP/hook.out" '"permissionDecision":"deny"' "NotebookEdit inside the repository is denied"
+  hook pre-tool-use.sh "$(ptu Read file_path "$repo/src/a.gd" "$main_t" "$repo" d1)"
+  assert_eq "" "$(cat "$TMP/hook.out")" "a Read is never denied"
+  hook pre-tool-use.sh "$(ptu Write file_path "$repo/src/a.gd" "$main_t" "$outside" d1)"
+  assert_eq "" "$(cat "$TMP/hook.out")" "a cwd outside any git repository allows"
+  hook pre-tool-use.sh "$(ptu Write file_path "$repo/src/a.gd" "$main_t" "$repo" d2)"
+  assert_eq "" "$(cat "$TMP/hook.out")" "a session with no mode file allows"
+  hook pre-tool-use.sh '{"session_id":"d1","transcript_path":"'"$main_t"'","cwd":"'"$repo"'","hook_event_name":"PreToolUse","tool_name":"Write","tool_input":{"content":"x"}}'
+  assert_eq "" "$(cat "$TMP/hook.out")" "a Write with no file_path allows"
+
+  mode --session d1 clear delegate
+  mode --session d1 set parallel max=2
+  hook pre-tool-use.sh "$(ptu Write file_path "$repo/src/a.gd" "$main_t" "$repo" d1)"
+  assert_eq "" "$(cat "$TMP/hook.out")" "parallel without delegate allows"
+  mode --session d1 clear --all
+  hook pre-tool-use.sh "$(ptu Write file_path "$repo/src/a.gd" "$main_t" "$repo" d1)"
+  assert_eq "" "$(cat "$TMP/hook.out")" "with the mode cleared the same Write allows"
+
+  assert_status 0 "empty stdin exits 0" -- hook_status pre-tool-use.sh ''
+  hook pre-tool-use.sh ''
+  assert_eq "" "$(cat "$TMP/hook.out")" "empty stdin prints nothing"
+  assert_status 0 "garbage stdin exits 0" -- hook_status pre-tool-use.sh '{garbage'
+  hook pre-tool-use.sh '{garbage'
+  assert_eq "" "$(cat "$TMP/hook.out")" "garbage stdin prints nothing"
+  assert_eq "" "$(cat "$TMP/hook.err")" "garbage stdin leaves stderr empty"
+}
+
 test_caffeine() {
   rm -rf "$CFG"
   assert_file "$CAF" "omega ships bin/omega-caffeine"
@@ -606,4 +684,4 @@ test_skill_contracts() {
 run_tests test_plugin_files test_skill_stubs test_marketplace \
   test_mode_round_trip test_mode_validation test_mode_brief \
   test_hooks_json test_session_start test_session_start_prunes_old_files \
-  test_prompt_submit test_session_end test_caffeine test_skill_contracts
+  test_prompt_submit test_session_end test_pre_tool_use test_caffeine test_skill_contracts
