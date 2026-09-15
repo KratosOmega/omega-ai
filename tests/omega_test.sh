@@ -678,7 +678,7 @@ test_skill_contracts() {
     ran=$((ran + 1))
   done
   # Bump when a skill is added.
-  assert_eq 5 "$ran" "five skill contracts ran"
+  assert_eq 6 "$ran" "six skill contracts ran"
 }
 
 run_tests test_plugin_files test_skill_stubs test_marketplace \
