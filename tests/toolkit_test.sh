@@ -282,6 +282,61 @@ test_run_imports_when_dot_godot_is_absent() {
   assert_not_contains "$log" "\-\-import" "a project with .godot/ is not imported again"
 }
 
+# lint_stubs DIR — put recording stubs for gdlint and gdformat in DIR. Each
+# appends its arguments to DIR/calls and exits with $STUB_LINT_STATUS.
+lint_stubs() {
+  mkdir -p "$1"
+  for tool in gdlint gdformat; do
+    cat > "$1/$tool" <<STUB
+#!/bin/sh
+printf '$tool %s\n' "\$*" >> "$1/calls"
+exit "\${STUB_LINT_STATUS:-0}"
+STUB
+    chmod +x "$1/$tool"
+  done
+}
+
+test_lint_exits_3_without_gdtoolkit() {
+  P="$(fresh_project lint-none)"
+  status=0
+  ( cd "$P" && OMEGA_STUDIO_ROOT="$STUDIO" PATH="/usr/bin:/bin" sh "$BIN/studio-lint" ) > "$TMP/out" 2>&1 || status=$?
+  assert_eq "3" "$status" "no gdlint or gdformat exits 3"
+  assert_contains "$TMP/out" 'pip install "gdtoolkit==4.\*"' "the hint prints the pip install command"
+}
+
+test_lint_runs_both_tools_over_gd_files() {
+  P="$(fresh_project lint-run)"
+  mkdir -p "$P/src/player" "$P/addons/gut"
+  : > "$P/src/player/dash.gd"
+  : > "$P/addons/gut/gut.gd"
+  lint_stubs "$TMP/lintstubs"
+  status=0
+  ( cd "$P" && OMEGA_STUDIO_ROOT="$STUDIO" PATH="$TMP/lintstubs:/usr/bin:/bin" sh "$BIN/studio-lint" ) > "$TMP/out" 2>&1 || status=$?
+  assert_eq "0" "$status" "clean stubs exit 0"
+  assert_contains "$TMP/lintstubs/calls" "^gdlint .*src/player/dash.gd" "gdlint sees project scripts"
+  assert_contains "$TMP/lintstubs/calls" "^gdformat --check .*src/player/dash.gd" "gdformat runs in check mode"
+  assert_not_contains "$TMP/lintstubs/calls" "addons/gut" "addons are not linted"
+}
+
+test_lint_reports_findings() {
+  P="$(fresh_project lint-fail)"
+  mkdir -p "$P/src"
+  : > "$P/src/a.gd"
+  lint_stubs "$TMP/lintstubs2"
+  status=0
+  ( cd "$P" && OMEGA_STUDIO_ROOT="$STUDIO" PATH="$TMP/lintstubs2:/usr/bin:/bin" STUB_LINT_STATUS=1 sh "$BIN/studio-lint" ) > "$TMP/out" 2>&1 || status=$?
+  assert_eq "1" "$status" "findings exit 1"
+}
+
+test_lint_with_no_scripts_is_clean() {
+  P="$(fresh_project lint-empty)"
+  lint_stubs "$TMP/lintstubs3"
+  status=0
+  ( cd "$P" && OMEGA_STUDIO_ROOT="$STUDIO" PATH="$TMP/lintstubs3:/usr/bin:/bin" sh "$BIN/studio-lint" ) > "$TMP/out" 2>&1 || status=$?
+  assert_eq "0" "$status" "a project with no .gd files is clean"
+  assert_contains "$TMP/out" "no .gd files" "and says so"
+}
+
 run_tests test_dispatch_rejects_unknown_engine test_dispatch_needs_a_studio_root \
   test_resolve_honours_godot_path test_resolve_ignores_a_non_executable_godot_path \
   test_resolve_finds_an_app_bundle test_resolve_finds_godot_on_path test_guide_has_an_install_line \
@@ -289,4 +344,6 @@ run_tests test_dispatch_rejects_unknown_engine test_dispatch_needs_a_studio_root
   test_test_exits_2_without_engine test_test_passes_and_reports test_test_reports_failures \
   test_test_targets_a_file test_test_targets_a_directory test_test_imports_when_dot_godot_is_absent \
   test_run_clean test_run_detects_script_errors test_run_passes_scene_and_windowed \
-  test_run_terminates_a_long_process test_run_rejects_bad_options test_run_imports_when_dot_godot_is_absent
+  test_run_terminates_a_long_process test_run_rejects_bad_options test_run_imports_when_dot_godot_is_absent \
+  test_lint_exits_3_without_gdtoolkit test_lint_runs_both_tools_over_gd_files \
+  test_lint_reports_findings test_lint_with_no_scripts_is_clean
