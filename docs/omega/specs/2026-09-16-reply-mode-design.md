@@ -219,6 +219,12 @@ tested against, in the format the other six use:
    mode is set keeps its normal register.
 6. **A status line** — "done, 12 tests pass" is not padded with a scenario.
 
+The 2026-09-16 runs failed scenarios 3 and 6 on the first pass and the skill
+text was amended in response: the status rule and the pasted-result rule were
+sharpened and hoisted above the scenario rules, and two red-flag rows were
+added. The result-echo rule remains the weakest of the set; `docs/omega/
+pressure/reply.md` records it as a known limit with the evidence.
+
 ## Docs
 
 `README.md` gains the row:
@@ -269,12 +275,21 @@ the user to make. The option text of a question put to the user counts.
 
 It does **not** fire on:
 
-- A status line — "done, 12 tests pass", "pushed", "branch created".
+- A status line — "done, 12 tests pass", "pushed", "branch created". Say the
+  state and stop; a status never gets a scenario, not even a short one, and
+  "there is nothing here yet" is a status.
 - A direct lookup the user asked for by name — "which file holds the hook?"
   is answered with the path.
 - Anything that persists outside the conversation: code, commands, plans,
   specs, commit messages, PR bodies, documents, subagent briefs. Those are
   written for other readers and keep their normal register.
+
+When the answer is a status, a result, or a count — including a result the
+user pasted — that answer is the status and nothing else. Give the state, or
+give the numbers and the failing line back as they were written, and stop.
+The rules below shape explanations; they never apply to a result. An
+explanation of what the result means is a separate answer, offered after it
+and only if the user wants it.
 
 ## 2. The scenario
 
@@ -323,7 +338,11 @@ Never restyled, never shortened, never softened, and the cap does not apply:
 - Exact error text — the shortest decisive line, verbatim.
 - Test results, counts and every verification claim. A failure is reported
   as a failure with its output. A scenario may say what that failure means
-  for the player; it never stands in place of the result.
+  for the player; it never stands in place of the result. When the user
+  pastes or reports a result, give it back in its own terms first — the
+  counts and the failing line as they were written — and only then say what
+  it means. "Three of fourteen failed" is the result; "the hero stands
+  still" is the meaning, and the meaning never replaces the numbers.
 - Security warnings and confirmations for destructive or irreversible
   actions.
 - A path, symbol or value the user asked for by name.
@@ -360,6 +379,8 @@ skill does next.
 | "The test failed, I'll soften it into a story" | The result is reported exactly. The story goes after it, not instead. |
 | "They asked a technical question, so the mode is off" | One answer is technical. The mode stays set. |
 | "The commit message should match my replies" | Persisted text keeps its normal register. |
+| "A status is dull — one line of colour helps" | A status gets the state and stops. Colour on a status is padding. |
+| "They already pasted the test output, repeating it is noise" | They pasted it to be read back. Counts and the failing line first, meaning second. |
 ```
 
 ## Out of scope

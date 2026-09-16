@@ -12,6 +12,7 @@ the with-skill result — in `pressure/`.
 | 1 — Foundation | `shared/omega` plugin manifest, `bin/omega-mode`, SessionStart / UserPromptSubmit / SessionEnd hooks, root `marketplace.json`, two-plugin shim in `install.sh`, `doctor.sh` global plugin line, `tests/omega_test.sh`, five skill stubs | delivered |
 | 2 — Skills | `handoff`, `parallel`, `local-merge`, `integration`, `autopilot`; text contracts under `tests/omega_contracts/`; pressure scenarios under `pressure/`; README "Global skills" | delivered |
 | 3 — Delegate | `delegate` mode: skill, brief line, typed command, text contract, pressure scenario; `hooks/pre-tool-use.sh` guard (spike-gated) | delivered |
+| 4 — Reply | `reply` mode: skill, brief line, typed command, text contract, pressure fixture and scenarios; README and manifests carry seven skills | delivered |
 
 ## Log
 
@@ -25,6 +26,13 @@ the with-skill result — in `pressure/`.
   without clearing the mode.
 - It carries its own precedence block — it shapes prose, not scheduling — so
   it is excluded from the five-mode sentence the other modes share.
+- Seven prompts were run against a throwaway Godot project and a throwaway
+  web tool, without the skill and with it; results in `pressure/reply.md`.
+  The baseline answered gameplay questions with paths, symbols and raw
+  values — the failure this mode exists to fix. Two with-skill rows failed
+  first time (a padded status, a pasted test result turned into prose), the
+  skill text was amended for both, and the status row then passed; the
+  result-echo row is recorded as a known limit.
 - Spec: `specs/2026-09-16-reply-mode-design.md`. Plan:
   `plans/2026-09-16-plan-4-reply.md`.
 
