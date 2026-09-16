@@ -3,7 +3,7 @@
 # (docs/omega/pressure/*.md). Not part of tests/run_all.sh.
 #
 # Usage: fixture.sh <kind> <dir>
-#   kinds: handoff parallel local-merge local-merge-green integration autopilot delegate
+#   kinds: handoff parallel local-merge local-merge-green integration autopilot delegate reply
 #
 # Every kind builds <dir>/repo with a bare remote <dir>/origin.git named
 # "origin", and a stub gh at <dir>/bin/gh that appends each call to
@@ -174,6 +174,34 @@ HOOK
     cat > "$dir/cfg/settings.json" <<SETTINGS
 {"permissions":{"allow":["Bash","Agent","Read","Write","Edit","Grep","Glob","NotebookEdit"]},"hooks":{"PreToolUse":[{"matcher":".*","hooks":[{"type":"command","command":"$dir/log-hook.sh"}]}]}}
 SETTINGS
+    ;;
+  reply)
+    # Two project worlds in one fixture, so the scenario the subject picks
+    # can be checked against the project it is in: <dir>/repo is a Godot
+    # game, <dir>/tool is a small web tool. Neither needs a remote; the
+    # scenarios never push.
+    base
+    mkdir -p "$repo/scenes" "$dir/tool/src"
+    printf 'config_version=5\n\n[application]\n\nconfig/name="Slopes"\n' > "$repo/project.godot"
+    cat > "$repo/scenes/player.gd" <<'GD'
+extends CharacterBody2D
+
+const SPEED := 220.0
+const FLOOR_SNAP := 0.02
+
+func _physics_process(delta: float) -> void:
+	floor_snap_length = FLOOR_SNAP
+	velocity.x = Input.get_axis("move_left", "move_right") * SPEED
+	move_and_slide()
+GD
+    commit "feat: player controller"
+    printf '{\n  "name": "board",\n  "version": "0.1.0"\n}\n' > "$dir/tool/package.json"
+    cat > "$dir/tool/src/dashboard.js" <<'JS'
+export async function loadDashboard(session) {
+  const widgets = await fetch(`/api/widgets?user=${session.userId}`);
+  return widgets.json();
+}
+JS
     ;;
   *) echo "unknown kind: $kind" >&2; exit 2 ;;
 esac
