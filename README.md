@@ -68,15 +68,50 @@ Inside `claude-gd`, in a Godot project:
 | `/game-dev:studio` | Reads `.studio/STATE.md`, reports the stage and milestone, names the next step, routes freeform text |
 | `/game-dev:brainstorm` | Batched questions → spec with GDD-lite sections → artifact page → **your approval** |
 | `/game-dev:plan` | Tasks tagged `Role:` and `Verify: unit \| playtest \| visual`, producer scope cut → **your approval** |
-| `/game-dev:execute` | Fresh subagent per task, reviewer after each; `--inline` for checkpointed execution |
+| `/game-dev:execute` | Fresh role agent per task, reviewer after each; `--inline` for checkpointed execution |
+| `/game-dev:review` | Whole-branch review by the reviewer agent against the spec; fix loop until clean |
+| `/game-dev:playtest` | `studio-test`, `studio-run`, then a numbered playtest script you answer item by item; bugs get repro steps and regression tests → **your sign-off** |
+| `/game-dev:ship` | Verification with evidence, finish the branch (merge or PR), `PROGRESS.md` and the milestone gate |
+| `/game-dev:retro` | Durable decisions into the studio's isolated memory |
 
-`review`, `playtest`, `ship`, `retro` and `scaffold` arrive in later releases;
-the session bootstrap says so when one is missing. State lives in the
-project's `.studio/`: `STATE.md` is the stage/task pointer — local, gitignored,
-resolved to the project's main checkout from any worktree — and
-`ledger/<feature>.md` is the feature's decision log, committed with the
-feature. Both are written only through `studio-state`; a hook blocks direct
-edits.
+`scaffold` arrives in the next release; the session bootstrap says so when
+it is missing. State lives in the project's `.studio/STATE.md`, written only
+through `studio-state`.
+
+### Roles
+
+Ten agents do the long-session work, each dispatched by a stage with a fresh
+context: `game-dev:game-designer`, `level-designer`, `architect`,
+`gameplay-programmer`, `tech-artist`, `feel-tuner`, `ui-designer`,
+`producer`, `playtester`, `reviewer`. Their personas and output contracts
+are in `studios/game-dev/agents/`; the role → godot-prompter skill map is
+in `studios/game-dev/engines/godot/GUIDE.md`.
+
+### Toolkit
+
+The shim puts `studios/game-dev/bin/` on `PATH`. From a Godot project root:
+
+| Verb | Does | Exit codes |
+|---|---|---|
+| `studio-test [PATH]` | GUT headless; JUnit XML and log in `.studio/reports/` | 0 pass · 1 failures · 2 no Godot · 3 GUT missing |
+| `studio-run [--scene S] [--seconds N] [--windowed]` | Boots the project for N seconds and scans the log for script errors | 0 clean · 1 errors · 2 no Godot |
+| `studio-lint [PATH]` | `gdlint` and `gdformat --check` when gdtoolkit is installed | 0 clean · 1 findings · 3 not installed |
+| `studio-state …` | Reads and writes `.studio/STATE.md` | 0 · 1 |
+
+The verbs never name Godot; `studios/game-dev/engines/godot/` does. Godot is
+found through `GODOT_PATH`, then `/Applications/Godot*.app`, then `godot` on
+`PATH`. GUT is installed per project with the `Install:` line in
+`engines/godot/GUIDE.md` (`studio-test` prints it when GUT is missing).
+
+### MCP (optional)
+
+When Node 18+ and a Godot binary are present, `./install.sh game-dev`
+registers [`godot-mcp`](https://github.com/Coding-Solo/godot-mcp) at user
+scope *inside* `~/.claude-gamedev` (never in `~/.claude.json`), so a
+`claude-gd` session can launch the editor, run the project with output
+capture, and create scenes. `--no-mcp` skips it; uninstall removes it;
+`./doctor.sh game-dev` reports it. The studio works without it —
+`studio-run` is the required path.
 
 ## Global skills
 
@@ -127,16 +162,18 @@ alias claude-omega='claude --plugin-dir /path/to/omega-ai/shared/omega'
 ```
 
 Reports the config root, the plugin directory the shim loads and its skill /
-agent counts, the global plugin (`global plugin: omega 0.1.0   skills 5  hooks
+agent counts, the global plugin (`global plugin: omega 0.1.0   skills 6  hooks
 present`), every plugin `requires.txt` declares (enabled? fetched? which
-version?), the shim the install recorded (present? launches this root?
-loads both plugins?), whether that shim's directory is on `PATH`, any stale
-layout from the earlier installer, and whether anything leaks back into
-`~/.claude`. Exits non-zero on a missing `CLAUDE.md` or `settings.json`, a
-name mismatch, a missing plugin, a missing or misnamed global plugin, a stale
-or foreign shim (including one written before the global plugin existed —
-reinstall to fix it), a stale layout, or a leak. `--target DIR` checks a root
-installed elsewhere.
+version?), whether every delegated skill and agent resolves in the fetched
+plugins, the engine binary, the MCP server, the shim the install recorded
+(present? launches this root? loads both plugins?), whether that shim's
+directory is on `PATH`, any stale layout from the earlier installer, and
+whether anything leaks back into `~/.claude`. Exits non-zero on a missing
+`CLAUDE.md` or `settings.json`, a name mismatch, a missing plugin, a missing
+or misnamed global plugin, an unresolvable delegation, a stale or foreign
+shim (including one written before the global plugin existed — reinstall to
+fix it), a stale layout, or a leak; a missing engine binary or MCP server is
+a warning. `--target DIR` checks a root installed elsewhere.
 
 ## Uninstall
 

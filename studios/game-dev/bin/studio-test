@@ -1,0 +1,3 @@
+#!/bin/sh
+# studio-test [PATH] — run the project's test suite through the engine adapter.
+exec sh "$(dirname "$0")/studio-dispatch" test "$@"

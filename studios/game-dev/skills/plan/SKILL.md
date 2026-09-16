@@ -13,13 +13,22 @@ description: Use when an approved spec exists and needs an implementation plan �
   `spec approved` line for it. If not, stop and say the spec must be approved
   first (`/game-dev:brainstorm`). The user may approve it now in one word;
   then change the spec's `Status:` line to `Approved`, record
-  `studio-state ledger "spec approved <path>"` and continue (the gate in §5
+  `studio-state ledger "spec approved <path>"` and continue (the gate in §6
   commits the spec alongside the plan).
 - Read the spec in full and the project `CLAUDE.md`. The milestone gate and
   its exit criteria come from `docs/game-dev/PROGRESS.md` when the project has
   one, otherwise from the spec's **Milestone gate** section.
 
-## 1. Format
+## 1. Architect proposal
+
+Dispatch `game-dev:architect` (`subagent_type: "game-dev:architect"`) with
+the spec path, briefed: "Propose a task decomposition: one line per task,
+the files it touches, and whether its deliverable is a decision or code."
+Its proposal is a starting point, not the final plan — the task list below
+is what turns it into tasks, adding, cutting or reshaping as the spec and
+milestone gate require.
+
+## 2. Format
 
 Invoke `superpowers:writing-plans` and follow it for the header, file
 structure, task structure, bite-sized steps, the no-placeholder rules, and
@@ -41,7 +50,7 @@ The plan header's **Spec:** line points at the approved spec, and its
 verbatim, plus the project's architecture rules from `CLAUDE.md`. The header
 also carries a `Status:` line, `Draft (awaiting approval)` until the gate.
 
-## 2. Roles
+## 3. Roles
 
 `Role:` names who implements the task. Use exactly one of:
 
@@ -57,7 +66,7 @@ also carries a `Status:` line, `Draft (awaiting approval)` until the gate.
 `game-dev:game-designer`, `game-dev:producer`, `game-dev:playtester` and
 `game-dev:reviewer` do not implement tasks and never appear in `Role:`.
 
-## 3. Verify
+## 4. Verify
 
 `Verify:` names how the task's deliverable is checked, and binds the
 implementer. It is one kind or several joined with `+` (`unit+playtest`):
@@ -80,21 +89,25 @@ speed, a curve) always includes `unit`: the number is tested, the feel is
 played. A task that mixes deliverables of different kinds is two tasks; a
 task with one deliverable checked two ways is one task with two kinds.
 
-## 4. Producer scope pass
+## 5. Producer scope pass
 
-Before saving, run the scope pass. (The `game-dev:producer` agent takes this
-over in Plan 2 of the studio; until then, do it here.) For every task ask:
+Before saving, dispatch `game-dev:producer` (`subagent_type:
+"game-dev:producer"`) with the draft plan path, the spec path, and the
+milestone gate from `docs/game-dev/PROGRESS.md`. It applies this test to
+every task:
 
 1. Does the current milestone gate's exit criteria (from `PROGRESS.md`, or
    the spec's **Milestone gate** section) need this task?
 2. Would the feature be playable end to end without it?
 
-A task that fails 1 and passes 2 moves to a `## Backlog` section at the end
-of the plan with a one-line reason. Say what was cut in the plan's header
-under **Cut in the scope pass:**. Vertical slice first; polish, variants and
-content wait.
+It moves every task that fails 1 and passes 2 to a `## Backlog` section at
+the end of the plan with a one-line reason, and fills the header line
+**Cut in the scope pass:** (or `none`). Read its report; if you disagree
+with a cut, restore the task and record why with
+`studio-state ledger "Ruling: kept T<n> against producer cut — <why>"`.
+Vertical slice first; polish, variants and content wait.
 
-## 5. Self-review, then gate
+## 6. Self-review, then gate
 
 Run the writing-plans self-review (spec coverage, placeholder scan, name
 consistency). Additionally check: every acceptance criterion in the spec maps

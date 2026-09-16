@@ -9,10 +9,24 @@ approval page in `artifacts/`.
 | Plan | Scope | Status |
 |------|-------|--------|
 | 1 — Foundation | `profiles/` → `studios/`, plugin packaging, shim with `--plugin-dir`, installer/doctor/tests, session hook, `docs/game-dev/`, `.studio/STATE.md`, skills `studio` `brainstorm` `plan` `execute` | delivered — exit criterion (Task 12 manual run) pending |
-| 2 — Quality loop | Ten role agents, skills `review` `playtest` `ship` `retro`, `bin/` verbs with the Godot adapter, optional `godot-mcp`, doctor delegation check | planned |
+| 2 — Quality loop | Ten role agents, skills `review` `playtest` `ship` `retro`, `bin/` verbs with the Godot adapter, optional `godot-mcp`, doctor delegation check | delivered — exit criterion (Task 16 manual run) pending |
 | 3 — Content | `scaffold` and template project, domain skills (migrate four, add `vertical-slice` `tuning-data` `milestone-gates`), `PROGRESS.md` conventions, `general` studio parity, skill pressure tests | planned |
 
 ## Log
+
+### 2026-09-15 — Plan 2 (Quality loop) delivered
+
+- Ten role agents under `studios/game-dev/agents/`; `2d-art-pipeline` and
+  `game-feel-tuner` migrated to `tech-artist` and `feel-tuner`.
+- Stage skills `review`, `playtest`, `ship`, `retro`; `execute`,
+  `brainstorm` and `plan` now dispatch the studio's own agents.
+- `studio-test`, `studio-run`, `studio-lint` through `studio-dispatch` and
+  the Godot adapter in `engines/godot/`.
+- Optional `godot-mcp` registration inside the config root; doctor reports
+  the engine, the MCP server, and resolves every delegated skill and agent.
+- Plan: `plans/2026-09-13-plan-2-quality-loop.md`. The Plan 2 exit
+  criterion (Task 16 manual run) is a manual verification pass; it has not
+  been run yet.
 
 ### 2026-09-13 — Plan 1 review fixes
 

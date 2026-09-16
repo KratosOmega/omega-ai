@@ -1,0 +1,3 @@
+#!/bin/sh
+# studio-lint [PATH] — lint the project's scripts through the engine adapter.
+exec sh "$(dirname "$0")/studio-dispatch" lint "$@"

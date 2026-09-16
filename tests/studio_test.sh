@@ -118,14 +118,12 @@ test_bin_syntax() {
 }
 
 # Every Role the plan and execute tables offer must be dispatchable: a
-# shipped agent file, or one of the roles execute maps to a godot-prompter
-# agent or general-purpose until Plan 2 ships the studio's own.
+# shipped agent file. Plan 2 ships all ten of the studio's own role agents,
+# so every role the tables name is checked.
 test_role_agents_exist() {
-  interim=" gameplay-programmer architect ui-designer level-designer "
   for f in "$REPO_ROOT/studios/game-dev/skills/plan/SKILL.md" "$REPO_ROOT/studios/game-dev/skills/execute/SKILL.md"; do
     skill="$(basename "$(dirname "$f")")"
     for role in $(sed -n 's/^| `game-dev:\([a-z0-9-]*\)`.*/\1/p' "$f" | sort -u); do
-      case "$interim" in *" $role "*) continue ;; esac
       assert_file "$REPO_ROOT/studios/game-dev/agents/$role.md" "$skill Role game-dev:$role is a shipped agent"
     done
   done
@@ -140,17 +138,19 @@ test_role_agents_exist() {
 test_stage_skill_contracts() {
   S="$REPO_ROOT/studios/game-dev/skills"
   assert_not_contains "$S/execute/SKILL.md" "finishing-a-development-branch" "execute never offers a merge path"
-  assert_contains "$S/execute/SKILL.md" "quit-after" "execute smoke-boots the project"
+  assert_contains "$S/execute/SKILL.md" "studio-run [-][-]seconds" "execute smoke-boots the project through the studio-run verb"
   assert_contains "$S/execute/SKILL.md" "git log -1" "execute requires a committed spec and plan"
-  assert_contains "$S/execute/SKILL.md" "godot-prompter:godot-game-dev" "execute dispatches godot-prompter's game dev for gameplay tasks"
+  assert_not_contains "$S/execute/SKILL.md" "godot-prompter:godot-game-dev" "execute no longer dispatches godot-prompter's game dev"
   assert_contains "$S/execute/SKILL.md" "game-dev:feel-tuner" "execute dispatches the studio's feel tuner"
   assert_contains "$S/execute/SKILL.md" "unverified" "execute lists unverified items"
   assert_not_contains "$S/execute/SKILL.md" "bypass the event bus" "execute's reviewer no longer mandates bus-for-everything"
-  assert_contains "$S/execute/SKILL.md" "[-][-]headless" "execute's smoke boot runs headless"
+  assert_not_contains "$S/execute/SKILL.md" "[-][-]quit-after" "execute no longer re-implements the engine's own headless flags"
   assert_contains "$S/execute/SKILL.md" "SCRIPT ERROR" "execute's smoke boot checks for SCRIPT ERROR"
-  assert_contains "$S/execute/SKILL.md" "godot-prompter:godot-code-reviewer" "execute dispatches godot-prompter's code reviewer"
-  assert_contains "$S/execute/SKILL.md" "godot-prompter:godot-ui-designer" "execute dispatches godot-prompter's UI designer"
-  assert_contains "$S/execute/SKILL.md" "GODOT_PATH" "execute's smoke boot resolves the binary via GODOT_PATH"
+  assert_not_contains "$S/execute/SKILL.md" "godot-prompter:godot-code-reviewer" "execute no longer dispatches godot-prompter's code reviewer"
+  assert_not_contains "$S/execute/SKILL.md" "godot-prompter:godot-ui-designer" "execute no longer dispatches godot-prompter's UI designer"
+  assert_contains "$S/execute/SKILL.md" "GODOT_PATH" "execute still names GODOT_PATH for the no-binary case"
+  assert_not_contains "$S/execute/SKILL.md" "Applications/Godot" "execute no longer re-implements resolve.sh's binary search"
+  assert_contains "$S/execute/SKILL.md" "do not set" "execute's smoke boot still stops the finish on failure"
 }
 
 # Behaviour Task 18 pinned as text contracts on the plan skill.
@@ -183,8 +183,69 @@ test_studio_skill_contract() {
   assert_contains "$S/studio/SKILL.md" "failing test" "the bug route starts from a failing test"
 }
 
+# The game-dev studio ships exactly these ten role agents.
+test_game_dev_agent_roster() {
+  for a in game-designer level-designer architect producer \
+           gameplay-programmer tech-artist feel-tuner ui-designer \
+           playtester reviewer; do
+    assert_file "$REPO_ROOT/studios/game-dev/agents/$a.md" "game-dev has the $a agent"
+  done
+}
+
+# Stage skills dispatch the studio's own agents, not stand-ins. These strings
+# are the ones the skills must carry once the role agents exist.
+test_stage_skills_dispatch_agents() {
+  S="$REPO_ROOT/studios/game-dev/skills"
+  assert_contains "$S/execute/SKILL.md" 'subagent_type: "game-dev:<role>"' "execute dispatches game-dev:<role> agents"
+  assert_contains "$S/execute/SKILL.md" 'game-dev:reviewer' "execute reviews with game-dev:reviewer"
+  assert_not_contains "$S/execute/SKILL.md" 'general-purpose' "execute no longer dispatches general-purpose"
+  assert_not_contains "$S/execute/SKILL.md" 'Plan 2 of the studio' "execute carries no Plan 2 note"
+  assert_contains "$S/brainstorm/SKILL.md" 'dispatch `game-dev:architect`' "brainstorm dispatches the architect"
+  assert_contains "$S/brainstorm/SKILL.md" 'dispatch `game-dev:game-designer`' "brainstorm dispatches the game designer"
+  assert_contains "$S/brainstorm/SKILL.md" 'dispatch `game-dev:level-designer`' "brainstorm dispatches the level designer"
+  assert_not_contains "$S/brainstorm/SKILL.md" 'general-purpose' "brainstorm no longer dispatches general-purpose"
+  assert_contains "$S/plan/SKILL.md" 'dispatch `game-dev:producer`' "plan dispatches the producer"
+  assert_contains "$S/plan/SKILL.md" 'Propose a task decomposition' "plan dispatches the architect for a task decomposition proposal"
+  assert_not_contains "$S/plan/SKILL.md" 'Plan 2 of the studio' "plan carries no Plan 2 note"
+  assert_not_contains "$S/studio/SKILL.md" 'until that skill is installed' "router has no playtest fallback note"
+  assert_contains "$S/review/SKILL.md" 'subagent_type: "game-dev:reviewer"' "review dispatches the reviewer"
+  assert_contains "$S/playtest/SKILL.md" 'subagent_type: "game-dev:playtester"' "playtest dispatches the playtester"
+  assert_contains "$S/playtest/SKILL.md" 'playtest signed off' "playtest writes the sign-off ledger phrase the router reads"
+  assert_contains "$S/ship/SKILL.md" 'subagent_type: "game-dev:producer"' "ship dispatches the producer"
+  assert_contains "$S/retro/SKILL.md" 'CLAUDE_CONFIG_DIR' "retro writes memory into the isolated config root"
+  assert_contains "$S/retro/SKILL.md" 'sync-memory.sh game-dev' "retro reminds the user to sync memory"
+}
+
+# Cross-checks the router's stage table (studio/SKILL.md) against what each
+# stage skill actually sets `stage` to when it finishes, so a future edit to
+# either side that breaks the chain fails here instead of misrouting users.
+# For each of execute/review/playtest/ship/retro, find its own *last*
+# `studio-state set stage <X>` line (the value it hands off to the next run)
+# and assert the router names `/game-dev:<X>` for stage `<X>` (idle routes to
+# brainstorm).
+test_stage_chain() {
+  S="$REPO_ROOT/studios/game-dev/skills"
+  router="$S/studio/SKILL.md"
+  for skill in execute review playtest ship retro; do
+    next="$(grep -o 'studio-state set stage [a-z]*' "$S/$skill/SKILL.md" | tail -n 1 | awk '{print $NF}')"
+    if [ -z "$next" ]; then
+      TESTS_RUN=$((TESTS_RUN + 1))
+      _fail "$skill sets a final stage value"
+      continue
+    fi
+    if [ "$next" = "idle" ]; then
+      assert_contains "$router" '| `idle` | `/game-dev:brainstorm` |' \
+        "router routes stage idle (set by $skill) to /game-dev:brainstorm"
+    else
+      assert_contains "$router" "| \`$next\` | \`/game-dev:$next\` |" \
+        "router routes stage $next (set by $skill) to /game-dev:$next"
+    fi
+  done
+}
+
 run_tests test_plugin_manifests test_skill_frontmatter test_agent_frontmatter \
   test_external_references_declared test_required_plugins_enabled test_bin_syntax \
   test_role_agents_exist test_stage_skill_contracts test_plan_skill_contract \
   test_brainstorm_skill_contract \
-  test_studio_skill_contract
+  test_studio_skill_contract test_game_dev_agent_roster test_stage_skills_dispatch_agents \
+  test_stage_chain

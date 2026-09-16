@@ -79,24 +79,26 @@ For bounded and architectural work, propose two or three approaches with
 trade-offs and lead with your recommendation. One `AskUserQuestion`. YAGNI:
 cut anything the milestone gate does not need before you present.
 
-For the architectural path, dispatch two subagents with the draft spec:
+For the architectural path, dispatch `game-dev:game-designer`
+(`subagent_type: "game-dev:game-designer"`) with the draft spec, briefed:
+"Write the **Design** section: core loop, mechanics and what each adds to
+the loop, progression as new decisions, difficulty and how the player
+learns it. Use `game-dev:game-design-doc` and `game-dev:core-loop-design`.
+State your assumptions about the target player; list open questions for me;
+write no engine files."
 
-- `game-dev:game-designer`, briefed: "Write the **Design** section: core
-  loop, mechanics and what each adds to the loop, progression as new
-  decisions, difficulty and how the player learns it. Use
-  `game-dev:game-design-doc` and `game-dev:core-loop-design`. State your
-  assumptions about the target player; list open questions for me; write no
-  engine files."
-- `godot-prompter:godot-game-architect`, opened with the persona line "You
-  are the studio's architect: scene tree, state machines, signal topology,
-  Resource schemas; you leave a decision and its reason, not just code."
-  and briefed: "Write the **Architecture** section: scene tree, state
-  machine changes, signals and event-bus topics, Resource schemas. Read
-  `godot-prompter:scene-organization`, `godot-prompter:state-machine`,
-  `godot-prompter:event-bus`, `godot-prompter:component-system` and
-  `godot-prompter:resource-pattern`. Composition over inheritance; signals
-  up, calls down, the event bus only where no ownership path exists; every
-  tunable number in a Resource. Write the section only; write no plan file."
+Also dispatch `game-dev:architect` (`subagent_type: "game-dev:architect"`)
+with the draft spec and this brief: "Write the **Architecture** section:
+scene tree, state machine changes, signals and event-bus topics, Resource
+schemas. Composition over inheritance; signals up, calls down, the event
+bus only where no ownership path exists; every tunable number in a
+Resource. Write the section only; write no plan file."
+
+When the feature involves a level, room, encounter or tile ruleset, also
+dispatch `game-dev:level-designer` (`subagent_type:
+"game-dev:level-designer"`) with the draft spec, briefed: "Write the
+**Level** section: what the level teaches, the beat sequence as a table,
+metrics in tiles, and the tileset rules."
 
 Fold their sections into the spec; put the designer's open questions to the
 user in the next batch.
@@ -139,6 +141,11 @@ What changes in the ten-second loop. "None" is a valid answer; say it.
 ## Design
 Core loop, mechanics, progression, difficulty — from `game-dev:game-designer`
 (architectural), or `n/a` (bounded).
+
+## Level
+What the level teaches, the beat sequence, metrics in tiles, and the
+tileset rules — from `game-dev:level-designer` when the feature involves a
+level, room, encounter or tile ruleset, or `n/a` otherwise.
 
 ## Failure and recovery
 What failing looks like, what it costs the player, how they get back in.

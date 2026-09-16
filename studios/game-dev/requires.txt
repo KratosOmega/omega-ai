@@ -38,3 +38,8 @@ agent  godot-prompter:godot-game-dev
 agent  godot-prompter:godot-game-architect
 agent  godot-prompter:godot-ui-designer
 agent  godot-prompter:godot-code-reviewer
+skill  godot-prompter:procedural-generation
+skill  godot-prompter:gdscript-advanced
+skill  godot-prompter:particles-vfx
+skill  godot-prompter:localization
+skill  godot-prompter:godot-optimization

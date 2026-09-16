@@ -137,6 +137,76 @@ for p in $others; do
 done
 [ "$listed" = "1" ] || log "  (none)"
 
+# Delegated skills and agents: every skill/agent line in requires.txt must
+# exist in the cached plugin. This is what protects the composition decision
+# — a renamed upstream skill is reported here, not discovered mid-session.
+# Layout: plugins/cache/<marketplace>/<plugin>/<version>/{skills,agents}.
+delegation_state() {
+  _plugin="${2%%:*}"; _name="${2#*:}"; _state="uncached"
+  for _v in "$TARGET"/plugins/cache/*/"$_plugin"/*/; do
+    [ -d "$_v" ] || continue
+    _state="missing"
+    if [ "$1" = "skill" ] && [ -f "$_v/skills/$_name/SKILL.md" ]; then _state="ok"; break; fi
+    if [ "$1" = "agent" ] && [ -f "$_v/agents/$_name.md" ]; then _state="ok"; break; fi
+  done
+  printf '%s\n' "$_state"
+}
+
+checked=0
+missing_lines=""
+tally=""
+for req in $(requires_of "$REQUIRES" plugin); do
+  pname="${req%@*}"
+  total=0; resolved=0
+  for kind in skill agent; do
+    for ref in $(requires_of "$REQUIRES" "$kind"); do
+      [ "${ref%%:*}" = "$pname" ] || continue
+      case "$(delegation_state "$kind" "$ref")" in
+        ok) total=$((total + 1)); resolved=$((resolved + 1)); checked=1 ;;
+        missing) total=$((total + 1)); checked=1
+          missing_lines="$missing_lines
+  $ref MISSING from the cached plugin" ;;
+        uncached) ;;
+      esac
+    done
+  done
+  [ "$total" -gt 0 ] && tally="$tally
+  $pname: $resolved of $total resolved"
+done
+if [ "$checked" = "1" ]; then
+  log "delegations:$tally"
+  if [ -n "$missing_lines" ]; then
+    printf '%s\n' "$missing_lines" | sed '/^$/d'
+    failed=1
+  fi
+else
+  log "delegations:  not checked — plugins not yet fetched; launch $SHIM_NAME once, then re-run doctor"
+fi
+
+# Engine binary, through the studio's own adapter. A missing binary is a
+# warning: the studio installs and plans without it; studio-test and
+# studio-run exit 2 until it is found.
+ENGINE="$(json_field "$STUDIO_DIR/studio.json" engine)"
+if [ -n "$ENGINE" ]; then
+  RESOLVE="$STUDIO_DIR/engines/$(engine_dir "$ENGINE")/resolve.sh"
+  if [ ! -f "$RESOLVE" ]; then
+    log "engine:       $ENGINE — no adapter at engines/$(engine_dir "$ENGINE")/"
+  elif GODOT="$(sh "$RESOLVE" 2>/dev/null)"; then
+    log "engine:       $ENGINE at $GODOT"
+  else
+    log "engine:       $ENGINE — no binary found (set GODOT_PATH); studio-test and studio-run will exit 2"
+  fi
+
+  # MCP registration lands in the config root's .claude.json under
+  # CLAUDE_CONFIG_DIR. Read the file rather than `claude mcp list`, which
+  # starts every server to health-check it.
+  if [ -f "$TARGET/.claude.json" ] && grep -q '"godot"[[:space:]]*:' "$TARGET/.claude.json"; then
+    log "mcp:          godot registered"
+  else
+    log "mcp:          none (optional — reinstall with Node 18+ and a Godot binary to enable godot-mcp)"
+  fi
+fi
+
 log "launch:       $SHIM_NAME"
 # The shim the manifest recorded is the one this install wrote; `command -v`
 # would happily report an older shim of the same name on PATH.
@@ -207,6 +277,12 @@ done)"
 if is_leak "$(canon_path "${TARGET%/}/.")"; then
   leaks="$leaks
 config root is inside ~/.claude: $TARGET"
+fi
+# An MCP server registered outside the config root would be a leak into the
+# user's general setup. The check cannot tell our registration from one the
+# user made on purpose, so it warns and names the file rather than failing.
+if [ -f "$HOME/.claude.json" ] && grep -q 'godot-mcp' "$HOME/.claude.json" 2>/dev/null; then
+  warn "~/.claude.json registers godot-mcp — if this studio's installer did that, it leaked; if it is your own setup, ignore this"
 fi
 if [ -n "$(printf '%s' "$leaks" | tr -d '[:space:]')" ]; then
   log "leakage:"
