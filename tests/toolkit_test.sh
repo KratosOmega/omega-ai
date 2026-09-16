@@ -270,6 +270,12 @@ test_run_rejects_bad_options() {
   assert_eq "1" "$(cat "$TMP/status")" "a missing option value exits 1"
 }
 
+test_run_traps_signals_to_avoid_orphaning_the_child() {
+  assert_contains "$STUDIO/engines/godot/run.sh" "trap 'kill -TERM \"\$pid\"" "run.sh installs a trap that terminates the backgrounded engine on interrupt"
+  assert_contains "$STUDIO/engines/godot/run.sh" "INT TERM HUP" "the trap covers INT, TERM, and HUP"
+  assert_contains "$STUDIO/engines/godot/run.sh" "trap - INT TERM HUP" "the trap is cleared after a normal wait"
+}
+
 test_run_imports_when_dot_godot_is_absent() {
   P="$(fresh_project run-import)"
   verb "$P" studio-run --seconds 1
@@ -296,6 +302,16 @@ STUB
   done
 }
 
+test_lint_needs_a_project() {
+  mkdir -p "$TMP/not-a-project-for-lint"
+  lint_stubs "$TMP/lintstubs0"
+  status=0
+  ( cd "$TMP/not-a-project-for-lint" && OMEGA_STUDIO_ROOT="$STUDIO" PATH="$TMP/lintstubs0:/usr/bin:/bin" \
+      sh "$BIN/studio-lint" ) > "$TMP/out" 2>&1 || status=$?
+  assert_eq "1" "$status" "a directory without project.godot exits 1, not 3"
+  assert_contains "$TMP/out" "no project.godot" "the message says what is missing"
+}
+
 test_lint_exits_3_without_gdtoolkit() {
   P="$(fresh_project lint-none)"
   status=0
@@ -306,9 +322,10 @@ test_lint_exits_3_without_gdtoolkit() {
 
 test_lint_runs_both_tools_over_gd_files() {
   P="$(fresh_project lint-run)"
-  mkdir -p "$P/src/player" "$P/addons/gut"
+  mkdir -p "$P/src/player" "$P/addons/gut" "$P/src/my scripts"
   : > "$P/src/player/dash.gd"
   : > "$P/addons/gut/gut.gd"
+  : > "$P/src/my scripts/a.gd"
   lint_stubs "$TMP/lintstubs"
   status=0
   ( cd "$P" && OMEGA_STUDIO_ROOT="$STUDIO" PATH="$TMP/lintstubs:/usr/bin:/bin" sh "$BIN/studio-lint" ) > "$TMP/out" 2>&1 || status=$?
@@ -316,6 +333,7 @@ test_lint_runs_both_tools_over_gd_files() {
   assert_contains "$TMP/lintstubs/calls" "^gdlint .*src/player/dash.gd" "gdlint sees project scripts"
   assert_contains "$TMP/lintstubs/calls" "^gdformat --check .*src/player/dash.gd" "gdformat runs in check mode"
   assert_not_contains "$TMP/lintstubs/calls" "addons/gut" "addons are not linted"
+  assert_contains "$TMP/lintstubs/calls" "src/my scripts/a.gd" "a .gd path with a space is passed whole, not word-split"
 }
 
 test_lint_reports_findings() {
@@ -344,6 +362,7 @@ run_tests test_dispatch_rejects_unknown_engine test_dispatch_needs_a_studio_root
   test_test_exits_2_without_engine test_test_passes_and_reports test_test_reports_failures \
   test_test_targets_a_file test_test_targets_a_directory test_test_imports_when_dot_godot_is_absent \
   test_run_clean test_run_detects_script_errors test_run_passes_scene_and_windowed \
-  test_run_terminates_a_long_process test_run_rejects_bad_options test_run_imports_when_dot_godot_is_absent \
-  test_lint_exits_3_without_gdtoolkit test_lint_runs_both_tools_over_gd_files \
+  test_run_terminates_a_long_process test_run_rejects_bad_options \
+  test_run_traps_signals_to_avoid_orphaning_the_child test_run_imports_when_dot_godot_is_absent \
+  test_lint_needs_a_project test_lint_exits_3_without_gdtoolkit test_lint_runs_both_tools_over_gd_files \
   test_lint_reports_findings test_lint_with_no_scripts_is_clean

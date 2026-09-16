@@ -59,9 +59,13 @@ set -- --path "$PROJECT"
 
 "$GODOT" "$@" >> "$log" 2>&1 &
 pid=$!
+# If studio-run itself is interrupted (Ctrl-C, a CI timeout) during the
+# sleep below, terminate the child instead of orphaning it.
+trap 'kill -TERM "$pid" 2>/dev/null; exit 130' INT TERM HUP
 sleep "$DURATION"
 kill -TERM "$pid" 2>/dev/null || true
 wait "$pid" 2>/dev/null || true
+trap - INT TERM HUP
 
 errors="$(grep -nE 'SCRIPT ERROR|ERROR:|Parser Error' "$log" || true)"
 if [ -n "$errors" ]; then
