@@ -129,8 +129,9 @@ and `claude-gen` both carry these seven skills beside their own:
 | `/omega:delegate` | The main session only dispatches, reads reports and runs status commands; every edit, search and document goes to a subagent, never fixed by hand; `off` clears it |
 | `/omega:reply` | Explanations and decisions arrive as one concrete scenario from the project's world — what the player sees, or what the tool's user hits — in five lines at most, with no paths, symbols, config keys or raw values in the prose; code, commands, exact errors, test results and safety warnings stay verbatim; `off` clears it |
 
-They are overlays. Each changes how work is scheduled, saved, merged or
-stopped — never what a studio does or in which order — and composes with
+They are overlays. Each changes how work is scheduled, saved, merged,
+stopped — or explained — never what a studio does or in which order — and
+composes with
 whatever skill is running. `parallel`, `local-merge`, `integration`,
 `autopilot`, `delegate` and `reply` set a **mode**: a line in
 `${CLAUDE_CONFIG_DIR:-~/.claude}/omega/modes/<session_id>`, written by

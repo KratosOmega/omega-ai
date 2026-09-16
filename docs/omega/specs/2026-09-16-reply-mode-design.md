@@ -284,12 +284,11 @@ It does **not** fire on:
   specs, commit messages, PR bodies, documents, subagent briefs. Those are
   written for other readers and keep their normal register.
 
-When the answer is a status, a result, or a count — including a result the
-user pasted — that answer is the status and nothing else. Give the state, or
-give the numbers and the failing line back as they were written, and stop.
-The rules below shape explanations; they never apply to a result. An
-explanation of what the result means is a separate answer, offered after it
-and only if the user wants it.
+When the answer is a status or a result — including a result the user
+pasted — give the state, or give the numbers and the failing line back as
+they were written, before anything else. Sections 2-6 shape the explanation
+that follows a result; they never restyle the result itself. When the user
+also asked what to do next, that answer follows the result, styled.
 
 ## 2. The scenario
 
@@ -345,7 +344,9 @@ Never restyled, never shortened, never softened, and the cap does not apply:
   still" is the meaning, and the meaning never replaces the numbers.
 - Security warnings and confirmations for destructive or irreversible
   actions.
-- A path, symbol or value the user asked for by name.
+- A path, symbol or existing value the user asked for by name — not a
+  value this session is recommending; a recommendation is still described
+  by feel.
 
 **"Technical version"**, "show me the code", "be technical" — full detail
 returns for that answer. The mode stays set; the next explanation is styled

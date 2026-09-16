@@ -38,7 +38,7 @@ the with-skill result — in `pressure/`.
 
 ### 2026-09-15 — delegate mode
 
-- `/omega:delegate [off]` sets the sixth mode: the main session talks to
+- `/omega:delegate [off]` sets the fifth mode: the main session talks to
   the user, dispatches subagents, reads their fifteen-line reports and runs
   status commands; every edit, search and document goes to a subagent, and
   a failing agent is redispatched, never fixed by hand — three rounds, then

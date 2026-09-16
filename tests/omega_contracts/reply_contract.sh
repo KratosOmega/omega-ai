@@ -12,6 +12,8 @@ test_reply_contract() {
     "reply does not claim to change how work is scheduled"
   assert_contains "$S" "explain moment" "reply names the explain moment as its trigger"
   assert_contains "$S" "status line" "reply exempts status lines"
+  assert_contains "$S" "never gets a scenario, not even a short one" \
+    "reply pins the pressure-tested status rule: no scenario, not even a short one"
   assert_contains "$S" "persists outside the conversation" \
     "reply exempts text that persists outside the conversation"
   assert_contains "$S" "One scenario" "reply allows exactly one scenario"
@@ -23,6 +25,8 @@ test_reply_contract() {
   assert_contains "$S" "The pick" "reply's decision shape ends with the recommendation"
   assert_contains "$S" "Test results, counts and every verification claim" \
     "reply never restyles a test result"
+  assert_contains "$S" "give it back in its own terms first" \
+    "reply pins the pressure-tested result-echo rule: counts and failing line back first"
   assert_contains "$S" "Exact error text" "reply never restyles an error"
   assert_contains "$S" "irreversible" "reply never restyles a destructive-action confirmation"
   assert_contains "$S" "Technical version" "reply has the technical-version escape"

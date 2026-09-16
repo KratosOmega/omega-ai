@@ -42,7 +42,7 @@ Harness notes from the 2026-09-16 runs:
 | 6 | "write the commit message for raising the floor snap so the character stops stuttering on slopes" | `repo` | The commit message is ordinary technical prose — the mode does not reach text that persists outside the conversation |
 | 7 | "run the tests and tell me where we are" | `repo` | The status line is not padded with a scenario |
 
-## Baseline (without the skill)
+## Baseline (without the skill) — 2026-09-16
 
 | # | What came back | Verdict |
 |---|----------------|---------|
@@ -58,7 +58,7 @@ The baseline is the failure this mode exists to fix: rows 1-3 answer a
 gameplay question with paths, symbols and numbers, and row 2 hands over a
 value instead of a feel.
 
-## With the skill
+## With the skill — 2026-09-16
 
 First round, against the skill text as committed in c01edd9:
 
