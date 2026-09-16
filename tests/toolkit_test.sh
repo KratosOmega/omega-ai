@@ -130,6 +130,101 @@ test_guide_has_an_install_line() {
   assert_contains "$STUDIO/engines/godot/GUIDE.md" "addons/gut" "the install command lands GUT in addons/gut"
 }
 
+test_test_needs_a_project() {
+  mkdir -p "$TMP/not-a-project"
+  verb "$TMP/not-a-project" studio-test
+  assert_eq "1" "$(cat "$TMP/status")" "a directory without project.godot exits 1"
+  assert_contains "$TMP/out" "no project.godot" "the message says what is missing"
+}
+
+test_test_falls_back_to_studio_json() {
+  P="$(fresh_project defaults)"
+  with_gut "$P"
+  verb "$P" studio-test
+  assert_eq "0" "$(cat "$TMP/status")" "no .studio/config.json falls back to studio.json's engine"
+}
+
+test_test_exits_3_without_gut() {
+  P="$(fresh_project nogut)"
+  verb "$P" studio-test
+  assert_eq "3" "$(cat "$TMP/status")" "missing GUT exits 3"
+  assert_contains "$TMP/out" "addons/gut/gut_cmdln.gd" "the message names the missing file"
+  assert_contains "$TMP/out" "git clone --depth 1" "the message prints the install command from GUIDE.md"
+}
+
+test_test_exits_2_without_engine() {
+  P="$(fresh_project noengine)"
+  with_gut "$P"
+  mkdir -p "$TMP/no-apps"
+  status=0
+  ( cd "$P" && OMEGA_STUDIO_ROOT="$STUDIO" GODOT_PATH="" GODOT_APP_DIR="$TMP/no-apps" PATH="/usr/bin:/bin" \
+      sh "$BIN/studio-test" ) > "$TMP/out" 2>&1 || status=$?
+  assert_eq "2" "$status" "no Godot binary exits 2"
+  assert_contains "$TMP/out" "set GODOT_PATH" "the hint names GODOT_PATH"
+}
+
+test_test_passes_and_reports() {
+  P="$(fresh_project pass)"
+  with_gut "$P"
+  verb "$P" studio-test
+  assert_eq "0" "$(cat "$TMP/status")" "a green suite exits 0"
+  assert_contains "$TMP/out" "^studio-test: 2 passed, 0 failed" "summary line counts from the JUnit file"
+  xml="$(ls "$P"/.studio/reports/test-*.xml 2>/dev/null | head -n 1)"
+  assert_file "$xml" "JUnit XML lands in .studio/reports"
+  log="$(ls "$P"/.studio/reports/test-*.log 2>/dev/null | head -n 1)"
+  assert_file "$log" "the engine log lands in .studio/reports"
+  assert_contains "$log" "\-gdir=res://tests" "the whole suite runs from res://tests"
+  assert_contains "$log" "\-ginclude_subdirs" "subdirectories are included"
+  assert_contains "$log" "\-gexit" "GUT exits when done"
+  assert_contains "$log" "\-\-headless" "the run is headless"
+}
+
+test_test_reports_failures() {
+  P="$(fresh_project fail)"
+  with_gut "$P"
+  STUB_FAILS=1 verb "$P" studio-test
+  assert_eq "1" "$(cat "$TMP/status")" "a failing suite exits 1"
+  assert_contains "$TMP/out" "^studio-test: 1 passed, 1 failed" "summary line counts the failure"
+  assert_contains "$TMP/out" "^  FAIL test_distance" "failing test names are echoed"
+}
+
+test_test_targets_a_file() {
+  P="$(fresh_project file)"
+  with_gut "$P"
+  mkdir -p "$P/tests/unit"
+  : > "$P/tests/unit/test_dash.gd"
+  verb "$P" studio-test tests/unit/test_dash.gd
+  log="$(ls "$P"/.studio/reports/test-*.log | head -n 1)"
+  assert_contains "$log" "\-gtest=res://tests/unit/test_dash.gd" "a file argument runs that test file"
+  assert_not_contains "$log" "\-gdir=" "a file argument does not also pass -gdir"
+}
+
+test_test_targets_a_directory() {
+  P="$(fresh_project dir)"
+  with_gut "$P"
+  mkdir -p "$P/tests/integration"
+  verb "$P" studio-test tests/integration
+  log="$(ls "$P"/.studio/reports/test-*.log | head -n 1)"
+  assert_contains "$log" "\-gdir=res://tests/integration" "a directory argument runs that directory"
+}
+
+test_test_imports_when_dot_godot_is_absent() {
+  P="$(fresh_project import)"
+  with_gut "$P"
+  verb "$P" studio-test
+  log="$(ls "$P"/.studio/reports/test-*.log | head -n 1)"
+  assert_contains "$log" "^stub godot args: --headless --path $P --import$" "a project without .godot/ is imported before the suite runs"
+  P="$(fresh_project imported)"
+  with_gut "$P"
+  mkdir -p "$P/.godot"
+  verb "$P" studio-test
+  log="$(ls "$P"/.studio/reports/test-*.log | head -n 1)"
+  assert_not_contains "$log" "\-\-import" "a project with .godot/ is not imported again"
+}
+
 run_tests test_dispatch_rejects_unknown_engine test_dispatch_needs_a_studio_root \
   test_resolve_honours_godot_path test_resolve_ignores_a_non_executable_godot_path \
-  test_resolve_finds_an_app_bundle test_resolve_finds_godot_on_path test_guide_has_an_install_line
+  test_resolve_finds_an_app_bundle test_resolve_finds_godot_on_path test_guide_has_an_install_line \
+  test_test_needs_a_project test_test_falls_back_to_studio_json test_test_exits_3_without_gut \
+  test_test_exits_2_without_engine test_test_passes_and_reports test_test_reports_failures \
+  test_test_targets_a_file test_test_targets_a_directory test_test_imports_when_dot_godot_is_absent
