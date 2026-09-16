@@ -137,6 +137,30 @@ for p in $others; do
 done
 [ "$listed" = "1" ] || log "  (none)"
 
+# Engine binary, through the studio's own adapter. A missing binary is a
+# warning: the studio installs and plans without it; studio-test and
+# studio-run exit 2 until it is found.
+ENGINE="$(json_field "$STUDIO_DIR/studio.json" engine)"
+if [ -n "$ENGINE" ]; then
+  RESOLVE="$STUDIO_DIR/engines/$(engine_dir "$ENGINE")/resolve.sh"
+  if [ ! -f "$RESOLVE" ]; then
+    log "engine:       $ENGINE — no adapter at engines/$(engine_dir "$ENGINE")/"
+  elif GODOT="$(sh "$RESOLVE" 2>/dev/null)"; then
+    log "engine:       $ENGINE at $GODOT"
+  else
+    log "engine:       $ENGINE — no binary found (set GODOT_PATH); studio-test and studio-run will exit 2"
+  fi
+
+  # MCP registration lands in the config root's .claude.json under
+  # CLAUDE_CONFIG_DIR. Read the file rather than `claude mcp list`, which
+  # starts every server to health-check it.
+  if [ -f "$TARGET/.claude.json" ] && grep -q '"godot"' "$TARGET/.claude.json"; then
+    log "mcp:          godot registered"
+  else
+    log "mcp:          none (optional — reinstall with Node 18+ and a Godot binary to enable godot-mcp)"
+  fi
+fi
+
 log "launch:       $SHIM_NAME"
 # The shim the manifest recorded is the one this install wrote; `command -v`
 # would happily report an older shim of the same name on PATH.
@@ -207,6 +231,12 @@ done)"
 if is_leak "$(canon_path "${TARGET%/}/.")"; then
   leaks="$leaks
 config root is inside ~/.claude: $TARGET"
+fi
+# An MCP server registered outside the config root would be a leak into the
+# user's general setup. The check cannot tell our registration from one the
+# user made on purpose, so it warns and names the file rather than failing.
+if [ -f "$HOME/.claude.json" ] && grep -q 'godot-mcp' "$HOME/.claude.json" 2>/dev/null; then
+  warn "~/.claude.json registers godot-mcp — if this studio's installer did that, it leaked; if it is your own setup, ignore this"
 fi
 if [ -n "$(printf '%s' "$leaks" | tr -d '[:space:]')" ]; then
   log "leakage:"

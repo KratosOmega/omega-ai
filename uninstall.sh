@@ -61,6 +61,9 @@ fi
 if [ "$PURGE" = "1" ]; then
   # Only a root this installer wrote may be purged; the manifest is the proof.
   [ -f "$MANIFEST" ] || die "no manifest at $MANIFEST — not an omega-ai config root, refusing to purge"
+  for server in $(manifest_mcp_servers "$MANIFEST"); do
+    mcp_remove "$TARGET" "$server"
+  done
   if [ "$ASSUME_YES" != "1" ]; then
     printf 'Delete the entire config root %s, including sessions and history? [y/N] ' "$TARGET"
     read -r reply
@@ -77,6 +80,10 @@ if [ "$PURGE" = "1" ]; then
 fi
 
 if [ -f "$MANIFEST" ]; then
+  for server in $(manifest_mcp_servers "$MANIFEST"); do
+    mcp_remove "$TARGET" "$server"
+    log "unregistered mcp server $server"
+  done
   manifest_remove "$MANIFEST" "$TARGET" "$SHIM_PATH"
 else
   warn "no manifest at $MANIFEST — removing nothing"

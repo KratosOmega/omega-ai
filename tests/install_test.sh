@@ -9,6 +9,35 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TMP="$(cd "$(mktemp -d)" && pwd -P)"
 trap 'rm -rf "$TMP"' EXIT
 
+# Every install in this file runs against stubs for claude, node and Godot,
+# so MCP registration is exercised without a real Claude Code install, Node,
+# or an engine. The claude stub records each call with its CLAUDE_CONFIG_DIR
+# in $STUBS/claude.calls and writes or removes the .claude.json entry a real
+# `claude mcp add|remove --scope user` would. The Godot stub is reached only
+# through GODOT_PATH, never PATH, so "no engine" cases can clear it.
+STUBS="$TMP/stubs"
+mkdir -p "$STUBS/engine"
+cat > "$STUBS/claude" <<'STUB'
+#!/bin/sh
+printf 'CLAUDE_CONFIG_DIR=%s claude %s\n' "${CLAUDE_CONFIG_DIR:-}" "$*" >> "$(dirname "$0")/claude.calls"
+case "${1:-} ${2:-}" in
+  "mcp add")
+    mkdir -p "${CLAUDE_CONFIG_DIR:-.}"
+    printf '{ "mcpServers": { "godot": { "command": "npx", "args": ["-y", "@coding-solo/godot-mcp"] } } }\n' \
+      > "${CLAUDE_CONFIG_DIR:-.}/.claude.json" ;;
+  "mcp remove")
+    rm -f "${CLAUDE_CONFIG_DIR:-.}/.claude.json" ;;
+esac
+exit 0
+STUB
+printf '#!/bin/sh\necho "${STUB_NODE_VERSION:-v20.11.0}"\n' > "$STUBS/node"
+printf '#!/bin/sh\necho "Godot Engine v4.3.stable (stub)"\n' > "$STUBS/engine/godot"
+chmod +x "$STUBS/claude" "$STUBS/node" "$STUBS/engine/godot"
+PATH="$STUBS:$PATH"; export PATH
+GODOT_PATH="$STUBS/engine/godot"; export GODOT_PATH
+# Tests that must see no engine at all also drop any real godot from PATH:
+NO_ENGINE_PATH="$STUBS:/usr/bin:/bin"
+
 test_studio_contract() {
   for dir in "$REPO_ROOT"/studios/*/; do
     name="$(basename "$dir")"
@@ -198,6 +227,83 @@ test_install_accepts_no_mcp() {
   assert_status 0 "--no-mcp is accepted" -- \
     sh "$REPO_ROOT/install.sh" general --target "$TMP/nomcp" --shim-dir "$TMP/bin-nomcp" --no-mcp
   assert_not_contains "$TMP/nomcp/.omega-ai-manifest" "^mcp " "--no-mcp records no mcp line"
+}
+
+test_install_registers_mcp() {
+  : > "$STUBS/claude.calls"
+  sh "$REPO_ROOT/install.sh" game-dev --target "$TMP/mcp" --shim-dir "$TMP/bin-mcp" > "$TMP/mcp.out" 2>&1
+  assert_contains "$TMP/mcp/.omega-ai-manifest" "^mcp godot\$" "manifest records the MCP server"
+  assert_contains "$STUBS/claude.calls" \
+    "^CLAUDE_CONFIG_DIR=$TMP/mcp claude mcp add --scope user godot -e GODOT_PATH=$STUBS/engine/godot -- npx -y @coding-solo/godot-mcp\$" \
+    "claude mcp add runs at user scope inside the config root with the resolved binary"
+  assert_contains "$TMP/mcp.out" "mcp:      godot registered" "install reports the registration"
+  assert_contains "$TMP/mcp.out" "mcp:          godot registered" "the doctor run at the end sees the server"
+}
+
+test_install_skips_mcp_without_node_18() {
+  : > "$STUBS/claude.calls"
+  STUB_NODE_VERSION=v16.20.0 sh "$REPO_ROOT/install.sh" game-dev --target "$TMP/mcp16" --shim-dir "$TMP/bin-mcp16" > "$TMP/mcp16.out" 2>&1
+  assert_not_contains "$TMP/mcp16/.omega-ai-manifest" "^mcp " "no mcp line without node 18"
+  assert_not_contains "$STUBS/claude.calls" "mcp add" "claude mcp add is not run"
+  assert_contains "$TMP/mcp16.out" "mcp:      skipped (node 18+ not found" "install explains the skip"
+}
+
+test_install_skips_mcp_without_engine() {
+  : > "$STUBS/claude.calls"
+  mkdir -p "$TMP/no-apps"
+  GODOT_PATH="" GODOT_APP_DIR="$TMP/no-apps" PATH="$NO_ENGINE_PATH" \
+    sh "$REPO_ROOT/install.sh" game-dev --target "$TMP/mcpng" --shim-dir "$TMP/bin-mcpng" > "$TMP/mcpng.out" 2>&1
+  assert_not_contains "$TMP/mcpng/.omega-ai-manifest" "^mcp " "no mcp line without an engine binary"
+  assert_not_contains "$STUBS/claude.calls" "mcp add" "claude mcp add is not run without an engine"
+  assert_contains "$TMP/mcpng.out" "mcp:      skipped (no Godot binary found" "install explains the skip"
+}
+
+test_install_no_mcp_flag_skips_registration() {
+  : > "$STUBS/claude.calls"
+  sh "$REPO_ROOT/install.sh" game-dev --target "$TMP/mcpoff" --shim-dir "$TMP/bin-mcpoff" --no-mcp > "$TMP/mcpoff.out" 2>&1
+  assert_not_contains "$STUBS/claude.calls" "mcp add" "--no-mcp never calls claude mcp add"
+  assert_contains "$TMP/mcpoff.out" "mcp:      skipped (--no-mcp)" "install reports the flag"
+}
+
+test_install_general_has_no_mcp() {
+  sh "$REPO_ROOT/install.sh" general --target "$TMP/gmcp" --shim-dir "$TMP/bin-gmcp" > "$TMP/gmcp.out" 2>&1
+  assert_contains "$TMP/gmcp.out" "mcp:      none (studio declares no engine" "a studio without an engine registers nothing"
+}
+
+test_reinstall_reregisters_mcp_once() {
+  : > "$STUBS/claude.calls"
+  sh "$REPO_ROOT/install.sh" game-dev --target "$TMP/mcpre" --shim-dir "$TMP/bin-mcpre" >/dev/null 2>&1
+  sh "$REPO_ROOT/install.sh" game-dev --target "$TMP/mcpre" --shim-dir "$TMP/bin-mcpre" >/dev/null 2>&1
+  assert_eq "2" "$(grep -c 'mcp add' "$STUBS/claude.calls")" "each install registers"
+  assert_eq "1" "$(grep -c 'mcp remove --scope user godot' "$STUBS/claude.calls")" "a reinstall unregisters the previous server first"
+  assert_eq "1" "$(grep -c '^mcp godot$' "$TMP/mcpre/.omega-ai-manifest")" "the manifest carries one mcp line"
+}
+
+test_uninstall_removes_mcp() {
+  sh "$REPO_ROOT/install.sh" game-dev --target "$TMP/mcpun" --shim-dir "$TMP/bin-mcpun" >/dev/null 2>&1
+  : > "$STUBS/claude.calls"
+  sh "$REPO_ROOT/uninstall.sh" game-dev --target "$TMP/mcpun" --shim-dir "$TMP/bin-mcpun" >/dev/null 2>&1
+  assert_contains "$STUBS/claude.calls" "^CLAUDE_CONFIG_DIR=$TMP/mcpun claude mcp remove --scope user godot\$" \
+    "uninstall unregisters the server inside the config root"
+}
+
+test_doctor_engine_and_mcp_rows() {
+  sh "$REPO_ROOT/install.sh" game-dev --target "$TMP/dre" --shim-dir "$TMP/bin-dre" >/dev/null 2>&1
+  sh "$REPO_ROOT/doctor.sh" game-dev --target "$TMP/dre" > "$TMP/dre.out" 2>&1
+  assert_contains "$TMP/dre.out" "engine:       godot4 at $STUBS/engine/godot" "doctor reports the resolved engine binary"
+  assert_contains "$TMP/dre.out" "mcp:          godot registered" "doctor reads the server from .claude.json"
+  rm -f "$TMP/dre/.claude.json"
+  sh "$REPO_ROOT/doctor.sh" game-dev --target "$TMP/dre" > "$TMP/dre2.out" 2>&1
+  assert_contains "$TMP/dre2.out" "mcp:          none (optional" "doctor reports a missing server as optional"
+  mkdir -p "$TMP/no-apps"
+  status=0
+  GODOT_PATH="" GODOT_APP_DIR="$TMP/no-apps" PATH="$NO_ENGINE_PATH" \
+    sh "$REPO_ROOT/doctor.sh" game-dev --target "$TMP/dre" > "$TMP/dre3.out" 2>&1 || status=$?
+  assert_eq "0" "$status" "a missing engine binary is a warning, not a failure"
+  assert_contains "$TMP/dre3.out" "engine:       godot4 — no binary found (set GODOT_PATH)" "doctor explains how to fix the engine"
+  sh "$REPO_ROOT/install.sh" general --target "$TMP/gen-dr" --shim-dir "$TMP/bin-gen-dr" >/dev/null 2>&1
+  sh "$REPO_ROOT/doctor.sh" general --target "$TMP/gen-dr" > "$TMP/gdr.out" 2>&1
+  assert_not_contains "$TMP/gdr.out" "^engine:" "a studio without an engine has no engine row"
 }
 
 # Claude Code writes to settings.json in-session, and the previous install's
@@ -996,7 +1102,10 @@ run_tests test_studio_contract test_install_unknown_studio test_install_guard \
   test_install_dry_run test_install_content \
   test_install_precedence test_install_copy_mode test_install_reinstall_cleans_stale_entries \
   test_install_reinstall_new_shim_dir_removes_old_shim \
-  test_install_accepts_no_mcp test_settings_backup test_shim \
+  test_install_accepts_no_mcp test_install_registers_mcp test_install_skips_mcp_without_node_18 \
+  test_install_skips_mcp_without_engine test_install_no_mcp_flag_skips_registration \
+  test_install_general_has_no_mcp test_reinstall_reregisters_mcp_once test_uninstall_removes_mcp \
+  test_doctor_engine_and_mcp_rows test_settings_backup test_shim \
   test_doctor test_doctor_detects_leak test_doctor_reports_no_plugins \
   test_doctor_plugin_report test_doctor_plugin_name_mismatch \
   test_option_value_required test_uninstall test_uninstall_scopes_manifest_entries \

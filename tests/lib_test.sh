@@ -314,10 +314,37 @@ test_engine_dir() {
   assert_eq "" "$(engine_dir '')" "empty in, empty out"
 }
 
+test_node_major() {
+  mkdir -p "$TMP/nodestub"
+  printf '#!/bin/sh\necho v20.11.0\n' > "$TMP/nodestub/node"
+  chmod +x "$TMP/nodestub/node"
+  assert_eq "20" "$(PATH="$TMP/nodestub:/usr/bin:/bin" node_major)" "reads the major version"
+  assert_eq "0" "$(PATH="/usr/bin:/bin" node_major)" "0 when node is absent"
+  printf '#!/bin/sh\necho garbage\n' > "$TMP/nodestub/node"
+  assert_eq "0" "$(PATH="$TMP/nodestub:/usr/bin:/bin" node_major)" "0 when the version is unreadable"
+}
+
+test_manifest_mcp_servers() {
+  printf '%s\n' "$TMP/x/CLAUDE.md" "mcp godot" "$TMP/x/bin/studio-state" "mcp other" > "$TMP/m.txt"
+  assert_eq "godot
+other" "$(manifest_mcp_servers "$TMP/m.txt")" "lists every mcp line's server name"
+  assert_eq "" "$(manifest_mcp_servers "$TMP/absent.txt")" "a missing manifest lists nothing"
+}
+
+test_manifest_remove_skips_mcp_lines() {
+  mkdir -p "$TMP/mm/root"
+  printf 'x\n' > "$TMP/mm/root/CLAUDE.md"
+  printf '%s\n' "$TMP/mm/root/CLAUDE.md" "mcp godot" > "$TMP/mm/root/.omega-ai-manifest"
+  ( cd "$TMP/mm" && manifest_remove "$TMP/mm/root/.omega-ai-manifest" "$TMP/mm/root" "" 2>"$TMP/mm/err" )
+  assert_missing "$TMP/mm/root/CLAUDE.md" "path entries are still removed"
+  assert_not_contains "$TMP/mm/err" "skipping manifest entry" "an mcp line is not reported as an out-of-scope path"
+  assert_missing "$TMP/mm/mcp godot" "an mcp line never becomes a relative path to delete"
+}
+
 run_tests test_json_field test_expand_path test_canon_path test_guard_target_rejects \
   test_guard_target_rejects_descendants_of_dot_claude test_guard_target_accepts \
   test_guard_target_derefs_symlinked_target test_guard_target_rejects_symlinked_dot_claude \
   test_need_value test_resolve_studio_target test_requires_of test_run_dry \
   test_manifest_remove test_manifest_remove_through_symlinked_root \
   test_manifest_remove_skips_trailing_slash test_studio_arg test_manifest_header \
-  test_engine_dir
+  test_engine_dir test_node_major test_manifest_mcp_servers test_manifest_remove_skips_mcp_lines

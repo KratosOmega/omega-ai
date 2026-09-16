@@ -170,6 +170,33 @@ engine_dir() {
   printf '%s\n' "$1" | sed 's/[0-9]*$//'
 }
 
+# node_major — the installed Node.js major version as a number, or 0 when
+# node is absent or its version is unreadable. MCP registration needs 18+.
+node_major() {
+  command -v node >/dev/null 2>&1 || { printf '0\n'; return 0; }
+  _nv="$(node --version 2>/dev/null | tr -d 'v')"
+  _nv="${_nv%%.*}"
+  case "$_nv" in
+    ''|*[!0-9]*) printf '0\n' ;;
+    *) printf '%s\n' "$_nv" ;;
+  esac
+}
+
+# manifest_mcp_servers MANIFEST — print the NAME of every "mcp NAME" line.
+# These lines record MCP servers registered inside the config root; they are
+# not paths and are never passed to rm.
+manifest_mcp_servers() {
+  [ -f "$1" ] || return 0
+  awk '$1 == "mcp" { print $2 }' "$1"
+}
+
+# mcp_remove TARGET NAME — unregister an MCP server from the config root's
+# user scope. Silent when claude is absent: nothing could have registered it.
+mcp_remove() {
+  command -v claude >/dev/null 2>&1 || return 0
+  CLAUDE_CONFIG_DIR="$1" claude mcp remove --scope user "$2" >/dev/null 2>&1 || true
+}
+
 # install_entries SRC_DIR DEST_DIR MODE — install each child of SRC_DIR into
 # DEST_DIR, replacing same-named entries. Prints each destination path.
 install_entries() {
@@ -249,6 +276,7 @@ manifest_remove() {
   _shim_canon="$(canon_path "$_shim")"
   while IFS= read -r _entry; do
     [ -n "$_entry" ] || continue
+    case "$_entry" in "mcp "*) continue ;; esac
     case "$_entry" in '#'*) continue ;; esac
     case "$_entry" in
       */) warn "skipping manifest entry with trailing slash: $_entry"; continue ;;

@@ -138,6 +138,9 @@ fi
 # missing manifest cannot trip `set -e`.
 _prev_shim="$(manifest_meta "$MANIFEST" shim || true)"
 [ -n "$_prev_shim" ] || _prev_shim="$SHIM_PATH"
+for server in $(manifest_mcp_servers "$MANIFEST"); do
+  if [ "$DRY_RUN" = "1" ]; then log "DRY  mcp remove $server"; else mcp_remove "$TARGET" "$server"; fi
+done
 manifest_remove "$MANIFEST" "$TARGET" "$_prev_shim"
 if [ "$DRY_RUN" != "1" ]; then
   # The pre-plugin layout linked skills, agents, commands and hooks into the
@@ -234,12 +237,33 @@ SHIM
   esac
 fi
 
-# MCP registration is part of the engine toolkit and arrives with it; the
-# flag is accepted now so scripts written against the final interface work.
+# Optional MCP server. godot-mcp needs Node 18+ and a Godot binary; it is
+# registered at user scope inside the config root, so it exists only for this
+# studio, and recorded in the manifest so a reinstall or uninstall removes it.
+# It is never written into the plugin's .mcp.json: a machine without Node
+# must not see a startup failure.
+ENGINE="$(json_field "$STUDIO_DIR/studio.json" engine)"
+RESOLVE=""
+[ -n "$ENGINE" ] && RESOLVE="$STUDIO_DIR/engines/$(engine_dir "$ENGINE")/resolve.sh"
 if [ "$NO_MCP" = "1" ]; then
   log "mcp:      skipped (--no-mcp)"
+elif [ -z "$ENGINE" ] || [ ! -f "$RESOLVE" ]; then
+  log "mcp:      none (studio declares no engine adapter)"
+elif [ "$DRY_RUN" = "1" ]; then
+  log "DRY  mcp add godot"
+elif [ "$(node_major)" -lt 18 ]; then
+  log "mcp:      skipped (node 18+ not found — install Node.js to enable godot-mcp)"
+elif ! GODOT="$(sh "$RESOLVE" 2>/dev/null)"; then
+  log "mcp:      skipped (no Godot binary found — set GODOT_PATH and reinstall to enable godot-mcp)"
+elif ! command -v claude >/dev/null 2>&1; then
+  log "mcp:      skipped (claude is not on PATH)"
+elif CLAUDE_CONFIG_DIR="$TARGET" claude mcp add --scope user godot \
+       -e "GODOT_PATH=$GODOT" -- npx -y @coding-solo/godot-mcp >/dev/null 2>&1; then
+  manifest_add "$MANIFEST" "mcp godot"
+  log "mcp:      godot registered (npx -y @coding-solo/godot-mcp, GODOT_PATH=$GODOT)"
 else
-  log "mcp:      none registered (arrives with the engine toolkit)"
+  warn "mcp registration failed; the studio works without it. To retry:
+    CLAUDE_CONFIG_DIR=\"$TARGET\" claude mcp add --scope user godot -e GODOT_PATH=\"$GODOT\" -- npx -y @coding-solo/godot-mcp"
 fi
 
 if [ "$DRY_RUN" = "1" ]; then
