@@ -176,6 +176,8 @@ mode_brief() {
         printf '  autopilot: never AskUserQuestion — rule by the standards, log the ruling with its cost if wrong, continue; commit, push and open a PR, never merge; end with handoff.\n' ;;
       delegate)
         printf '  delegate: the main session dispatches, reads reports and runs status commands; every edit, search and document goes to a subagent; never fix by hand.\n' ;;
+      reply)
+        printf "  reply: explain and decide in one concrete scenario from the project's world, five lines at most; no paths, symbols, config keys or raw values in the prose; code, commands, exact errors, test results and warnings stay verbatim.\n" ;;
     esac
   done < "$FILE"
 }

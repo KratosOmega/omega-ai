@@ -61,16 +61,16 @@ test_plugin_files() {
   assert_eq "omega" "$(json_field "$OMEGA/.claude-plugin/plugin.json" name)" \
     "omega plugin.json names the omega namespace"
   assert_eq "0.1.0" "$(json_field "$OMEGA/.claude-plugin/plugin.json" version)" "omega plugin.json is version 0.1.0"
-  for s in handoff parallel local-merge integration autopilot delegate; do
+  for s in handoff parallel local-merge integration autopilot delegate reply; do
     assert_file "$OMEGA/skills/$s/SKILL.md" "omega ships the $s skill"
   done
-  assert_contains "$OMEGA/.claude-plugin/plugin.json" "autopilot, delegate\." "omega plugin.json names the six skills"
+  assert_contains "$OMEGA/.claude-plugin/plugin.json" "delegate, reply\." "omega plugin.json names the seven skills"
   assert_missing "$OMEGA/requires.txt" "omega declares no hard dependencies"
   assert_missing "$OMEGA/settings.json" "omega has no settings.json"
 }
 
 test_skill_stubs() {
-  for s in handoff parallel local-merge integration autopilot delegate; do
+  for s in handoff parallel local-merge integration autopilot delegate reply; do
     f="$OMEGA/skills/$s/SKILL.md"
     assert_eq "---" "$(head -n 1 "$f")" "omega:$s starts with frontmatter"
     assert_eq "$s" "$(first_field "$f" name)" "omega:$s frontmatter name matches its directory"
@@ -85,6 +85,12 @@ test_skill_stubs() {
       "omega:$s carries the precedence contract"
     assert_contains "$OMEGA/skills/$s/SKILL.md" "omega-mode" "omega:$s sets or clears its mode through omega-mode"
   done
+  # reply shapes prose, not scheduling, so it carries its own precedence
+  # block instead of the five-mode sentence above; reply_contract.sh asserts
+  # that block's wording.
+  assert_contains "$OMEGA/skills/reply/SKILL.md" "This mode changes how the session explains itself to the user." \
+    "omega:reply carries its own precedence contract"
+  assert_contains "$OMEGA/skills/reply/SKILL.md" "omega-mode" "omega:reply sets or clears its mode through omega-mode"
 }
 
 test_marketplace() {
@@ -93,7 +99,7 @@ test_marketplace() {
   assert_status 0 "marketplace.json is valid JSON" -- valid_json "$m"
   assert_eq "omega-ai" "$(json_field "$m" name)" "the marketplace is named omega-ai"
   assert_contains "$m" '"name": "omega"' "the marketplace publishes the omega plugin"
-  assert_contains "$m" 'autopilot, delegate\.' "the marketplace description names the six skills"
+  assert_contains "$m" 'delegate, reply\.' "the marketplace description names the seven skills"
   src="$(sed -n 's/.*"source"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$m" | head -n 1)"
   assert_eq "./shared/omega" "$src" "the omega plugin's source is ./shared/omega"
   assert_file "$REPO_ROOT/${src#./}/.claude-plugin/plugin.json" "the marketplace source resolves to the plugin"
@@ -185,8 +191,9 @@ test_mode_brief() {
   mode --session t4 set integration slug=ui-rework
   mode --session t4 set autopilot
   mode --session t4 set delegate
+  mode --session t4 set reply
   mode --session t4 brief > "$TMP/brief.txt"
-  assert_eq "Omega modes: parallel max=3 · local-merge · integration slug=ui-rework · autopilot · delegate" \
+  assert_eq "Omega modes: parallel max=3 · local-merge · integration slug=ui-rework · autopilot · delegate · reply" \
     "$(head -n 1 "$TMP/brief.txt")" "brief's first line joins the modes with a middle dot"
   assert_contains "$TMP/brief.txt" "^  parallel: dispatch up to 3 ready tasks at once, each in its own worktree; review each; cherry-pick onto the feature branch; the invoking skill's bookkeeping is unchanged\.$" \
     "brief carries the parallel rule with its cap"
@@ -198,7 +205,9 @@ test_mode_brief() {
     "brief carries the autopilot rule"
   assert_contains "$TMP/brief.txt" "^  delegate: the main session dispatches, reads reports and runs status commands; every edit, search and document goes to a subagent; never fix by hand\.$" \
     "brief carries the delegate rule"
-  assert_eq "6" "$(wc -l < "$TMP/brief.txt" | tr -d ' ')" "brief is the header plus one line per mode"
+  assert_contains "$TMP/brief.txt" "^  reply: explain and decide in one concrete scenario from the project's world, five lines at most; no paths, symbols, config keys or raw values in the prose; code, commands, exact errors, test results and warnings stay verbatim\.$" \
+    "brief carries the reply rule"
+  assert_eq "7" "$(wc -l < "$TMP/brief.txt" | tr -d ' ')" "brief is the header plus one line per mode"
   mode --session t4 set parallel
   mode --session t4 brief > "$TMP/brief2.txt"
   assert_contains "$TMP/brief2.txt" "^  parallel: dispatch every ready task at once, each in its own worktree; review each; cherry-pick onto the feature branch; the invoking skill's bookkeeping is unchanged\.$" \
@@ -206,7 +215,7 @@ test_mode_brief() {
   mode --session t4 set custom-mode key=value
   mode --session t4 brief > "$TMP/brief3.txt"
   assert_contains "$TMP/brief3.txt" "custom-mode key=value" "an unknown mode is listed in the header"
-  assert_eq "6" "$(wc -l < "$TMP/brief3.txt" | tr -d ' ')" "an unknown mode gets no rule line"
+  assert_eq "7" "$(wc -l < "$TMP/brief3.txt" | tr -d ' ')" "an unknown mode gets no rule line"
 }
 
 # hook NAME JSON — run a hook as Claude Code would: the JSON on stdin, the
@@ -259,8 +268,8 @@ test_session_start() {
   assert_eq "1" "$(wc -l < "$TMP/hook.out" | tr -d ' ')" "session-start output is a single line"
   assert_contains "$TMP/hook.out" '"hookEventName":"SessionStart"' "output names the SessionStart event"
   context > "$TMP/ctx.txt"
-  assert_contains "$TMP/ctx.txt" "Omega global skills: /omega:handoff, /omega:parallel \[N|off\], /omega:local-merge \[off\], /omega:integration <start|add|status|finish>, /omega:autopilot \[off\], /omega:delegate \[off\]\." \
-    "context names the six skills"
+  assert_contains "$TMP/ctx.txt" "Omega global skills: /omega:handoff, /omega:parallel \[N|off\], /omega:local-merge \[off\], /omega:integration <start|add|status|finish>, /omega:autopilot \[off\], /omega:delegate \[off\], /omega:reply \[off\]\." \
+    "context names the seven skills"
   assert_contains "$TMP/ctx.txt" "Mode tool: $OMEGA/bin/omega-mode (set | clear | show | path | brief)\." "context names the omega-mode path"
   assert_contains "$TMP/ctx.txt" "Keep-awake: $OMEGA/bin/omega-caffeine (start | stop | status)\." "context names the omega-caffeine path"
   assert_not_contains "$TMP/ctx.txt" "Omega modes:" "no modes block when no mode is set"
@@ -342,6 +351,16 @@ test_prompt_submit() {
   assert_contains "$CFG/omega/modes/p1" "^delegate$" "/omega:delegate 3 changes nothing"
   hook prompt-submit.sh '{"session_id":"p1","hook_event_name":"UserPromptSubmit","prompt":"<command-name>/omega:delegate</command-name><command-args>off</command-args>"}'
   assert_not_contains "$CFG/omega/modes/p1" "^delegate" "/omega:delegate off clears delegate"
+
+  hook prompt-submit.sh '{"session_id":"p1","hook_event_name":"UserPromptSubmit","prompt":"<command-message>reply</command-message>\n<command-name>/omega:reply</command-name>\n<command-args></command-args>"}'
+  assert_contains "$CFG/omega/modes/p1" "^reply$" "/omega:reply with empty args sets reply"
+  context > "$TMP/ctx-reply.txt"
+  assert_contains "$TMP/ctx-reply.txt" "  reply: explain and decide in one concrete scenario from the project's world, five lines at most; no paths, symbols, config keys or raw values in the prose; code, commands, exact errors, test results and warnings stay verbatim\." \
+    "the turn's context carries the reply rule line"
+  hook prompt-submit.sh '{"session_id":"p1","hook_event_name":"UserPromptSubmit","prompt":"<command-name>/omega:reply</command-name><command-args>3</command-args>"}'
+  assert_contains "$CFG/omega/modes/p1" "^reply$" "/omega:reply 3 changes nothing"
+  hook prompt-submit.sh '{"session_id":"p1","hook_event_name":"UserPromptSubmit","prompt":"<command-name>/omega:reply</command-name><command-args>off</command-args>"}'
+  assert_not_contains "$CFG/omega/modes/p1" "^reply" "/omega:reply off clears reply"
 
   before="$(mode --session p1 show)"
   hook prompt-submit.sh '{"session_id":"p1","hook_event_name":"UserPromptSubmit","prompt":"<command-message>caveman</command-message>\n<command-name>/caveman</command-name>\n<command-args>off</command-args>"}'
@@ -692,7 +711,7 @@ test_skill_contracts() {
     ran=$((ran + 1))
   done
   # Bump when a skill is added.
-  assert_eq 6 "$ran" "six skill contracts ran"
+  assert_eq 7 "$ran" "seven skill contracts ran"
 }
 
 run_tests test_plugin_files test_skill_stubs test_marketplace \

@@ -84,6 +84,11 @@ if [ -n "$skill" ]; then
         off) sh "$MODE" --session "$sid" clear delegate >/dev/null ;;
         '') sh "$MODE" --session "$sid" set delegate >/dev/null ;;
       esac ;;
+    reply)
+      case "$args" in
+        off) sh "$MODE" --session "$sid" clear reply >/dev/null ;;
+        '') sh "$MODE" --session "$sid" set reply >/dev/null ;;
+      esac ;;
     autopilot)
       # `off` only: a bare /omega:autopilot arms nothing. The skill sets the
       # mode after its pre-flight, so open questions never run unattended.
