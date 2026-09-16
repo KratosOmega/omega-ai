@@ -205,6 +205,7 @@ test_stage_skills_dispatch_agents() {
   assert_contains "$S/plan/SKILL.md" 'dispatch `game-dev:producer`' "plan dispatches the producer"
   assert_not_contains "$S/plan/SKILL.md" 'Plan 2 of the studio' "plan carries no Plan 2 note"
   assert_not_contains "$S/studio/SKILL.md" 'until that skill is installed' "router has no playtest fallback note"
+  assert_contains "$S/review/SKILL.md" 'subagent_type: "game-dev:reviewer"' "review dispatches the reviewer"
 }
 
 run_tests test_plugin_manifests test_skill_frontmatter test_agent_frontmatter \
