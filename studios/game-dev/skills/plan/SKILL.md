@@ -82,17 +82,21 @@ task with one deliverable checked two ways is one task with two kinds.
 
 ## 4. Producer scope pass
 
-Before saving, run the scope pass. (The `game-dev:producer` agent takes this
-over in Plan 2 of the studio; until then, do it here.) For every task ask:
+Before saving, dispatch `game-dev:producer` (`subagent_type:
+"game-dev:producer"`) with the draft plan path, the spec path, and the
+milestone gate from `docs/game-dev/PROGRESS.md`. It applies this test to
+every task:
 
 1. Does the current milestone gate's exit criteria (from `PROGRESS.md`, or
    the spec's **Milestone gate** section) need this task?
 2. Would the feature be playable end to end without it?
 
-A task that fails 1 and passes 2 moves to a `## Backlog` section at the end
-of the plan with a one-line reason. Say what was cut in the plan's header
-under **Cut in the scope pass:**. Vertical slice first; polish, variants and
-content wait.
+It moves every task that fails 1 and passes 2 to a `## Backlog` section at
+the end of the plan with a one-line reason, and fills the header line
+**Cut in the scope pass:** (or `none`). Read its report; if you disagree
+with a cut, restore the task and record why with
+`studio-state ledger "Ruling: kept T<n> against producer cut — <why>"`.
+Vertical slice first; polish, variants and content wait.
 
 ## 5. Self-review, then gate
 

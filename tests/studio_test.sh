@@ -140,14 +140,14 @@ test_stage_skill_contracts() {
   assert_not_contains "$S/execute/SKILL.md" "finishing-a-development-branch" "execute never offers a merge path"
   assert_contains "$S/execute/SKILL.md" "quit-after" "execute smoke-boots the project"
   assert_contains "$S/execute/SKILL.md" "git log -1" "execute requires a committed spec and plan"
-  assert_contains "$S/execute/SKILL.md" "godot-prompter:godot-game-dev" "execute dispatches godot-prompter's game dev for gameplay tasks"
+  assert_not_contains "$S/execute/SKILL.md" "godot-prompter:godot-game-dev" "execute no longer dispatches godot-prompter's game dev"
   assert_contains "$S/execute/SKILL.md" "game-dev:feel-tuner" "execute dispatches the studio's feel tuner"
   assert_contains "$S/execute/SKILL.md" "unverified" "execute lists unverified items"
   assert_not_contains "$S/execute/SKILL.md" "bypass the event bus" "execute's reviewer no longer mandates bus-for-everything"
   assert_contains "$S/execute/SKILL.md" "[-][-]headless" "execute's smoke boot runs headless"
   assert_contains "$S/execute/SKILL.md" "SCRIPT ERROR" "execute's smoke boot checks for SCRIPT ERROR"
-  assert_contains "$S/execute/SKILL.md" "godot-prompter:godot-code-reviewer" "execute dispatches godot-prompter's code reviewer"
-  assert_contains "$S/execute/SKILL.md" "godot-prompter:godot-ui-designer" "execute dispatches godot-prompter's UI designer"
+  assert_not_contains "$S/execute/SKILL.md" "godot-prompter:godot-code-reviewer" "execute no longer dispatches godot-prompter's code reviewer"
+  assert_not_contains "$S/execute/SKILL.md" "godot-prompter:godot-ui-designer" "execute no longer dispatches godot-prompter's UI designer"
   assert_contains "$S/execute/SKILL.md" "GODOT_PATH" "execute's smoke boot resolves the binary via GODOT_PATH"
 }
 
@@ -191,8 +191,24 @@ test_game_dev_agent_roster() {
   done
 }
 
+# Stage skills dispatch the studio's own agents, not stand-ins. These strings
+# are the ones the skills must carry once the role agents exist.
+test_stage_skills_dispatch_agents() {
+  S="$REPO_ROOT/studios/game-dev/skills"
+  assert_contains "$S/execute/SKILL.md" 'subagent_type: "game-dev:<role>"' "execute dispatches game-dev:<role> agents"
+  assert_contains "$S/execute/SKILL.md" 'game-dev:reviewer' "execute reviews with game-dev:reviewer"
+  assert_not_contains "$S/execute/SKILL.md" 'general-purpose' "execute no longer dispatches general-purpose"
+  assert_not_contains "$S/execute/SKILL.md" 'Plan 2 of the studio' "execute carries no Plan 2 note"
+  assert_contains "$S/brainstorm/SKILL.md" 'dispatch `game-dev:architect`' "brainstorm dispatches the architect"
+  assert_contains "$S/brainstorm/SKILL.md" 'dispatch `game-dev:game-designer`' "brainstorm dispatches the game designer"
+  assert_not_contains "$S/brainstorm/SKILL.md" 'general-purpose' "brainstorm no longer dispatches general-purpose"
+  assert_contains "$S/plan/SKILL.md" 'dispatch `game-dev:producer`' "plan dispatches the producer"
+  assert_not_contains "$S/plan/SKILL.md" 'Plan 2 of the studio' "plan carries no Plan 2 note"
+  assert_not_contains "$S/studio/SKILL.md" 'until that skill is installed' "router has no playtest fallback note"
+}
+
 run_tests test_plugin_manifests test_skill_frontmatter test_agent_frontmatter \
   test_external_references_declared test_required_plugins_enabled test_bin_syntax \
   test_role_agents_exist test_stage_skill_contracts test_plan_skill_contract \
   test_brainstorm_skill_contract \
-  test_studio_skill_contract test_game_dev_agent_roster
+  test_studio_skill_contract test_game_dev_agent_roster test_stage_skills_dispatch_agents

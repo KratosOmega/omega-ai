@@ -74,7 +74,7 @@ by what the request *is*, not by which stage the project is in:
 | Request looks like | Route to |
 |--------------------|----------|
 | a feature, mechanic, system, enemy, level, or "add / change / remove X" | `/game-dev:brainstorm` with the text as its topic |
-| "feels wrong / floaty / laggy / unresponsive / too fast / juice" | `/game-dev:playtest` — a feel pass; until that skill is installed, `game-dev:game-feel` for the diagnostic order |
+| "feels wrong / floaty / laggy / unresponsive / too fast / juice" | `/game-dev:playtest` — a feel pass over the items that describe the complaint |
 | "is this done / does this match the spec / review it" | `/game-dev:review` |
 | "make a plan / break this down" and a spec exists | `/game-dev:plan` |
 | "build it / implement / go" and an approved plan exists | `/game-dev:execute` |

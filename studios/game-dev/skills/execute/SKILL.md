@@ -50,39 +50,34 @@ whole-branch review, ledger. The studio rules in §2–§5 layer on top of it.
 **`--inline`.** Only when the user passed it. Invoke
 `superpowers:executing-plans` instead and implement tasks in this session in
 batches, checking in with the user between batches. You are the implementer:
-before each task read the skills its role's row in §2 lists. §3, §5 and §6
+before each task read the skills named in the role agent's `## Skills you
+may call` section (`studios/game-dev/agents/<role>.md`). §3, §5 and §6
 still apply; §2's dispatch and §4 do not.
 
 ## 2. Who implements (subagent-driven mode)
 
-Dispatch the implementer named by the task's `Role:` line from this table.
-The studio's own role agents arrive in Plan 2; until then a role with a
-godot-prompter equivalent dispatches that agent, and `level-designer`
-dispatches `general-purpose`. Open every brief with the persona line — a
-godot-prompter agent knows the engine, not this studio's rules.
+Dispatch the agent named by the task's `Role:` line with the Agent tool
+(`subagent_type: "game-dev:<role>"` — for example
+`subagent_type: "game-dev:gameplay-programmer"`). The agent carries its own
+persona, rules and output contract; the brief carries only the task.
 
-| `Role:` | Dispatch | Persona line | Skills the brief names |
-|---------|----------|--------------|------------------------|
-| `game-dev:gameplay-programmer` | `godot-prompter:godot-game-dev` | You are the studio's gameplay programmer: composition over inheritance, signals up and calls down, every tunable number in a Resource, tests first. | `godot-prompter:gdscript-patterns`, `godot-prompter:state-machine`, `godot-prompter:event-bus`, `godot-prompter:resource-pattern`, `godot-prompter:component-system`, `godot-prompter:player-controller`, `godot-prompter:input-handling`, `godot-prompter:physics-system`, `godot-prompter:camera-system`, `godot-prompter:godot-testing` |
-| `game-dev:architect` | `godot-prompter:godot-game-architect` | You are the studio's architect: scene tree, state machines, signal topology, Resource schemas; you leave a decision and its reason, not just code. | `godot-prompter:scene-organization`, `godot-prompter:state-machine`, `godot-prompter:event-bus`, `godot-prompter:component-system`, `godot-prompter:dependency-injection`, `godot-prompter:resource-pattern` |
-| `game-dev:ui-designer` | `godot-prompter:godot-ui-designer` | You are the studio's UI designer: Control nodes only, containers over manual positioning, one Theme resource. | `godot-prompter:godot-ui`, `godot-prompter:hud-system`, `godot-prompter:responsive-ui` |
-| `game-dev:feel-tuner` | `game-dev:feel-tuner` | (the agent carries it) | `game-dev:game-feel`, `godot-prompter:tween-animation`, `godot-prompter:camera-system`, `godot-prompter:animation-system`, `godot-prompter:input-handling` |
-| `game-dev:tech-artist` | `game-dev:tech-artist` | (the agent carries it) | `game-dev:2d-sprite-pipeline`, `godot-prompter:2d-essentials`, `godot-prompter:assets-pipeline` |
-| `game-dev:level-designer` | `general-purpose` | You are the studio's level designer: layout teaches the mechanic before it tests it; collision is authored on the tileset, not per level. | `godot-prompter:2d-essentials` |
+One exception: when `.studio/config.json` sets `language: csharp` and the
+role is `game-dev:gameplay-programmer`, dispatch
+`godot-prompter:godot-csharp-engineer` instead and prepend the project
+`CLAUDE.md` architecture rules and the gameplay-programmer's output contract
+to its brief, because that agent does not know the studio's report shape.
 
-When `.studio/config.json` sets `language: csharp`, `gameplay-programmer`
-dispatches `godot-prompter:godot-csharp-engineer` instead, and the skills
-column swaps too: `godot-prompter:csharp-godot` and
-`godot-prompter:csharp-signals` replace `godot-prompter:gdscript-patterns`
-(the engine-pattern skills — `state-machine`, `event-bus`,
-`resource-pattern`, `component-system`, `player-controller`,
-`input-handling`, `physics-system`, `camera-system`, `godot-testing` — carry
-over unchanged).
+The `Role:` values are the studio's agents: `game-dev:gameplay-programmer`,
+`game-dev:level-designer`, `game-dev:tech-artist`, `game-dev:feel-tuner`,
+`game-dev:ui-designer`, `game-dev:architect` implement; `game-dev:game-designer`,
+`game-dev:producer`, `game-dev:playtester` and `game-dev:reviewer` never
+appear in `Role:`.
 
 Every brief also carries: the task text (via the skill's task-brief script),
-the spec sections the task cites, the project `CLAUDE.md` architecture
-rules, and the skills column above as "read these before writing code". A
-stuck implementer reads `superpowers:systematic-debugging`.
+the spec sections the task cites, and the project `CLAUDE.md` architecture
+rules. The agent's own `## Skills you may call` section (in
+`agents/<role>.md`) names the skills it reads before writing code. A stuck
+implementer reads `superpowers:systematic-debugging`.
 
 ## 3. Verify rules (both modes)
 
@@ -93,10 +88,9 @@ kind listed binds the implementer:
   the test named in `Files:` is written and seen to fail before the
   implementation, then passes. The test framework is the project's test
   framework (`tests` in `.studio/config.json`, default GUT). Before
-  reporting, run the project's test suite: `studio-test` when it is on
-  `PATH` (it arrives with the engine toolkit); otherwise the framework's
-  command line from `godot-prompter:godot-testing`, headless, with the exit
-  code checked.
+  reporting, the implementer runs `studio-test` and pastes its summary
+  line. Exit 2 (no engine binary) or 3 (GUT not installed) stops the task:
+  report it to the user with the printed hint; do not work around it.
 - `playtest` — the implementer's report ends with the playtest item the task
   defined (action, expected perceptual result, what a failure looks like).
   Record it with `studio-state ledger "T<n> Playtest item: <text>"`.
@@ -109,10 +103,11 @@ played.
 
 ## 4. Who reviews (subagent-driven mode)
 
-The task reviewer from subagent-driven-development is dispatched as
-`godot-prompter:godot-code-reviewer`, with the studio's checklist appended to
-the global-constraints block it receives (Plan 2 of the studio replaces it
-with the `game-dev:reviewer` agent):
+Where subagent-driven-development dispatches its task reviewer, dispatch
+`game-dev:reviewer` (`subagent_type: "game-dev:reviewer"`) with the task
+text, the spec sections it cites, the global-constraints block, and the
+commit range. The agent carries this checklist; it is repeated here so the
+orchestrator can judge the report:
 
 - Spec compliance: every acceptance criterion the task claims is met, and
   nothing beyond the task was built.
@@ -163,10 +158,7 @@ When the final whole-branch review is clean:
 2. `studio-state set stage review`.
 3. List every ruling you made, in order, with what it costs if wrong.
 4. List every `Playtest item:` and `Visual:` line in `studio-state show`
-   under **Unverified — check by hand before merging**. They were reviewed
+   under **unverified — check by hand before merging**. They were reviewed
    by reading code, not by playing; the playtest stage owns them.
-5. Tell the user the next command is `/game-dev:review`. If that skill is
-   not in your skill list yet, say that the review and playtest stages are
-   not installed and that the branch must not be merged until the
-   unverified items above are checked by hand. Do not merge, and do not
-   name a merging skill.
+5. Tell the user the next command is `/game-dev:review`. Do not merge, and
+   do not name a merging skill.
