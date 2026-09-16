@@ -222,9 +222,71 @@ test_test_imports_when_dot_godot_is_absent() {
   assert_not_contains "$log" "\-\-import" "a project with .godot/ is not imported again"
 }
 
+test_run_clean() {
+  P="$(fresh_project run-clean)"
+  verb "$P" studio-run --seconds 1
+  assert_eq "0" "$(cat "$TMP/status")" "a clean run exits 0"
+  assert_contains "$TMP/out" "^studio-run: clean" "a clean run says so"
+  log="$(ls "$P"/.studio/reports/run-*.log | head -n 1)"
+  assert_file "$log" "the run log lands in .studio/reports"
+  assert_contains "$log" "\-\-headless" "the default run is headless"
+  assert_contains "$log" "\-\-path $P" "the run targets the project"
+}
+
+test_run_detects_script_errors() {
+  P="$(fresh_project run-error)"
+  mkdir -p "$P/.godot"   # already imported; the stub prints its error line on an import run too
+  STUB_SCRIPT_ERROR=1 verb "$P" studio-run --seconds 1
+  assert_eq "1" "$(cat "$TMP/status")" "a SCRIPT ERROR line exits 1"
+  assert_eq "1" "$(head -n 1 "$TMP/out" | grep -c 'SCRIPT ERROR')" "error lines are echoed first"
+  assert_contains "$TMP/out" "^studio-run: 1 error line" "the summary counts error lines"
+}
+
+test_run_passes_scene_and_windowed() {
+  P="$(fresh_project run-scene)"
+  mkdir -p "$P/.godot"   # already imported; an import run is always headless
+  verb "$P" studio-run --scene res://levels/test_dash.tscn --seconds 1 --windowed
+  log="$(ls "$P"/.studio/reports/run-*.log | head -n 1)"
+  assert_contains "$log" "res://levels/test_dash.tscn" "the scene is passed to the engine"
+  assert_not_contains "$log" "\-\-headless" "--windowed drops --headless"
+}
+
+test_run_terminates_a_long_process() {
+  P="$(fresh_project run-long)"
+  mkdir -p "$P/.godot"   # already imported; the stub sleeps on an import run too
+  start="$(date +%s)"
+  STUB_SLEEP=30 verb "$P" studio-run --seconds 1
+  elapsed=$(( $(date +%s) - start ))
+  assert_eq "0" "$(cat "$TMP/status")" "a process that outlives --seconds is not an error"
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if [ "$elapsed" -lt 10 ]; then _pass "the engine is terminated after --seconds"; else _fail "the engine is terminated after --seconds (took ${elapsed}s)"; fi
+}
+
+test_run_rejects_bad_options() {
+  P="$(fresh_project run-opts)"
+  verb "$P" studio-run --frames 3
+  assert_eq "1" "$(cat "$TMP/status")" "an unknown option exits 1"
+  verb "$P" studio-run --seconds
+  assert_eq "1" "$(cat "$TMP/status")" "a missing option value exits 1"
+}
+
+test_run_imports_when_dot_godot_is_absent() {
+  P="$(fresh_project run-import)"
+  verb "$P" studio-run --seconds 1
+  log="$(ls "$P"/.studio/reports/run-*.log | head -n 1)"
+  assert_contains "$log" "^stub godot args: --headless --path $P --import$" "a project without .godot/ is imported before the run"
+  P="$(fresh_project run-imported)"
+  mkdir -p "$P/.godot"
+  verb "$P" studio-run --seconds 1
+  log="$(ls "$P"/.studio/reports/run-*.log | head -n 1)"
+  assert_not_contains "$log" "\-\-import" "a project with .godot/ is not imported again"
+}
+
 run_tests test_dispatch_rejects_unknown_engine test_dispatch_needs_a_studio_root \
   test_resolve_honours_godot_path test_resolve_ignores_a_non_executable_godot_path \
   test_resolve_finds_an_app_bundle test_resolve_finds_godot_on_path test_guide_has_an_install_line \
   test_test_needs_a_project test_test_falls_back_to_studio_json test_test_exits_3_without_gut \
   test_test_exits_2_without_engine test_test_passes_and_reports test_test_reports_failures \
-  test_test_targets_a_file test_test_targets_a_directory test_test_imports_when_dot_godot_is_absent
+  test_test_targets_a_file test_test_targets_a_directory test_test_imports_when_dot_godot_is_absent \
+  test_run_clean test_run_detects_script_errors test_run_passes_scene_and_windowed \
+  test_run_terminates_a_long_process test_run_rejects_bad_options test_run_imports_when_dot_godot_is_absent
