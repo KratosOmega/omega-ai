@@ -3018,7 +3018,7 @@ If the first `grep` prints 0, the user-scope MCP file is elsewhere for this Clau
 - [ ] **Step 2: Doctor**
 
 Run: `./doctor.sh game-dev`
-Expected: `plugin:       game-dev 0.1.0   skills 8  agents 10  hooks present`; both required plugins `ok <version>`; `delegations:` with `superpowers: 8 of 8 resolved` and `godot-prompter: <M> of <M> resolved` (M is the number of `godot-prompter:` lines in `requires.txt`; both counts equal) and no `MISSING` line; `engine:       godot4 at /Applications/Godot_mono.app/Contents/MacOS/Godot`; `mcp:          godot registered`; `shim on PATH: yes`; `leakage: none`; exit 0.
+Expected: `plugin:       game-dev 0.1.0   skills 12  agents 10  hooks present`; both required plugins `ok <version>`; `delegations:` with `superpowers: 8 of 8 resolved` and `godot-prompter: <M> of <M> resolved` (M is the number of `godot-prompter:` lines in `requires.txt`; both counts equal) and no `MISSING` line; `engine:       godot4 at /Applications/Godot_mono.app/Contents/MacOS/Godot`; `mcp:          godot registered`; `shim on PATH: yes`; `leakage: none`; exit 0.
 
 If a `MISSING` line appears, the upstream plugin renamed a skill: fix `requires.txt` and the referencing agent or skill, and re-run.
 
@@ -3038,8 +3038,8 @@ Without GUT installed, `studio-test` must print the install line and exit 3; che
 
 Start `claude-gd` in that project and run, replying at each gate:
 
-1. `/game-dev:studio` — expected: the state line and `Next: /game-dev:brainstorm`.
-2. `/game-dev:brainstorm add a dash ability for the player` — expected: classification, question batches, the architect dispatched only if you chose the architectural path, a spec with the eight headings, an artifact link, a stop. Reply `approve`.
+1. `/game-dev:studio` — expected: the state line and `Next: /game-dev:brainstorm`. In a fresh project with no `.studio/` yet, expect an `AskUserQuestion` about running `studio-state init` first instead — answer yes and continue.
+2. `/game-dev:brainstorm add a dash ability for the player` — expected: classification, question batches, the architect dispatched only if you chose the architectural path, a spec carrying every heading in the `brainstorm` skill's template, an artifact link, a stop. Reply `approve`.
 3. `/game-dev:plan` — expected: `game-dev:producer` dispatched (visible as an Agent call), a `Cut in the scope pass:` line in the plan header, `Role:`/`Verify:` on every task, a stop. Reply `approve`.
 4. `/game-dev:execute` — expected: Agent calls with `subagent_type` `game-dev:gameplay-programmer` / `game-dev:feel-tuner` and `game-dev:reviewer` after each task; `studio-test` summary lines in the implementers' reports; `stage: review` at the end.
 5. `/game-dev:review` — expected: `studio-test` and `studio-lint` run first, `game-dev:reviewer` over the branch, fix commits if any, `review clean` in the ledger, `stage: playtest`.
@@ -3047,7 +3047,7 @@ Start `claude-gd` in that project and run, replying at each gate:
 7. `/game-dev:ship` — expected: three verification commands with their output shown, the finishing-branch menu; choose "keep the branch" for this exercise; `game-dev:producer` dispatched; a new entry at the top of `docs/game-dev/PROGRESS.md`; `stage: retro`.
 8. `/game-dev:retro` — expected: one question batch, one to three files under `~/.claude-gamedev/memory/`, matching lines in `~/.claude-gamedev/memory/MEMORY.md`, the sync reminder, `stage: idle`.
 
-Confirm with `cat .studio/STATE.md`: `stage: idle`, `spec: -`, `plan: -`, `task: -`, `last_playtest: docs/game-dev/playtests/…`, and a ledger containing `spec approved`, `plan approved`, `T<n> complete`, `review clean`, `playtest written`, `playtest signed off`, `shipped`, `retro written`. Then, from the omega-ai checkout, `./sync-memory.sh game-dev` copies the new memory files into `studios/game-dev/memory/`; inspect them and commit or discard.
+Confirm with `cat .studio/STATE.md`: `stage: idle`, `spec: -`, `plan: -`, `task: -`, `last_playtest: docs/game-dev/playtests/…`. The eight ledger phrases — `spec approved`, `plan approved`, `T<n> complete`, `review clean`, `playtest written`, `playtest signed off`, `shipped`, `retro written` — do not live in `STATE.md`: every stage from `brainstorm` through `retro` writes with `spec` set, so `studio-state ledger` routes each of them to the feature ledger under `.studio/ledger/` instead; `ls .studio/ledger/` to find it (it is the only file there for this run), and `cat` it to confirm all eight. Then, from the omega-ai checkout, `./sync-memory.sh game-dev` copies the new memory files into `studios/game-dev/memory/`; inspect them and commit or discard.
 
 - [ ] **Step 5: Record the result**
 
