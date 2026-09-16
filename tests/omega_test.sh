@@ -268,8 +268,8 @@ test_session_start() {
   assert_eq "1" "$(wc -l < "$TMP/hook.out" | tr -d ' ')" "session-start output is a single line"
   assert_contains "$TMP/hook.out" '"hookEventName":"SessionStart"' "output names the SessionStart event"
   context > "$TMP/ctx.txt"
-  assert_contains "$TMP/ctx.txt" "Omega global skills: /omega:handoff, /omega:parallel \[N|off\], /omega:local-merge \[off\], /omega:integration <start|add|status|finish>, /omega:autopilot \[off\], /omega:delegate \[off\]\." \
-    "context names the six skills"
+  assert_contains "$TMP/ctx.txt" "Omega global skills: /omega:handoff, /omega:parallel \[N|off\], /omega:local-merge \[off\], /omega:integration <start|add|status|finish>, /omega:autopilot \[off\], /omega:delegate \[off\], /omega:reply \[off\]\." \
+    "context names the seven skills"
   assert_contains "$TMP/ctx.txt" "Mode tool: $OMEGA/bin/omega-mode (set | clear | show | path | brief)\." "context names the omega-mode path"
   assert_contains "$TMP/ctx.txt" "Keep-awake: $OMEGA/bin/omega-caffeine (start | stop | status)\." "context names the omega-caffeine path"
   assert_not_contains "$TMP/ctx.txt" "Omega modes:" "no modes block when no mode is set"
@@ -351,6 +351,16 @@ test_prompt_submit() {
   assert_contains "$CFG/omega/modes/p1" "^delegate$" "/omega:delegate 3 changes nothing"
   hook prompt-submit.sh '{"session_id":"p1","hook_event_name":"UserPromptSubmit","prompt":"<command-name>/omega:delegate</command-name><command-args>off</command-args>"}'
   assert_not_contains "$CFG/omega/modes/p1" "^delegate" "/omega:delegate off clears delegate"
+
+  hook prompt-submit.sh '{"session_id":"p1","hook_event_name":"UserPromptSubmit","prompt":"<command-message>reply</command-message>\n<command-name>/omega:reply</command-name>\n<command-args></command-args>"}'
+  assert_contains "$CFG/omega/modes/p1" "^reply$" "/omega:reply with empty args sets reply"
+  context > "$TMP/ctx-reply.txt"
+  assert_contains "$TMP/ctx-reply.txt" "  reply: explain and decide in one concrete scenario from the project's world, five lines at most; no paths, symbols, config keys or raw values in the prose; code, commands, exact errors, test results and warnings stay verbatim\." \
+    "the turn's context carries the reply rule line"
+  hook prompt-submit.sh '{"session_id":"p1","hook_event_name":"UserPromptSubmit","prompt":"<command-name>/omega:reply</command-name><command-args>3</command-args>"}'
+  assert_contains "$CFG/omega/modes/p1" "^reply$" "/omega:reply 3 changes nothing"
+  hook prompt-submit.sh '{"session_id":"p1","hook_event_name":"UserPromptSubmit","prompt":"<command-name>/omega:reply</command-name><command-args>off</command-args>"}'
+  assert_not_contains "$CFG/omega/modes/p1" "^reply" "/omega:reply off clears reply"
 
   before="$(mode --session p1 show)"
   hook prompt-submit.sh '{"session_id":"p1","hook_event_name":"UserPromptSubmit","prompt":"<command-message>caveman</command-message>\n<command-name>/caveman</command-name>\n<command-args>off</command-args>"}'
