@@ -61,14 +61,18 @@ fi
 if [ "$PURGE" = "1" ]; then
   # Only a root this installer wrote may be purged; the manifest is the proof.
   [ -f "$MANIFEST" ] || die "no manifest at $MANIFEST — not an omega-ai config root, refusing to purge"
-  for server in $(manifest_mcp_servers "$MANIFEST"); do
-    mcp_remove "$TARGET" "$server"
-  done
   if [ "$ASSUME_YES" != "1" ]; then
     printf 'Delete the entire config root %s, including sessions and history? [y/N] ' "$TARGET"
     read -r reply
     case "$reply" in y|Y) ;; *) die "aborted" ;; esac
   fi
+  # The MCP server is unregistered only once the operator has confirmed: an
+  # aborted purge (a reply other than y/Y dies above) must leave a working
+  # server registered, not unregister it as a side effect of a purge that
+  # never happened.
+  for server in $(manifest_mcp_servers "$MANIFEST"); do
+    mcp_remove "$TARGET" "$server"
+  done
   # rm -rf on a symlink removes the link and keeps the directory: purge the
   # directory the target names, then the link that named it.
   real="$(canon_path "$TARGET/.")"

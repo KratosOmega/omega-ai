@@ -287,6 +287,27 @@ test_uninstall_removes_mcp() {
     "uninstall unregisters the server inside the config root"
 }
 
+# An aborted --purge (a reply other than y/Y) must leave a registered MCP
+# server alone: unregistering it is an irreversible side effect the
+# confirmation prompt exists to gate.
+test_uninstall_purge_confirmation_gates_mcp_removal() {
+  sh "$REPO_ROOT/install.sh" game-dev --target "$TMP/mcppurge" --shim-dir "$TMP/bin-mcppurge" >/dev/null 2>&1
+  assert_file "$TMP/mcppurge/.claude.json" "install registered the server"
+  : > "$STUBS/claude.calls"
+  status=0
+  printf 'n\n' | sh "$REPO_ROOT/uninstall.sh" game-dev --target "$TMP/mcppurge" --shim-dir "$TMP/bin-mcppurge" \
+    --purge > "$TMP/mcppurge-abort.out" 2>&1 || status=$?
+  assert_eq "1" "$status" "an aborted purge exits non-zero"
+  assert_not_contains "$STUBS/claude.calls" "mcp remove" "an aborted purge never unregisters the server"
+  assert_file "$TMP/mcppurge/.claude.json" "an aborted purge leaves the registered server in place"
+
+  sh "$REPO_ROOT/uninstall.sh" game-dev --target "$TMP/mcppurge" --shim-dir "$TMP/bin-mcppurge" \
+    --purge --yes >/dev/null 2>&1
+  assert_contains "$STUBS/claude.calls" "mcp remove --scope user godot" \
+    "a confirmed purge unregisters the server"
+  assert_missing "$TMP/mcppurge" "a confirmed purge removes the config root"
+}
+
 # fake_cache ROOT — a plugin cache under ROOT holding every skill and agent
 # game-dev's requires.txt declares, laid out as Claude Code lays it out.
 fake_cache() {
@@ -1152,6 +1173,7 @@ run_tests test_studio_contract test_install_unknown_studio test_install_guard \
   test_install_accepts_no_mcp test_install_registers_mcp test_install_skips_mcp_without_node_18 \
   test_install_skips_mcp_without_engine test_install_no_mcp_flag_skips_registration \
   test_install_general_has_no_mcp test_reinstall_reregisters_mcp_once test_uninstall_removes_mcp \
+  test_uninstall_purge_confirmation_gates_mcp_removal \
   test_doctor_engine_and_mcp_rows test_doctor_delegations test_settings_backup test_shim \
   test_doctor test_doctor_detects_leak test_doctor_reports_no_plugins \
   test_doctor_plugin_report test_doctor_plugin_name_mismatch \
