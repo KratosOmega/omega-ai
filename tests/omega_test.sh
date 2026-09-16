@@ -191,8 +191,9 @@ test_mode_brief() {
   mode --session t4 set integration slug=ui-rework
   mode --session t4 set autopilot
   mode --session t4 set delegate
+  mode --session t4 set reply
   mode --session t4 brief > "$TMP/brief.txt"
-  assert_eq "Omega modes: parallel max=3 · local-merge · integration slug=ui-rework · autopilot · delegate" \
+  assert_eq "Omega modes: parallel max=3 · local-merge · integration slug=ui-rework · autopilot · delegate · reply" \
     "$(head -n 1 "$TMP/brief.txt")" "brief's first line joins the modes with a middle dot"
   assert_contains "$TMP/brief.txt" "^  parallel: dispatch up to 3 ready tasks at once, each in its own worktree; review each; cherry-pick onto the feature branch; the invoking skill's bookkeeping is unchanged\.$" \
     "brief carries the parallel rule with its cap"
@@ -204,7 +205,9 @@ test_mode_brief() {
     "brief carries the autopilot rule"
   assert_contains "$TMP/brief.txt" "^  delegate: the main session dispatches, reads reports and runs status commands; every edit, search and document goes to a subagent; never fix by hand\.$" \
     "brief carries the delegate rule"
-  assert_eq "6" "$(wc -l < "$TMP/brief.txt" | tr -d ' ')" "brief is the header plus one line per mode"
+  assert_contains "$TMP/brief.txt" "^  reply: explain and decide in one concrete scenario from the project's world, five lines at most; no paths, symbols, config keys or raw values in the prose; code, commands, exact errors, test results and warnings stay verbatim\.$" \
+    "brief carries the reply rule"
+  assert_eq "7" "$(wc -l < "$TMP/brief.txt" | tr -d ' ')" "brief is the header plus one line per mode"
   mode --session t4 set parallel
   mode --session t4 brief > "$TMP/brief2.txt"
   assert_contains "$TMP/brief2.txt" "^  parallel: dispatch every ready task at once, each in its own worktree; review each; cherry-pick onto the feature branch; the invoking skill's bookkeeping is unchanged\.$" \
@@ -212,7 +215,7 @@ test_mode_brief() {
   mode --session t4 set custom-mode key=value
   mode --session t4 brief > "$TMP/brief3.txt"
   assert_contains "$TMP/brief3.txt" "custom-mode key=value" "an unknown mode is listed in the header"
-  assert_eq "6" "$(wc -l < "$TMP/brief3.txt" | tr -d ' ')" "an unknown mode gets no rule line"
+  assert_eq "7" "$(wc -l < "$TMP/brief3.txt" | tr -d ' ')" "an unknown mode gets no rule line"
 }
 
 # hook NAME JSON — run a hook as Claude Code would: the JSON on stdin, the
