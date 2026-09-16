@@ -61,16 +61,16 @@ test_plugin_files() {
   assert_eq "omega" "$(json_field "$OMEGA/.claude-plugin/plugin.json" name)" \
     "omega plugin.json names the omega namespace"
   assert_eq "0.1.0" "$(json_field "$OMEGA/.claude-plugin/plugin.json" version)" "omega plugin.json is version 0.1.0"
-  for s in handoff parallel local-merge integration autopilot delegate; do
+  for s in handoff parallel local-merge integration autopilot delegate reply; do
     assert_file "$OMEGA/skills/$s/SKILL.md" "omega ships the $s skill"
   done
-  assert_contains "$OMEGA/.claude-plugin/plugin.json" "autopilot, delegate\." "omega plugin.json names the six skills"
+  assert_contains "$OMEGA/.claude-plugin/plugin.json" "delegate, reply\." "omega plugin.json names the seven skills"
   assert_missing "$OMEGA/requires.txt" "omega declares no hard dependencies"
   assert_missing "$OMEGA/settings.json" "omega has no settings.json"
 }
 
 test_skill_stubs() {
-  for s in handoff parallel local-merge integration autopilot delegate; do
+  for s in handoff parallel local-merge integration autopilot delegate reply; do
     f="$OMEGA/skills/$s/SKILL.md"
     assert_eq "---" "$(head -n 1 "$f")" "omega:$s starts with frontmatter"
     assert_eq "$s" "$(first_field "$f" name)" "omega:$s frontmatter name matches its directory"
@@ -85,6 +85,12 @@ test_skill_stubs() {
       "omega:$s carries the precedence contract"
     assert_contains "$OMEGA/skills/$s/SKILL.md" "omega-mode" "omega:$s sets or clears its mode through omega-mode"
   done
+  # reply shapes prose, not scheduling, so it carries its own precedence
+  # block instead of the five-mode sentence above; reply_contract.sh asserts
+  # that block's wording.
+  assert_contains "$OMEGA/skills/reply/SKILL.md" "This mode changes how the session explains itself to the user." \
+    "omega:reply carries its own precedence contract"
+  assert_contains "$OMEGA/skills/reply/SKILL.md" "omega-mode" "omega:reply sets or clears its mode through omega-mode"
 }
 
 test_marketplace() {
@@ -93,7 +99,7 @@ test_marketplace() {
   assert_status 0 "marketplace.json is valid JSON" -- valid_json "$m"
   assert_eq "omega-ai" "$(json_field "$m" name)" "the marketplace is named omega-ai"
   assert_contains "$m" '"name": "omega"' "the marketplace publishes the omega plugin"
-  assert_contains "$m" 'autopilot, delegate\.' "the marketplace description names the six skills"
+  assert_contains "$m" 'delegate, reply\.' "the marketplace description names the seven skills"
   src="$(sed -n 's/.*"source"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$m" | head -n 1)"
   assert_eq "./shared/omega" "$src" "the omega plugin's source is ./shared/omega"
   assert_file "$REPO_ROOT/${src#./}/.claude-plugin/plugin.json" "the marketplace source resolves to the plugin"

@@ -420,7 +420,7 @@ test_doctor() {
   sh "$REPO_ROOT/doctor.sh" general --target "$TMP/gen" > "$TMP/doctor.out" 2>&1
   assert_contains "$TMP/doctor.out" "$TMP/gen" "doctor reports the resolved config root"
   assert_contains "$TMP/doctor.out" "leakage: none" "doctor finds no leak into ~/.claude"
-  assert_contains "$TMP/doctor.out" "global plugin: omega 0.1.0   skills 6  hooks present" \
+  assert_contains "$TMP/doctor.out" "global plugin: omega 0.1.0   skills 7  hooks present" \
     "doctor reports the global plugin as the shim loads it"
   assert_contains "$TMP/doctor.out" "shim:         ok" "doctor accepts the two-plugin shim"
   # A shim from before the global plugin: the doctor names the gap and
