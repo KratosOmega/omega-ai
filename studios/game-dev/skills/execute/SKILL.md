@@ -146,15 +146,11 @@ follow. Everything else is a ruling.
 
 When the final whole-branch review is clean:
 
-1. **Smoke boot.** From the project root run the resolved binary headless
-   and let it quit on its own: `<binary> --headless --quit-after 1 2>&1`,
-   capturing both stdout and stderr — Godot prints `SCRIPT ERROR` and
-   `ERROR:` to stderr. Binary: `$GODOT_PATH` if set, else the first
-   `/Applications/Godot*.app/Contents/MacOS/Godot`, else `godot` on `PATH`;
-   if none is found, stop and ask the user to set `GODOT_PATH` — do not set
-   `stage review`. Require exit 0 and no line matching `SCRIPT ERROR` or
-   `ERROR:`. A failure is a task: fix it through the loop above, re-run,
-   then continue.
+1. **Smoke boot.** From the project root run `studio-run --seconds 5`. It
+   scans the run log for `SCRIPT ERROR` and `ERROR:` and exits 1 when either
+   appears, 2 when no Godot binary is found; on exit 2, stop and ask the user
+   to set `GODOT_PATH` — do not set `stage review`. A failure (exit 1) is a
+   task: fix it through the loop above, re-run, then continue.
 2. `studio-state set stage review`.
 3. List every ruling you made, in order, with what it costs if wrong.
 4. List every `Playtest item:` and `Visual:` line in `studio-state show`

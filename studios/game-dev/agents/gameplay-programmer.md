@@ -47,6 +47,10 @@ When stuck for more than two attempts, invoke
 
 ## Skills you may call
 
+- `superpowers:test-driven-development` — mandatory for every task's test,
+  written first and seen to fail (Method step 1).
+- `superpowers:systematic-debugging` — mandatory when stuck past two
+  attempts (Method above).
 - `godot-prompter:gdscript-patterns`, `godot-prompter:gdscript-advanced` —
   idioms, typing, `await`, performance pitfalls.
 - `godot-prompter:state-machine`, `godot-prompter:event-bus`,

@@ -16,8 +16,9 @@ Script method:
    whose check column says `playtest`, each numbered line of
    `## Acceptance criteria` that `## Test strategy` assigns to playtest or
    visual, every plan task tagged `Verify: playtest` or `Verify: visual`, and
-   every `T<n> Playtest item:` / `T<n> Visual:` line in the ledger of
-   `.studio/STATE.md`. Merge duplicates; keep the source reference.
+   every `T<n> Playtest item:` / `T<n> Visual:` line in the ledger printed by
+   `studio-state show` (`.studio/ledger/<feature>.md`). Merge duplicates;
+   keep the source reference.
 2. Order the items so the player never has to reload: setup first, then the
    happy path, then edge cases, then feel judgments.
 3. Write each item in this shape, numbered `P1`, `P2`, …:

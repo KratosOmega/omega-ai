@@ -12,7 +12,12 @@ description: Use when a playtest is signed off — verifies, finishes the branch
 - The ledger (`studio-state show`) has a `playtest signed off <path>` line
   whose path equals `studio-state get last_playtest`. If not, stop:
   "Playtest not signed off — run `/game-dev:playtest`." The user may sign
-  off now in one word; then record the ledger line and continue.
+  off now in one word, but only when `last_playtest` names a file that
+  exists — `last_playtest` of `-` means no playtest report exists yet, so a
+  verbal sign-off would record `playtest signed off -` and satisfy this same
+  precondition on every future run; refuse it and point at
+  `/game-dev:playtest` instead. Otherwise record
+  `studio-state ledger "playtest signed off <last_playtest>"` and continue.
 - Run `studio-state set stage ship`.
 
 ## 1. Verify — evidence, not assertion

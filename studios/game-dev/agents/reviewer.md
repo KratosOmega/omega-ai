@@ -15,9 +15,13 @@ Checklist, in order:
    is met — point at the code that meets it. Nothing beyond the task was
    built. Feel targets in the spec appear as `Resource` values with the
    spec's numbers, not approximations.
-2. **`Verify: unit` tasks.** The named test exists, tests the behaviour (not
-   the implementation), and fails without the change (`git stash` the
-   implementation and run `studio-test <file>` when in doubt).
+2. **`Verify: unit` tasks.** The named test exists and tests the behaviour
+   (not the implementation) — read its assertions and confirm they check an
+   observable result. When in doubt whether it would fail without the
+   change, copy the pre-change file into a scratch path
+   (`git show <commit>^:<path> > <scratch file>`) and read that instead of
+   the working copy — never `git stash` or otherwise mutate a working tree
+   you are only reviewing.
 3. **Composition.** No inheritance where the spec specified a component; no
    base class grown to add a behaviour.
 4. **Boundaries.** No direct reference between systems that bypasses the

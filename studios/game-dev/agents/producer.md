@@ -32,8 +32,8 @@ mark cut tasks and leave the numbering to the plan skill.
 
 Ship method:
 
-1. Read the plan, the ledger in `.studio/STATE.md`, and the latest playtest
-   report.
+1. Read the plan, the ledger printed by `studio-state show`
+   (`.studio/ledger/<feature>.md`), and the latest playtest report.
 2. Add a dated entry at the top of the `## Log` section of
    `docs/game-dev/PROGRESS.md`: what shipped (one line per player-visible
    change), the playtest report it passed, and the PR or merge reference.

@@ -94,6 +94,12 @@ schemas. Composition over inheritance; signals up, calls down, the event
 bus only where no ownership path exists; every tunable number in a
 Resource. Write the section only; write no plan file."
 
+When the feature involves a level, room, encounter or tile ruleset, also
+dispatch `game-dev:level-designer` (`subagent_type:
+"game-dev:level-designer"`) with the draft spec, briefed: "Write the
+**Level** section: what the level teaches, the beat sequence as a table,
+metrics in tiles, and the tileset rules."
+
 Fold their sections into the spec; put the designer's open questions to the
 user in the next batch.
 
@@ -135,6 +141,11 @@ What changes in the ten-second loop. "None" is a valid answer; say it.
 ## Design
 Core loop, mechanics, progression, difficulty — from `game-dev:game-designer`
 (architectural), or `n/a` (bounded).
+
+## Level
+What the level teaches, the beat sequence, metrics in tiles, and the
+tileset rules — from `game-dev:level-designer` when the feature involves a
+level, room, encounter or tile ruleset, or `n/a` otherwise.
 
 ## Failure and recovery
 What failing looks like, what it costs the player, how they get back in.

@@ -43,7 +43,14 @@ Stage: execute · Milestone: prototype · Spec: docs/game-dev/specs/2026-09-13-d
 Next: /game-dev:execute — resume at task 2 of 6
 ```
 
-The next stage follows from the current one:
+The next stage follows from the current one. `brainstorm` and `plan` set
+`stage` to their own name while they work, so that value names the stage in
+progress; but from `execute` onward, each stage skill sets `stage` to the
+stage still to run once it finishes (`execute` sets `review`, `review` sets
+`playtest`, `playtest` sets `ship`, `ship` sets `retro`, `retro` sets `idle`).
+So for `review`, `playtest`, `ship` and `retro`, `stage` names the *same*
+stage whether it is in progress or waiting to start — route to the
+same-named skill either way:
 
 | `stage` | Next | Unless |
 |---------|------|--------|
@@ -51,10 +58,10 @@ The next stage follows from the current one:
 | `brainstorm` | `/game-dev:plan` | `spec` is `-` — then the project is effectively idle: report `Stage: idle` and `Next: /game-dev:brainstorm` (a brainstorm that never reached a spec). Or the ledger has no `spec approved <path>` line for the current `spec` value — then: "spec awaiting approval; reply approve to `/game-dev:brainstorm` or re-run it" |
 | `plan` | `/game-dev:execute` | the ledger has no `plan approved <path>` line for the current `plan` value — same pattern |
 | `execute` | `/game-dev:execute` (resume) | `task` is `N/N` — then `/game-dev:review` |
-| `review` | `/game-dev:playtest` | — |
-| `playtest` | `/game-dev:ship` | the ledger has no `playtest signed off` line — "playtest awaiting sign-off" |
-| `ship` | `/game-dev:retro` | — |
-| `retro` | `/game-dev:brainstorm` | — |
+| `review` | `/game-dev:review` | — |
+| `playtest` | `/game-dev:playtest` | — |
+| `ship` | `/game-dev:ship` | the ledger has no `playtest signed off` line — say "playtest awaiting sign-off; run `/game-dev:playtest`" |
+| `retro` | `/game-dev:retro` | — |
 
 **Abandon / re-plan.** At any stage, when the user says the feature is
 dropped or the plan is too broken to follow, confirm with one
