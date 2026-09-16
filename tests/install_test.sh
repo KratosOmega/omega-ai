@@ -603,9 +603,16 @@ test_doctor_plugin_report() {
   assert_contains "$TMP/dr.out" "launch claude-gd once" "the warning names the shim to launch"
 
   mkdir -p "$TMP/dr/plugins/cache/claude-plugins-official/superpowers/6.3.0"
-  sh "$REPO_ROOT/doctor.sh" game-dev --target "$TMP/dr" > "$TMP/dr2.out" 2>&1
+  status=0
+  sh "$REPO_ROOT/doctor.sh" game-dev --target "$TMP/dr" > "$TMP/dr2.out" 2>&1 || status=$?
   assert_contains "$TMP/dr2.out" "superpowers@claude-plugins-official ok 6.3.0" \
     "a cached plugin is reported with its version"
+  # The version dir above is empty (no skills/agents/ under it), so every
+  # delegated superpowers skill is correctly reported MISSING from the cache
+  # — doctor fails here, and should.
+  assert_eq "1" "$status" "doctor fails when the cached version has no skills/agents fetched into it"
+  assert_contains "$TMP/dr2.out" "MISSING from the cached plugin" \
+    "doctor names the delegations missing from the empty version cache"
 
   printf '{ "model": "opus", "enabledPlugins": { "superpowers@claude-plugins-official": true } }\n' \
     > "$TMP/dr/settings.json"

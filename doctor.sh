@@ -200,7 +200,7 @@ if [ -n "$ENGINE" ]; then
   # MCP registration lands in the config root's .claude.json under
   # CLAUDE_CONFIG_DIR. Read the file rather than `claude mcp list`, which
   # starts every server to health-check it.
-  if [ -f "$TARGET/.claude.json" ] && grep -q '"godot"' "$TARGET/.claude.json"; then
+  if [ -f "$TARGET/.claude.json" ] && grep -q '"godot"[[:space:]]*:' "$TARGET/.claude.json"; then
     log "mcp:          godot registered"
   else
     log "mcp:          none (optional — reinstall with Node 18+ and a Godot binary to enable godot-mcp)"

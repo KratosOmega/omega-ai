@@ -249,14 +249,14 @@ if [ "$NO_MCP" = "1" ]; then
   log "mcp:      skipped (--no-mcp)"
 elif [ -z "$ENGINE" ] || [ ! -f "$RESOLVE" ]; then
   log "mcp:      none (studio declares no engine adapter)"
-elif [ "$DRY_RUN" = "1" ]; then
-  log "DRY  mcp add godot"
 elif [ "$(node_major)" -lt 18 ]; then
   log "mcp:      skipped (node 18+ not found — install Node.js to enable godot-mcp)"
 elif ! GODOT="$(sh "$RESOLVE" 2>/dev/null)"; then
   log "mcp:      skipped (no Godot binary found — set GODOT_PATH and reinstall to enable godot-mcp)"
 elif ! command -v claude >/dev/null 2>&1; then
   log "mcp:      skipped (claude is not on PATH)"
+elif [ "$DRY_RUN" = "1" ]; then
+  log "DRY  mcp add godot"
 elif CLAUDE_CONFIG_DIR="$TARGET" claude mcp add --scope user godot \
        -e "GODOT_PATH=$GODOT" -- npx -y @coding-solo/godot-mcp >/dev/null 2>&1; then
   manifest_add "$MANIFEST" "mcp godot"

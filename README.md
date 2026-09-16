@@ -162,7 +162,7 @@ alias claude-omega='claude --plugin-dir /path/to/omega-ai/shared/omega'
 ```
 
 Reports the config root, the plugin directory the shim loads and its skill /
-agent counts, the global plugin (`global plugin: omega 0.1.0   skills 5  hooks
+agent counts, the global plugin (`global plugin: omega 0.1.0   skills 6  hooks
 present`), every plugin `requires.txt` declares (enabled? fetched? which
 version?), whether every delegated skill and agent resolves in the fetched
 plugins, the engine binary, the MCP server, the shim the install recorded
