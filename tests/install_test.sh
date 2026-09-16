@@ -287,6 +287,53 @@ test_uninstall_removes_mcp() {
     "uninstall unregisters the server inside the config root"
 }
 
+# fake_cache ROOT — a plugin cache under ROOT holding every skill and agent
+# game-dev's requires.txt declares, laid out as Claude Code lays it out.
+fake_cache() {
+  req="$REPO_ROOT/studios/game-dev/requires.txt"
+  for kind in skill agent; do
+    for ref in $(requires_of "$req" "$kind"); do
+      plugin="${ref%%:*}"; name="${ref#*:}"
+      case "$plugin" in
+        superpowers) v="$1/plugins/cache/claude-plugins-official/superpowers/6.3.0" ;;
+        *) v="$1/plugins/cache/skillsmith/$plugin/1.9.0" ;;
+      esac
+      if [ "$kind" = skill ]; then
+        mkdir -p "$v/skills/$name"; : > "$v/skills/$name/SKILL.md"
+      else
+        mkdir -p "$v/agents"; : > "$v/agents/$name.md"
+      fi
+    done
+  done
+}
+
+test_doctor_delegations() {
+  sh "$REPO_ROOT/install.sh" game-dev --target "$TMP/dd" --shim-dir "$TMP/bin-dd" >/dev/null 2>&1
+  status=0
+  sh "$REPO_ROOT/doctor.sh" game-dev --target "$TMP/dd" > "$TMP/dd0.out" 2>&1 || status=$?
+  assert_eq "0" "$status" "no plugin cache is a warning, not a failure"
+  assert_contains "$TMP/dd0.out" "delegations:  not checked — plugins not yet fetched; launch claude-gd once" \
+    "doctor says why delegations were not checked"
+
+  fake_cache "$TMP/dd"
+  status=0
+  sh "$REPO_ROOT/doctor.sh" game-dev --target "$TMP/dd" > "$TMP/dd1.out" 2>&1 || status=$?
+  assert_eq "0" "$status" "every declared name resolving passes"
+  assert_contains "$TMP/dd1.out" "^  superpowers: [0-9][0-9]* of [0-9][0-9]* resolved" "doctor tallies superpowers delegations"
+  assert_contains "$TMP/dd1.out" "^  godot-prompter: [0-9][0-9]* of [0-9][0-9]* resolved" "doctor tallies godot-prompter delegations"
+  assert_not_contains "$TMP/dd1.out" "MISSING" "nothing is missing"
+  sp="$(grep '^  superpowers: ' "$TMP/dd1.out" | sed 's/^  superpowers: \([0-9]*\) of \([0-9]*\).*/\1 \2/')"
+  assert_eq "${sp% *}" "${sp#* }" "resolved equals declared for superpowers"
+
+  rm -rf "$TMP/dd/plugins/cache/claude-plugins-official/superpowers/6.3.0/skills/test-driven-development"
+  rm -f "$TMP/dd/plugins/cache/skillsmith/godot-prompter/1.9.0/agents/godot-csharp-engineer.md"
+  status=0
+  sh "$REPO_ROOT/doctor.sh" game-dev --target "$TMP/dd" > "$TMP/dd2.out" 2>&1 || status=$?
+  assert_eq "1" "$status" "a missing delegated name fails the doctor"
+  assert_contains "$TMP/dd2.out" "^  superpowers:test-driven-development MISSING from the cached plugin" "the missing skill is named"
+  assert_contains "$TMP/dd2.out" "^  godot-prompter:godot-csharp-engineer MISSING from the cached plugin" "the missing agent is named"
+}
+
 test_doctor_engine_and_mcp_rows() {
   sh "$REPO_ROOT/install.sh" game-dev --target "$TMP/dre" --shim-dir "$TMP/bin-dre" >/dev/null 2>&1
   sh "$REPO_ROOT/doctor.sh" game-dev --target "$TMP/dre" > "$TMP/dre.out" 2>&1
@@ -1105,7 +1152,7 @@ run_tests test_studio_contract test_install_unknown_studio test_install_guard \
   test_install_accepts_no_mcp test_install_registers_mcp test_install_skips_mcp_without_node_18 \
   test_install_skips_mcp_without_engine test_install_no_mcp_flag_skips_registration \
   test_install_general_has_no_mcp test_reinstall_reregisters_mcp_once test_uninstall_removes_mcp \
-  test_doctor_engine_and_mcp_rows test_settings_backup test_shim \
+  test_doctor_engine_and_mcp_rows test_doctor_delegations test_settings_backup test_shim \
   test_doctor test_doctor_detects_leak test_doctor_reports_no_plugins \
   test_doctor_plugin_report test_doctor_plugin_name_mismatch \
   test_option_value_required test_uninstall test_uninstall_scopes_manifest_entries \

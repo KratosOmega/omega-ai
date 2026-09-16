@@ -137,6 +137,52 @@ for p in $others; do
 done
 [ "$listed" = "1" ] || log "  (none)"
 
+# Delegated skills and agents: every skill/agent line in requires.txt must
+# exist in the cached plugin. This is what protects the composition decision
+# — a renamed upstream skill is reported here, not discovered mid-session.
+# Layout: plugins/cache/<marketplace>/<plugin>/<version>/{skills,agents}.
+delegation_state() {
+  _plugin="${2%%:*}"; _name="${2#*:}"; _state="uncached"
+  for _v in "$TARGET"/plugins/cache/*/"$_plugin"/*/; do
+    [ -d "$_v" ] || continue
+    _state="missing"
+    if [ "$1" = "skill" ] && [ -f "$_v/skills/$_name/SKILL.md" ]; then _state="ok"; break; fi
+    if [ "$1" = "agent" ] && [ -f "$_v/agents/$_name.md" ]; then _state="ok"; break; fi
+  done
+  printf '%s\n' "$_state"
+}
+
+checked=0
+missing_lines=""
+tally=""
+for req in $(requires_of "$REQUIRES" plugin); do
+  pname="${req%@*}"
+  total=0; resolved=0
+  for kind in skill agent; do
+    for ref in $(requires_of "$REQUIRES" "$kind"); do
+      [ "${ref%%:*}" = "$pname" ] || continue
+      case "$(delegation_state "$kind" "$ref")" in
+        ok) total=$((total + 1)); resolved=$((resolved + 1)); checked=1 ;;
+        missing) total=$((total + 1)); checked=1
+          missing_lines="$missing_lines
+  $ref MISSING from the cached plugin" ;;
+        uncached) ;;
+      esac
+    done
+  done
+  [ "$total" -gt 0 ] && tally="$tally
+  $pname: $resolved of $total resolved"
+done
+if [ "$checked" = "1" ]; then
+  log "delegations:$tally"
+  if [ -n "$missing_lines" ]; then
+    printf '%s\n' "$missing_lines" | sed '/^$/d'
+    failed=1
+  fi
+else
+  log "delegations:  not checked — plugins not yet fetched; launch $SHIM_NAME once, then re-run doctor"
+fi
+
 # Engine binary, through the studio's own adapter. A missing binary is a
 # warning: the studio installs and plans without it; studio-test and
 # studio-run exit 2 until it is found.
