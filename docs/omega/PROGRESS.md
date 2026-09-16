@@ -15,6 +15,19 @@ the with-skill result — in `pressure/`.
 
 ## Log
 
+### 2026-09-16 — Plan 4 (Reply) delivered
+
+- `/omega:reply` is the seventh omega skill and sixth mode: explanations and
+  decisions arrive as one concrete scenario from the project's own world,
+  five lines at most, with no implementation vocabulary in the prose. Code,
+  commands, exact errors, test results and safety warnings are exempt and
+  stay verbatim; "technical version" returns full detail for one answer
+  without clearing the mode.
+- It carries its own precedence block — it shapes prose, not scheduling — so
+  it is excluded from the five-mode sentence the other modes share.
+- Spec: `specs/2026-09-16-reply-mode-design.md`. Plan:
+  `plans/2026-09-16-plan-4-reply.md`.
+
 ### 2026-09-15 — delegate mode
 
 - `/omega:delegate [off]` sets the sixth mode: the main session talks to

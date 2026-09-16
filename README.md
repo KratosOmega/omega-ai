@@ -117,7 +117,7 @@ capture, and create scenes. `--no-mcp` skips it; uninstall removes it;
 
 `shared/omega/` is a second plugin every studio shim loads — the shim passes
 `--plugin-dir` twice, the studio and then `shared/omega` — so `claude-gd`
-and `claude-gen` both carry these six skills beside their own:
+and `claude-gen` both carry these seven skills beside their own:
 
 | Command | Does |
 |---|---|
@@ -127,11 +127,12 @@ and `claude-gen` both carry these six skills beside their own:
 | `/omega:integration start\|add\|status\|finish` | An `integration/<slug>` branch several stories merge into, tracked in `docs/integrations/<slug>.md`, landed on `main` as one |
 | `/omega:autopilot` | Asks every open decision up front, then runs unattended: rulings logged, a push after every task, a draft PR, never a merge, and a handoff at the end; keeps the machine awake (`omega-caffeine`) and re-prompts itself every 30 minutes while idle; `off` clears it |
 | `/omega:delegate` | The main session only dispatches, reads reports and runs status commands; every edit, search and document goes to a subagent, never fixed by hand; `off` clears it |
+| `/omega:reply` | Explanations and decisions arrive as one concrete scenario from the project's world — what the player sees, or what the tool's user hits — in five lines at most, with no paths, symbols, config keys or raw values in the prose; code, commands, exact errors, test results and safety warnings stay verbatim; `off` clears it |
 
 They are overlays. Each changes how work is scheduled, saved, merged or
 stopped — never what a studio does or in which order — and composes with
 whatever skill is running. `parallel`, `local-merge`, `integration`,
-`autopilot` and `delegate` set a **mode**: a line in
+`autopilot`, `delegate` and `reply` set a **mode**: a line in
 `${CLAUDE_CONFIG_DIR:-~/.claude}/omega/modes/<session_id>`, written by
 `shared/omega/bin/omega-mode`. While any mode is set, a hook prints
 `Omega modes: parallel max=3 · local-merge` at the top of every turn, so a
@@ -243,7 +244,7 @@ studios/<name>/
 
 shared/omega/                    the omega global plugin, loaded by every shim
 ├── .claude-plugin/plugin.json   name "omega" → the /omega: namespace
-├── skills/                      handoff, parallel, local-merge, integration, autopilot, delegate
+├── skills/                      handoff, parallel, local-merge, integration, autopilot, delegate, reply
 ├── hooks/                       SessionStart, UserPromptSubmit, SessionEnd: the mode line; PreToolUse: the delegate guard
 ├── bin/omega-mode               the mode file's one writer; on PATH inside every studio
 └── bin/omega-caffeine           autopilot's keep-awake process (caffeinate / systemd-inhibit)
