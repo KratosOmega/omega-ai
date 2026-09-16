@@ -30,9 +30,10 @@ the with-skill result — in `pressure/`.
   web tool, without the skill and with it; results in `pressure/reply.md`.
   The baseline answered gameplay questions with paths, symbols and raw
   values — the failure this mode exists to fix. Two with-skill rows failed
-  first time (a padded status, a pasted test result turned into prose), the
-  skill text was amended for both, and the status row then passed; the
-  result-echo row is recorded as a known limit.
+  first time (a padded status, a pasted test result turned into prose) and
+  the skill text was amended for both; the first form of that amendment
+  contradicted the precision-floor bullet it reinforced, the whole-branch
+  review caught it, and after the rewrite all seven rows pass.
 - Spec: `specs/2026-09-16-reply-mode-design.md`. Plan:
   `plans/2026-09-16-plan-4-reply.md`.
 

@@ -82,10 +82,9 @@ this branch):
    result, give it back in its own terms first — the counts and the failing
    line as they were written — and only then say what it means."
 3. Section 1 gained a closing paragraph hoisting both rules above the
-   scenario rules: "When the answer is a status, a result, or a count —
-   including a result the user pasted — that answer is the status and
-   nothing else… The rules below shape explanations; they never apply to a
-   result."
+   scenario rules. Its first form ("that answer is the status and nothing
+   else… The rules below shape explanations; they never apply to a result")
+   was replaced during review — see below.
 
 Two red-flag rows were added for the same two failures.
 
@@ -97,18 +96,37 @@ Re-runs against the amended text, on a freshly built fixture:
 | 7 | "No test suite exist. Project got only `player.gd`, no GUT/gdUnit4 setup, nothing to run. / Nothing runs, nothing pass or fail — test harness not there yet. Want it added?" — no scenario | ✅ |
 | 4 | "Test file's not in this checkout — repo only has two commits, no `test/` folder at all… Player script that exists shows the shape of the bug though: speed is a locked-in constant…" — the pasted counts are still not given back verbatim | ❌ |
 
-### Known limit
+Row 4 was still failing here, and the whole-branch review found why: the
+paragraph added as amendment 3 contradicted the section 6 bullet it was meant
+to reinforce. Section 1 said an explanation of a result is offered "only if
+the user wants it"; section 6 said give the result back "and only then say
+what it means". For row 4's own prompt — a pasted failure followed by "what
+now?" — a model could obey one or the other, not both, and the sentence
+"the rules below… never apply to a result" read as a general exit from the
+scenario rules. The paragraph was rewritten to bound itself to a status or a
+result, to hand off to sections 2-6 rather than override them, and to say
+that a "what do I do next" answer follows the result and is styled.
 
-Row 4 did not pass after three attempts. In a one-shot `-p` run with the
-rulebook prefixed, the model treats a pasted result as context to reason
-from rather than as text to return. It never contradicted or softened the
-result — the failure is an omission, not a misreport — but "3 of 14 failed"
-and the failing line do not come back in the answer.
+Row 4 re-run against that text, on a freshly built fixture:
 
-What is known to hold: the vocabulary ban, the one-scenario rule, the cap,
-the decision shape, the project-matched scenario world, the technical-version
-escape and the return to styled prose after it, the persisted-text exemption,
-and (after the amendment) a bare status. The result-echo rule is the weakest
-of the set, and a real session differs from this harness in two ways that
-help it: the rule line is re-injected every turn, and the user can correct it
-in one word.
+| # | What came back | Verdict |
+|---|----------------|---------|
+| 4 | The pasted lines returned first, verbatim, in a code block — "res://test/test_player.gd:22 - Failed: expected 220.0 but got 0.0 / 3 of 14 passed=11 failed=3" — then "Zero result read like character stood still when check fired — no key held, or check ran before a physics tick landed", then a pick: pull the test file before touching player code | ✅ |
+
+### What the runs establish
+
+All seven rows pass against the text on this branch: the vocabulary ban, the
+one-scenario rule, the cap, the decision shape, the project-matched scenario
+world, the technical-version escape and the return to styled prose after it,
+the persisted-text exemption, a bare status, and a pasted result returned
+before it is interpreted.
+
+Two of the ten rules needed a second pass to hold, and the first attempt at
+fixing them introduced a contradiction that only the review caught — the
+pressure runs are what surfaced both. A real session differs from this
+harness in two ways that help further: the rule line is re-injected every
+turn, and the user can correct a slip in one word.
+
+Harness caveat for anyone re-running row 4: `--permission-mode plan` makes
+the subject stop and wait for a question instead of answering, so that row is
+run with default permissions against a fixture rebuilt beforehand.

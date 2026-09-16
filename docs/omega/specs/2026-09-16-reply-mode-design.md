@@ -154,7 +154,9 @@ to them:
   for the player*, but never in place of the result.
 - Security warnings and confirmations for destructive or irreversible
   actions — those are already exempt from compression styles and stay plain.
-- A path, symbol or value the user explicitly asked for by name.
+- A path, symbol or existing value the user explicitly asked for by name —
+  not a value this session is recommending; a recommendation is still
+  described by feel.
 
 **"Technical version"** — or "show me the code", "be technical" — drops the
 mode's styling for that one answer and returns full detail. The mode stays
@@ -219,11 +221,14 @@ tested against, in the format the other six use:
    mode is set keeps its normal register.
 6. **A status line** — "done, 12 tests pass" is not padded with a scenario.
 
-The 2026-09-16 runs failed scenarios 3 and 6 on the first pass and the skill
-text was amended in response: the status rule and the pasted-result rule were
+The 2026-09-16 runs failed the pasted-result and status scenarios on the
+first pass, and the skill text was amended in response: both rules were
 sharpened and hoisted above the scenario rules, and two red-flag rows were
-added. The result-echo rule remains the weakest of the set; `docs/omega/
-pressure/reply.md` records it as a known limit with the evidence.
+added. The first form of that hoisted paragraph contradicted the section 6
+bullet it reinforced — the whole-branch review caught it — and was rewritten
+to hand off to the scenario rules rather than override them. Every scenario
+passes against the text on this branch; `docs/omega/pressure/reply.md`
+carries the evidence, including the failing rounds.
 
 ## Docs
 
