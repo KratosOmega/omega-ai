@@ -212,7 +212,6 @@ test_stage_skills_dispatch_agents() {
   assert_not_contains "$S/studio/SKILL.md" 'until that skill is installed' "router has no playtest fallback note"
   assert_contains "$S/review/SKILL.md" 'subagent_type: "game-dev:reviewer"' "review dispatches the reviewer"
   assert_contains "$S/playtest/SKILL.md" 'subagent_type: "game-dev:playtester"' "playtest dispatches the playtester"
-  assert_contains "$S/ship/SKILL.md" 'subagent_type: "game-dev:producer"' "ship dispatches the producer"
   assert_contains "$S/retro/SKILL.md" 'CLAUDE_CONFIG_DIR' "retro writes memory into the isolated config root"
   assert_contains "$S/retro/SKILL.md" 'sync-memory.sh game-dev' "retro reminds the user to sync memory"
 }
@@ -366,10 +365,45 @@ test_retro_contract() {
   done
 }
 
+# The old pipeline's last stage is deleted: no studio, omega, README or test
+# line routes to it. Its name is held split in $sk (spec Testing's
+# split-spelling rule), so this file's own lines never match.
+test_no_ship_references() {
+  sk='sh''ip'
+  assert_missing "$REPO_ROOT/studios/game-dev/skills/$sk" "the $sk skill directory is gone"
+  hits="$(cd "$REPO_ROOT" && grep -rnE "game-dev:$sk([^a-z-]|\$)|skills/$sk([^a-z-]|\$)|stage $sk([^a-z-]|\$)|[Ss]${sk#s} (stage|skill|method)" \
+    studios/game-dev shared/omega README.md tests/*.sh || true)"
+  assert_eq "" "$hits" "nothing names the deleted command, skill or stage"
+}
+
+# Every superpowers skill requires.txt declares is named by a studio skill or
+# agent: the other direction of test_external_references_declared. The doctor
+# never checks for a skill nothing uses.
+test_superpowers_requires_referenced() {
+  D="$REPO_ROOT/studios/game-dev"
+  for ref in $(sed -n 's/^skill[[:space:]][[:space:]]*\(superpowers:[a-z0-9-]*\)[[:space:]]*$/\1/p' "$D/requires.txt"); do
+    TESTS_RUN=$((TESTS_RUN + 1))
+    if grep -rqE -- "$ref([^a-z0-9-]|\$)" "$D/skills" "$D/agents"; then
+      _pass "requires.txt's $ref is named by a skill or agent"
+    else
+      _fail "requires.txt's $ref is named by a skill or agent"
+    fi
+  done
+  assert_not_contains "$D/requires.txt" 'finishing-a-development-branch' "requires.txt no longer declares the branch-finishing skill"
+}
+
+# The last_playtest key is gone: no studio or omega file reads or writes it.
+# Spec §1 (115-117) relies on such a test, which §Testing omits (ruling R1).
+test_no_last_playtest_callers() {
+  hits="$(grep -rn 'last_playtest' "$REPO_ROOT/studios/game-dev" "$REPO_ROOT/shared/omega" || true)"
+  assert_eq "" "$hits" "no studio or omega file names last_playtest"
+}
+
 run_tests test_plugin_manifests test_skill_frontmatter test_agent_frontmatter \
   test_external_references_declared test_required_plugins_enabled test_bin_syntax \
   test_role_agents_exist test_stage_skill_contracts test_plan_skill_contract \
   test_brainstorm_skill_contract \
   test_studio_skill_contract test_game_dev_agent_roster test_stage_skills_dispatch_agents \
   test_stage_chain test_execute_contract test_agent_contracts test_feature_checkout_copies test_next_lines \
-  test_review_contract test_on_demand_skills_keep_stage test_playtest_contract test_retro_contract
+  test_review_contract test_on_demand_skills_keep_stage test_playtest_contract test_retro_contract \
+  test_no_ship_references test_superpowers_requires_referenced test_no_last_playtest_callers

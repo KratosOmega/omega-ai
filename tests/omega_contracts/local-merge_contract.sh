@@ -12,4 +12,6 @@ test_local_merge_contract() {
   assert_contains "$S" "Never merge unverified" "local-merge never merges unverified"
   assert_contains "$S" "[-][-]draft" "local-merge opens a draft PR under autopilot"
   assert_contains "$S" "tests/run_all.sh" "local-merge knows this repository's CI convention"
+  assert_not_contains "$S" 'ship'' stage' "local-merge names no studio stage that was deleted"
+  assert_contains "$S" "is not such a step" "a studio finish that opens a PR is not a merge step"
 }

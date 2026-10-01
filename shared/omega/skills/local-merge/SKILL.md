@@ -21,9 +21,10 @@ command was typed; running it again is harmless.
 > disagree about a gate, the invoking skill wins.
 
 While `local-merge` is set, any step that would wait for GitHub checks or
-hand the merge to the user — a studio's ship stage,
-`superpowers:finishing-a-development-branch` when installed, the user
-saying "merge it" — follows this procedure instead.
+hand the merge to the user — `superpowers:finishing-a-development-branch`
+when installed, the user saying "merge it" — follows this procedure
+instead. A studio's finish that opens a PR for the user to play and merge
+is not such a step; the merge starts when the user says so.
 
 ## 1. Find the local CI procedure
 
