@@ -50,11 +50,13 @@ With no text after the command, print one example and stop:
   ledger of the feature `spec` names: `<checkout>/.studio/ledger/<slug>.md`
   (slug as `studio-state` derives it) exists. When it does not, `spec` and
   `branch` name different features, and every ledger line written here would
-  land in a ledger named for the next feature. Stop with: "the studio
+  land in a ledger named for the next feature. **Leave the feature
+  checkout** if this command entered one, then stop with: "the studio
   pointers now name `<spec>`; the finished feature is `<branch>` — fix it on
   that branch by hand, or run this after `<spec>`'s finish".
 - Stop at `stage execute`: the feature in progress has no PR and no play
-  list yet.
+  list yet. **Leave the feature checkout** if this command entered one
+  before stopping.
 - Every brief to a dispatched agent names the checkout's absolute path and
   tells the agent to work there: an agent starts in the session's working
   directory.
@@ -64,7 +66,9 @@ With no text after the command, print one example and stop:
 - Before the first fix dispatch, run `gh pr view --json state` on the
   branch. On `MERGED` or `CLOSED`, dispatch no fixer and push nothing:
   report the bugs and name `/game-dev:brainstorm` for a fix that must reach
-  the base.
+  the base. The run is report-only: write no ledger line, make no commit and
+  post no PR comment, skip §1 and §2, and **Leave the feature checkout** if
+  §0 entered one.
 - Read the spec (`studio-state get spec`) and the plan
   (`studio-state get plan`), and the `P<k> Play:` and `B<n>` lines of the
   feature ledger (`studio-state show`).
