@@ -1,115 +1,128 @@
 ---
 name: playtest
-description: Use when implementation is done and needs verification in the running game — runs automated tests and a headless boot, then a human playtest script with a bug loop.
+description: Use when the user played the build and reports what failed — turns each failure into a bug, fixes it with a regression test, pushes, and comments on the PR.
 ---
 
 # Playtest
 
-**Announce at start:** "Using game-dev:playtest — automated checks first, then the script."
+**Announce at start:** "Using game-dev:playtest — filing and fixing what failed."
 
-A unit test proves the numbers; only a person at the keyboard proves the
-feel. This stage does both, in that order, and turns every failure into a
-bug with a repro and a regression test before it is called fixed.
+The user plays execute's play list and reports what failed, in their own
+words. This command turns each failure into a bug, fixes it with a
+regression test, and comments once on the PR. It never changes `stage`.
 
-## 0. Preconditions
+With no text after the command, print one example and stop:
+`/game-dev:playtest dash clips the wall at full speed`.
 
-- `studio-state get spec` and `studio-state get plan` name files that exist;
-  read both. If the plan is missing but a spec exists, playtest the spec's
-  criteria alone and say so.
-- Run `studio-state set stage playtest`.
-- Decide the topic stem from the spec file name (`2026-09-13-player-dash.md`
-  → `player-dash`); the report is
-  `docs/game-dev/playtests/YYYY-MM-DD-<topic>.md` with today's date.
+## Feature-checkout procedures
 
-## 1. Automated baseline
+- **Default branch:** `git symbolic-ref --short refs/remotes/origin/HEAD`
+  without its `origin/`; without one, the first of `main` and `master` that
+  exists. The main checkout is the first `worktree` line of
+  `git worktree list --porcelain`.
+- **Enter the feature checkout:** run `studio-state worktree`.
+  - Exit 0: when the printed path is not the current checkout
+    (`git rev-parse --show-toplevel`), call `EnterWorktree` with
+    `path: <it>`; without that tool, `cd <it>`.
+  - Exit 3: run the command on its stderr's second line (it unlocks and
+    prunes a stale entry first when one holds the branch), then enter the
+    new worktree, the path that command added, the same way.
+  - Exit 1: no feature branch is recorded, or it is gone. Ask the user once
+    which checkout to use, naming what was found: the `branch` value (or
+    that none is recorded) and the `git worktree list` paths.
+  - If `EnterWorktree` refuses, stop and show its message; when another
+    live session holds the worktree, close that session first. Never `cd`
+    into a worktree another live session is using.
+- **Leave the feature checkout** (only when this command entered one): call
+  `ExitWorktree` with `action: "keep"`. It is a no-op that says so when no
+  `EnterWorktree` session is active, and it is the only step that moves the
+  directory `/clear` returns to. When it reports no active session and
+  `git rev-parse --git-dir` differs from `git rev-parse --git-common-dir`,
+  `cd` to the main checkout. Unless this command entered with `cd` itself,
+  the session was launched in this worktree: end the report with this line:
+  "This session started in the feature worktree, and /clear returns here:
+  quit, then start claude-gd in `<main checkout>` before the next feature."
 
-1. `studio-test`. Exit 1: every failing test is a bug (§4) before any human
-   plays; fix them first, then continue. Exit 2 or 3: report the printed
-   hint and ask the user whether to continue without the automated baseline
-   — a playtest without passing unit tests is a decision they make, not you.
-2. `studio-run --seconds 10`, plus `studio-run --scene <scene> --seconds 10`
-   for each scene the spec's `## Test strategy` names. Exit 1: each error
-   line is a bug (§4). Exit 2: same as above.
+## 0. Checkout and stops
 
-Keep both outputs; they go into the report's `## Automated baseline`.
+- **Enter the feature checkout**, and say which checkout.
+- **Which feature.** After the lookup, check that the checkout holds the
+  ledger of the feature `spec` names: `<checkout>/.studio/ledger/<slug>.md`
+  (slug as `studio-state` derives it) exists. When it does not, `spec` and
+  `branch` name different features, and every ledger line written here would
+  land in a ledger named for the next feature. Stop with: "the studio
+  pointers now name `<spec>`; the finished feature is `<branch>` — fix it on
+  that branch by hand, or run this after `<spec>`'s finish".
+- Stop at `stage execute`: the feature in progress has no PR and no play
+  list yet.
+- Every brief to a dispatched agent names the checkout's absolute path and
+  tells the agent to work there: an agent starts in the session's working
+  directory.
+- On the default branch (**Default branch**, above), this command commits
+  nothing until the user says where the fixes go: ask once, then dispatch a
+  fixer only on that answer.
+- Before the first fix dispatch, run `gh pr view --json state` on the
+  branch. On `MERGED` or `CLOSED`, dispatch no fixer and push nothing:
+  report the bugs and name `/game-dev:brainstorm` for a fix that must reach
+  the base.
+- Read the spec (`studio-state get spec`) and the plan
+  (`studio-state get plan`), and the `P<k> Play:` and `B<n>` lines of the
+  feature ledger (`studio-state show`).
 
-## 2. Build the script
+Split the user's text into failures, one per distinct observed problem.
+When two complaints may be one bug, treat them as one and say so.
 
-Dispatch `game-dev:playtester` (`subagent_type: "game-dev:playtester"`) with
-the spec path, the plan path, the ledger from `studio-state show`, the
-baseline output, and the report path. It writes the report with
-`## Automated baseline`, `## Script` (`P1`…`Pn`, each with Setup, Action,
-Expected, Fail looks like, and a Hypothesis for feel items) and empty
-`## Results`, `## Bugs`, `## Fixes` sections, and returns the item count.
+## 1. Per failure
 
-Read the script. Any item you cannot map to a spec criterion, a feel target,
-or a `Verify: playtest` task is removed with a note; the script tests the
-spec, not the playtester's imagination.
-
-## 3. Run the script with the user
-
-You, the main session, run the script — the agent cannot reach the user.
-
-1. Tell the user how to launch: `studio-run --windowed --seconds 600` (or
-   `--scene <scene>`), or the editor, or — when `mcp__godot__*` tools are in
-   your tool list — the MCP run tool with output capture.
-2. Print the whole script once so they can read ahead.
-3. For each item, one `AskUserQuestion`: the item's Action and Expected as
-   the question, options **pass**, **fail**, **defer** (with a note field
-   implied by the free-text answer). Read free-text answers carefully — "pass
-   but it feels slow" is a fail on the feel target.
-4. Record each answer in the report's `## Results` table as you go
-   (`P3 · fail · "clips the wall at speed"`), so a crash mid-session loses
-   nothing.
-
-## 4. Bug loop
-
-For each failed item, and each automated failure from §1:
-
-1. Dispatch `game-dev:playtester` again with the failed item and the user's
-   note; it appends a `B<n>` bug (Repro, Expected, Actual, Suspected cause,
-   Severity, Regression test) to `## Bugs`.
-2. Dispatch the fixer with the bug and the spec section: `game-dev:feel-tuner`
-   when the bug is a feel target (latency, forgiveness, acceleration, timing,
+1. **File the bug.** Dispatch `game-dev:playtester`
+   (`subagent_type: "game-dev:playtester"`) with the checkout's path, the
+   failure text, the spec path, the plan path, the `P<k> Play:` and `B<n>`
+   ledger lines, the next free bug number (one above the highest `B<n>` in
+   the ledger), and "return the bug block; write no file". It returns the
+   bug block, whose title ends `(from P<k>)` for a play-list item,
+   `(from B<m>)` for a repeat of an earlier bug outside the list (`B<m>` is
+   the first bug of that chain), or `(from report)` otherwise.
+2. **Third failure.** Count the item's earlier failures in the ledger: for
+   `(from P<k>)`, the `B` lines tagged `(from P<k>)`; for `(from B<m>)`, the
+   line `B<m>` itself plus the lines tagged `(from B<m>)`. `(from report)`
+   is never counted: it is a first report, shared by unrelated failures.
+   When the count is already 2 or more, this is the third failure (or a
+   later one): dispatch no fixer. After the other failures, suggest moving
+   it to the plan's `## Backlog` with the user's reason, and move it only on
+   the user's word.
+3. **Fix.** Dispatch a fresh fixer: `game-dev:feel-tuner` when the bug
+   concerns a feel target (latency, forgiveness, acceleration, timing,
    camera, feedback), otherwise `game-dev:gameplay-programmer`. The brief
-   says: follow `superpowers:systematic-debugging` before changing anything;
-   when the bug's `Regression test` line says `unit`, write that test first
-   (`superpowers:test-driven-development`) and make it fail on the bug; fix;
-   run `studio-test`; commit as `fix(B<n>): …`; report the commit and the
+   carries the checkout's path, the bug block and the spec section, and
+   says: follow `systematic-debugging` before changing anything; when the
+   bug's `Regression test` line says `unit`, write that test first
+   (test-driven-development) and see it fail on the bug; fix; run
+   `studio-test`; commit `fix(B<n>): …`; report the commit and the
    hypothesis (feel-tuner) or the root cause (gameplay-programmer).
-3. Append to `## Fixes`: bug · commit · regression test · re-run result.
-4. Re-run the failed item with the user (§3 step 3, that item only). A
-   second failure goes back to step 1 with the new note; a third failure
-   is a stop: report the pattern and ask whether to defer.
+   Feel fixes change one variable per hypothesis: a feel-tuner report that
+   changed three values is sent back.
+4. **Ledger.**
+   `studio-state ledger "B<n> <title> — <commit, or backlog suggested>"`.
 
-**Defer** moves the item to the plan's `## Backlog` with the user's reason
-and marks it `deferred` in `## Results`. The loop ends when every item is
-`pass` or `deferred`.
+## 2. After the last failure
 
-## 5. Report, state, gate
-
-- The report's `## Results` table is complete; `## Bugs` and `## Fixes` list
-  every bug and its outcome. `studio-test` is run one last time and its
-  summary line is added under `## Automated baseline` as "after fixes".
-- `studio-state set last_playtest <report path>`,
-  `studio-state ledger "playtest written <report path>"`, and for every bug
-  `studio-state ledger "B<n> <title> — <commit or deferred>"`.
-- `studio-state set stage ship`.
-- **Stop** with:
-
-  > Playtest report at `<path>`: <n> items, <p> passed, <d> deferred, <b>
-  > bugs fixed. Reply **sign off**, or name the item to revisit.
-
-- On sign-off: `studio-state ledger "playtest signed off <report path>"`
-  and tell the user the next command is `/game-dev:ship`. Do not invoke it
-  yourself.
+- Run `studio-test` once, fresh.
+- Commit the ledger lines on the feature branch with the fixes and any
+  `## Backlog` move: `git add .studio/ledger <plan path>`, then
+  `git commit -m "chore(studio): ledger"`. Push when the branch tracks a
+  remote (`git rev-parse --abbrev-ref @{u}` succeeds); never force-push.
+- Post one `gh pr comment` on the branch's PR per run, listing each fix
+  (`B<n> <title> — <commit>`), the play-list items to replay (each fixed
+  `P<k>`, plus any item a fix touched), the parked items, and the
+  `studio-test` summary line. With no PR or no remote, the fixes stay
+  committed locally and the comment text is printed instead.
+- Then **Leave the feature checkout** if §0 entered one.
 
 ## Rules
 
-- Never mark an item passed on the user's behalf. Silence, "ok", or "sure"
-  without the item's letter is not an answer; ask again.
-- A fix without a regression test is only allowed when the bug's
-  `Regression test` line says `playtest only`, and then the re-run is the
+- Never write a script or a report file, ask a question per item, sign
+  anything off, change `stage`, commit on the default branch, or merge.
+- A fix without a regression test is allowed only when the bug's
+  `Regression test` line says `playtest only`; the user's replay is then the
   test.
-- Feel fixes change one variable per hypothesis. A feel-tuner report that
-  changed three values is sent back.
+- Never fix in the main session: fixers fix.

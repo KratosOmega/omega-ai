@@ -212,7 +212,6 @@ test_stage_skills_dispatch_agents() {
   assert_not_contains "$S/studio/SKILL.md" 'until that skill is installed' "router has no playtest fallback note"
   assert_contains "$S/review/SKILL.md" 'subagent_type: "game-dev:reviewer"' "review dispatches the reviewer"
   assert_contains "$S/playtest/SKILL.md" 'subagent_type: "game-dev:playtester"' "playtest dispatches the playtester"
-  assert_contains "$S/playtest/SKILL.md" 'playtest signed off' "playtest writes the sign-off ledger phrase the router reads"
   assert_contains "$S/ship/SKILL.md" 'subagent_type: "game-dev:producer"' "ship dispatches the producer"
   assert_contains "$S/retro/SKILL.md" 'CLAUDE_CONFIG_DIR' "retro writes memory into the isolated config root"
   assert_contains "$S/retro/SKILL.md" 'sync-memory.sh game-dev' "retro reminds the user to sync memory"
@@ -282,6 +281,9 @@ test_agent_contracts() {
   assert_not_contains "$A/producer.md" 'playtest report it passed' "the producer reads no playtest report"
   assert_not_contains "$A/producer.md" 'sh''ip skill' "the producer names no deleted skill"
   assert_not_contains "$A/producer.md" 'studio-state show' "the producer runs no studio-state"
+  assert_not_contains "$A/playtester.md" '## Script' "the playtester writes no playtest script"
+  assert_not_contains "$A/playtester.md" 'docs/game-dev/playtests' "the playtester writes no report file"
+  assert_eq "Read, Grep, Glob, Bash" "$(first_field "$A/playtester.md" tools)" "the playtester's tools have no Write"
 }
 
 # Every copy of a §1 feature-checkout procedure holds its key literals: skills
@@ -289,9 +291,9 @@ test_agent_contracts() {
 # own copy. The three lists name the skills that carry each procedure.
 test_feature_checkout_copies() {
   S="$REPO_ROOT/studios/game-dev/skills"
-  enter_leave="execute review"
+  enter_leave="execute review playtest"
   guard="brainstorm plan execute"
-  default_branch="brainstorm plan execute review"
+  default_branch="brainstorm plan execute review playtest"
   for sk in $enter_leave; do
     for lit in 'studio-state worktree' 'EnterWorktree' 'another live session' 'ExitWorktree' '--git-common-dir'; do
       assert_contains "$S/$sk/SKILL.md" "$lit" "$sk carries the enter/leave procedure: $lit"
@@ -329,8 +331,23 @@ test_review_contract() {
 # retro clears no pointer. Each skill joins the list when it is rewritten.
 test_on_demand_skills_keep_stage() {
   S="$REPO_ROOT/studios/game-dev/skills"
-  for sk in review; do
+  for sk in review playtest; do
     assert_not_contains "$S/$sk/SKILL.md" 'studio-state set stage' "$sk writes no stage"
+  done
+}
+
+# Playtest on demand (spec §5): the user's failure report in; a filed bug, a
+# fresh fixer, a regression test, a push and one PR comment out. No script,
+# no report file, no sign-off.
+test_playtest_contract() {
+  P="$REPO_ROOT/studios/game-dev/skills/playtest/SKILL.md"
+  for lit in 'subagent_type: "game-dev:playtester"' 'game-dev:feel-tuner' 'fix(B<n>)' 'gh pr comment' \
+             '## Backlog' 'systematic-debugging' '.studio/ledger <plan path>' 'chore(studio): ledger' \
+             'never counted' 'pointers now name' 'stage execute' 'MERGED'; do
+    assert_contains "$P" "$lit" "playtest carries: $lit"
+  done
+  for lit in 'AskUserQuestion' 'docs/game-dev/playtests' 'signed off' '## Script'; do
+    assert_not_contains "$P" "$lit" "playtest no longer carries: $lit"
   done
 }
 
@@ -340,4 +357,4 @@ run_tests test_plugin_manifests test_skill_frontmatter test_agent_frontmatter \
   test_brainstorm_skill_contract \
   test_studio_skill_contract test_game_dev_agent_roster test_stage_skills_dispatch_agents \
   test_stage_chain test_execute_contract test_agent_contracts test_feature_checkout_copies test_next_lines \
-  test_review_contract test_on_demand_skills_keep_stage
+  test_review_contract test_on_demand_skills_keep_stage test_playtest_contract
