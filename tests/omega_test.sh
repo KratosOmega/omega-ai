@@ -480,8 +480,30 @@ test_prompt_submit_raw_shape() {
   assert_eq "" "$(mode --session r1 show)" "raw: a foreign command changes nothing"
   hook prompt-submit.sh '{"session_id":"r1","hook_event_name":"UserPromptSubmit","prompt":"see /omega:reply"}'
   assert_eq "" "$(mode --session r1 show)" "raw: a command not at the start changes nothing"
-  hook prompt-submit.sh '{"session_id":"r1","hook_event_name":"UserPromptSubmit","prompt":"<scheduled-task id=\"z\">/omega:reply</scheduled-task>"}'
+  # The command is at the prompt's start, so only the scheduled-task guard
+  # stops it.
+  hook prompt-submit.sh '{"session_id":"r1","hook_event_name":"UserPromptSubmit","prompt":"/omega:reply <scheduled-task id=\"z\">"}'
   assert_eq "" "$(mode --session r1 show)" "raw: a scheduled-task prompt changes nothing"
+
+  hook prompt-submit.sh '{"session_id":"r1","hook_event_name":"UserPromptSubmit","prompt":"/omega:reply\r\n"}'
+  assert_eq "reply" "$(mode --session r1 show)" "raw: a CRLF ends the name"
+  hook prompt-submit.sh '{"session_id":"r1","hook_event_name":"UserPromptSubmit","prompt":"/omega:parallel\t2"}'
+  assert_contains "$CFG/omega/modes/r1" "^parallel max=2$" "raw: a tab separates the name from its args"
+  hook prompt-submit.sh '{"session_id":"r1","hook_event_name":"UserPromptSubmit","prompt":"/omega:parallel\n3"}'
+  assert_contains "$CFG/omega/modes/r1" "^parallel max=3$" "raw: a newline separates the name from its args"
+  hook prompt-submit.sh '{"session_id":"r1","hook_event_name":"UserPromptSubmit","prompt":"/omega:local-merge"}'
+  assert_contains "$CFG/omega/modes/r1" "^local-merge$" "raw /omega:local-merge sets local-merge"
+  mode --session r1 clear --all
+  hook prompt-submit.sh '{"session_id":"r1","hook_event_name":"UserPromptSubmit","prompt":"/omega:parallel 3\nfix the menu"}'
+  assert_eq "" "$(mode --session r1 show)" "raw: a command followed by more lines of text changes nothing"
+  hook prompt-submit.sh '{"session_id":"r1","hook_event_name":"UserPromptSubmit","prompt":"/omega:parallel 0"}'
+  assert_eq "" "$(mode --session r1 show)" "raw /omega:parallel 0 sets nothing"
+  hook prompt-submit.sh '{"session_id":"r1","hook_event_name":"UserPromptSubmit","prompt":"/omega:integration finish"}'
+  assert_eq "" "$(mode --session r1 show)" "raw /omega:integration finish leaves the mode to the skill"
+  hook prompt-submit.sh '{"session_id":"r1","hook_event_name":"UserPromptSubmit","prompt":"/omega:integration start bad/slug"}'
+  assert_eq "" "$(mode --session r1 show)" "raw: a slug with a slash changes nothing"
+  hook prompt-submit.sh '{"session_id":"r1","hook_event_name":"UserPromptSubmit","prompt":"/omega:delegate \"now\""}'
+  assert_eq "" "$(mode --session r1 show)" "raw: args with a quote change nothing"
   assert_eq "" "$(cat "$TMP/hook.err")" "raw: stderr stays empty"
   mode --session r1 clear --all
 }

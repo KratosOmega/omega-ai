@@ -11,8 +11,9 @@
 #   <command-name>/omega:parallel</command-name>
 #   <command-args>3</command-args>
 #
-# Both are read the same way. The hook turns the mode commands into omega-mode calls, so a typed command
-# changes the mode before the model reads the skill, and then — only when a
+# Both are read the same way. The hook turns the mode commands into
+# omega-mode calls, so a typed command changes the mode before the model
+# reads the skill, and then — only when a
 # mode is active — prints the "Omega modes:" block as the turn's additional
 # context. /omega:autopilot is the exception: only `off` acts here. The
 # skill sets the mode itself at the end of its phase 1, once the readiness
@@ -35,10 +36,11 @@ sid="$(printf '%s' "$input" | tr '\n' ' ' \
 [ -n "$sid" ] || sid="${CLAUDE_CODE_SESSION_ID:-}"
 [ -n "$sid" ] || exit 0
 
-# One line, with the JSON escapes for newline and tab turned into spaces, so
-# the envelope tags match whether Claude Code joined them with newlines or
-# not.
-flat="$(printf '%s' "$input" | tr '\n\t' '  ' | sed -e 's/\\n/ /g' -e 's/\\t/ /g')"
+# One line, with the JSON escapes for newline, carriage return and tab
+# turned into spaces, so the envelope tags match whether Claude Code joined
+# them with newlines or not, and a raw command's name ends at a CRLF.
+flat="$(printf '%s' "$input" | tr '\n\r\t' '   ' \
+  | sed -e 's/\\n/ /g' -e 's/\\r/ /g' -e 's/\\t/ /g')"
 
 # The prompt's own value, not the whole flattened JSON — a prompt that merely
 # *mentions* an envelope tag (a developer pasting a line of
@@ -56,7 +58,7 @@ envelope="$(printf '%s' "$prompt_val" \
   | sed -e 's/^<command-message>[^<]*<\/command-message>[[:space:]]*//')"
 
 # Unattended scheduled-task runs never change a mode. This only turns off
-# the envelope handling below; the Omega modes: block is still printed when
+# the command handling below (both shapes); the Omega modes: block is still printed when
 # a mode is set.
 case "$flat" in
   *'<scheduled-task'*) envelope="" ;;
