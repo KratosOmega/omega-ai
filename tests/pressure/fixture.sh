@@ -3,7 +3,7 @@
 # (docs/omega/pressure/*.md). Not part of tests/run_all.sh.
 #
 # Usage: fixture.sh <kind> <dir>
-#   kinds: handoff parallel local-merge local-merge-green integration autopilot delegate reply
+#   kinds: handoff parallel local-merge local-merge-green integration autopilot delegate reply slim-pipeline
 #
 # Every kind builds <dir>/repo with a bare remote <dir>/origin.git named
 # "origin", and a stub gh at <dir>/bin/gh that appends each call to
@@ -202,6 +202,82 @@ export async function loadDashboard(session) {
   return widgets.json();
 }
 JS
+    ;;
+  slim-pipeline)
+    # A Godot project at stage plan with an approved, committed spec and a
+    # one-task plan; studio state points at both. <dir>/bin/godot is a stub
+    # engine (run with GODOT_PATH=<dir>/bin/godot) so studio-test and
+    # studio-run exit 0; <dir>/bin/gh is the stub gh (PATH=<dir>/bin:$PATH).
+    base
+    studio_state="$(cd "$(dirname "$0")/../.." && pwd -P)/studios/game-dev/bin/studio-state"
+    mkdir -p "$repo/docs/game-dev/specs" "$repo/docs/game-dev/plans" "$repo/addons/gut" "$repo/tests" "$repo/.godot"
+    printf 'config_version=5\n\n[application]\nconfig/name="Fixture"\n' > "$repo/project.godot"
+    printf '# stub: the stub engine never loads it\n' > "$repo/addons/gut/gut_cmdln.gd"
+    printf '.godot/\n.studio/reports/\n' > "$repo/.gitignore"
+    cat > "$repo/docs/game-dev/specs/2026-10-01-dash.md" <<'SPEC'
+# Dash — Design
+
+Status: Approved
+
+## Purpose
+
+The player dashes a short distance in the facing direction.
+
+## Feel targets
+
+| Target | Value | Check |
+|--------|-------|-------|
+| Dash start latency | under 50 ms | playtest |
+
+## Acceptance criteria
+
+1. Pressing dash moves the player 96 px over 0.15 s.
+2. A second dash within 0.5 s does nothing.
+SPEC
+    cat > "$repo/docs/game-dev/plans/2026-10-01-dash.md" <<'PLAN'
+# Dash Implementation Plan
+
+**Spec:** docs/game-dev/specs/2026-10-01-dash.md
+Status: Approved
+
+### Task 1: Dash with cooldown
+Role: game-dev:gameplay-programmer
+Verify: unit+playtest
+Files: scripts/dash.gd, tests/test_dash.gd
+
+A dash moves the player 96 px over 0.15 s, then cannot fire again for 0.5 s.
+Playtest item: press dash twice quickly → one dash → fail looks like: a
+double dash.
+PLAN
+    ( cd "$repo" \
+      && sh "$studio_state" init >/dev/null \
+      && sh "$studio_state" set spec docs/game-dev/specs/2026-10-01-dash.md \
+      && sh "$studio_state" ledger "spec approved docs/game-dev/specs/2026-10-01-dash.md" \
+      && sh "$studio_state" set stage plan \
+      && sh "$studio_state" set plan docs/game-dev/plans/2026-10-01-dash.md \
+      && sh "$studio_state" set task 0/1 \
+      && sh "$studio_state" ledger "plan approved docs/game-dev/plans/2026-10-01-dash.md" )
+    commit "docs(plans): approve dash"
+    git -C "$repo" push -q origin main
+    cat > "$dir/bin/godot" <<'GODOT'
+#!/bin/sh
+# Stub Godot: a passing GUT JUnit report when asked to run tests; exit 0.
+proj=""; xml=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --path) proj="${2:-}"; shift ;;
+    -gjunit_xml_file=res://*) xml="${1#-gjunit_xml_file=res://}" ;;
+  esac
+  shift
+done
+if [ -n "$proj" ] && [ -n "$xml" ]; then
+  mkdir -p "$(dirname "$proj/$xml")"
+  printf '<testsuites name="GutTests" tests="1" failures="0" errors="0">\n<testsuite name="stub" tests="1"><testcase name="test_stub" classname="stub"></testcase></testsuite>\n</testsuites>\n' > "$proj/$xml"
+fi
+echo "Godot Engine v4.3.stable (stub)"
+exit 0
+GODOT
+    chmod +x "$dir/bin/godot"
     ;;
   *) echo "unknown kind: $kind" >&2; exit 2 ;;
 esac

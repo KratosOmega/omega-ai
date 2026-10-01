@@ -14,6 +14,27 @@ approval page in `artifacts/`.
 
 ## Log
 
+### 2026-10-01 — Slim pipeline (issue #9)
+
+- The stage chain is `idle → brainstorm → plan → execute → idle`, with a
+  `/clear` between stages. `review`, `playtest` and `retro` are on-demand
+  commands that never change `stage`. The last stage of the old pipeline is
+  deleted, and execute's finish opens the PR.
+- `studio-state`: a `branch` key, four stages, and `worktree` (exit 0 prints
+  the feature's checkout; exit 3 prints the command that recreates it).
+- Execute: B2 fix rounds (a fresh fixer per round, a re-review only after a
+  Critical, 3+ Importants or a production-bug fix, never a third pass), a
+  standalone final review on Opus, and a finish that gates, writes the play
+  list, records PROGRESS and opens a ready PR without merging.
+- `stage-guard.sh` (`UserPromptSubmit`) warns when a session that already ran
+  one stage is used to start another.
+- Pending: M2 (the hook's live input shape) and M3 (phoenix's router line)
+  after rollout, and M4 (issue #6 re-scoped). Pressure scenarios are in
+  `docs/game-dev/pressure/slim-pipeline.md`; they cannot run yet because
+  `claude-gd` returns `403 oauth_not_allowed_for_organization`.
+- Spec `specs/2026-10-01-slim-pipeline-design.md`, plan
+  `plans/2026-10-01-slim-pipeline.md`.
+
 ### 2026-09-15 — Plan 2 (Quality loop) delivered
 
 - Ten role agents under `studios/game-dev/agents/`; `2d-art-pipeline` and
