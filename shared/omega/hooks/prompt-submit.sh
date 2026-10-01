@@ -1,13 +1,19 @@
 #!/bin/sh
 # UserPromptSubmit hook for the omega global plugin. A typed /omega:<skill>
-# command reaches the hook as an envelope, not the literal text:
+# command reaches the hook in one of two shapes. Raw — the text as typed,
+# which Claude Code 2.1.286 sends:
+#
+#   /omega:parallel 3
+#
+# or an envelope, which some versions send:
 #
 #   <command-message>parallel</command-message>
 #   <command-name>/omega:parallel</command-name>
 #   <command-args>3</command-args>
 #
-# The hook turns the mode commands into omega-mode calls, so a typed command
-# changes the mode before the model reads the skill, and then — only when a
+# Both are read the same way. The hook turns the mode commands into
+# omega-mode calls, so a typed command changes the mode before the model
+# reads the skill, and then — only when a
 # mode is active — prints the "Omega modes:" block as the turn's additional
 # context. /omega:autopilot is the exception: only `off` acts here. The
 # skill sets the mode itself at the end of its phase 1, once the readiness
@@ -30,10 +36,11 @@ sid="$(printf '%s' "$input" | tr '\n' ' ' \
 [ -n "$sid" ] || sid="${CLAUDE_CODE_SESSION_ID:-}"
 [ -n "$sid" ] || exit 0
 
-# One line, with the JSON escapes for newline and tab turned into spaces, so
-# the envelope tags match whether Claude Code joined them with newlines or
-# not.
-flat="$(printf '%s' "$input" | tr '\n\t' '  ' | sed -e 's/\\n/ /g' -e 's/\\t/ /g')"
+# One line, with the JSON escapes for newline, carriage return and tab
+# turned into spaces, so the envelope tags match whether Claude Code joined
+# them with newlines or not, and a raw command's name ends at a CRLF.
+flat="$(printf '%s' "$input" | tr '\n\r\t' '   ' \
+  | sed -e 's/\\n/ /g' -e 's/\\r/ /g' -e 's/\\t/ /g')"
 
 # The prompt's own value, not the whole flattened JSON — a prompt that merely
 # *mentions* an envelope tag (a developer pasting a line of
@@ -51,20 +58,28 @@ envelope="$(printf '%s' "$prompt_val" \
   | sed -e 's/^<command-message>[^<]*<\/command-message>[[:space:]]*//')"
 
 # Unattended scheduled-task runs never change a mode. This only turns off
-# the envelope handling below; the Omega modes: block is still printed when
+# the command handling below (both shapes); the Omega modes: block is still printed when
 # a mode is set.
 case "$flat" in
   *'<scheduled-task'*) envelope="" ;;
 esac
 
 skill=""
+args=""
 case "$envelope" in
   '<command-name>'*)
     skill="$(printf '%s' "$envelope" \
-      | sed -n 's/.*<command-name>[[:space:]]*\/omega:\([a-z-]*\)[[:space:]]*<\/command-name>.*/\1/p' | head -n 1)" ;;
+      | sed -n 's/.*<command-name>[[:space:]]*\/omega:\([a-z-]*\)[[:space:]]*<\/command-name>.*/\1/p' | head -n 1)"
+    [ -z "$skill" ] \
+      || args="$(printf '%s' "$envelope" | sed -n 's/.*<command-args>\(.*\)<\/command-args>.*/\1/p' | head -n 1)" ;;
+  /omega:*)
+    # The raw shape: the text as typed, the name ended by whitespace or the
+    # end of the prompt, so /omega:replyx is not /omega:reply.
+    skill="$(printf '%s\n' "$envelope" \
+      | sed -n -E 's#^/omega:([a-z-]+)([[:space:]].*)?$#\1#p' | head -n 1)"
+    [ -z "$skill" ] || args="${envelope#/omega:"$skill"}" ;;
 esac
 if [ -n "$skill" ]; then
-  args="$(printf '%s' "$envelope" | sed -n 's/.*<command-args>\(.*\)<\/command-args>.*/\1/p' | head -n 1)"
   args="$(printf '%s' "$args" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
   case "$skill" in
     parallel)

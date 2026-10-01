@@ -442,6 +442,72 @@ test_prompt_submit() {
   mode --session p2 clear --all
 }
 
+# The raw shape (#11): Claude Code 2.1.286 sends a typed command as the text
+# as typed, "prompt":"/omega:<mode> <args>", with no envelope. Session r1,
+# fresh, so these do not depend on test_prompt_submit's history.
+test_prompt_submit_raw_shape() {
+  mode --session r1 clear --all
+  hook prompt-submit.sh '{"session_id":"r1","hook_event_name":"UserPromptSubmit","prompt":"/omega:parallel 3"}'
+  assert_eq "parallel max=3" "$(mode --session r1 show)" "raw /omega:parallel 3 sets parallel max=3"
+  context > "$TMP/ctx-raw.txt"
+  assert_contains "$TMP/ctx-raw.txt" "Omega modes: parallel max=3" "raw: the turn's context carries the modes block"
+  hook prompt-submit.sh '{"session_id":"r1","hook_event_name":"UserPromptSubmit","prompt":"/omega:parallel off"}'
+  assert_eq "" "$(mode --session r1 show)" "raw /omega:parallel off clears parallel"
+
+  hook prompt-submit.sh '{"session_id":"r1","hook_event_name":"UserPromptSubmit","prompt":"/omega:reply"}'
+  assert_eq "reply" "$(mode --session r1 show)" "raw /omega:reply with no args sets reply"
+  hook prompt-submit.sh '{"session_id":"r1","hook_event_name":"UserPromptSubmit","prompt":"  /omega:delegate  "}'
+  assert_contains "$CFG/omega/modes/r1" "^delegate$" "raw: surrounding whitespace is ignored"
+  hook prompt-submit.sh '{"session_id":"r1","hook_event_name":"UserPromptSubmit","prompt":"/omega:integration start ui-rework"}'
+  assert_contains "$CFG/omega/modes/r1" "^integration slug=ui-rework$" "raw /omega:integration start <slug> sets the slug"
+  mode --session r1 clear --all
+
+  hook prompt-submit.sh '{"session_id":"r1","hook_event_name":"UserPromptSubmit","prompt":"/omega:autopilot"}'
+  assert_eq "" "$(mode --session r1 show)" "raw /omega:autopilot arms nothing"
+  mode --session r1 set autopilot
+  hook prompt-submit.sh '{"session_id":"r1","hook_event_name":"UserPromptSubmit","prompt":"/omega:autopilot off"}'
+  assert_eq "" "$(mode --session r1 show)" "raw /omega:autopilot off clears autopilot"
+
+  hook prompt-submit.sh '{"session_id":"r1","hook_event_name":"UserPromptSubmit","prompt":"/omega:replyx"}'
+  assert_eq "" "$(mode --session r1 show)" "raw: a longer name is not the mode"
+  hook prompt-submit.sh '{"session_id":"r1","hook_event_name":"UserPromptSubmit","prompt":"/omega:parallel lots"}'
+  assert_eq "" "$(mode --session r1 show)" "raw: a non-numeric parallel argument changes nothing"
+  hook prompt-submit.sh '{"session_id":"r1","hook_event_name":"UserPromptSubmit","prompt":"/omega:reply 3"}'
+  assert_eq "" "$(mode --session r1 show)" "raw /omega:reply 3 changes nothing"
+  hook prompt-submit.sh '{"session_id":"r1","hook_event_name":"UserPromptSubmit","prompt":"/omega:handoff"}'
+  assert_eq "" "$(mode --session r1 show)" "raw /omega:handoff changes nothing"
+  hook prompt-submit.sh '{"session_id":"r1","hook_event_name":"UserPromptSubmit","prompt":"/caveman off"}'
+  assert_eq "" "$(mode --session r1 show)" "raw: a foreign command changes nothing"
+  hook prompt-submit.sh '{"session_id":"r1","hook_event_name":"UserPromptSubmit","prompt":"see /omega:reply"}'
+  assert_eq "" "$(mode --session r1 show)" "raw: a command not at the start changes nothing"
+  # The command is at the prompt's start, so only the scheduled-task guard
+  # stops it.
+  hook prompt-submit.sh '{"session_id":"r1","hook_event_name":"UserPromptSubmit","prompt":"/omega:reply <scheduled-task id=\"z\">"}'
+  assert_eq "" "$(mode --session r1 show)" "raw: a scheduled-task prompt changes nothing"
+
+  hook prompt-submit.sh '{"session_id":"r1","hook_event_name":"UserPromptSubmit","prompt":"/omega:reply\r\n"}'
+  assert_eq "reply" "$(mode --session r1 show)" "raw: a CRLF ends the name"
+  hook prompt-submit.sh '{"session_id":"r1","hook_event_name":"UserPromptSubmit","prompt":"/omega:parallel\t2"}'
+  assert_contains "$CFG/omega/modes/r1" "^parallel max=2$" "raw: a tab separates the name from its args"
+  hook prompt-submit.sh '{"session_id":"r1","hook_event_name":"UserPromptSubmit","prompt":"/omega:parallel\n3"}'
+  assert_contains "$CFG/omega/modes/r1" "^parallel max=3$" "raw: a newline separates the name from its args"
+  hook prompt-submit.sh '{"session_id":"r1","hook_event_name":"UserPromptSubmit","prompt":"/omega:local-merge"}'
+  assert_contains "$CFG/omega/modes/r1" "^local-merge$" "raw /omega:local-merge sets local-merge"
+  mode --session r1 clear --all
+  hook prompt-submit.sh '{"session_id":"r1","hook_event_name":"UserPromptSubmit","prompt":"/omega:parallel 3\nfix the menu"}'
+  assert_eq "" "$(mode --session r1 show)" "raw: a command followed by more lines of text changes nothing"
+  hook prompt-submit.sh '{"session_id":"r1","hook_event_name":"UserPromptSubmit","prompt":"/omega:parallel 0"}'
+  assert_eq "" "$(mode --session r1 show)" "raw /omega:parallel 0 sets nothing"
+  hook prompt-submit.sh '{"session_id":"r1","hook_event_name":"UserPromptSubmit","prompt":"/omega:integration finish"}'
+  assert_eq "" "$(mode --session r1 show)" "raw /omega:integration finish leaves the mode to the skill"
+  hook prompt-submit.sh '{"session_id":"r1","hook_event_name":"UserPromptSubmit","prompt":"/omega:integration start bad/slug"}'
+  assert_eq "" "$(mode --session r1 show)" "raw: a slug with a slash changes nothing"
+  hook prompt-submit.sh '{"session_id":"r1","hook_event_name":"UserPromptSubmit","prompt":"/omega:delegate \"now\""}'
+  assert_eq "" "$(mode --session r1 show)" "raw: args with a quote change nothing"
+  assert_eq "" "$(cat "$TMP/hook.err")" "raw: stderr stays empty"
+  mode --session r1 clear --all
+}
+
 test_session_end() {
   rm -rf "$CFG"
   mode --session e1 set parallel
@@ -717,4 +783,5 @@ test_skill_contracts() {
 run_tests test_plugin_files test_skill_stubs test_marketplace \
   test_mode_round_trip test_mode_validation test_mode_brief \
   test_hooks_json test_session_start test_session_start_prunes_old_files \
-  test_prompt_submit test_session_end test_pre_tool_use test_caffeine test_skill_contracts
+  test_prompt_submit test_prompt_submit_raw_shape test_session_end test_pre_tool_use \
+  test_caffeine test_skill_contracts
