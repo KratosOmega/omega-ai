@@ -171,6 +171,7 @@ test_brainstorm_skill_contract() {
   assert_contains "$S/brainstorm/SKILL.md" "game-dev:game-designer" "brainstorm dispatches the game designer"
   assert_not_contains "$S/brainstorm/SKILL.md" "godot-brainstorming" "brainstorm does not hand a subagent an interactive skill"
   assert_contains "$S/brainstorm/SKILL.md" "docs(specs): approve" "brainstorm commits at the approval gate"
+  assert_contains "$S/brainstorm/SKILL.md" 'studio-state set stage brainstorm' "brainstorm's stage command sits on one line"
 }
 
 # Behaviour this review pass added to the router: reconciling with
@@ -285,8 +286,8 @@ test_agent_contracts() {
 test_feature_checkout_copies() {
   S="$REPO_ROOT/studios/game-dev/skills"
   enter_leave="execute"
-  guard="execute"
-  default_branch="execute"
+  guard="brainstorm plan execute"
+  default_branch="brainstorm plan execute"
   for sk in $enter_leave; do
     for lit in 'studio-state worktree' 'EnterWorktree' 'another live session' 'ExitWorktree' '--git-common-dir'; do
       assert_contains "$S/$sk/SKILL.md" "$lit" "$sk carries the enter/leave procedure: $lit"
@@ -302,9 +303,16 @@ test_feature_checkout_copies() {
   done
 }
 
+# Brainstorm and plan end by printing the next command, to run after a /clear.
+test_next_lines() {
+  S="$REPO_ROOT/studios/game-dev/skills"
+  assert_contains "$S/brainstorm/SKILL.md" 'Next: run /clear, then /game-dev:plan' "brainstorm prints the /clear Next line"
+  assert_contains "$S/plan/SKILL.md" 'Next: run /clear, then /game-dev:execute' "plan prints the /clear Next line"
+}
+
 run_tests test_plugin_manifests test_skill_frontmatter test_agent_frontmatter \
   test_external_references_declared test_required_plugins_enabled test_bin_syntax \
   test_role_agents_exist test_stage_skill_contracts test_plan_skill_contract \
   test_brainstorm_skill_contract \
   test_studio_skill_contract test_game_dev_agent_roster test_stage_skills_dispatch_agents \
-  test_stage_chain test_execute_contract test_agent_contracts test_feature_checkout_copies
+  test_stage_chain test_execute_contract test_agent_contracts test_feature_checkout_copies test_next_lines

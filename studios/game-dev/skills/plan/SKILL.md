@@ -9,6 +9,22 @@ description: Use when an approved spec exists and needs an implementation plan �
 
 ## 0. Preconditions
 
+- **Default branch:** `git symbolic-ref --short refs/remotes/origin/HEAD`
+  without its `origin/`; without one, the first of `main` and `master` that
+  exists. The main checkout is the first `worktree` line of
+  `git worktree list --porcelain`.
+- **Finished-checkout guard** (run it first, before any state write): when
+  `studio-state get branch` names a branch (not `-`) that is not the default
+  branch and equals `git branch --show-current`, stop with: "This checkout
+  holds the previous, finished feature (`<branch>`). Leave it first:
+  `ExitWorktree` with `action: "keep"`. When that reports no active worktree
+  session, this session was launched here, and neither `ExitWorktree` nor
+  `cd` outlasts the `/clear` the chain needs: quit and start `claude-gd` in
+  `<main checkout>`. In the main checkout itself:
+  `git switch <default branch>`.
+  To start the next feature on this branch anyway, run
+  `studio-state set branch -` first." Without studio state the guard is
+  skipped like every other `studio-state` call.
 - `studio-state get spec` names a file that exists, and the ledger has a
   `spec approved` line for it. If not, stop and say the spec must be approved
   first (`/game-dev:brainstorm`). The user may approve it now in one word;
@@ -127,6 +143,7 @@ spec and the state that must travel with them into the execution worktree —
 `git add <spec path> <plan path> .studio/ledger .studio/config.json && git commit -m "docs(plans): approve <topic>"`
 (a no-op for an already-committed, unchanged spec; it captures the spec
 approved in §0) —
-and tell the user the next command is `/game-dev:execute` (subagent-driven by
-default; `--inline` for checkpointed execution in this session). Do not invoke
-it yourself.
+and print
+`Next: run /clear, then /game-dev:execute` (subagent-driven by default;
+`--inline` for checkpointed execution in this session). Do not invoke it
+yourself.
