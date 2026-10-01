@@ -29,4 +29,7 @@ test_autopilot_contract() {
   assert_not_contains "$S" "leftover), \`omega-mode clear autopilot\`" "a leftover mode is disarmed, not just cleared"
   assert_not_contains "$S" "| Clear it;" "the red-flag rows say disarm, not clear"
   assert_not_contains "$S" "Clear the mode\. |" "the heartbeat red-flag row says disarm, not clear"
+  assert_contains "$S" "already approved and committed" "autopilot skips design and plan when both are approved and committed"
+  assert_contains "$S" "/clear" "autopilot says to arm from a fresh session"
+  assert_contains "$S" "no second PR is opened" "autopilot opens no second PR when the invoking skill opened one"
 }
