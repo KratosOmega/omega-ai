@@ -105,7 +105,7 @@ test_hook_files() {
   assert_contains "$B" 'idle → brainstorm → plan → execute → idle' "bootstrap states the three-stage chain"
   assert_contains "$B" 'Run each stage in a fresh session: `/clear`' "bootstrap says to /clear between stages"
   assert_contains "$B" 'omega modes' "bootstrap says /clear ends the session's omega modes"
-  assert_not_contains "$B" 'game-dev:'"'"'ship' "bootstrap names no deleted command"
+  assert_not_contains "$B" 'game-dev:''ship' "bootstrap names no deleted command"
 }
 
 test_hook_output_shape() {
