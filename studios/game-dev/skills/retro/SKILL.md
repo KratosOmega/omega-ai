@@ -1,6 +1,6 @@
 ---
 name: retro
-description: Use when a feature has shipped or a working session ends — captures durable decisions and pitfalls into studio memory.
+description: Use when you want the lessons of recent work kept — on demand at any stage; harvests ledger rulings, reviews and bugs into studio memory.
 ---
 
 # Retro
@@ -13,16 +13,30 @@ every other studio and from `~/.claude` by construction — and nowhere else.
 
 ## 0. Read
 
-- `studio-state show`: every `Ruling:`, `Review:`, `B<n>` and `playtest`
-  line since the last `retro written` line (or all of them).
-- The playtest report(s) named since then; the spec's `## Not doing` list.
-- Run `studio-state set stage retro`.
+Retro is read-only on the repository: it asks the user nothing, enters no
+checkout, writes no ledger line, makes no commit, and changes no stage or
+pointer. It writes studio memory only.
 
-## 1. Ask, once
-
-One `AskUserQuestion` batch, three questions: what surprised you; what
-should the next feature do the same way; what should it never do again.
-Free text is expected; offer no options beyond "nothing".
+- `studio-state show`: `STATE.md` with its own ledger, then the current
+  checkout's feature ledger.
+- Find the recorded feature's ledger. The slug is the basename of
+  `studio-state get spec`, without `.md` and without a leading
+  `YYYY-MM-DD-`; the ledger is `.studio/ledger/<slug>.md`.
+  - Run `studio-state worktree`. At exit 0 it prints a checkout path; when
+    that is not the current checkout, read `<path>/.studio/ledger/<slug>.md`
+    there.
+  - At exit 3 the branch exists but no worktree has it: read
+    `git show <branch>:.studio/ledger/<slug>.md`, with `<branch>` from
+    `studio-state get branch`. Create and enter no worktree.
+  - At exit 1, use the current checkout's feature ledger from
+    `studio-state show` when `<slug>.md` exists there; when it does not,
+    read only `STATE.md`'s ledger and say so.
+  - At exit 0 or 3, when that ledger does not exist, `spec` and `branch`
+    name different features: read only `STATE.md`'s ledger, and say so.
+- Take every `Ruling:`, `Review:` and `B<n>` line. Read the spec only to
+  understand a line. Earlier features' ledgers are not read.
+- A second retro reads the same lines; the existing-memory check in §3
+  skips a lesson already written.
 
 ## 2. Decide what is durable
 
@@ -68,20 +82,17 @@ instead of duplicating it.
 Add one line per new file to `$CLAUDE_CONFIG_DIR/memory/MEMORY.md`:
 `- [Title](file.md) — hook`. Never put the memory's content in the index.
 
-## 4. State and hand-off
+## 4. Hand-off
 
-- `studio-state ledger "retro written <n> memories"`.
-- `studio-state set stage idle`, `studio-state set spec -`,
-  `studio-state set plan -`, `studio-state set task -`.
 - Tell the user: "Memory written to `$CLAUDE_CONFIG_DIR/memory/`. To commit
   it into the repository, run `./sync-memory.sh game-dev` from the omega-ai
-  checkout." Then name the next command: `/game-dev:brainstorm` for the
-  next feature, or `/game-dev:studio` to see the state.
+  checkout."
+- Last line: `Next: run /clear, then` the router's next command for the current stage.
 
 ## Rules
 
 - Write only into `$CLAUDE_CONFIG_DIR/memory/`. Never into the game
   project, never into `~/.claude`, never into the omega-ai checkout — the
   sync script is the one path from a session into version control.
-- Fewer, sharper memories. Three files a retro is typical; ten is a sign
-  the filter in §2 was skipped.
+- Fewer, sharper memories: zero to three. More than three means the filter in §2
+  was skipped.

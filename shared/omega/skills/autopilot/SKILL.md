@@ -30,11 +30,19 @@ it; when it does (a previous run's leftover), disarm first — the
 **Disarm** bullet of phase 2: `omega-caffeine stop`, `CronDelete` any
 heartbeat, then `omega-mode clear autopilot`.
 
-1. **Design and plan as the studio does.** `/game-dev:brainstorm` then
-   `/game-dev:plan` in the game studio; `superpowers:brainstorming` then
-   `superpowers:writing-plans` when installed and no studio is present;
-   otherwise a spec and a plan written by hand and approved by the user.
-   Their approval gates stand.
+1. **Design and plan as the studio does — unless that is done.** When the
+   spec and the plan are already approved and committed — the studio
+   ledger has `spec approved <spec>` and `plan approved <plan>` lines
+   (outside a studio, both files' `Status:` line says Approved), `git log
+   -1 --format=%h -- <file>` prints a hash for each, and `git status
+   --porcelain -- <spec> <plan>` prints nothing — go straight to step 2.
+   Otherwise `/game-dev:brainstorm` then `/game-dev:plan` in the game
+   studio; `superpowers:brainstorming` then `superpowers:writing-plans`
+   when installed and no studio is present; otherwise a spec and a plan
+   written by hand and approved by the user. Their approval gates stand.
+   Arm from a fresh session: run `/clear` first. `/clear` ends a session,
+   and its SessionEnd hook clears every omega mode that session set — a
+   `/clear` after arming disarms the run.
 2. **Question sweep.** Read the approved spec and plan. List every decision
    the implementation could still meet: naming, error handling, test depth,
    tie-breaks between two acceptable patterns, what to do when a tool is
@@ -116,11 +124,12 @@ While `omega-mode show` lists `autopilot`:
   if wrong>"`, or the SDD ledger, or the plan's `## Decisions` section
   when neither exists — and continue.
 - **Allowed side effects:** commit; `git push` after every integrated
-  task, so a crash loses at most one task; `gh pr create --fill --draft`
-  when the plan is complete — base per `omega:local-merge` §3 (the
-  integration branch when an `integration` mode is set, else the
-  repository's default branch);
-  `gh pr comment`; the handoff.
+  task, so a crash loses at most one task; the run's one PR — when the
+  invoking skill opens it (`game-dev:execute`'s finish does, as a draft
+  while this mode is set), that PR is the run's PR and no second PR is opened;
+  otherwise `gh pr create --fill --draft` when the plan is complete — base per
+  `omega:local-merge` §3 (the integration branch when an `integration` mode is
+  set, else the repository's default branch); `gh pr comment`; the handoff.
 - **Forbidden:** never merge — with `local-merge` set, its merge step is
   skipped and reported; never force-push; never delete a remote branch; no
   destructive or security-sensitive operation; no reading or writing of

@@ -4,7 +4,6 @@ skill  superpowers:test-driven-development
 skill  superpowers:systematic-debugging
 skill  superpowers:using-git-worktrees
 skill  superpowers:verification-before-completion
-skill  superpowers:finishing-a-development-branch
 skill  superpowers:writing-plans
 skill  superpowers:executing-plans
 skill  superpowers:subagent-driven-development

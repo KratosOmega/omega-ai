@@ -9,14 +9,18 @@ You are in the omega-ai **game-dev** studio. Engine: {{ENGINE}} · {{DIMENSION}}
 - `/game-dev:studio` — router: reads state, names the next stage, routes freeform text.
 - `/game-dev:brainstorm` — clarify, classify, spec with GDD-lite sections, artifact, approval gate.
 - `/game-dev:plan` — role- and verify-tagged tasks, producer scope cut, approval gate.
-- `/game-dev:execute` — fresh role agent per task, reviewer after each; `--inline` for checkpoints.
-- `/game-dev:review` — whole-branch spec-compliance and Godot review.
-- `/game-dev:playtest` — automated tests, headless boot, human playtest script, bug loop, sign-off gate.
-- `/game-dev:ship` — verify, finish the branch, update PROGRESS.md.
-- `/game-dev:retro` — durable decisions into studio memory.
+- `/game-dev:execute` — fresh role agent per task, reviewer after each, standalone final review, gate, play list, PROGRESS entry, PR; `--inline` for checkpoints.
 - `/game-dev:scaffold` — new project from the engine template.
 
-Stages are installed in phases. A stage that is not in your skill list is not installed yet: say so and name the stage rather than improvising it.
+The chain is idle → brainstorm → plan → execute → idle. Run each stage in a fresh session: `/clear`, then the stage command. `/clear` ends the session, and that session's omega modes (reply, delegate, autopilot and the rest) end with it; type again the ones you want.
+
+## On demand — never changes the stage
+
+- `/game-dev:review [scope]` — the branch (or a range) against the spec; findings fixed by fresh agents.
+- `/game-dev:playtest <what failed>` — what you saw fail goes in; a bug, a fixed commit with a regression test, a push and one PR comment come out.
+- `/game-dev:retro` — durable lessons from the ledger into studio memory.
+
+A command that is not in your skill list is not installed yet: say so and name it rather than improvising it.
 
 ## State
 

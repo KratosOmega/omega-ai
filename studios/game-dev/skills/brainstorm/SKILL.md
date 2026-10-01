@@ -17,6 +17,22 @@ a short spec — but it never disappears.
   whether to initialise studio state; on yes run `studio-state init`. On no,
   or when there is no `project.godot`, continue without state and skip every
   `studio-state` call in this skill.
+- **Default branch:** `git symbolic-ref --short refs/remotes/origin/HEAD`
+  without its `origin/`; without one, the first of `main` and `master` that
+  exists. The main checkout is the first `worktree` line of
+  `git worktree list --porcelain`.
+- **Finished-checkout guard** (run it first, before any state write): when
+  `studio-state get branch` names a branch (not `-`) that is not the default
+  branch and equals `git branch --show-current`, stop with: "This checkout
+  holds the previous, finished feature (`<branch>`). Leave it first:
+  `ExitWorktree` with `action: "keep"`. When that reports no active worktree
+  session, this session was launched here, and neither `ExitWorktree` nor
+  `cd` outlasts the `/clear` the chain needs: quit and start `claude-gd` in
+  `<main checkout>`. In the main checkout itself:
+  `git switch <default branch>`.
+  To start the next feature on this branch anyway, run
+  `studio-state set branch -` first." Without studio state the guard is
+  skipped like every other `studio-state` call.
 - If `studio-state get spec` names a file and the ledger has no matching
   `spec approved` line, tell the user an unapproved spec already exists and
   ask whether to continue it or start a new one.
@@ -41,8 +57,8 @@ invoke `game-dev:game-feel`.
 - **Architectural** — a new system, a new game, or a change to how systems
   talk to each other. Full process below.
 
-For **bounded** and **architectural** work run `studio-state set stage
-brainstorm` now; a spike leaves the stage where it was.
+For **bounded** and **architectural** work run
+`studio-state set stage brainstorm` now; a spike leaves the stage where it was.
 
 When in doubt, take the heavier path. Hidden complexity found mid-way
 upgrades the path; say so.
@@ -221,7 +237,7 @@ Revise on request and re-render. On approval: change the spec's `Status:` to
 `Approved`, run `studio-state ledger "spec approved <spec path>"`, commit the
 spec, its artifact (§6) and the state that must travel with them —
 `git add <spec path> docs/game-dev/artifacts/YYYY-MM-DD-<topic>.html .gitignore .studio/ledger .studio/config.json && git commit -m "docs(specs): approve <topic>"` —
-and tell the user the next command is `/game-dev:plan`. Without studio
+and print `Next: run /clear, then /game-dev:plan`. Without studio
 state (§0), drop `.gitignore` and the two `.studio/` paths from that
 `git add`; the spec and its artifact still commit. Do not invoke the next
 command yourself.

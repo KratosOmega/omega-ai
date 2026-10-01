@@ -68,11 +68,10 @@ Inside `claude-gd`, in a Godot project:
 | `/game-dev:studio` | Reads `.studio/STATE.md`, reports the stage and milestone, names the next step, routes freeform text |
 | `/game-dev:brainstorm` | Batched questions → spec with GDD-lite sections → artifact page → **your approval** |
 | `/game-dev:plan` | Tasks tagged `Role:` and `Verify: unit \| playtest \| visual`, producer scope cut → **your approval** |
-| `/game-dev:execute` | Fresh role agent per task, reviewer after each; `--inline` for checkpointed execution |
-| `/game-dev:review` | Whole-branch review by the reviewer agent against the spec; fix loop until clean |
-| `/game-dev:playtest` | `studio-test`, `studio-run`, then a numbered playtest script you answer item by item; bugs get repro steps and regression tests → **your sign-off** |
-| `/game-dev:ship` | Verification with evidence, finish the branch (merge or PR), `PROGRESS.md` and the milestone gate |
-| `/game-dev:retro` | Durable decisions into the studio's isolated memory |
+| `/game-dev:execute` | Fresh role agent per task, reviewer after each, a standalone final review on Opus, the gate, a play list and a ready PR (never a merge); `--inline` for checkpointed execution |
+| `/game-dev:review [scope]` | On demand, at any stage: the branch (or a range) against the spec; findings fixed by fresh agents; never changes the stage |
+| `/game-dev:playtest <what failed>` | On demand: what you saw fail goes in; a bug, a fixed commit with a regression test, a push and one PR comment come out |
+| `/game-dev:retro` | On demand: durable lessons from the feature's ledger into the studio's isolated memory |
 
 `scaffold` arrives in the next release; the session bootstrap says so when
 it is missing. State lives in the project's `.studio/STATE.md`, written only

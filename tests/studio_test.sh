@@ -142,7 +142,7 @@ test_stage_skill_contracts() {
   assert_contains "$S/execute/SKILL.md" "git log -1" "execute requires a committed spec and plan"
   assert_not_contains "$S/execute/SKILL.md" "godot-prompter:godot-game-dev" "execute no longer dispatches godot-prompter's game dev"
   assert_contains "$S/execute/SKILL.md" "game-dev:feel-tuner" "execute dispatches the studio's feel tuner"
-  assert_contains "$S/execute/SKILL.md" "unverified" "execute lists unverified items"
+  assert_contains "$S/execute/SKILL.md" "Play before merging" "execute hands the user a play list"
   assert_not_contains "$S/execute/SKILL.md" "bypass the event bus" "execute's reviewer no longer mandates bus-for-everything"
   assert_not_contains "$S/execute/SKILL.md" "[-][-]quit-after" "execute no longer re-implements the engine's own headless flags"
   assert_contains "$S/execute/SKILL.md" "SCRIPT ERROR" "execute's smoke boot checks for SCRIPT ERROR"
@@ -171,6 +171,7 @@ test_brainstorm_skill_contract() {
   assert_contains "$S/brainstorm/SKILL.md" "game-dev:game-designer" "brainstorm dispatches the game designer"
   assert_not_contains "$S/brainstorm/SKILL.md" "godot-brainstorming" "brainstorm does not hand a subagent an interactive skill"
   assert_contains "$S/brainstorm/SKILL.md" "docs(specs): approve" "brainstorm commits at the approval gate"
+  assert_contains "$S/brainstorm/SKILL.md" 'studio-state set stage brainstorm' "brainstorm's stage command sits on one line"
 }
 
 # Behaviour this review pass added to the router: reconciling with
@@ -198,6 +199,7 @@ test_stage_skills_dispatch_agents() {
   S="$REPO_ROOT/studios/game-dev/skills"
   assert_contains "$S/execute/SKILL.md" 'subagent_type: "game-dev:<role>"' "execute dispatches game-dev:<role> agents"
   assert_contains "$S/execute/SKILL.md" 'game-dev:reviewer' "execute reviews with game-dev:reviewer"
+  assert_contains "$S/execute/SKILL.md" 'subagent_type: "game-dev:producer"' "execute dispatches the producer at the finish"
   assert_not_contains "$S/execute/SKILL.md" 'general-purpose' "execute no longer dispatches general-purpose"
   assert_not_contains "$S/execute/SKILL.md" 'Plan 2 of the studio' "execute carries no Plan 2 note"
   assert_contains "$S/brainstorm/SKILL.md" 'dispatch `game-dev:architect`' "brainstorm dispatches the architect"
@@ -210,37 +212,213 @@ test_stage_skills_dispatch_agents() {
   assert_not_contains "$S/studio/SKILL.md" 'until that skill is installed' "router has no playtest fallback note"
   assert_contains "$S/review/SKILL.md" 'subagent_type: "game-dev:reviewer"' "review dispatches the reviewer"
   assert_contains "$S/playtest/SKILL.md" 'subagent_type: "game-dev:playtester"' "playtest dispatches the playtester"
-  assert_contains "$S/playtest/SKILL.md" 'playtest signed off' "playtest writes the sign-off ledger phrase the router reads"
-  assert_contains "$S/ship/SKILL.md" 'subagent_type: "game-dev:producer"' "ship dispatches the producer"
   assert_contains "$S/retro/SKILL.md" 'CLAUDE_CONFIG_DIR' "retro writes memory into the isolated config root"
   assert_contains "$S/retro/SKILL.md" 'sync-memory.sh game-dev' "retro reminds the user to sync memory"
 }
 
-# Cross-checks the router's stage table (studio/SKILL.md) against what each
-# stage skill actually sets `stage` to when it finishes, so a future edit to
-# either side that breaks the chain fails here instead of misrouting users.
-# For each of execute/review/playtest/ship/retro, find its own *last*
-# `studio-state set stage <X>` line (the value it hands off to the next run)
-# and assert the router names `/game-dev:<X>` for stage `<X>` (idle routes to
-# brainstorm).
+# Cross-checks the router's stage table (studio/SKILL.md) against the stage
+# chain idle → brainstorm → plan → execute → idle: the four rows and the
+# old-pipeline row, the value each stage skill last sets (execute's is idle),
+# and every value studio-state accepts. A future edit to either side that
+# breaks the chain fails here instead of misrouting users.
 test_stage_chain() {
   S="$REPO_ROOT/studios/game-dev/skills"
   router="$S/studio/SKILL.md"
-  for skill in execute review playtest ship retro; do
-    next="$(grep -o 'studio-state set stage [a-z]*' "$S/$skill/SKILL.md" | tail -n 1 | awk '{print $NF}')"
-    if [ -z "$next" ]; then
+  assert_contains "$router" '| `idle` | `/game-dev:brainstorm` |' "router routes idle to brainstorm"
+  assert_contains "$router" '| `brainstorm` | `/game-dev:plan` |' "router routes brainstorm to plan"
+  assert_contains "$router" '| `plan` | `/game-dev:execute` |' "router routes plan to execute"
+  assert_contains "$router" '| `execute` | `/game-dev:execute`' "router resumes execute"
+  assert_contains "$router" '^| any other value.*old pipeline' "router reads any other stage as the old pipeline"
+  for skill in brainstorm plan execute; do
+    last="$(grep -o 'studio-state set stage [a-z]*' "$S/$skill/SKILL.md" | tail -n 1 | awk '{print $NF}')"
+    if [ -z "$last" ]; then
       TESTS_RUN=$((TESTS_RUN + 1))
-      _fail "$skill sets a final stage value"
+      _fail "$skill sets a stage value on one line"
       continue
     fi
-    if [ "$next" = "idle" ]; then
-      assert_contains "$router" '| `idle` | `/game-dev:brainstorm` |' \
-        "router routes stage idle (set by $skill) to /game-dev:brainstorm"
+    assert_contains "$router" "^| \`$last\` |" "router has a row for stage $last (set last by $skill)"
+  done
+  assert_eq "idle" "$(grep -o 'studio-state set stage [a-z]*' "$S/execute/SKILL.md" | tail -n 1 | awk '{print $NF}')" \
+    "execute's last stage value is idle"
+  stages="$(sed -n 's/^STAGES="\(.*\)"$/\1/p' "$REPO_ROOT/studios/game-dev/bin/studio-state")"
+  assert_eq "idle brainstorm plan execute" "$stages" "studio-state accepts exactly the four stages"
+  for st in $stages; do
+    assert_contains "$router" "^| \`$st\` |" "router has a row for stage $st"
+  done
+}
+
+# Execute's slim-pipeline contract (spec §4): B2 fix rounds, the standalone
+# final review on Opus, the finish to a ready PR, and isolation that records
+# the feature branch and its base.
+test_execute_contract() {
+  E="$REPO_ROOT/studios/game-dev/skills/execute/SKILL.md"
+  for lit in 'never resume or message an implementer' 'superpowers:subagent-driven-development' \
+             '[Nn]ever a third' 'review-package' 'model: "opus"' 'never folded' 'Verify prior fixes' \
+             'final|gate|review' 'final fix wave' 'A task is complete' 'final review done' 'studio-lint' \
+             'subagent_type: "game-dev:producer"' 'gh pr create' '[-][-]draft' 'local, default branch' \
+             'Play before merging' 'studio-state set stage idle' 'new run clears' \
+             'studio-state set branch "$(git branch' 'before the fast-forward' 'ledger "base' \
+             "from the feature's worktree" 'set task 0/' 'N/N' 'SDD ledger — plan:' \
+             'Next: play the list; merge when it passes; report failures with /game-dev:playtest <what failed>; /clear before the next feature\.'; do
+    assert_contains "$E" "$lit" "execute carries: $lit"
+  done
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if grep -qE '3\+ Importants|three or more Importants' "$E"; then
+    _pass "execute re-reviews after 3+ Importants"
+  else
+    _fail "execute re-reviews after 3+ Importants"
+  fi
+  assert_not_contains "$E" 'set stage ''review' "execute no longer hands off to a review stage"
+  # Final-review fixes M1-M4: the producer's result has a report slot, branch
+  # is cleared before stage is written, the legacy stop does not isolate, and
+  # review-package runs from the worktree root.
+  for lit in "producer's gate result" 'A new run first runs `studio-state set branch -`' \
+             'then do not isolate' "run by its path in SDD's skill directory, from the worktree root"; do
+    assert_contains "$E" "$lit" "execute carries: $lit"
+  done
+  assert_not_contains "$E" "run from SDD's skill directory" "execute no longer reads review-package's directory as a cwd"
+  assert_not_contains "$E" 'a side effect outside the worktree' "execute drops the old side-effect rule"
+}
+
+# The agent contracts the slim pipeline changed. The producer records the
+# finish with the play list, and has no Bash, so it runs no studio-state.
+test_agent_contracts() {
+  A="$REPO_ROOT/studios/game-dev/agents"
+  assert_contains "$A/producer.md" 'Play before merging' "the producer's log entry carries the play list"
+  assert_not_contains "$A/producer.md" 'playtest report it passed' "the producer reads no playtest report"
+  assert_not_contains "$A/producer.md" 'sh''ip skill' "the producer names no deleted skill"
+  assert_not_contains "$A/producer.md" 'studio-state show' "the producer runs no studio-state"
+  assert_not_contains "$A/playtester.md" '## Script' "the playtester writes no playtest script"
+  assert_not_contains "$A/playtester.md" 'docs/game-dev/playtests' "the playtester writes no report file"
+  assert_eq "Read, Grep, Glob, Bash" "$(first_field "$A/playtester.md" tools)" "the playtester's tools have no Write"
+}
+
+# Every copy of a §1 feature-checkout procedure holds its key literals: skills
+# cannot include one another, so each skill that runs a procedure carries its
+# own copy. The three lists name the skills that carry each procedure.
+test_feature_checkout_copies() {
+  S="$REPO_ROOT/studios/game-dev/skills"
+  enter_leave="execute review playtest"
+  guard="brainstorm plan execute"
+  default_branch="brainstorm plan execute review playtest"
+  for sk in $enter_leave; do
+    for lit in 'studio-state worktree' 'EnterWorktree' 'another live session' 'ExitWorktree' '--git-common-dir'; do
+      assert_contains "$S/$sk/SKILL.md" "$lit" "$sk carries the enter/leave procedure: $lit"
+    done
+  done
+  for sk in $guard; do
+    for lit in 'studio-state get branch' 'previous, finished feature' 'start the next feature on this branch anyway'; do
+      assert_contains "$S/$sk/SKILL.md" "$lit" "$sk carries the finished-checkout guard: $lit"
+    done
+  done
+  for sk in $default_branch; do
+    assert_contains "$S/$sk/SKILL.md" 'refs/remotes/origin/HEAD' "$sk carries the default-branch procedure"
+  done
+}
+
+# Brainstorm and plan end by printing the next command, to run after a /clear.
+test_next_lines() {
+  S="$REPO_ROOT/studios/game-dev/skills"
+  assert_contains "$S/brainstorm/SKILL.md" 'Next: run /clear, then /game-dev:plan' "brainstorm prints the /clear Next line"
+  assert_contains "$S/plan/SKILL.md" 'Next: run /clear, then /game-dev:execute' "plan prints the /clear Next line"
+}
+
+# Review on demand (spec §5): execute's fix rules, Opus, the ledger line on
+# the feature branch, and the stale-pointer and merged-branch stops.
+test_review_contract() {
+  R="$REPO_ROOT/studios/game-dev/skills/review/SKILL.md"
+  for lit in 'model: "opus"' 'fix(review)' 'never a third' '.studio/ledger <plan path>' \
+             'chore(studio): ledger' 'pointers now name' 'MERGED' 'ends at HEAD'; do
+    assert_contains "$R" "$lit" "review carries: $lit"
+  done
+  assert_not_contains "$R" 'Three rounds' "review drops its own three-round loop"
+  # Final-review fix I1: the report-only gate is the ruling made in section 0,
+  # the ledger line needs the recorded branch on the branch/range path, an
+  # Exit-1 answer is entered, and a run without a ledger line reports its
+  # deferrals.
+  for lit in 'ruled the run report-only' 'studio-state get branch' \
+             'enter the chosen checkout the Exit 0 way' 'lists it in the report'; do
+    assert_contains "$R" "$lit" "review carries: $lit"
+  done
+  assert_not_contains "$R" 'HEAD is not the' "review's gate no longer keys on the recorded branch's checkout"
+}
+
+# Review, playtest and retro run on demand: they never change the stage, and
+# retro clears no pointer.
+test_on_demand_skills_keep_stage() {
+  S="$REPO_ROOT/studios/game-dev/skills"
+  for sk in review playtest retro; do
+    assert_not_contains "$S/$sk/SKILL.md" 'studio-state set stage' "$sk writes no stage"
+  done
+  assert_not_contains "$S/retro/SKILL.md" 'set spec -' "retro clears no spec pointer"
+  assert_not_contains "$S/retro/SKILL.md" 'set plan -' "retro clears no plan pointer"
+}
+
+# Playtest on demand (spec §5): the user's failure report in; a filed bug, a
+# fresh fixer, a regression test, a push and one PR comment out. No script,
+# no report file, no sign-off.
+test_playtest_contract() {
+  P="$REPO_ROOT/studios/game-dev/skills/playtest/SKILL.md"
+  for lit in 'subagent_type: "game-dev:playtester"' 'game-dev:feel-tuner' 'fix(B<n>)' 'gh pr comment' \
+             '## Backlog' 'superpowers:systematic-debugging' '.studio/ledger <plan path>' 'chore(studio): ledger' \
+             'never counted' 'pointers now name' 'stage execute' 'MERGED' \
+             'enter the chosen checkout the Exit 0 way' 'superpowers:test-driven-development' \
+             'commit the move in' 'redone by a fresh feel-tuner'; do
+    assert_contains "$P" "$lit" "playtest carries: $lit"
+  done
+  for lit in 'AskUserQuestion' 'docs/game-dev/playtests' 'signed off' '## Script' 'sent back'; do
+    assert_not_contains "$P" "$lit" "playtest no longer carries: $lit"
+  done
+}
+
+# Retro on demand (spec §5): no questions, no ledger write, no commit; it
+# reads the recorded feature's ledger and writes studio memory only.
+test_retro_contract() {
+  T="$REPO_ROOT/studios/game-dev/skills/retro/SKILL.md"
+  for lit in 'CLAUDE_CONFIG_DIR' 'sync-memory.sh game-dev' 'studio-state worktree' 'git show' \
+             'read only `STATE.md`' 'for the current stage'; do
+    assert_contains "$T" "$lit" "retro carries: $lit"
+  done
+  # Final-review fix I2: exit 1 reads the current checkout's ledger (spec
+  # Data migration), not STATE.md's alone.
+  assert_contains "$T" "At exit 1, use the current checkout's feature ledger" "retro reads the current checkout's ledger at exit 1"
+  for lit in 'AskUserQuestion' 'studio-state ledger' 'retro written' 'git commit'; do
+    assert_not_contains "$T" "$lit" "retro no longer carries: $lit"
+  done
+}
+
+# The old pipeline's last stage is deleted: no studio, omega, README or test
+# line routes to it. Its name is held split in $sk (spec Testing's
+# split-spelling rule), so this file's own lines never match.
+test_no_ship_references() {
+  sk='sh''ip'
+  assert_missing "$REPO_ROOT/studios/game-dev/skills/$sk" "the $sk skill directory is gone"
+  hits="$(cd "$REPO_ROOT" && grep -rnE "game-dev:$sk([^a-z-]|\$)|skills/$sk([^a-z-]|\$)|stage $sk([^a-z-]|\$)|[Ss]${sk#s} (stage|skill|method)" \
+    studios/game-dev shared/omega README.md tests/*.sh || true)"
+  assert_eq "" "$hits" "nothing names the deleted command, skill or stage"
+}
+
+# Every superpowers skill requires.txt declares is named by a studio skill or
+# agent: the other direction of test_external_references_declared. The doctor
+# never checks for a skill nothing uses.
+test_superpowers_requires_referenced() {
+  D="$REPO_ROOT/studios/game-dev"
+  for ref in $(sed -n 's/^skill[[:space:]][[:space:]]*\(superpowers:[a-z0-9-]*\)[[:space:]]*$/\1/p' "$D/requires.txt"); do
+    TESTS_RUN=$((TESTS_RUN + 1))
+    if grep -rqE -- "$ref([^a-z0-9-]|\$)" "$D/skills" "$D/agents"; then
+      _pass "requires.txt's $ref is named by a skill or agent"
     else
-      assert_contains "$router" "| \`$next\` | \`/game-dev:$next\` |" \
-        "router routes stage $next (set by $skill) to /game-dev:$next"
+      _fail "requires.txt's $ref is named by a skill or agent"
     fi
   done
+  assert_not_contains "$D/requires.txt" 'finishing-a-development-branch' "requires.txt no longer declares the branch-finishing skill"
+}
+
+# The last_playtest key is gone: no studio or omega file reads or writes it.
+# Spec §1 (115-117) relies on such a test, which §Testing omits (ruling R1).
+test_no_last_playtest_callers() {
+  hits="$(grep -rn 'last_playtest' "$REPO_ROOT/studios/game-dev" "$REPO_ROOT/shared/omega" || true)"
+  assert_eq "" "$hits" "no studio or omega file names last_playtest"
 }
 
 run_tests test_plugin_manifests test_skill_frontmatter test_agent_frontmatter \
@@ -248,4 +426,6 @@ run_tests test_plugin_manifests test_skill_frontmatter test_agent_frontmatter \
   test_role_agents_exist test_stage_skill_contracts test_plan_skill_contract \
   test_brainstorm_skill_contract \
   test_studio_skill_contract test_game_dev_agent_roster test_stage_skills_dispatch_agents \
-  test_stage_chain
+  test_stage_chain test_execute_contract test_agent_contracts test_feature_checkout_copies test_next_lines \
+  test_review_contract test_on_demand_skills_keep_stage test_playtest_contract test_retro_contract \
+  test_no_ship_references test_superpowers_requires_referenced test_no_last_playtest_callers

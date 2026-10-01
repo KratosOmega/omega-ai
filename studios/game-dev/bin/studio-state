@@ -18,10 +18,12 @@
 #                                       --rebuild sets task from the ledger
 #   studio-state reset [--keep-ledger]  back to idle; drops the feature ledger
 #                                       unless --keep-ledger
+#   studio-state worktree        print the worktree that has the recorded branch checked out
 #
-# Keys: stage spec plan task last_playtest milestone
+# Keys: stage spec plan task branch milestone
 # Exit: 0 ok · 1 no .studio/ (except init and root), bad key, bad value, bad
-# usage, or a check that found a mismatch
+# usage, or a check that found a mismatch · 3 worktree: the branch exists but
+# no worktree has it checked out
 set -eu
 
 # The pointer's root is the main worktree, always listed first by
@@ -45,12 +47,12 @@ fi
 STATE="$STATE_ROOT/.studio/STATE.md"
 CONFIG="$WORK_ROOT/.studio/config.json"
 LEDGER_DIR="$WORK_ROOT/.studio/ledger"
-KEYS="stage spec plan task last_playtest milestone"
-STAGES="idle brainstorm plan execute review playtest ship retro"
+KEYS="stage spec plan task branch milestone"
+STAGES="idle brainstorm plan execute"
 MILESTONES="prototype vertical-slice alpha beta gold"
 
 usage() {
-  printf 'usage: studio-state root [--work] | init | show | get KEY | set KEY VALUE | ledger TEXT | check [--rebuild] | reset [--keep-ledger]\nkeys: %s\n' "$KEYS" >&2
+  printf 'usage: studio-state root [--work] | init | show | get KEY | set KEY VALUE | ledger TEXT | check [--rebuild] | reset [--keep-ledger] | worktree\nkeys: %s\n' "$KEYS" >&2
   exit 1
 }
 
@@ -85,6 +87,30 @@ write_field() {
 set_field() {
   grep -q "^$1: " "$STATE" || fail "no '$1:' line in $STATE — the file is damaged; restore the header"
   write_field "$1" "$2"
+}
+
+# set_branch VALUE — set_field for `branch`, except that a STATE.md written
+# before the key existed gains the line right after its first `task:` line.
+# Every other missing header line stays set_field's damaged-file error.
+set_branch() {
+  if grep -q '^branch: ' "$STATE"; then
+    write_field branch "$1"
+    return 0
+  fi
+  grep -q '^task: ' "$STATE" || fail "no 'task:' line in $STATE — the file is damaged; restore the header"
+  _tmp="$STATE.tmp.$$"
+  STUDIO_STATE_VALUE="$1" awk '
+    BEGIN { done = 0 }
+    { print }
+    !done && /^task: / { print "branch: " ENVIRON["STUDIO_STATE_VALUE"]; done = 1 }
+  ' "$STATE" > "$_tmp"
+  mv "$_tmp" "$STATE"
+}
+
+# shq WORD — WORD single-quoted for sh, so a printed command survives a path
+# with spaces or quotes when it is pasted or run.
+shq() {
+  printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
 }
 
 # field KEY — the current value of a header field.
@@ -126,7 +152,7 @@ stage: idle
 spec: -
 plan: -
 task: -
-last_playtest: -
+branch: -
 milestone: prototype
 
 ## Ledger
@@ -174,7 +200,7 @@ EOF
           *) printf '%s' "$val" | grep -qE '^[0-9]+/[0-9]+$' || fail "task must be n/N or -" ;;
         esac ;;
     esac
-    set_field "$key" "$val"
+    if [ "$key" = branch ]; then set_branch "$val"; else set_field "$key" "$val"; fi
     ;;
   show)
     need_state
@@ -254,7 +280,52 @@ EOF
     set_field spec -
     set_field plan -
     set_field task -
+    set_branch -
     printf 'reset to idle\n'
+    ;;
+  worktree)
+    need_state
+    [ $# -eq 1 ] || usage
+    br="$(field branch)"
+    case "$br" in ''|-) fail "no feature branch recorded" ;; esac
+    git show-ref --verify --quiet "refs/heads/$br" 2>/dev/null || fail "branch $br no longer exists"
+    # One record per `git worktree list --porcelain` block that holds the
+    # branch: "<prunable 0|1><TAB><locked 0|1><TAB><path>". The ref is
+    # compared whole, so feat/x never matches feat/x-2.
+    _tab="$(printf '\t')"
+    _recs="$(git worktree list --porcelain 2>/dev/null | STUDIO_STATE_REF="refs/heads/$br" awk '
+      function flush() {
+        if (hit) printf "%d\t%d\t%s\n", prunable, locked, path
+        hit = 0; prunable = 0; locked = 0; path = ""
+      }
+      /^worktree / { flush(); path = substr($0, 10); next }
+      $0 == "branch " ENVIRON["STUDIO_STATE_REF"] { hit = 1; next }
+      /^prunable( |$)/ { prunable = 1; next }
+      /^locked( |$)/ { locked = 1; next }
+      END { flush() }
+    ')"
+    _prefix=""
+    while IFS="$_tab" read -r _pr _lk _p; do
+      [ -n "$_p" ] || continue
+      if [ "$_pr" = 0 ] && [ -d "$_p" ]; then
+        printf '%s\n' "$_p"
+        exit 0
+      fi
+      # A stale entry still holds the branch, and git refuses to add a second
+      # worktree for it. Claude Code locks its worktrees and git never marks
+      # a locked entry prunable: unlock it first, then prune.
+      if [ "$_lk" = 1 ]; then
+        _prefix="git worktree unlock $(shq "$_p") && git worktree prune && "
+      elif [ -z "$_prefix" ]; then
+        _prefix="git worktree prune && "
+      fi
+    done <<EOF
+$_recs
+EOF
+    _name="$(printf '%s' "$br" | tr '/' '-')"
+    printf 'studio-state: no worktree has %s checked out\n' "$br" >&2
+    printf '%sgit worktree add %s %s\n' "$_prefix" "$(shq "$STATE_ROOT/.claude/worktrees/$_name")" "$(shq "$br")" >&2
+    exit 3
     ;;
   *)
     usage
