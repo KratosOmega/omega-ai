@@ -28,10 +28,13 @@ approval page in `artifacts/`.
   list, records PROGRESS and opens a ready PR without merging.
 - `stage-guard.sh` (`UserPromptSubmit`) warns when a session that already ran
   one stage is used to start another.
-- Pending: M2 (the hook's live input shape) and M3 (phoenix's router line)
-  after rollout, and M4 (issue #6 re-scoped). Pressure scenarios are in
-  `docs/game-dev/pressure/slim-pipeline.md`; they cannot run yet because
-  `claude-gd` returns `403 oauth_not_allowed_for_organization`.
+- Rollout checks: M2 passed on Claude Code 2.1.287 (the second stage typed
+  in one session drew one warning line and was not blocked; recorded in
+  `docs/game-dev/pressure/slim-pipeline.md`); M3 passed (phoenix's router
+  prints `Stage: idle (was retro, old pipeline)` and `Next:
+  /game-dev:brainstorm`); M4 done (issue #6 describes the new chain). The
+  pressure scenarios in `docs/game-dev/pressure/slim-pipeline.md` are not
+  yet run; `claude-gd` logs in again, so they are unblocked.
 - Spec `specs/2026-10-01-slim-pipeline-design.md`, plan
   `plans/2026-10-01-slim-pipeline.md`.
 
