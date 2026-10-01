@@ -289,9 +289,9 @@ test_agent_contracts() {
 # own copy. The three lists name the skills that carry each procedure.
 test_feature_checkout_copies() {
   S="$REPO_ROOT/studios/game-dev/skills"
-  enter_leave="execute"
+  enter_leave="execute review"
   guard="brainstorm plan execute"
-  default_branch="brainstorm plan execute"
+  default_branch="brainstorm plan execute review"
   for sk in $enter_leave; do
     for lit in 'studio-state worktree' 'EnterWorktree' 'another live session' 'ExitWorktree' '--git-common-dir'; do
       assert_contains "$S/$sk/SKILL.md" "$lit" "$sk carries the enter/leave procedure: $lit"
@@ -314,9 +314,30 @@ test_next_lines() {
   assert_contains "$S/plan/SKILL.md" 'Next: run /clear, then /game-dev:execute' "plan prints the /clear Next line"
 }
 
+# Review on demand (spec §5): execute's fix rules, Opus, the ledger line on
+# the feature branch, and the stale-pointer and merged-branch stops.
+test_review_contract() {
+  R="$REPO_ROOT/studios/game-dev/skills/review/SKILL.md"
+  for lit in 'model: "opus"' 'fix(review)' 'never a third' '.studio/ledger <plan path>' \
+             'chore(studio): ledger' 'pointers now name' 'MERGED' 'ends at HEAD'; do
+    assert_contains "$R" "$lit" "review carries: $lit"
+  done
+  assert_not_contains "$R" 'Three rounds' "review drops its own three-round loop"
+}
+
+# Review, playtest and retro run on demand: they never change the stage, and
+# retro clears no pointer. Each skill joins the list when it is rewritten.
+test_on_demand_skills_keep_stage() {
+  S="$REPO_ROOT/studios/game-dev/skills"
+  for sk in review; do
+    assert_not_contains "$S/$sk/SKILL.md" 'studio-state set stage' "$sk writes no stage"
+  done
+}
+
 run_tests test_plugin_manifests test_skill_frontmatter test_agent_frontmatter \
   test_external_references_declared test_required_plugins_enabled test_bin_syntax \
   test_role_agents_exist test_stage_skill_contracts test_plan_skill_contract \
   test_brainstorm_skill_contract \
   test_studio_skill_contract test_game_dev_agent_roster test_stage_skills_dispatch_agents \
-  test_stage_chain test_execute_contract test_agent_contracts test_feature_checkout_copies test_next_lines
+  test_stage_chain test_execute_contract test_agent_contracts test_feature_checkout_copies test_next_lines \
+  test_review_contract test_on_demand_skills_keep_stage
