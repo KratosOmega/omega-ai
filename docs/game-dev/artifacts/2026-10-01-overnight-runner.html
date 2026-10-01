@@ -1,0 +1,251 @@
+<title>Overnight Runner</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+  /* Layout: sticky contents rail beside one reading column; the unit timeline is the hero. Shares the studio spec pages' tokens. */
+  :root {
+    --bg: #F2F4F7; --surface: #FFFFFF; --surface-2: #E9EDF2;
+    --ink: #1A222D; --ink-2: #4A5563; --ink-3: #7A8493; --line: #D5DBE3;
+    --accent: #0F7C86; --accent-soft: #D8EEF0;
+    --gate: #B86E00; --gate-soft: #FBEBD1; --ok: #2F7D3A; --ok-soft: #DCEFDF;
+    --term-bg: #1A222D; --term-ink: #E4E9F0; --term-dim: #8A96A6; --term-accent: #6ED3DC;
+    --f-display: "Bricolage Grotesque", "Avenir Next", system-ui, sans-serif;
+    --f-body: "Atkinson Hyperlegible", "Segoe UI", system-ui, sans-serif;
+    --f-mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0F141A; --surface: #161D26; --surface-2: #1E2732;
+      --ink: #E6EAF0; --ink-2: #B2BAC6; --ink-3: #7F8A98; --line: #2A3542;
+      --accent: #4FC3CF; --accent-soft: #143A3F;
+      --gate: #F2B233; --gate-soft: #3A2C10; --ok: #7BCB86; --ok-soft: #173321;
+      --term-bg: #0A0E13; --term-ink: #E4E9F0; --term-dim: #7F8A98; --term-accent: #6ED3DC;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0F141A; --surface: #161D26; --surface-2: #1E2732;
+    --ink: #E6EAF0; --ink-2: #B2BAC6; --ink-3: #7F8A98; --line: #2A3542;
+    --accent: #4FC3CF; --accent-soft: #143A3F;
+    --gate: #F2B233; --gate-soft: #3A2C10; --ok: #7BCB86; --ok-soft: #173321;
+    --term-bg: #0A0E13; --term-ink: #E4E9F0; --term-dim: #7F8A98; --term-accent: #6ED3DC;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  body { background: var(--bg); color: var(--ink); font: 16px/1.6 var(--f-body); }
+  .wrap { max-width: 1180px; margin: 0 auto; padding-inline: 16px; padding-block: 32px 64px;
+          display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 40px; }
+  header.top { grid-column: 1 / -1; display: grid; gap: 14px; }
+  .eyebrow { font: 600 12px/1 var(--f-mono); letter-spacing: .08em; text-transform: uppercase; color: var(--accent); }
+  h1 { font: 700 clamp(30px, 5vw, 48px)/1.05 var(--f-display); margin: 0; text-wrap: balance; letter-spacing: -.01em; }
+  .status { justify-self: start; font: 600 13px/1 var(--f-mono); padding: 7px 10px; border-radius: 6px; }
+  .status.gate { background: var(--gate-soft); color: var(--gate); }
+  .status.ok { background: var(--ok-soft); color: var(--ok); }
+  dl.meta { display: flex; flex-wrap: wrap; gap: 8px 28px; margin: 0; color: var(--ink-2); font-size: 14px; }
+  dl.meta div { min-width: 0; max-width: 62ch; }
+  dl.meta dt { font: 600 11px/1.4 var(--f-mono); letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3); }
+  dl.meta dd { margin: 0; }
+  .units { grid-column: 1 / -1; background: var(--term-bg); color: var(--term-ink); border-radius: 10px;
+           padding: 20px; display: grid; gap: 14px; overflow-x: auto; }
+  .units .cmd { font: 13px/1.4 var(--f-mono); color: var(--term-dim); }
+  .units .cmd b { color: var(--term-accent); font-weight: 600; }
+  .lane { display: flex; gap: 8px; min-width: 640px; }
+  .unit { flex: 1; border: 1px solid #2E3A48; border-radius: 8px; padding: 10px 12px; display: grid; gap: 4px; }
+  .unit span { font: 600 11px/1 var(--f-mono); color: var(--term-dim); letter-spacing: .06em; text-transform: uppercase; }
+  .unit strong { font: 600 15px/1.2 var(--f-mono); color: var(--term-ink); }
+  .unit em { font: 12px/1.35 var(--f-body); color: var(--term-dim); font-style: normal; }
+  .unit.last { border-color: var(--term-accent); }
+  nav.toc { position: sticky; top: calc(env(safe-area-inset-top, 0px) + 16px); align-self: start; }
+  nav.toc ol { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; font-size: 14px; counter-reset: s; }
+  nav.toc a { color: var(--ink-2); text-decoration: none; display: block; padding: 3px 8px; border-radius: 5px; }
+  nav.toc a:hover, nav.toc a:focus-visible { background: var(--surface-2); color: var(--ink); outline: none; }
+  main { min-width: 0; display: grid; gap: 8px; }
+  section { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 22px 26px; min-width: 0; }
+  h2 { font: 700 22px/1.2 var(--f-display); margin: 0 0 10px; text-wrap: balance; }
+  h3 { font: 700 17px/1.3 var(--f-display); margin: 22px 0 6px; color: var(--ink); }
+  p, li { max-width: 72ch; }
+  p { margin: 8px 0; } ul, ol { margin: 8px 0; padding-left: 22px; } li { margin: 4px 0; }
+  code { font: 0.86em var(--f-mono); background: var(--surface-2); padding: 1px 5px; border-radius: 4px; overflow-wrap: anywhere; }
+  .scroll { overflow-x: auto; margin: 12px 0; }
+  table { border-collapse: collapse; font-size: 14px; width: 100%; font-variant-numeric: tabular-nums; }
+  th { text-align: left; font: 600 12px/1.3 var(--f-mono); letter-spacing: .04em; text-transform: uppercase; color: var(--ink-3); border-bottom: 2px solid var(--line); padding: 8px 10px; }
+  td { border-bottom: 1px solid var(--line); padding: 8px 10px; vertical-align: top; min-width: 120px; }
+  pre.term { margin: 0; background: var(--term-bg); color: var(--term-ink); font: 12.5px/1.5 var(--f-mono); padding: 16px 18px; border-radius: 8px; white-space: pre; }
+  pre.term code { background: none; }
+  @media (max-width: 860px) {
+    .wrap { grid-template-columns: minmax(0, 1fr); gap: 20px; }
+    nav.toc { position: static; }
+    nav.toc ol { display: flex; flex-wrap: wrap; gap: 4px; }
+    nav.toc a { border: 1px solid var(--line); }
+    section { padding: 18px 16px; }
+  }
+  @media (prefers-reduced-motion: no-preference) { html { scroll-behavior: smooth; } }
+</style>
+<div class="wrap">
+  <header class="top">
+    <div class="eyebrow">game-dev studio · spec · bundle 2 of 3</div>
+    <h1>Overnight runner</h1>
+    <div class="status ok">Approved 2026-10-01</div>
+    <dl class="meta"><div><dt>Date</dt><dd>2026-10-01</dd></div><div><dt>Milestone</dt><dd>Plan 3 — Content (studio tooling; bundle 2 of 3 of the token/autopilot redesign)</dd></div><div><dt>Classification</dt><dd>architectural</dd></div><div><dt>Issue</dt><dd>#17 — bundle 2 of 3. Bundle 1 (#9, <code>2026-10-01-slim-pipeline-design.md</code>) cut the chain to <code>idle → brainstorm → plan → execute → idle</code> and deferred three things here: automatic fresh sessions, replacing autopilot&#x27;s heartbeat, and splitting execute into fresh sessions per unit. Bundle 3 is the plan shape and the plan falsifier.</dd></div></dl>
+  </header>
+  <div class="units" aria-label="One fresh session per unit">
+    <div class="cmd">$ <b>studio-overnight start</b>   # each box is a fresh <b>claude-gd -p "/game-dev:execute --one"</b></div>
+    <div class="lane">
+      <div class="unit"><span>unit 1</span><strong>T1</strong><em>isolate, task, review, push</em></div>
+      <div class="unit"><span>unit k</span><strong>T2 … TN</strong><em>one task per session</em></div>
+      <div class="unit"><span>unit N+1</span><strong>final review</strong><em>Opus, fix wave</em></div>
+      <div class="unit last"><span>unit N+2</span><strong>finish</strong><em>gate, play list, draft PR</em></div>
+      <div class="unit"><span>runner</span><strong>report.md</strong><em>from the ledger</em></div>
+    </div>
+  </div>
+  <nav class="toc" aria-label="Sections"><ol><li><a href="#milestone-gate">Milestone gate</a></li><li><a href="#purpose">Purpose</a></li><li><a href="#core-loop-delta">Core-loop delta</a></li><li><a href="#player-verbs">Player verbs</a></li><li><a href="#design">Design</a></li><li><a href="#level">Level</a></li><li><a href="#failure-and-recovery">Failure and recovery</a></li><li><a href="#teaching">Teaching</a></li><li><a href="#input-and-platform">Input and platform</a></li><li><a href="#feel-targets">Feel targets</a></li><li><a href="#references">References</a></li><li><a href="#acceptance-criteria">Acceptance criteria</a></li><li><a href="#architecture">Architecture</a></li><li><a href="#tuning-knobs">Tuning knobs</a></li><li><a href="#assets-and-audio">Assets and audio</a></li><li><a href="#test-strategy">Test strategy</a></li><li><a href="#risks">Risks</a></li><li><a href="#not-doing">Not doing</a></li></ol></nav>
+  <main>
+<section id="milestone-gate">
+<h2 id="milestone-gate">Milestone gate</h2>
+<p>The studio&#x27;s working milestone (PROGRESS.md: Plan 1 and Plan 2 delivered, Plan 3 planned) has no exit criterion for runner work; this bundle&#x27;s own exit criteria, agreed in brainstorm:</p>
+<ol><li><code>sh tests/run_all.sh</code> is green, including the stub-<code>claude</code> runner suite.</li><li>One live run of <code>studio-overnight start</code> on a two-task plan in a throwaway Godot project reaches a draft PR with no human input, each unit in its own session, and writes the morning report.</li><li>No in-session scheduler remains: autopilot creates no <code>CronCreate</code> job and <code>omega-caffeine</code> is gone.</li></ol>
+</section>
+<section id="purpose">
+<h2 id="purpose">Purpose</h2>
+<p>An approved plan turns into a draft PR overnight without anyone at the keyboard, and without one session dragging every earlier task&#x27;s context behind it. Today execute runs every task in one main session (469k average context, 800k max on phoenix), and autopilot&#x27;s half-hourly heartbeat lives inside that session — a <code>/clear</code>, a crash or a closed terminal ends the run. The runner is an outside supervisor: it starts a fresh <code>claude-gd -p</code> session for each unit of work, reads durable state between units, and stops on its own rules. It serves the redesign&#x27;s goal (same quality, a fraction of the spend, fewer stops) by making the main-session cost per unit roughly constant instead of growing with the plan.</p>
+</section>
+<section id="core-loop-delta">
+<h2 id="core-loop-delta">Core-loop delta</h2>
+<p>The user&#x27;s loop (the studio&#x27;s &quot;ten-second loop&quot; is the feature loop here): today <code>approve plan → /clear → arm autopilot → /game-dev:execute → (session runs all tasks, heartbeat nudges) → morning</code>. After: <code>approve plan → /clear → /omega:autopilot (question sweep, readiness) → run the printed studio-overnight command → morning: read report.md, play the list, merge</code>. Attended runs are unchanged: <code>/game-dev:execute</code> without <code>--one</code> still runs the whole stage in one session.</p>
+</section>
+<section id="player-verbs">
+<h2 id="player-verbs">Player verbs</h2>
+<ul><li>Added: <code>studio-overnight start [--dry-run]</code>, <code>studio-overnight status</code>, <code>studio-overnight stop</code>; <code>/game-dev:execute --one</code>.</li><li>Changed: <code>/omega:autopilot</code> phase 1 ends by printing the runner command instead of arming a heartbeat; phase 2 reaches headless sessions through <code>OMEGA_AUTOPILOT=1</code>.</li><li>Removed: autopilot&#x27;s <code>CronCreate</code> heartbeat; <code>omega-caffeine</code>.</li></ul>
+</section>
+<section id="design">
+<h2 id="design">Design</h2>
+<p>n/a — studio tooling, no game loop. <code>game-dev:game-designer</code> not dispatched.</p>
+</section>
+<section id="level">
+<h2 id="level">Level</h2>
+<p>n/a</p>
+</section>
+<section id="failure-and-recovery">
+<h2 id="failure-and-recovery">Failure and recovery</h2>
+<ul><li><strong>A unit makes no progress</strong> (the progress signature — <code>stage</code>, <code>task</code>, the feature ledger&#x27;s <code>final review done</code> and <code>shipped</code> lines — is unchanged after the session): one retry of the same unit; a second no-progress session stops the run with <code>stop: no progress on &lt;unit&gt;</code>.</li><li><strong>A hard stop</strong> (execute&#x27;s own: destructive or security-sensitive operation, plan too broken to follow, no Godot binary, test framework missing): execute under <code>--one</code> writes <code>studio-state ledger &quot;Stop: &lt;reason&gt;&quot;</code> and exits; the runner sees the new <code>Stop:</code> line and stops at once, no retry.</li><li><strong>Budget</strong>: a session that hits <code>--max-budget-usd</code> ends; it counts as a no-progress session unless the signature moved. Before each launch, when spent + <code>session_usd</code> &gt; <code>run_usd</code>, the runner stops with <code>stop: run budget</code>.</li><li><strong>Timeout</strong>: a session over <code>session_minutes</code> is sent SIGTERM, then SIGKILL after 30 s; it counts as no progress unless the signature moved.</li><li><strong>Crash or closed terminal</strong>: the lock&#x27;s pid is dead; the next <code>studio-overnight start</code> reclaims the stale lock and resumes from state — each unit is idempotent because execute&#x27;s §0 resume reads <code>task</code>, the ledger and the branch.</li><li><strong>Cost to the user</strong>: at most one unit&#x27;s work is lost (each task commits and pushes before its session ends). The morning report names the stop reason and the resume command.</li></ul>
+</section>
+<section id="teaching">
+<h2 id="teaching">Teaching</h2>
+<p>The user learns the runner from autopilot&#x27;s phase 1: its last step prints the exact command, what the run may and may not do, and the <code>status</code> / <code>stop</code> commands. <code>studio-overnight --help</code> lists the same. The router (<code>/game-dev:studio</code>) names <code>studio-overnight status</code> when a lock is live.</p>
+</section>
+<section id="input-and-platform">
+<h2 id="input-and-platform">Input and platform</h2>
+<p>macOS (Darwin) first, POSIX <code>sh</code>; <code>caffeinate</code> when present, otherwise a warning and the run continues (Linux: <code>systemd-inhibit</code> when present). Claude Code ≥ 2.1.287 headless flags: <code>-p</code>, <code>--output-format stream-json</code>, <code>--verbose</code> (required by stream-json under <code>-p</code>), <code>--permission-mode auto</code>, <code>--permission-prompts none</code>, <code>--disallowedTools</code>, <code>--max-budget-usd</code>.</p>
+</section>
+<section id="feel-targets">
+<h2 id="feel-targets">Feel targets</h2>
+<div class="scroll"><table><thead><tr><th>Target</th><th>Value</th><th>How it is checked</th></tr></thead><tbody><tr><td>Main-session context at unit start</td><td>≈ fresh-session baseline (≤ 90k), every unit</td><td>live run (stream-json usage of each session)</td></tr><tr><td>Main-session context at unit end, task unit</td><td>≤ 250k</td><td>live run</td></tr><tr><td>Runner overhead between units</td><td>≤ 5 s</td><td>unit (stub)</td></tr><tr><td>Retries per unit before stop</td><td>1</td><td>unit (stub)</td></tr><tr><td>Stop after <code>studio-overnight stop</code></td><td>after the running unit, ≤ 1 unit late</td><td>unit (stub)</td></tr><tr><td>Morning report written on every ending</td><td>100% (done, stop, budget, no progress, crash-resume)</td><td>unit (stub)</td></tr></tbody></table></div>
+</section>
+<section id="references">
+<h2 id="references">References</h2>
+<ul><li>CI runners / Kubernetes Jobs: the supervisor schedules, workers are stateless and idempotent over durable state.</li><li>launchd / systemd: one scheduler, a pidfile lock, the sleep inhibitor held for the supervisor&#x27;s lifetime (<code>caffeinate -i -w &lt;pid&gt;</code>, <code>systemd-inhibit</code>).</li><li>Bundle 1&#x27;s spec: execute&#x27;s §0 resume and §7 finish are the units&#x27; contracts.</li></ul>
+</section>
+<section id="acceptance-criteria">
+<h2 id="acceptance-criteria">Acceptance criteria</h2>
+<ol><li><code>studio-overnight start</code> refuses to start (exit 2, one line each) unless: the plan is approved and committed (ledger <code>plan approved &lt;plan&gt;</code>, clean <code>git status</code> on spec and plan); the plan has a <code>## Decisions</code> section; <code>stage</code> is <code>plan</code> or <code>execute</code>; <code>claude-gd</code> and <code>gh auth status</code> succeed; no live lock.</li><li>It runs <code>claude-gd -p &quot;/game-dev:execute --one&quot;</code> once per unit with <code>OMEGA_AUTOPILOT=1</code>, <code>--output-format stream-json --verbose</code>, <code>--permission-mode auto --permission-prompts none</code>, the deny list and <code>--max-budget-usd &lt;session_usd&gt;</code>, with stdout to <code>.studio/reports/overnight-&lt;ts&gt;/&lt;n&gt;-&lt;unit&gt;.jsonl</code>.</li><li>Under <code>--one</code>, execute runs exactly one unit — the next task, or the final review with its fix wave, or the finish — writes its state, commits and pushes, and exits; it never starts a second unit.</li><li>The run ends with <code>done</code> when <code>stage</code> is <code>idle</code> and the feature ledger has a <code>shipped</code> line.</li><li>A unit with an unchanged progress signature is retried once; a second unchanged session stops the run (<code>no progress</code>).</li><li>A new <code>Stop:</code> ledger line stops the run with no retry.</li><li>The run stops before a launch that could exceed <code>run_usd</code>; the spend is the sum of each session&#x27;s <code>total_cost_usd</code>.</li><li>A session past <code>session_minutes</code> is terminated and counted.</li><li><code>.studio/overnight.lock</code> holds the runner&#x27;s pid; a second <code>start</code> with a live pid exits 2; a dead pid is reclaimed with a warning.</li><li><code>studio-overnight stop</code> makes the runner exit after the running unit; SIGINT/SIGTERM to the runner do the same.</li><li><code>studio-overnight status</code> prints run dir, unit, <code>task k/N</code>, spend so far, and the lock pid — or <code>no run</code> (exit 1).</li><li>On every ending the runner writes <code>report.md</code>: stop reason, each unit (name, exit, cost, minutes), every <code>Ruling:</code> line with its cost if wrong, the play list (<code>P&lt;k&gt; Play:</code> lines), the PR URL from the <code>shipped</code> line, and the resume command when not done.</li><li>The runner holds <code>caffeinate -i -w &lt;runner pid&gt;</code> for its lifetime when <code>caffeinate</code> exists.</li><li><code>omega-mode show</code> prints <code>autopilot</code> when <code>OMEGA_AUTOPILOT=1</code> is set and no session file lists it; the hooks&#x27; mode brief includes it.</li><li>Autopilot phase 1 (in a studio) creates no <code>CronCreate</code> job, does not call <code>omega-caffeine</code>, replaces its &quot;in a worktree&quot; readiness line with <code>studio-overnight start --dry-run</code> exiting 0, and ends by printing the <code>studio-overnight start</code> command; <code>omega-caffeine</code> and its tests are deleted; no shipped path (<code>shared/</code>, <code>studios/</code>, <code>tests/</code> except the absence checks themselves, <code>README.md</code>, <code>install.sh</code>) mentions <code>omega-caffeine</code> or <code>CronCreate</code>. Dated specs, plans, pressure records and PROGRESS are history and keep their text.</li><li>The deny list blocks force-push, remote branch delete, <code>gh pr merge</code>, and reads of secret paths; it is data in one file, not inlined in code.</li></ol>
+</section>
+<section id="architecture">
+<h2 id="architecture">Architecture</h2>
+<p>(from <code>game-dev:architect</code>.) Studio tooling, so the usual terms translate: the scene tree becomes files and owners, the gameplay state machine becomes the runner&#x27;s loop, signals become the runner ↔ session contract (environment, ledger lines, exit codes), and the <code>Resource</code> becomes <code>config.json</code>&#x27;s <code>overnight</code> object.</p>
+<p><strong>Ownership.</strong> The runner owns the lock, the stop file, the run directory, scheduling and <code>report.md</code>. Execute owns every piece of studio state (<code>STATE.md</code>, the ledger, the branch, commits, the PR). The runner only reads studio state and never writes it; the session never reads runner files.</p>
+<h3 id="before-after">Before / after</h3>
+<div class="scroll"><pre class="term">before: claude-gd (one session, attended terminal)
+          /omega:autopilot ph.1 → omega-mode set · omega-caffeine start · CronCreate
+          /game-dev:execute → SDD T1..TN → §5 → §7 → omega:handoff → disarm
+
+after:  terminal: studio-overnight start          (cwd = START_DIR; holds lock + caffeinate)
+          unit 1   claude-gd -p &quot;/game-dev:execute --one&quot;   OMEGA_AUTOPILOT=1 → T1
+          unit k   …same command…                                            → T&lt;k&gt;
+          unit N+1 …same command…                                            → §5 + fix wave
+          unit N+2 …same command…                                            → §7 finish
+          report.md written from the ledger; unlock</pre></div>
+<h3 id="files">Files</h3>
+<div class="scroll"><table><thead><tr><th>File</th><th>Action</th><th>Single responsibility</th></tr></thead><tbody><tr><td><code>studios/game-dev/bin/studio-overnight</code></td><td>create</td><td>Supervisor: <code>start [--dry-run]</code>, <code>status</code>, <code>stop</code>, <code>--help</code>. POSIX <code>sh</code>, <code>set -u</code>, house style of <code>studio-dispatch</code>. Calls its sibling <code>studio-state</code> by path (own directory resolved through symlinks, the <code>studio-dispatch</code> loop), never via <code>PATH</code></td></tr><tr><td><code>studios/game-dev/bin/overnight-deny.txt</code></td><td>create</td><td>The deny list (AC16). Sibling of the runner so link and copy installs both carry it. One Claude Code permission rule per line; blank lines and <code>#</code> comments ignored. Seed: <code>Bash(git push --force:*)</code>, <code>Bash(git push -f:*)</code>, <code>Bash(git push --force-with-lease:*)</code>, <code>Bash(git push origin --delete:*)</code>, <code>Bash(git push --delete:*)</code>, <code>Bash(gh pr merge:*)</code>, <code>Bash(gh api -X DELETE:*)</code>, <code>Read(**/.env*)</code>, <code>Read(**/*.pem)</code>, <code>Read(**/*.key)</code>, <code>Read(~/.ssh/**)</code>, <code>Read(~/.aws/**)</code>, <code>Read(~/.config/gh/**)</code>. Missing or empty file: preflight refuses</td></tr><tr><td><code>tests/overnight_test.sh</code></td><td>create</td><td>Runner suite (picked up by <code>run_all.sh</code>&#x27;s <code>*_test.sh</code> glob; <code>sh</code> + <code>tests/assert.sh</code> like <code>state_test.sh</code>). Fake bin first on <code>PATH</code>: a stub <code>claude</code> driven by a scenario file, a two-line <code>claude-gd</code> that <code>exec claude &quot;$@&quot;</code>, and a stub <code>gh</code></td></tr><tr><td><code>studios/game-dev/skills/execute/SKILL.md</code></td><td>modify</td><td>New <code>## 8. One unit (--one)</code>, plus one-line pointers in §0 (every stop), §1, §5 step 6 and §7 steps 6–7</td></tr><tr><td><code>shared/omega/bin/omega-mode</code></td><td>modify</td><td><code>OMEGA_AUTOPILOT=1</code> in <code>show</code> and <code>brief</code></td></tr><tr><td><code>shared/omega/hooks/session-start.sh</code></td><td>modify</td><td>Drop <code>CAFFEINE</code> and the <code>Keep-awake:</code> clause from the context line</td></tr><tr><td><code>shared/omega/hooks/session-end.sh</code></td><td>modify</td><td>Drop the <code>omega-caffeine stop</code> call and its header mention</td></tr><tr><td><code>shared/omega/hooks/prompt-submit.sh</code></td><td>modify</td><td><code>/omega:autopilot off</code> only clears the mode; drop <code>CAFFEINE</code></td></tr><tr><td><code>shared/omega/bin/omega-caffeine</code></td><td>delete</td><td>—</td></tr><tr><td><code>shared/omega/skills/autopilot/SKILL.md</code></td><td>modify</td><td>Rewrite of <code>off</code>, phase 1 steps 3/5/6, phase 2 hard stops / completion / disarm, red flags</td></tr><tr><td><code>shared/omega/skills/delegate/SKILL.md</code></td><td>modify</td><td>Drop <code>omega-caffeine</code> from its list of status commands</td></tr><tr><td><code>studios/game-dev/skills/studio/SKILL.md</code></td><td>modify</td><td>When <code>.studio/overnight.lock</code> names a live pid, the router says <code>studio-overnight status</code> and routes nothing else</td></tr><tr><td><code>README.md</code></td><td>modify</td><td>Autopilot row (l.127) describes the runner hand-off; drop the <code>omega-caffeine</code> tree line (l.250); add <code>studio-overnight</code> to the studio bin tree</td></tr><tr><td><code>docs/omega/pressure/autopilot.md</code></td><td>modify</td><td>Pressure scenario expects the printed runner command, not a heartbeat</td></tr><tr><td><code>tests/omega_test.sh</code></td><td>modify</td><td>Remove the <code>omega-caffeine</code> cases, fake <code>caffeinate</code> and the <code>Keep-awake</code> assertion; add <code>OMEGA_AUTOPILOT</code> show/brief cases; add the absence check (below)</td></tr><tr><td><code>tests/omega_contracts/autopilot_contract.sh</code></td><td>modify</td><td>Drop the caffeine/heartbeat assertions; assert <code>studio-overnight start</code>, <code>source=env</code>, <code>Stop:</code>, and absence of <code>CronCreate</code>/<code>omega-caffeine</code></td></tr><tr><td><code>tests/install_test.sh</code></td><td>modify</td><td>The copy-mode tool loop (l.145) checks <code>omega-mode</code> only</td></tr><tr><td><code>tests/studio_test.sh</code></td><td>modify</td><td>Text contract for execute&#x27;s <code>--one</code> section</td></tr></tbody></table></div>
+<p>The absence check (AC15) greps <code>shared/</code>, <code>studios/</code>, <code>tests/</code> (except the check&#x27;s own file and the contract that asserts absence), <code>README.md</code> and <code>install.sh</code> for <code>omega-caffeine</code> and <code>CronCreate</code>. Dated specs, <code>docs/*/PROGRESS.md</code> and this spec are history and stay as written.</p>
+<h3 id="paths-the-runner-uses">Paths the runner uses</h3>
+<ul><li><code>STATE_ROOT</code> = <code>studio-state root</code> (main checkout). Holds <code>.studio/overnight.lock</code>, <code>.studio/overnight.stop</code> and <code>.studio/reports/overnight-&lt;YYYYmmdd-HHMMSS&gt;/</code>. On first use the runner writes <code>.studio/reports/.gitignore</code> (<code>*</code>) and appends <code>.studio/overnight.lock</code> and <code>.studio/overnight.stop</code> to <code>$(git rev-parse --git-common-dir)/info/exclude</code> — never to a tracked <code>.gitignore</code>, which would dirty the tree.</li><li><code>START_DIR</code> = <code>studio-state root --work</code> where <code>start</code> was run: the checkout holding the approved spec and plan (normally the main checkout). Every session is launched with cwd <code>START_DIR</code>; execute&#x27;s §0 resume moves each session into the feature worktree itself (<code>EnterWorktree</code>).</li><li><code>FEATURE_DIR</code> = stdout of <code>studio-state worktree</code> run in <code>START_DIR</code> when it exits 0; otherwise (no branch yet, exit 1 or 3) <code>START_DIR</code>. Recomputed at every snapshot.</li><li>Ledger text = the lines after <code>## Feature ledger: </code> in <code>studio-state show</code> run with cwd <code>FEATURE_DIR</code> (and, for <code>Stop:</code> lines only, also with cwd <code>START_DIR</code>). The runner never derives the ledger file name; <code>studio-state</code> keeps the one slug rule.</li><li>Config = <code>START_DIR/.studio/config.json</code>.</li><li>Run directory: <code>&lt;n&gt;-&lt;label&gt;.jsonl</code> (stdout), <code>&lt;n&gt;-&lt;label&gt;.err</code> (stderr), <code>units.tsv</code> (<code>n label exit cost minutes timed_out outcome</code>), <code>current</code> (label of the running unit), <code>report.md</code>.</li></ul>
+<h3 id="progress-signature">Progress signature</h3>
+<p>Taken immediately before each launch and after each session ends:</p>
+<div class="scroll"><pre class="term">SIG   = stage=&lt;studio-state get stage&gt;;task=&lt;studio-state get task&gt;;
+        frd=&lt;count of &quot;^- [0-9-]* final review done$&quot; in FEATURE_DIR ledger&gt;;
+        shipped=&lt;count of &quot;^- [0-9-]* shipped &quot; in FEATURE_DIR ledger&gt;
+STOPS = sort -u of every &quot;^- [0-9-]* Stop: &quot; line in the FEATURE_DIR and
+        START_DIR ledgers</pre></div>
+<p><code>stage</code>/<code>task</code> come from <code>STATE.md</code> in the main checkout (<code>studio-state get</code> works from any cwd). <code>STOPS</code> is a de-duplicated set, not a count, so a committed <code>Stop:</code> line that a new worktree copies from <code>START_DIR</code> is not new. A new stop = <code>comm -13 STOPS_before STOPS_after</code> is non-empty; its last line&#x27;s text after <code>Stop: </code> is the reason.</p>
+<p><strong>Unit label</strong> (file names and the report only; never passed to the session, and never a decision about which unit runs): from <code>SIG_before</code>, <code>stage plan</code> → <code>T1</code>; <code>task k/N</code>, k &lt; N → <code>T&lt;k+1&gt;</code>; <code>N/N</code>, <code>frd=0</code> → <code>final-review</code>; <code>N/N</code>, <code>frd&gt;0</code> → <code>finish</code>. A retry appends <code>-retry</code>.</p>
+<h3 id="runner-state-machine">Runner state machine</h3>
+<div class="scroll"><pre class="term">PREFLIGHT ─fail→ exit 2 (one line per failure; no lock, no report)
+   │ ok (--dry-run: print the launch line, exit 0)
+LOCK ─live pid→ exit 2
+   │ stale pid → warn &quot;reclaiming stale lock (pid N)&quot;, remove, retake
+   │ took it → run dir, rm stop file, start inhibitor
+   ▼
+CHECK ◄──────────────────────────────────────────────┐
+   │ stop file or signal flag        → REPORT &quot;stopped by user&quot;
+   │ stage ∉ {plan, execute}         → REPORT &quot;stop: unexpected stage &lt;s&gt;&quot;
+   │ spent + session_usd &gt; run_usd   → REPORT &quot;stop: run budget&quot;
+   │ else snapshot SIG_before, STOPS_before
+LAUNCH (claude-gd in background + watchdog)          │
+WAIT ─child exits──────────────┐                     │
+   │ watchdog: TERM, grace, KILL┤ timed_out=1         │
+   │ INT/TERM to runner: set flag, keep waiting       │
+CLASSIFY (in this order; append units.tsv row first) │
+   │ new STOPS line                  → REPORT &quot;stop: &lt;reason&gt;&quot;
+   │ stage idle ∧ shipped &gt; 0        → REPORT &quot;done&quot;
+   │ SIG changed                     → noprog=0 ─────┤
+   │ noprog+1 ≤ retries              → (retry) ──────┘
+   │ else                            → REPORT &quot;no progress on &lt;label&gt;&quot;
+REPORT → write report.md → UNLOCK (kill inhibitor, rm lock, rm stop file)</pre></div>
+<ul><li><strong>Preflight</strong> (AC1), each failure one line, exit 2: <code>studio-state show</code> has <code>plan approved &lt;plan&gt;</code>; <code>git status --porcelain -- &lt;spec&gt; &lt;plan&gt; .studio/ledger .studio/config.json</code> is empty in <code>START_DIR</code> (the same four paths execute&#x27;s §0 checks, so a unit cannot stop on them at once); the plan has a <code>^## Decisions</code> line; <code>stage</code> is <code>plan</code> or <code>execute</code>; <code>command -v claude-gd</code> and <code>claude-gd --version</code> succeed; <code>gh auth status</code> succeeds; the deny file is present and non-empty; each <code>overnight</code> value parses and is in range; no live lock.</li><li><strong>Lock</strong> (AC9): created with <code>set -C</code> (noclobber) so two starts cannot both win; lines <code>pid=&lt;$$&gt;</code>, <code>run=&lt;abs run dir&gt;</code>, <code>started=&lt;ISO time&gt;</code>. Live = <code>kill -0 &lt;pid&gt;</code> and <code>ps -o args= -p &lt;pid&gt;</code> contains <code>studio-overnight</code>.</li><li><strong>Inhibitor</strong> (AC13): Darwin with <code>caffeinate</code> → <code>caffeinate -i -w $$ &amp;</code>; Linux with <code>systemd-inhibit</code> → <code>systemd-inhibit --what=idle:sleep --why=studio-overnight sh -c &#x27;while kill -0 &lt;runner pid&gt;; do sleep 60; done&#x27; &amp;</code>; otherwise one warning line and continue.</li><li><strong>Signals</strong> (AC10): <code>trap &#x27;STOP_REQ=1&#x27; INT TERM</code>. The session is an asynchronous list in a non-interactive shell, so POSIX starts it with SIGINT ignored and a Ctrl-C reaches only the runner. <code>trap … EXIT</code> writes <code>report.md</code> with <code>stop: runner error (exit &lt;n&gt;)</code> and unlocks when REPORT was not reached. SIGHUP is not trapped: a closed terminal is the crash path, recovered by the stale-lock rule.</li><li><strong>Exit codes</strong>: <code>start</code> 0 done · 1 any other ending · 2 refused. <code>status</code> 0 run live · 1 <code>no run</code>. <code>stop</code> 0 stop file written · 1 <code>no run</code>.</li><li>**<code>status</code>** (AC11) reads the lock (pid, run dir), <code>current</code>, <code>units.tsv</code> (spend = sum of the cost column) and <code>studio-state get task</code>.</li><li>**<code>stop</code>** touches <code>STATE_ROOT/.studio/overnight.stop</code> when the lock is live; the runner checks it in CHECK, so the running unit always finishes.</li></ul>
+<h3 id="launch-line-and-portable-timeout">Launch line and portable timeout</h3>
+<div class="scroll"><pre class="term">cd &quot;$START_DIR&quot; &amp;&amp; OMEGA_AUTOPILOT=1 claude-gd -p &quot;/game-dev:execute --one&quot; \
+  --output-format stream-json --verbose \
+  --permission-mode auto --permission-prompts none \
+  --max-budget-usd &lt;session_usd&gt; \
+  --disallowedTools &lt;rule 1&gt; &lt;rule 2&gt; … \
+  &gt; &lt;n&gt;-&lt;label&gt;.jsonl 2&gt; &lt;n&gt;-&lt;label&gt;.err &amp;</pre></div>
+<p>The prompt is the first argument and <code>--disallowedTools</code> the last option, because the flag is variadic and would swallow a later positional. Each deny rule is its own argv element, built with <code>set --</code> while reading the file, so rules with spaces survive. <code>--verbose</code> is required by <code>stream-json</code> under <code>-p</code>. The probe task&#x27;s fallback prompt (Risks) replaces only the prompt string.</p>
+<p>macOS has no GNU <code>timeout</code>. The watchdog is a background subshell <code>( sleep &lt;secs&gt;; : &gt; timed_out; kill -TERM &lt;cpid&gt;; pkill -TERM -P &lt;cpid&gt;; sleep &lt;grace&gt;; kill -KILL &lt;cpid&gt;; pkill -KILL -P &lt;cpid&gt; ) &gt;/dev/null 2&gt;&amp;1 &amp;</code>, then <code>while kill -0 &lt;cpid&gt;; do wait &lt;cpid&gt;; done</code> (a trapped signal interrupts <code>wait</code>; the loop re-waits). When the session ends first, the runner kills the watchdog. <code>&lt;secs&gt;</code> = <code>session_minutes × 60</code>, overridden only by <code>STUDIO_OVERNIGHT_SESSION_SECONDS</code> (test hook, documented in <code>--help</code>). No polling, so runner overhead between units is the snapshot cost only.</p>
+<h3 id="cost-from-stream-json">Cost from stream-json</h3>
+<p>The last <code>&quot;type&quot;:&quot;result&quot;</code> line of the session&#x27;s <code>.jsonl</code> carries <code>total_cost_usd</code>: <code>grep &#x27;&quot;type&quot;[[:space:]]*:[[:space:]]*&quot;result&quot;&#x27; f | tail -n 1 | sed -n &#x27;s/.*&quot;total_cost_usd&quot;[[:space:]]*:[[:space:]]*\([0-9.eE+-]*\).*/\1/p&#x27;</code>. Missing (no result event: killed, crashed, or subscription auth with no cost) → <code>0</code>, and the unit&#x27;s cost column reads <code>unknown</code>; the report then says &quot;cost unknown&quot; next to the total. Sums and the budget comparison use <code>awk</code> (floating point; <code>sh</code> arithmetic is integer only).</p>
+<h3 id="overnight-config-the-tunables-schema"><code>overnight</code> config (the tunables&#x27; schema)</h3>
+<p><code>START_DIR/.studio/config.json</code>, read with the same flat <code>sed</code> scan <code>studio-dispatch</code> uses — no <code>jq</code>, no new dependency. A number field is <code>sed -n &#x27;s/.*&quot;&lt;key&gt;&quot;[[:space:]]*:[[:space:]]*\([0-9][0-9.]*\).*/\1/p&#x27; | head -n 1</code>; the five key names are unique in the file, so nesting needs no parser. Absent → default; present but outside its range or not a number → preflight refusal naming the key (never a silent clamp).</p>
+<div class="scroll"><pre class="term">{ &quot;overnight&quot;: { &quot;session_usd&quot;: 25, &quot;run_usd&quot;: 150, &quot;session_minutes&quot;: 90,
+                 &quot;retries&quot;: 1, &quot;kill_grace_seconds&quot;: 30 } }</pre></div>
+<p>Ranges are the Tuning knobs table. <code>session_minutes</code>, <code>retries</code> and <code>kill_grace_seconds</code> must be integers; the two USD fields may be decimals.</p>
+<h3 id="execute-one-contract-new-8">Execute <code>--one</code> contract (new §8)</h3>
+<ul><li><strong>Which unit:</strong> exactly what §0&#x27;s *Where to start* picks. <code>task k/N</code>, k &lt; N → one SDD task, <code>T&lt;k+1&gt;</code>; <code>N/N</code> without <code>final review done</code> → §5 whole, the fix wave included, through step 6; <code>N/N</code> with it → §7 steps 1–6. Never more than one.</li><li><strong>Cutting SDD&#x27;s loop:</strong> SDD is invoked as usual, but once the task is complete (§4a rule 6) and §6&#x27;s writes are done — <code>set task n/N</code>, the <code>T&lt;n&gt; complete</code> line, the ledger committed — no next implementer is dispatched, and when n = N §5 is not started. This overrides SDD&#x27;s instruction to continue to the next task.</li><li><strong>What each unit writes:</strong> task — the task&#x27;s commits, <code>task n/N</code>, the <code>T&lt;n&gt;</code> ledger lines, then <code>git push -u origin &lt;branch&gt;</code>; final review — <code>fix(final)</code> commits, the <code>Review: final</code> and <code>final review done</code> lines committed, then push; finish — §7 as written (<code>P&lt;k&gt; Play:</code> lines, the PR, <code>shipped &lt;url&gt;</code>, <code>stage idle</code>, <code>task -</code>). A rejected push is a <code>Ruling:</code> line, not a stop.</li><li>**<code>Stop: &lt;reason&gt;</code>:** wherever execute says &quot;stop&quot; — §0&#x27;s preconditions and isolation stops, §6&#x27;s hard-stop list, §7 step 1&#x27;s exit 2 and exit 3 — under <code>--one</code> it runs <code>studio-state ledger &quot;Stop: &lt;reason&gt;&quot;</code>, then <code>git add .studio/ledger &amp;&amp; git commit -m &quot;chore(studio): stop&quot;</code> in the checkout it is in (so the re-run&#x27;s clean-tree check passes), then ends the turn. One line, reason first; the runner prints it verbatim.</li><li><strong>§7 step 6 headless:</strong> <code>ExitWorktree</code> <code>action: &quot;keep&quot;</code> runs as written (it restores the session directory; the process then exits). The &quot;started in the feature worktree&quot; note and the <code>Next:</code> line are skipped: there is no <code>/clear</code> and no human reading this session.</li><li><strong>No handoff:</strong> <code>--one</code> never runs <code>omega:handoff</code>; the runner&#x27;s <code>report.md</code> is the morning report.</li><li><code>--one</code> with <code>--inline</code> is refused with a <code>Stop:</code> line (subagent-driven only).</li></ul>
+<h3 id="omega-autopilot-in-omega-mode-and-the-hooks"><code>OMEGA_AUTOPILOT</code> in omega-mode and the hooks</h3>
+<ul><li><code>omega-mode show</code>: the file&#x27;s lines, then <code>autopilot source=env</code> when <code>OMEGA_AUTOPILOT=1</code> and no file line starts with <code>autopilot</code>. With <code>OMEGA_AUTOPILOT=1</code>, <code>show</code> and <code>brief</code> no longer die on a missing session id; they print the env line alone. <code>set</code>, <code>clear</code> and <code>path</code> are unchanged (<code>clear autopilot</code> cannot clear the environment, by design).</li><li><code>omega-mode brief</code>: an <code>autopilot</code> line with <code>source=env</code> gets its own rule text: <code>autopilot (overnight runner): never AskUserQuestion — rule by the standards, log the ruling with its cost if wrong, continue; commit, push and open a draft PR, never merge; on a hard stop write Stop: &lt;reason&gt; to the ledger and end; no handoff — the runner starts the next session.</code> A session-file <code>autopilot</code> line keeps today&#x27;s text.</li><li>Hooks need no code for the variable: each runs as a child of the <code>claude</code> process, inherits <code>OMEGA_AUTOPILOT</code>, and already injects <code>omega-mode brief</code>. Their only change is the <code>omega-caffeine</code> removal.</li><li>§7 step 4&#x27;s draft rule (<code>omega-mode show</code> lists <code>autopilot</code>) therefore holds under the runner with no edit to §7.</li></ul>
+<h3 id="autopilot-skill-md-rewrite-summary">Autopilot SKILL.md rewrite (summary)</h3>
+<ul><li><code>off</code>: <code>omega-mode clear autopilot</code> (and <code>studio-overnight stop</code> when a lock is live), then stop. The phase 1 leftover disarm is the same clear.</li><li>Phase 1 step 3, in a studio: commit only; the first task unit pushes the feature branch. Outside a studio: unchanged.</li><li>Phase 1 step 5, in a studio: the &quot;on the feature branch, in a worktree&quot; line is replaced by <code>studio-overnight start --dry-run</code> exiting 0 (it runs the preflight); the baseline test and engine lines stay.</li><li>Phase 1 step 6, in a studio: set no mode. Print the absolute <code>studio-overnight start</code> command and the checkout to run it from, what the run may do (commit, push the feature branch, open a draft PR) and may not do (merge, force-push, delete a remote branch, destructive or security-sensitive operations, secrets), <code>status</code>/<code>stop</code>, where <code>report.md</code> lands, and that this session can now close. Outside a studio: <code>omega-mode set autopilot</code> and the user starts the run in this session; no heartbeat, no keep-awake. The &quot;resumed session repeats steps 2–3&quot; paragraph is deleted.</li><li>Phase 2: applies while <code>show</code> lists <code>autopilot</code> from either source. Hard stop under <code>source=env</code>: write the <code>Stop:</code> line and end — no handoff, no disarm. Completion under <code>source=env</code>: the invoking skill&#x27;s unit ends the session; the runner reports. Session-mode completion and hard stop: <code>omega:handoff</code>, then disarm = <code>omega-mode clear autopilot</code>.</li><li>Red flags: the two heartbeat rows go; one row added: &quot;I&#x27;ll start the next task while I&#x27;m here&quot; → under <code>--one</code>, one unit, then end.</li></ul>
+<h3 id="rejected-alternatives">Rejected alternatives</h3>
+<ul><li>Runner computes the next task from the plan: duplicates §0&#x27;s resume and drifts from it (ruled Approach A).</li><li>Runner parses the session&#x27;s last line for a status: the model&#x27;s prose is not a contract; durable state is.</li><li>Ledger path derived in the runner: a second copy of <code>studio-state</code>&#x27;s slug rule; <code>studio-state show</code> in <code>FEATURE_DIR</code> is the one source.</li><li><code>jq</code> for config and cost: a new dependency for five numbers and one field the existing <code>sed</code> scan reads.</li><li><code>perl -e alarm</code> or a polling loop for the timeout: the first is a hidden dependency, the second adds up to a poll interval of overhead per unit.</li><li>Deny list inline in the runner or in the studio <code>settings.json</code>: AC16 wants data, and <code>settings.json</code> would also deny attended sessions.</li><li>Session-mode autopilot set by the runner: a headless session has no mode file until it starts, and the env variable needs no cleanup.</li></ul>
+</section>
+<section id="tuning-knobs">
+<h2 id="tuning-knobs">Tuning knobs</h2>
+<p><code>.studio/config.json</code>, key <code>overnight</code> (absent keys take the defaults):</p>
+<div class="scroll"><table><thead><tr><th>Field</th><th>Unit</th><th>Default</th><th>Range</th></tr></thead><tbody><tr><td><code>session_usd</code></td><td>USD</td><td>25</td><td>1–200</td></tr><tr><td><code>run_usd</code></td><td>USD</td><td>150</td><td>1–2000</td></tr><tr><td><code>session_minutes</code></td><td>minutes</td><td>90</td><td>10–480</td></tr><tr><td><code>retries</code></td><td>sessions</td><td>1</td><td>0–3</td></tr><tr><td><code>kill_grace_seconds</code></td><td>seconds</td><td>30</td><td>5–120</td></tr></tbody></table></div>
+</section>
+<section id="assets-and-audio">
+<h2 id="assets-and-audio">Assets and audio</h2>
+<p>n/a</p>
+</section>
+<section id="test-strategy">
+<h2 id="test-strategy">Test strategy</h2>
+<ul><li>Unit (<code>tests/run_all.sh</code>, bash): a stub <code>claude</code> first on <code>PATH</code> that, per scripted scenario, edits a fixture <code>.studio/</code> the way a unit would (advance <code>task</code>, append ledger lines, emit a stream-json <code>result</code> event with <code>total_cost_usd</code>). Cases: unit sequencing to <code>done</code>; retry once then stop; <code>Stop:</code> line stops with no retry; run budget; session timeout; lock live / stale; stop file; SIGINT; report contents on each ending; preflight refusals; <code>omega-mode show</code> under <code>OMEGA_AUTOPILOT=1</code>; no <code>omega-caffeine</code> or <code>CronCreate</code> reference in a shipped path (AC15); execute&#x27;s <code>--one</code> contract text.</li><li>Playtest (live, manual exit criterion 2): a two-task plan in a throwaway Godot project; pass = draft PR, four sessions (T1, T2, final review, finish) each starting near baseline context, report.md complete; fail = any prompt waiting, a unit run twice with progress, or no report.</li><li>Visual: the user reads report.md and judges whether it answers &quot;what happened overnight&quot; without opening the logs.</li></ul>
+</section>
+<section id="risks">
+<h2 id="risks">Risks</h2>
+<div class="scroll"><table><thead><tr><th>Risk</th><th>Cheapest early check</th></tr></thead><tbody><tr><td>A plugin slash command does not invoke the skill under <code>-p</code></td><td>First plan task: a one-line live probe <code>claude-gd -p &quot;/game-dev:studio&quot;</code>; fallback prompt text &quot;Invoke the game-dev:execute skill with args --one&quot;</td></tr><tr><td><code>--permission-mode auto</code> denies a tool the unit needs, and the unit silently fails</td><td>The no-progress rule catches it within two sessions; the session log names the denial; the live run lists denials</td></tr><tr><td><code>EnterWorktree</code> behaves differently in <code>-p</code></td><td>Live probe in the same first task; execute&#x27;s <code>cd</code> fallback already exists</td></tr><tr><td><code>total_cost_usd</code> absent under subscription auth</td><td>Stub test treats a missing cost as 0 and the report says &quot;cost unknown&quot;; the timeout still bounds the run</td></tr><tr><td>Fresh sessions re-pay ≈62k startup per unit</td><td>Accepted: a 6-task plan costs ≈8 × 62k, against one session growing to 469k average</td></tr></tbody></table></div>
+</section>
+<section id="not-doing">
+<h2 id="not-doing">Not doing</h2>
+<ul><li>Driving brainstorm or plan headlessly — their approvals need a human.</li><li>Automatic <code>/clear</code> between attended stages — bundle 1&#x27;s warning hook stays.</li><li>A shared/omega runner with a studio adapter — one user today (YAGNI).</li><li>Skipping a stuck task and continuing — later tasks depend on earlier ones.</li><li>launchd/cron scheduling of the runner — the user starts it; resume is a re-run.</li><li>The plan falsifier and the plan shape — bundle 3.</li><li>Model selection per unit — unchanged from bundle 1.</li></ul>
+</section>
+  </main>
+</div>
