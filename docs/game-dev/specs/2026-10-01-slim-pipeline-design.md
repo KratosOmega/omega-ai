@@ -125,18 +125,22 @@ of the project:
 2. `git show-ref --verify --quiet refs/heads/<branch>` fails: print
    `studio-state: branch <branch> no longer exists` on stderr, exit 1.
 3. Read `git worktree list --porcelain` block by block. The first block
-   that holds the line `branch refs/heads/<branch>` and no `prunable` line:
-   print its `worktree` path — absolute, and nothing else — on stdout, exit
-   0. It can be the main checkout, when the user checked the branch out
-   there.
-4. None: print on stderr that no worktree has the branch, and the command
-   that makes one: `git worktree add <main checkout>/.claude/worktrees/<name>
-   <branch>`, where `<name>` is the branch with each `/` turned into `-` and
-   the path is absolute, so the command runs from any checkout. When a
-   `prunable` block held the branch, the command is prefixed with `git
-   worktree prune && `: git refuses to add a worktree for a branch that a
-   stale entry still holds (checked with git 2.39.3: `fatal: 'feat/x' is
-   already checked out at …`). Exit 3.
+   that holds the line `branch refs/heads/<branch>`, no `prunable` line,
+   and a path that is a directory: print its `worktree` path — absolute,
+   and nothing else — on stdout, exit 0. It can be the main checkout, when
+   the user checked the branch out there.
+4. None: stderr is exactly two lines — `studio-state: no worktree has
+   <branch> checked out`, then the command alone that makes one: `git
+   worktree add <main checkout>/.claude/worktrees/<name> <branch>`, where
+   `<name>` is the branch with each `/` turned into `-` and the path is
+   absolute, so the command runs from any checkout. When a `prunable` block
+   held the branch, the command is prefixed with `git worktree prune && `:
+   git refuses to add a worktree for a branch that a stale entry still
+   holds (checked with git 2.39.3: `fatal: 'feat/x' is already checked out
+   at …`). Claude Code locks every worktree it creates, and git never marks
+   a locked entry `prunable`; when the block was locked with its directory
+   gone, the prefix is `git worktree unlock <path> && git worktree prune &&
+   `. Exit 3.
 
 Exit: 0 found · 1 no state, no branch recorded, or the branch is gone · 3
 the branch exists but no worktree has it checked out.
@@ -145,6 +149,48 @@ The new worktree goes under `.claude/worktrees/` because `EnterWorktree`
 with `path:` accepts any worktree `git worktree list` shows when called from
 the launch directory, but only one under `.claude/worktrees/` when the
 session is already in another worktree (the tool's own contract).
+
+**Feature-checkout procedures**, stated once here and named elsewhere.
+Skills cannot include one another, so each skill in parentheses carries a
+copy, and `test_feature_checkout_copies` asserts every copy holds the same
+key literals.
+
+- **Default branch** (brainstorm, plan, execute, review, playtest): `git
+  symbolic-ref --short refs/remotes/origin/HEAD` without its `origin/`;
+  without one, the first of `main` and `master` that exists.
+- **Enter the feature checkout** (execute's resume, review, playtest): run
+  `studio-state worktree`. Exit 0: when the printed path is not the current
+  checkout (`git rev-parse --show-toplevel`), `EnterWorktree` with `path:
+  <it>`; git fallback `cd <it>`. Exit 3: run the command on its stderr's
+  second line, then enter the new worktree the same way. Exit 1: the
+  caller's own rule (§4 §0, §5). If `EnterWorktree` refuses, stop and show
+  its message; when another session holds the worktree, close that session
+  first. Never `cd` into a worktree another live session is using.
+- **Leave the feature checkout** (execute's finish; review and playtest
+  when they entered): call `ExitWorktree` with `action: "keep"`
+  unconditionally. It is a no-op that says so when no `EnterWorktree`
+  session is active, and it is the only step that moves the directory
+  `/clear` returns to: an `EnterWorktree` made before a `/clear` in this
+  process is still active, though this conversation does not remember it.
+  When it reports no active session and `git rev-parse --git-dir` differs
+  from `git rev-parse --git-common-dir`, `cd` to the main checkout (the
+  first `worktree` line of `git worktree list --porcelain`). Unless this
+  command entered with `cd` itself, the session was launched in this
+  worktree: put this line before the report's `Next:` line (or last): "This
+  session started in the feature worktree, and /clear returns here: quit,
+  then start claude-gd in `<main checkout>` before the next feature."
+- **Finished-checkout guard** (brainstorm §0, plan §0, execute §0 on a new
+  run, before any state write): when `studio-state get branch` names a
+  branch (not `-`) that is not the default branch and equals `git branch
+  --show-current`, stop with: "This checkout holds the previous, finished
+  feature (`<branch>`). Leave it first: `ExitWorktree` with `action:
+  "keep"`. When that reports no active worktree session, this session was
+  launched here, and neither `ExitWorktree` nor `cd` outlasts the `/clear`
+  the chain needs: quit and start `claude-gd` in `<main checkout>`. In the
+  main checkout itself: `git switch <default branch>`. To start the next
+  feature on this branch anyway, run `studio-state set branch -` first."
+  Without studio state the guard is skipped like every other
+  `studio-state` call.
 
 Who writes `stage` after the change:
 
@@ -161,21 +207,22 @@ Who writes `branch`:
 
 | Writer | Value | When |
 |--------|-------|------|
-| `execute` | the feature branch | §0, right after isolating a new run, or a resume that found no `branch` (§4) |
+| `execute` | `-` | §0, when a new run starts (§4) |
+| `execute` | the feature branch | §0, after the ancestor check of a new run, or of a resume that found no `branch` (§4) |
 | `studio-state reset` | `-` | abandon |
 | everything else | — | never; execute's finish keeps it |
 
 `branch` is read by `studio-state worktree` (execute's resume, review,
-playtest, retro) and by the brainstorm and execute guards that compare it
-with the current branch (§2, §4).
+playtest, retro) and by the finished-checkout guard.
 
 At the end of execute the pointers are left as they are except `task`:
 `stage idle`, `task -`, and `spec`, `plan` and `branch` keep naming the
 feature that was just finished. The next brainstorm overwrites `spec` at its
 gate (`brainstorm/SKILL.md:214`), the next plan overwrites `plan` at its
-gate (`plan/SKILL.md:117`), and the next execute overwrites `branch` when it
-isolates. Keeping them is what lets the on-demand commands find the finished
-feature's checkout and ledger (§5).
+gate (`plan/SKILL.md:117`), and the next execute clears `branch` when its
+new run starts and records its own when it isolates. Keeping them is what
+lets the on-demand commands find the finished feature's checkout and ledger
+(§5).
 
 ### 2. Router and bootstrap
 
@@ -243,17 +290,14 @@ value, so the bootstrap line and the router agree.
   line; the text is unchanged. Today the line break falls inside the command
   (`set stage` / `brainstorm`), so the rewritten `test_stage_chain` would
   find no stage value in brainstorm.
-- §0 (`:14-22`) gains one bullet, the finished-checkout guard: "When `stage`
-  is `idle` and `studio-state get branch` names a branch (not `-`) equal to
-  `git branch --show-current`, stop: this is the finished feature's
-  checkout. Leave it first — `ExitWorktree` with `action: "keep"`, or `cd`
-  to the main checkout — then run `/game-dev:brainstorm` again." Without
-  studio state the guard is skipped like every other `studio-state` call.
+- §0 (`:14-22`) gains one bullet: the finished-checkout guard (§1), at
+  every stage.
 - `:224-227` — "and tell the user the next command is `/game-dev:plan`"
   becomes "and print `Next: run /clear, then /game-dev:plan`". "Do not
   invoke the next command yourself." (`:226-227`) stays.
 
-**`plan/SKILL.md:130-132`** — "and tell the user the next command is
+**`plan/SKILL.md`.** §0 (`:9-19`) gains the same guard bullet. `:130-132`
+— "and tell the user the next command is
 `/game-dev:execute` (…)" becomes "and print `Next: run /clear, then
 /game-dev:execute` (subagent-driven by default; `--inline` for checkpointed
 execution)". "Do not invoke it yourself." (`:131-132`) stays.
@@ -380,7 +424,16 @@ reading the plan and spec) are unchanged. Around them:
 
 1. **Which run this is.** Before `:29` writes `stage execute`, read `stage`,
    `task` and `branch`:
-   - `plan` — a new run.
+   - `plan` — a new run. First the finished-checkout guard (§1) on the
+     `branch` just read; it stops before any state write. Then `studio-state
+     set branch -` beside `:29`'s `studio-state set stage execute`, before
+     isolating (the skill says "A new run clears `branch`"). A stop before
+     (c) — the ancestor check's `git merge --ff-only` failing on a local
+     default branch that has diverged from `origin` (the usual case after a
+     PR merged on GitHub without a `git pull`), or the user declining a
+     worktree — then leaves `stage execute` with no `branch`. The re-run is
+     a resume that isolates as today, never one that enters the previous
+     feature's worktree.
    - `execute` — a resume. So are `review`, `playtest` and `ship`, the old
      pipeline's mid-way values (§Data and state migration); they have no
      `branch`.
@@ -388,30 +441,32 @@ reading the plan and spec) are unchanged. Around them:
      `idle` the pointers still name the finished feature, §1): stop and name
      `/game-dev:studio`.
 2. **Isolation** (`:34-41`).
-   - (a) A resume: run `studio-state worktree`. Exit 0: enter the printed
-     path unless it is the current checkout (`git rev-parse
-     --show-toplevel`) — `EnterWorktree` with `path: <it>`; git fallback
-     `cd <it>` — and never create a second worktree. Exit 3: run the command
-     its message names, then enter the new worktree the same way. Exit 1 (no
-     `branch`, as for the old values, or the branch is gone): isolate as
-     today.
-   - (b) A new run: when `branch` names a branch (not `-`) equal to `git
-     branch --show-current`, stop: "this checkout holds the previous,
-     finished feature (`<branch>`) — leave it first (`ExitWorktree` with
-     `action: "keep"`, or `cd` to the main checkout), then re-run". Otherwise
-     isolate as today.
-   - (c) After isolating a new run, and after a resume that found no
-     `branch`: `studio-state set branch "$(git branch --show-current)"`, run
-     inside the worktree. A new run also records its base: `studio-state
-     ledger "base <noted branch>"`.
-   - The ancestor check for the spec's and plan's hashes (`:36-41`) runs
-     after every isolation, a resume's included.
+   - (a) A resume: **Enter the feature checkout** (§1); never create a
+     second worktree. Exit 1 with no `branch` (an old value, or a new run
+     that stopped before (c)): isolate as today — unless `task` is past
+     `0/N` and the current checkout's feature ledger has no `T<n> complete`
+     line: then stop, "run `/game-dev:execute` from the feature's worktree"
+     (a legacy run started from the main checkout would get an empty
+     worktree). Exit 1 because the branch is gone: stop and say so; restart
+     with `studio-state set task 0/<N>` and `studio-state set branch -`, or
+     abandon with `/game-dev:studio`.
+   - (b) A new run isolates as today.
+   - The ancestor check for the spec's and plan's hashes (`:36-41`), its
+     `git merge --ff-only` included, runs after every isolation, a resume's
+     included.
+   - (c) Only after that check: for a new run, and for a resume that found
+     no `branch`, run inside the worktree `studio-state set branch "$(git
+     branch --show-current)"`. A new run — or such a resume at `task 0/N`,
+     a new run restarted — then records its base and commits it at once:
+     `studio-state ledger "base <noted branch>" && git add .studio/ledger &&
+     git commit -m "chore(studio): ledger"`. Never write the ledger before
+     the fast-forward: an untracked ledger file makes it abort.
 3. **The base** — the PR's base, and the anchor for `git merge-base` in §4a,
    §5 and §7 — is the noted branch on a new run. On a resume it is the
    feature ledger's last `base <branch>` line, because the noted branch can
    be the feature branch itself after a stop that left the session in the
    worktree (§7 step 1). A ledger without one (a run begun before this
-   change) uses the repository's default branch (§5).
+   change) uses the default branch (§1).
 4. **Where to start**, once isolated:
    - `task` is `N/N`: every task is complete. Do not start SDD's task loop;
      go to §5, or to §7 when the feature ledger already has a `final review
@@ -492,6 +547,9 @@ Then:
    by the final review's verify-prior-fixes list.
 5. Every finding that changed the code is still ledgered as today:
    `T<n> Review: <one line>` (`:136`).
+6. A task is complete — `set task n/N`, `T<n> complete` — when its review is
+   clean, its last round was accepted under rule 3, or what remains is
+   parked under rule 4.
 
 **§5 Final review** (new section). After the last task completes, and as
 its own dispatch — never folded into the last task's review:
@@ -537,11 +595,12 @@ its own dispatch — never folded into the last task's review:
    then starts from a clean ledger, so a re-run after a stop in §7 passes
    §0's clean-tree check and resumes at §7 (§0 step 4).
 
-**§6 State** (today's §5, `:128-138`) is unchanged except its stop
-paragraph. `:140-143` ("Stop only for the four reasons subagent-driven-
-development names: an irreversible or destructive operation, a
-security-sensitive action, a side effect outside the worktree (merge, push,
-publish), or a plan too broken to follow.") becomes:
+**§6 State** (today's §5, `:128-138`) is unchanged except `:130` ("After
+each task's review is clean", now "When a task is complete (§4a rule 6)")
+and its stop paragraph. `:140-143` ("Stop only for the four reasons
+subagent-driven-development names: an irreversible or destructive
+operation, a security-sensitive action, a side effect outside the worktree
+(merge, push, publish), or a plan too broken to follow.") becomes:
 
 > Stop only for: an irreversible, destructive or security-sensitive
 > operation; a plan too broken to follow; no Godot binary (`studio-test` or
@@ -596,12 +655,15 @@ skill stays). It runs once §5 is done, with no question to the user:
    it: `git add docs/game-dev/PROGRESS.md && git commit -m "docs(progress):
    <topic>"`. On `gate met`: `studio-state set milestone <next>`. Without
    the file: skip this step and say so in the report.
-4. **Push and PR.** `git push -u origin <branch>`. Then `gh pr view --json
-   url` on the branch: when a PR exists, it is the PR (no second one).
-   Otherwise `gh pr create --base <base> --title "<spec title>" --body-file
-   <body file>`, adding `--draft` when `omega-mode show` lists `autopilot`,
-   when `omega-mode show` fails (it exits 1 without
-   `CLAUDE_CODE_SESSION_ID`: `shared/omega/bin/omega-mode:39`, `:56`; an
+4. **Push and PR.** When `<branch>` is the default branch (§1; the user
+   consented to work in place, `:41`), push nothing and open no PR: the
+   report says the work is committed locally on `<branch>`; step 5's line
+   is `shipped <branch> (local, default branch)`. Otherwise `git push -u
+   origin <branch>`, then `gh pr view --json url` on the branch: when a PR
+   exists, it is the PR (no second one). Otherwise `gh pr create --base
+   <base> --title "<spec title>" --body-file <body file>`, adding
+   `--draft` when `omega-mode show` lists `autopilot`, when `omega-mode
+   show` fails (it exits 1 without `CLAUDE_CODE_SESSION_ID`: `shared/omega/bin/omega-mode:39`, `:56`; an
    unknown mode counts as autopilot), or when step 1 ended red. The body
    file is `"$(git rev-parse --git-dir)/game-dev-pr-body.md"` — inside the
    repository's metadata, never committed — and holds, in order: the spec's
@@ -618,21 +680,14 @@ skill stays). It runs once §5 is done, with no question to the user:
    commit -m "chore(studio): <topic> finished"`) and push it when step 4
    pushed; `studio-state set stage idle`; `studio-state set task -`.
    `spec`, `plan` and `branch` are left as they are.
-6. **Leave the worktree.** `ExitWorktree` with `action: "keep"` when §0
-   entered the worktree with the native tool (`EnterWorktree`, directly or
-   through `superpowers:using-git-worktrees`); git fallback: `cd` to the
-   main checkout (the first `worktree` line of `git worktree list
-   --porcelain`). The worktree and its branch stay on disk for
-   `/game-dev:playtest` and `/game-dev:review`, which find them through
-   `studio-state worktree` (§5). This replaces the exit `ship`'s
-   branch-finishing skill used to make. Without it, `/clear` returns the
-   session to the worktree — in Claude Code 2.1.286 `EnterWorktree` moves
-   the session's original directory and `/clear` resets to it — and
-   `superpowers:using-git-worktrees` skips creation inside a linked
-   worktree, so the next feature would be specced, planned and built on
-   this branch and pushed into this PR. When the session was started inside
-   the worktree, neither form outlasts `/clear`: the report says so, and the
-   brainstorm and execute guards (§2, §4 §0) stop a next feature there.
+6. **Leave the feature checkout** (§1). The worktree and its branch stay
+   on disk for `/game-dev:playtest` and `/game-dev:review` (§5). This
+   replaces the exit `ship`'s branch-finishing skill used to make. Without
+   it, `/clear` returns the session to the worktree — in Claude Code
+   2.1.286 `EnterWorktree` moves the session's original directory and
+   `/clear` resets to it — and `superpowers:using-git-worktrees` skips
+   creation inside a linked worktree, so the next feature would be
+   specced, planned and built on this branch and pushed into this PR.
 7. **Report**, in this order: the PR link (or the saved body path and the
    reason); the play list; the rulings, each with its cost if wrong; the
    final review verdict line; the gate line; and the last line, verbatim:
@@ -644,28 +699,36 @@ skill stays). It runs once §5 is done, with no question to the user:
 ### 5. On-demand commands
 
 **Feature checkout** (shared by review and playtest; retro reads through it
-without entering). Run `studio-state worktree` (§1):
+without entering): **Enter the feature checkout** (§1), and say which
+checkout. Exit 1 — no feature branch is recorded, or it is gone: ask the
+user once which checkout to use, naming what was found (the `branch` value,
+or that none is recorded, and the `git worktree list` paths). The skill
+text says "ask", not the tool's name, so the playtest contract test holds.
 
-- Exit 0 — the printed path is the feature checkout. When it is not the
-  current checkout (`git rev-parse --show-toplevel`), enter it:
-  `EnterWorktree` with `path: <it>`; git fallback `cd <it>`. Say which.
-- Exit 3 — run the `git worktree add …` command its message names, then
-  enter the new worktree the same way.
-- Exit 1 — no feature branch is recorded, or it is gone: ask the user once
-  which checkout to use, naming what was found (the `branch` value, or that
-  none is recorded, and the `git worktree list` paths). The skill text says
-  "ask", not the tool's name, so the playtest contract test holds.
+**Which feature.** After the lookup, check that the checkout holds the
+ledger of the feature `spec` names: `<checkout>/.studio/ledger/<slug>.md`
+(slug as `studio-state` derives it) exists. When it does not, `spec` and
+`branch` name different features: the next brainstorm's gate has moved
+`spec`, and every ledger line written there would land in a ledger named
+for the next feature. Review and playtest then stop with "the studio
+pointers now name `<spec>`; the finished feature is `<branch>` — fix it on
+that branch by hand, or run this after `<spec>`'s finish" (retro: below).
+Playtest also stops at `stage execute`: the feature in progress has no PR
+and no play list yet. Before the first
+fix dispatch, review and playtest run `gh pr view --json state` on the
+branch. On `MERGED` or `CLOSED`, they dispatch no fixer and push nothing.
+They report the findings or bugs, and name the router's bug route (or
+`/game-dev:brainstorm`) for a fix that must reach the base.
 
 Every brief to a dispatched agent names the checkout's absolute path and
 tells the agent to work there: an agent starts in the session's working
-directory. Neither command commits on the repository's default branch
-(`git symbolic-ref --short refs/remotes/origin/HEAD` without its `origin/`;
-without one, the first of `main` and `master` that exists): on it, review
-reports its findings only, and playtest asks the user where the fixes go
-before dispatching a fixer. At its end, a command that entered a worktree
-leaves it — `ExitWorktree` with `action: "keep"`, or `cd` back — so a later
-`/clear` starts in the main checkout. Review's explicit scope argument, when
-it is a branch or a range, skips the lookup.
+directory. Neither command commits on the default branch (§1): on it,
+review reports its findings only, and playtest asks the user where the
+fixes go before dispatching a fixer. At its end, a command that entered a
+worktree runs **Leave the feature checkout** (§1). Review's explicit scope
+argument, when it is a branch or a range, skips the lookup; review then
+fixes only when HEAD is that branch (or the range ends at HEAD), and
+otherwise reports only.
 
 **`/game-dev:review [scope]`** — `studios/game-dev/skills/review/SKILL.md`,
 rewritten in place.
@@ -678,7 +741,7 @@ rewritten in place.
   (a range, a branch, a task number, a path list); otherwise the whole
   branch, `git merge-base <base> HEAD` to `HEAD`, where `<base>` is the PR's
   base (`gh pr view --json baseRefName`), else the feature ledger's last
-  `base` line (§4 §0), else the repository's default branch. `:21`
+  `base` line (§4 §0), else the default branch (§1). `:21`
   (`studio-state set stage review`) is deleted.
 - §1 baseline: unchanged (`:23-32`).
 - §2 dispatch: the same reviewer brief and dispatch as execute's final
@@ -699,14 +762,16 @@ rewritten in place.
   dispatch. `:59-63` (re-dispatch until clean, three rounds then stop) is
   deleted. Deferral to the plan's `## Backlog` (`:65-66`) is unchanged.
 - §4 state: `studio-state ledger "Review: <scope> — <Findings line>; <m>
-  fixed, <k> deferred"`, committed on the feature branch with the fixes:
-  `git add .studio/ledger && git commit -m "chore(studio): ledger"`. When
+  fixed, <k> deferred"`, committed on the feature branch with the fixes
+  and any `## Backlog` deferral: `git add .studio/ledger <plan path> && git
+  commit -m "chore(studio): ledger"`. When
   the branch tracks a remote (`git rev-parse --abbrev-ref @{u}` succeeds),
   push the fix commits and that commit. On the default branch: no ledger
   line and no commit. `:71` ("review clean") and `:72` (`studio-state set
   stage playtest`) are deleted. Print the verdict line and the fix commits,
-  then leave the worktree if §0 entered one. `:82-83` (the rule naming the
-  branch-finishing skill and "the ship stage") is deleted.
+  then **Leave the feature checkout** (§1) if §0 entered one. `:82-83`
+  (the rule naming the branch-finishing skill and "the ship stage") is
+  deleted.
 
 **`/game-dev:playtest <what failed>`** —
 `studios/game-dev/skills/playtest/SKILL.md`, rewritten whole (today's
@@ -749,13 +814,14 @@ ship` all go).
      the hypothesis (feel-tuner) or the root cause (gameplay-programmer).
   4. `studio-state ledger "B<n> <title> — <commit, or backlog suggested>"`.
 - After the last failure: `studio-test` once, fresh. Commit the ledger
-  lines on the feature branch with the fixes: `git add .studio/ledger &&
-  git commit -m "chore(studio): ledger"`. Push. One `gh pr comment` on the
+  lines on the feature branch with the fixes and any `## Backlog` move:
+  `git add .studio/ledger <plan path> && git commit -m "chore(studio):
+  ledger"`. Push. One `gh pr comment` on the
   branch's PR listing each fix (`B<n> <title> — <commit>`), the play-list
   items to replay (each fixed `P<k>`, plus any item the fix touched), the
   parked items, and the `studio-test` summary line. No PR or no remote: the
   fixes stay committed locally and the comment text is printed instead.
-  Then leave the worktree if this command entered one.
+  Then **Leave the feature checkout** (§1) if this command entered one.
 - Never: a script, a report file, a question per item, a sign-off, a stage
   change, a commit on the default branch. The feel-fix rule stays: one
   variable per hypothesis (today's `:114-115`).
@@ -772,20 +838,25 @@ and commits nothing. It writes only the studio memory (`:83-85`, unchanged).
   worktree` exits 0 and prints a different checkout, read the feature
   ledger there instead — `<path>/.studio/ledger/<slug>.md`, the slug
   derived from `spec` as `studio-state` derives it (basename, no `.md`, no
-  leading date; `studio-state:95-99`) — so the lines of an unmerged feature
-  are harvested. Take every `Ruling:`, `Review:` and `B<n>` line; read the
-  spec only to understand a line. `:18` (playtest reports) and `:19`
-  (`studio-state set stage retro`) are deleted.
+  leading date; `studio-state:95-99`); at exit 3, read `git show
+  <branch>:.studio/ledger/<slug>.md` — so the lines of an unmerged feature
+  are harvested. When that ledger does not exist (§5's which-feature
+  check), read only `STATE.md`'s ledger and say so. Take every `Ruling:`,
+  `Review:` and `B<n>` line; read the spec only to understand a line.
+  `:18` (playtest reports) and `:19` (`studio-state set stage retro`) are
+  deleted.
 - §1 (`:21-25`, the question batch) is deleted.
 - §2 durability filter (`:27-38`) and §3 write (`:40-69`) are unchanged.
-  With no `retro written` marker, a second retro reads the same lines; §3's
+  A second retro reads the same lines (there is no marker line, and the
+  skill must not name the old one: `test_retro_contract` forbids it); §3's
   existing rule — read `MEMORY.md` first and "update an existing file
   instead of duplicating it" (`:64-66`) — is what skips a lesson already in
   the studio memory.
 - §4 (`:71-79`): `:73` (`studio-state ledger "retro written <n> memories"`)
   and `:74-75` (`set stage idle`, `set spec -`, `set plan -`, `set task -`)
   are deleted; the sync-memory reminder stays; the last line is `Next: run
-  /clear, then /game-dev:brainstorm for the next feature`.
+  /clear, then` and the router's next command for the current stage (§2's
+  table).
 - Rules `:86-87` ("Three files a retro is typical; ten is a sign …")
   become "Zero to three memories. More than three means the filter in §2
   was skipped."
@@ -801,7 +872,7 @@ and commits nothing. It writes only the studio memory (`:83-85`, unchanged).
 | refused without `playtest signed off` | gone — the play list is played before merge, by the user |
 | three gate commands with evidence | execute §7 step 1 |
 | `superpowers:finishing-a-development-branch` (merge / PR / keep) | execute §7 step 4: always a PR, never a merge |
-| left the feature worktree (through that skill) | execute §7 step 6: `ExitWorktree` with `action: "keep"` |
+| left the feature worktree (through that skill) | execute §7 step 6: Leave the feature checkout (§1) |
 | producer → PROGRESS, milestone | execute §7 step 3 |
 | `shipped <ref>` ledger line | execute §7 step 5 |
 | `set stage retro` | gone — retro is on demand |
@@ -927,7 +998,8 @@ the skill changes (the heartbeat included).
   today (`superpowers:using-git-worktrees` sees the linked worktree and
   creates none), records `branch`, takes the repository's default branch as
   the base (no `base` ledger line), and runs the final review and the
-  finish — the PR that `ship` would have offered. Phoenix is at `retro`
+  finish — the PR that `ship` would have offered. Run from the main
+  checkout, it stops and says so (§4 §0 step 2). Phoenix is at `retro`
   (finished) and is not affected.
 - **Ledgers.** Old lines (`playtest written`, `playtest signed off`, `review
   clean`, `retro written`) stay and nothing reads them. Old reports under
@@ -950,13 +1022,16 @@ the skill changes (the heartbeat included).
 | No play-list sources | `nothing to play` in the report, the PR body and PROGRESS |
 | Final or re-review finding still open after pass 2 | One last fresh fix, no review; anything unclosed is a parked `Ruling:` in the PR body |
 | Execute at `stage` `idle`, `brainstorm` or `retro` | Stop: no approved plan is waiting; name `/game-dev:studio` |
-| Execute resume: `studio-state worktree` exit 3 | Run the printed `git worktree add` (with `git worktree prune` first when printed), enter it, continue |
-| Execute resume: `studio-state worktree` exit 1 | Isolate as today; record `branch` afterwards |
-| A new run (`stage plan`) typed in the previous feature's checkout | Stop: leave it first (`ExitWorktree` keep, or `cd` to the main checkout) |
-| `/game-dev:brainstorm` at `stage idle` in the finished feature's checkout | Stop: leave it first |
-| Session launched inside the feature worktree, finish done | Leaving cannot outlast `/clear`; the report says so; the brainstorm and execute guards stop the next feature there |
+| A new run stops during isolation (fast-forward fails, worktree declined) | `stage execute`, `branch -`: the re-run is a resume that isolates as today |
+| Execute resume, review or playtest: `studio-state worktree` exit 3 | Run the printed command (unlock and prune first when printed), enter it, continue |
+| Execute resume: `studio-state worktree` exit 1 | No `branch`: isolate as today, record it after the ancestor check; a legacy run from the main checkout stops. The branch gone: stop; restart with `set task 0/<N>` and `set branch -`, or abandon |
+| `EnterWorktree` refuses (another live session holds the worktree, or a path outside `.claude/worktrees/`) | Stop with its message (§1, Enter the feature checkout) |
+| Execute ran in place on the default branch | No push, no PR; the guards skip the default branch |
+| Brainstorm, plan or a new execute run in the previous feature's checkout | Stop: the finished-checkout guard (§1) |
+| Session launched inside the feature worktree | `ExitWorktree` reports no session: `cd` to the main checkout, and the report says to quit and start `claude-gd` there (§1, Leave the feature checkout) |
 | Review or playtest: `studio-state worktree` exit 1 | One question naming what was found |
-| Review or playtest: `studio-state worktree` exit 3 | `git worktree add` as printed, then enter it |
+| Review or playtest: the checkout has no ledger for `spec` (the next brainstorm moved it), or playtest at `stage execute` | Stop and say why (§5, Which feature); retro reads only `STATE.md`'s ledger |
+| Review or playtest: the branch's PR is `MERGED` or `CLOSED` | No fixer, no push; findings or bugs reported with the bug route |
 | Review or playtest in a checkout on the default branch | Review reports findings only (no fix, no ledger line, no commit); playtest asks where the fixes go |
 | `stage-guard.sh`: malformed or empty input, no `transcript_path`, unreadable transcript | Silent, exit 0 |
 | `stage-guard.sh`: any shell error | `trap 'exit 0' EXIT` turns it into exit 0; never exit 2, which would block and erase the prompt |
@@ -1007,12 +1082,16 @@ tests' own lines.
     and stdout is exactly that worktree's physical path — run from the main
     checkout and from inside the worktree;
   - `git branch feat/g`, `set branch feat/g`: exit 3, stdout empty, stderr
-    contains `git worktree add`, `.claude/worktrees/feat-g` and `feat/g`;
-    running the printed command then makes `worktree` exit 0 with that
-    path;
+    exactly two lines — `studio-state: no worktree has feat/g checked out`,
+    then a line containing `git worktree add`, `.claude/worktrees/feat-g`
+    and `feat/g`; running that second line then makes `worktree` exit 0
+    with that path;
   - the `wt-f` directory removed by hand (`rm -rf`, leaving a `prunable`
     entry), `set branch feat/f`: exit 3 and stderr contains `git worktree
-    prune`.
+    prune`;
+  - a worktree `wt-h` for `feat/h`, locked (`git worktree lock`), then its
+    directory removed by hand, `set branch feat/h`: exit 3 and stderr's
+    second line starts `git worktree unlock`.
 
 **`tests/hook_test.sh`** — a `run_guard` helper writes a transcript file and
 feeds the hook a `UserPromptSubmit` input JSON (`session_id`,
@@ -1076,28 +1155,38 @@ otherwise; every case asserts exit 0.
   `superpowers:subagent-driven-development`; `3+ Importants` or `three or
   more Importants`; `[Nn]ever a third`; `review-package`; `model: "opus"`;
   `never folded`; `Verify prior fixes`; `final|gate|review` (the reserved
-  scopes of the fix filter); `final review done`; `subagent_type:
-  "game-dev:producer"`; `gh pr create`; `--draft`; `Play before merging`;
-  `studio-state set stage idle`; `studio-state worktree`; `EnterWorktree`;
-  `studio-state set branch`; `ledger "base`; `ExitWorktree`; `SDD ledger —
+  scopes of the fix filter); `final fix wave`; `A task is complete`; `final
+  review done`; `studio-lint`; `subagent_type: "game-dev:producer"`; `gh pr
+  create`; `--draft`; `local, default branch`; `Play before merging`;
+  `studio-state set stage idle`; `new run clears` (the clear before
+  isolating); `studio-state set branch "$(git branch`; `before the
+  fast-forward`; `ledger "base`; `from the feature's worktree` (the legacy
+  stop); `set task 0/` (the gone-branch restart); `N/N`; `SDD ledger —
   plan:` (the seed); the verbatim `Next: play the list; …` line; and does
   not contain `set stage review` or `a side effect outside the worktree`.
 - `test_review_contract` (new) — review contains `model: "opus"`,
-  `fix(review)`, `never a third`, `studio-state worktree`, `chore(studio):
-  ledger`, `default branch` and `ExitWorktree`; no `Three rounds`. (Its
-  `subagent_type: "game-dev:reviewer"` stays pinned by
-  `test_stage_skills_dispatch_agents`, `:211`.)
+  `fix(review)`, `never a third`, `.studio/ledger <plan path>`,
+  `chore(studio): ledger`, `pointers now name`, `MERGED` and `ends at
+  HEAD`; no `Three rounds`. (Its `subagent_type: "game-dev:reviewer"` stays
+  pinned by `test_stage_skills_dispatch_agents`, `:211`.)
 - `test_playtest_contract` (new) — playtest contains `subagent_type:
   "game-dev:playtester"`, `game-dev:feel-tuner`, `fix(B<n>)`, `gh pr
-  comment`, `## Backlog`, `systematic-debugging`, `studio-state worktree`,
-  `chore(studio): ledger`, `never counted`, `default branch` and
-  `ExitWorktree`; does not contain `AskUserQuestion`,
+  comment`, `## Backlog`, `systematic-debugging`, `.studio/ledger <plan
+  path>`, `chore(studio): ledger`, `never counted`, `pointers now name`,
+  `stage execute` and `MERGED`; does not contain `AskUserQuestion`,
   `docs/game-dev/playtests`, `signed off` or `## Script`.
 - `test_retro_contract` (new) — retro contains `CLAUDE_CONFIG_DIR`,
-  `sync-memory.sh game-dev` and `studio-state worktree`; does not contain
-  `AskUserQuestion`, `studio-state ledger`, `retro written` or `git commit`.
-- `test_brainstorm_skill_contract` — adds: brainstorm contains `studio-state
-  get branch` and `ExitWorktree` (the finished-checkout guard).
+  `sync-memory.sh game-dev`, `studio-state worktree`, `git show`, ``read
+  only `STATE.md` `` and `for the current stage`; does not contain
+  `AskUserQuestion`, `studio-state ledger`, `retro written` or `git
+  commit`.
+- `test_feature_checkout_copies` (new) — every copy of a §1 procedure holds
+  its key literals: execute, review and playtest each contain `studio-state
+  worktree`, `EnterWorktree`, `another live session`, `ExitWorktree` and
+  `--git-common-dir`; brainstorm, plan and execute each contain
+  `studio-state get branch`, `previous, finished feature` and `start the
+  next feature on this branch anyway`; all five contain
+  `refs/remotes/origin/HEAD`.
 - `test_next_lines` (new) — brainstorm contains `Next: run /clear, then
   /game-dev:plan`; plan contains `Next: run /clear, then /game-dev:execute`.
 - `test_agent_contracts` (new) — producer contains `Play before merging`
@@ -1110,8 +1199,9 @@ otherwise; every case asserts exit 0.
   `studios/game-dev`, `shared/omega`, `README.md` and `tests/*.sh`, with
   nothing excluded: the split-spelling rule above keeps the tests' own
   lines from matching.
-- `test_superpowers_requires_referenced` (new) — every `skill superpowers:…`
-  line of `studios/game-dev/requires.txt` is named by a file under
+- `test_superpowers_requires_referenced` (new) — every line of
+  `studios/game-dev/requires.txt` matching `^skill[[:space:]]+superpowers:`
+  (the file pads with two spaces) is named by a file under
   `studios/game-dev/skills` or `studios/game-dev/agents`; the existing
   `test_external_references_declared` (the other direction) still passes.
 - `test_stage_skill_contracts` — `:145` (`unverified`) becomes `Play before
@@ -1189,7 +1279,7 @@ Status in the file: "written 2026-10-01; not yet run — `claude-gd` returns
 | A later Claude Code changes the hook's input shape again | Both shapes are accepted; M2 records the version it ran on; the hook is warn-only, so a miss costs a warning, never a prompt |
 | `systemMessage` stops being shown by a later Claude Code | The hook is warn-only and silent elsewhere; nothing depends on the message being seen |
 | A spurious warning when a session read a file containing an envelope | Patterns are anchored at a JSON string start; `test_stage_guard_ignores_mentions` pins the common prose mentions |
-| `/clear` returns the session to the finished feature's worktree (a session launched there, or a later Claude Code that changes `ExitWorktree`) | The brainstorm and execute guards compare `branch` with the current branch and stop the next feature there |
+| `/clear` returns the session to the finished feature's worktree (a session launched there, or a later Claude Code that changes `ExitWorktree`) | The finished-checkout guard (brainstorm, plan, execute) compares `branch` with the current branch and stops the next feature there; a session launched there is told to restart in the main checkout |
 | A PR opened without asking is visible to collaborators | It is ready, never merged; under autopilot (or an unknown mode) it is a draft; the play list in its body says what must pass first |
 | PROGRESS records a feature before it is merged | The entry says the play list is pending and names the branch; it lands with the PR, so a closed PR takes it away |
 | A PR closed unmerged leaves `milestone` advanced in `STATE.md` (§7 step 3 moves it at PR time) | Fix it by hand with `studio-state set milestone <previous>`; the report names the move |
@@ -1235,9 +1325,11 @@ Status in the file: "written 2026-10-01; not yet run — `claude-gd` returns
    `test_state_branch_key`, `test_state_set_hardening`).
 6. `studio-state worktree` prints the path of the worktree that has
    `branch` checked out and exits 0; exits 1 when `branch` is `-` or the
-   branch is gone; exits 3 naming `git worktree add …/.claude/worktrees/…`
-   (with `git worktree prune` first for a stale entry) when the branch
-   exists but no worktree has it (`test_state_worktree`).
+   branch is gone; exits 3 with two stderr lines, the second the `git
+   worktree add …/.claude/worktrees/…` command (with `git worktree prune`
+   first for a stale entry, and `git worktree unlock` before that for a
+   locked one whose directory is gone), when the branch exists but no
+   worktree has it (`test_state_worktree`).
 7. The router has rows `idle → brainstorm`, `brainstorm → plan`, `plan →
    execute`, `execute → execute (resume)` and an `old pipeline` row; every
    stage in `STAGES` has a row; brainstorm's `studio-state set stage
@@ -1260,18 +1352,25 @@ Status in the file: "written 2026-10-01; not yet run — `claude-gd` returns
     (`test_execute_contract`).
 13. Execute's §0 tells a new run from a resume: a resume enters the
     recorded worktree through `studio-state worktree` and `EnterWorktree`;
-    a new run in the previous feature's checkout stops; a new run records
-    `branch` and its `base`; `task` `N/N` skips the task loop; a missing SDD
-    progress ledger is seeded from the feature ledger
-    (`test_execute_contract`).
+    a new run in the previous feature's checkout stops; a new run clears
+    `branch` before isolating, then records `branch` and commits its `base`
+    after the fast-forward; a resume whose branch is gone, or a legacy
+    resume from the main checkout, stops; `task` `N/N` skips the task loop;
+    a missing SDD progress ledger is seeded from the feature ledger; a task
+    accepted under rule 3 or parked under rule 4 is complete
+    (`test_execute_contract`, `test_feature_checkout_copies`).
 14. Execute's finish runs the three gate commands, dispatches the producer,
-    opens the PR with `gh pr create` (`--draft` under autopilot), prints
-    the play list under `Play before merging`, sets `stage idle`, leaves
-    the worktree with `ExitWorktree`, and ends with the verbatim `Next:`
-    line; it no longer lists push as an ask-first side effect
-    (`test_execute_contract`, `test_stage_skill_contracts`).
-15. Brainstorm at `stage idle` in the finished feature's checkout stops
-    (`test_brainstorm_skill_contract`).
+    opens the PR with `gh pr create` (`--draft` under autopilot) or, on the
+    default branch, pushes nothing and opens no PR, prints the play list
+    under `Play before merging`, sets `stage idle`, leaves the feature
+    checkout with `ExitWorktree`, and ends with the verbatim `Next:` line;
+    it no longer lists push as an ask-first side effect
+    (`test_execute_contract`, `test_stage_skill_contracts`,
+    `test_feature_checkout_copies`).
+15. Brainstorm, plan and a new execute run stop in the previous feature's
+    checkout, never on the default branch, and every skill that carries a
+    §1 procedure holds the same key literals
+    (`test_feature_checkout_copies`).
 16. Brainstorm and plan end with `Next: run /clear, then /game-dev:<next>`
     (`test_next_lines`).
 17. The bootstrap lists the three-stage chain, the three on-demand commands
@@ -1300,16 +1399,25 @@ Status in the file: "written 2026-10-01; not yet run — `claude-gd` returns
     counts third failures per item without counting `(from report)`,
     commits `fix(B<n>)` and its ledger lines, comments once on the PR,
     leaves the worktree it entered, never commits on the default branch,
-    and has no script, report file, per-item question or sign-off
-    (`test_playtest_contract`).
+    stops when the pointers name a different feature or at `stage
+    execute`, dispatches no fixer once the PR is merged or closed, and has
+    no script, report file,
+    per-item question or sign-off (`test_playtest_contract`,
+    `test_feature_checkout_copies`).
 23. Review finds the feature checkout through `studio-state worktree`,
     dispatches on Opus with execute's fix rules and no three-round loop,
     commits its ledger line with its fixes, reports only on the default
-    branch, and leaves the worktree it entered (`test_review_contract`,
-    `test_stage_skills_dispatch_agents`).
+    branch or when HEAD is not the branch or range it was given, stops
+    when the pointers name a different feature, fixes nothing once the PR
+    is merged or closed, and leaves the worktree it entered
+    (`test_review_contract`, `test_stage_skills_dispatch_agents`,
+    `test_feature_checkout_copies`).
 24. Retro asks no questions, reads the recorded feature's ledger through
-    `studio-state worktree`, writes no ledger line and commits nothing, and
-    keeps memory in `CLAUDE_CONFIG_DIR` (`test_retro_contract`).
+    `studio-state worktree` (with `git show` when its worktree is gone;
+    only `STATE.md`'s when the pointers name a different feature), writes
+    no ledger line and commits nothing, names the router's next
+    command, and keeps memory in `CLAUDE_CONFIG_DIR`
+    (`test_retro_contract`).
 25. The producer and playtester carry their new contracts; the producer
     reads the ledger from the path in its brief, not `studio-state show`
     (`test_agent_contracts`).
@@ -1332,6 +1440,11 @@ Status in the file: "written 2026-10-01; not yet run — `claude-gd` returns
 30. Manual check M4: issue #6 describes the new chain, including the check
     that after the finish and `/clear` the session is in the main checkout
     (`gh issue view 6`).
+
+## Review history
+
+- First falsifier pass: 2 Critical, 7 Important, 12 Minor, all applied; headline: the stage guard matched the wrong prompt shape, and `/clear` stayed in the finished worktree.
+- Second pass: 1 Critical, 4 Important, 13 Minor, all applied; headline: a run stopped during isolation re-entered the previous feature's worktree.
 
 ## Open questions for the user
 
@@ -1366,7 +1479,8 @@ different ruling changes only the lines named.
    the router agree.
 5. **Retro across several features.** Retro now reads the recorded
    feature's ledger wherever its checkout is (§5), plus `STATE.md`'s, so it
-   harvests the latest feature before its merge. On demand it may run after
+   harvests the latest feature before its merge — until the next
+   brainstorm's gate moves `spec`. On demand it may run after
    several features, and the earlier features' ledgers are not read.
    *Recommended (drafted):* keep it to the latest feature in bundle 1 — a
    repeated retro over the same lines writes no duplicate (retro
@@ -1380,12 +1494,15 @@ different ruling changes only the lines named.
 Details this draft fills in that no decision names, listed so they can be
 vetoed: the `branch` state key and `studio-state worktree` (exit 0 / 1 / 3),
 through which execute's resume, review, playtest and retro find the
-feature's checkout (§1, §4, §5); execute's §0 split into new run and resume,
-with the stops at `idle`, `brainstorm` and `retro` and in the previous
-feature's checkout, and the `base` ledger line; the brainstorm guard at
-`idle` in the finished feature's checkout; `ExitWorktree` with `action:
-"keep"` at the end of execute's finish, and at the end of review and
-playtest when they entered a worktree; the `final review done` line and
+feature's checkout (§1, §4, §5); the three named feature-checkout
+procedures and their copies test; execute's §0 split into new run and
+resume, with the stops at `idle`, `brainstorm` and `retro`, a new run
+clearing `branch` before it isolates, and the `base` ledger line committed
+after the fast-forward; the finished-checkout guard in brainstorm, plan
+and execute; no push and no PR when execute ran on the default branch;
+review's and playtest's which-feature and merged-PR checks; leaving the
+feature checkout at the end of execute's finish, and of review and
+playtest when they entered one; the `final review done` line and
 ledger commit that let a stopped finish resume at the gate; the SDD progress
 ledger seeded from the feature ledger; retro read-only on the repository (no
 `retro written` line); review and playtest never commit on the default
