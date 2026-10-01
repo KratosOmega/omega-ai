@@ -16,7 +16,7 @@ names the next stage, and hands freeform requests to the right stage skill.
 Run `studio-state show` from the project root.
 
 - **Exit 0:** parse the header fields (`stage`, `spec`, `plan`, `task`,
-  `last_playtest`, `milestone`) and the ledger lines. Then run
+  `branch`, `milestone`) and the ledger lines. Then run
   `studio-state check`: on exit 1, end the state line with ` · ` followed by
   the first line of its output verbatim (it already carries its own
   `check:` prefix, e.g. `check: ledger says T3 complete but task is 2/6 —
@@ -43,25 +43,22 @@ Stage: execute · Milestone: prototype · Spec: docs/game-dev/specs/2026-09-13-d
 Next: /game-dev:execute — resume at task 2 of 6
 ```
 
-The next stage follows from the current one. `brainstorm` and `plan` set
-`stage` to their own name while they work, so that value names the stage in
-progress; but from `execute` onward, each stage skill sets `stage` to the
-stage still to run once it finishes (`execute` sets `review`, `review` sets
-`playtest`, `playtest` sets `ship`, `ship` sets `retro`, `retro` sets `idle`).
-So for `review`, `playtest`, `ship` and `retro`, `stage` names the *same*
-stage whether it is in progress or waiting to start — route to the
-same-named skill either way:
+The next stage follows from the current one. Each stage sets `stage` to its
+own name while it works, and `execute` sets `idle` when its finish
+completes. `review`, `playtest` and `retro` are on-demand commands: they run
+at any stage and never change it.
 
 | `stage` | Next | Unless |
 |---------|------|--------|
 | `idle` | `/game-dev:brainstorm` | — |
 | `brainstorm` | `/game-dev:plan` | `spec` is `-` — then the project is effectively idle: report `Stage: idle` and `Next: /game-dev:brainstorm` (a brainstorm that never reached a spec). Or the ledger has no `spec approved <path>` line for the current `spec` value — then: "spec awaiting approval; reply approve to `/game-dev:brainstorm` or re-run it" |
 | `plan` | `/game-dev:execute` | the ledger has no `plan approved <path>` line for the current `plan` value — same pattern |
-| `execute` | `/game-dev:execute` (resume) | `task` is `N/N` — then `/game-dev:review` |
-| `review` | `/game-dev:review` | — |
-| `playtest` | `/game-dev:playtest` | — |
-| `ship` | `/game-dev:ship` | the ledger has no `playtest signed off` line — say "playtest awaiting sign-off; run `/game-dev:playtest`" |
-| `retro` | `/game-dev:retro` | — |
+| `execute` | `/game-dev:execute` (resume) | `task` is `N/N` — then it resumes at the final review and finish |
+| any other value (`review`, `playtest`, `ship`, `retro`: the old pipeline) | `/game-dev:brainstorm` | — report the state line as `Stage: idle (was <value>, old pipeline)` |
+
+On demand, at any stage: `/game-dev:review [scope]`,
+`/game-dev:playtest <what failed>`, `/game-dev:retro`. None of them changes
+`stage`.
 
 **Abandon / re-plan.** At any stage, when the user says the feature is
 dropped or the plan is too broken to follow, confirm with one
@@ -81,11 +78,12 @@ by what the request *is*, not by which stage the project is in:
 | Request looks like | Route to |
 |--------------------|----------|
 | a feature, mechanic, system, enemy, level, or "add / change / remove X" | `/game-dev:brainstorm` with the text as its topic |
-| "feels wrong / floaty / laggy / unresponsive / too fast / juice" | `/game-dev:playtest` — a feel pass over the items that describe the complaint |
+| "feels wrong / floaty / laggy / unresponsive / too fast / juice" | `/game-dev:playtest` with the user's text as the failure report |
 | "is this done / does this match the spec / review it" | `/game-dev:review` |
 | "make a plan / break this down" and a spec exists | `/game-dev:plan` |
 | "build it / implement / go" and an approved plan exists | `/game-dev:execute` |
 | "new game / new project" | `/game-dev:scaffold` when installed; otherwise say so |
+| "what did we learn / retro / lessons" | `/game-dev:retro` |
 | a bug with a repro | `superpowers:using-git-worktrees`, then a failing test that reproduces it, then `superpowers:systematic-debugging`; note the fix with `studio-state ledger "Bug: <one line> — <commit>"` |
 | "abandon / drop this / start over" | the abandon step in §2 |
 | anything else | answer directly; no stage applies |

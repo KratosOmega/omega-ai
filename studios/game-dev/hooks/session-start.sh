@@ -18,6 +18,13 @@ BOOTSTRAP="$ROOT/hooks/bootstrap.md"
 STUDIO_STATE="$ROOT/bin/studio-state"
 WORK_ROOT="$(sh "$STUDIO_STATE" root --work 2>/dev/null || pwd -P)"
 STAGE="$(sh "$STUDIO_STATE" get stage 2>/dev/null || true)"
+# A stage value the old eight-stage pipeline wrote reads as idle, the way the
+# router reports it (decided here, outside the $(...) below: bash 3.2 cannot
+# parse a case pattern's ')' inside a command substitution).
+case "$STAGE" in
+  ''|idle|brainstorm|plan|execute) ;;
+  *) STAGE="idle (was $STAGE, old pipeline)" ;;
+esac
 
 # field FILE KEY — value of a flat JSON string key; empty when absent.
 field() {

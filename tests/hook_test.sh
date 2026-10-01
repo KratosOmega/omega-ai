@@ -98,6 +98,14 @@ test_hook_files() {
   assert_contains "$STUDIO_DIR/hooks/hooks.json" 'Edit|Write|MultiEdit' "the guard matches the file-writing tools"
   assert_contains "$STUDIO_DIR/hooks/hooks.json" 'CLAUDE_PLUGIN_ROOT}/hooks/guard-state.sh' \
     "hooks.json runs guard-state.sh from the plugin root"
+  B="$STUDIO_DIR/hooks/bootstrap.md"
+  assert_contains "$B" '/game-dev:review \[scope\]' "bootstrap lists the on-demand review"
+  assert_contains "$B" '/game-dev:playtest <what failed>' "bootstrap lists the on-demand playtest"
+  assert_contains "$B" '/game-dev:retro' "bootstrap lists the on-demand retro"
+  assert_contains "$B" 'idle → brainstorm → plan → execute → idle' "bootstrap states the three-stage chain"
+  assert_contains "$B" 'Run each stage in a fresh session: `/clear`' "bootstrap says to /clear between stages"
+  assert_contains "$B" 'omega modes' "bootstrap says /clear ends the session's omega modes"
+  assert_not_contains "$B" 'game-dev:'"'"'ship' "bootstrap names no deleted command"
 }
 
 test_hook_output_shape() {
@@ -237,6 +245,18 @@ test_hook_reports_stage() {
   assert_eq "" "$(cat "$TMP/hook.err")" "the hook is silent on stderr without state"
 }
 
+# A stage value the old eight-stage pipeline wrote reads as idle, the way the
+# router reports it.
+test_hook_reports_old_stage() {
+  mkdir -p "$TMP/oldstage/.studio/ledger"
+  printf '# Studio State\n\nstage: retro\nspec: -\nplan: -\ntask: -\nlast_playtest: -\nmilestone: prototype\n\n## Ledger\n\n' \
+    > "$TMP/oldstage/.studio/STATE.md"
+  run_hook "$TMP/oldstage"
+  context "$TMP/hook.out" > "$TMP/ctx10.txt"
+  assert_contains "$TMP/ctx10.txt" "Studio state: stage idle (was retro, old pipeline)" "an old stage reads as idle"
+  assert_eq "" "$(cat "$TMP/hook.err")" "the hook is silent on stderr for an old stage"
+}
+
 test_stage_guard_registered() {
   assert_contains "$STUDIO_DIR/hooks/hooks.json" '"UserPromptSubmit"' "hooks.json registers UserPromptSubmit"
   assert_contains "$STUDIO_DIR/hooks/hooks.json" 'CLAUDE_PLUGIN_ROOT}/hooks/stage-guard.sh' \
@@ -351,7 +371,7 @@ run_tests test_hook_files test_hook_output_shape test_hook_defaults_from_studio_
   test_hook_reads_project_config test_hook_partial_config_falls_back test_hook_escapes_json \
   test_hook_fills_config_value_with_metacharacters test_guard_state_blocks_direct_writes \
   test_hook_fails_without_bootstrap test_hook_strips_control_characters test_hook_reports_stage \
-  test_stage_guard_registered test_stage_guard_first_stage_silent \
+  test_hook_reports_old_stage test_stage_guard_registered test_stage_guard_first_stage_silent \
   test_stage_guard_warns_after_other_stage test_stage_guard_raw_prompt_shape \
   test_stage_guard_envelope_prompt test_stage_guard_names_latest_prior_stage \
   test_stage_guard_same_stage_silent test_stage_guard_ignores_mentions \

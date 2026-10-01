@@ -218,30 +218,34 @@ test_stage_skills_dispatch_agents() {
   assert_contains "$S/retro/SKILL.md" 'sync-memory.sh game-dev' "retro reminds the user to sync memory"
 }
 
-# Cross-checks the router's stage table (studio/SKILL.md) against what each
-# stage skill actually sets `stage` to when it finishes, so a future edit to
-# either side that breaks the chain fails here instead of misrouting users.
-# For each of execute/review/playtest/ship/retro, find its own *last*
-# `studio-state set stage <X>` line (the value it hands off to the next run)
-# and assert the router names `/game-dev:<X>` for stage `<X>` (idle routes to
-# brainstorm).
+# Cross-checks the router's stage table (studio/SKILL.md) against the stage
+# chain idle → brainstorm → plan → execute → idle: the four rows and the
+# old-pipeline row, the value each stage skill last sets (execute's is idle),
+# and every value studio-state accepts. A future edit to either side that
+# breaks the chain fails here instead of misrouting users.
 test_stage_chain() {
   S="$REPO_ROOT/studios/game-dev/skills"
   router="$S/studio/SKILL.md"
-  for skill in execute review playtest ship retro; do
-    next="$(grep -o 'studio-state set stage [a-z]*' "$S/$skill/SKILL.md" | tail -n 1 | awk '{print $NF}')"
-    if [ -z "$next" ]; then
+  assert_contains "$router" '| `idle` | `/game-dev:brainstorm` |' "router routes idle to brainstorm"
+  assert_contains "$router" '| `brainstorm` | `/game-dev:plan` |' "router routes brainstorm to plan"
+  assert_contains "$router" '| `plan` | `/game-dev:execute` |' "router routes plan to execute"
+  assert_contains "$router" '| `execute` | `/game-dev:execute`' "router resumes execute"
+  assert_contains "$router" '^| any other value.*old pipeline' "router reads any other stage as the old pipeline"
+  for skill in brainstorm plan execute; do
+    last="$(grep -o 'studio-state set stage [a-z]*' "$S/$skill/SKILL.md" | tail -n 1 | awk '{print $NF}')"
+    if [ -z "$last" ]; then
       TESTS_RUN=$((TESTS_RUN + 1))
-      _fail "$skill sets a final stage value"
+      _fail "$skill sets a stage value on one line"
       continue
     fi
-    if [ "$next" = "idle" ]; then
-      assert_contains "$router" '| `idle` | `/game-dev:brainstorm` |' \
-        "router routes stage idle (set by $skill) to /game-dev:brainstorm"
-    else
-      assert_contains "$router" "| \`$next\` | \`/game-dev:$next\` |" \
-        "router routes stage $next (set by $skill) to /game-dev:$next"
-    fi
+    assert_contains "$router" "^| \`$last\` |" "router has a row for stage $last (set last by $skill)"
+  done
+  assert_eq "idle" "$(grep -o 'studio-state set stage [a-z]*' "$S/execute/SKILL.md" | tail -n 1 | awk '{print $NF}')" \
+    "execute's last stage value is idle"
+  stages="$(sed -n 's/^STAGES="\(.*\)"$/\1/p' "$REPO_ROOT/studios/game-dev/bin/studio-state")"
+  assert_eq "idle brainstorm plan execute" "$stages" "studio-state accepts exactly the four stages"
+  for st in $stages; do
+    assert_contains "$router" "^| \`$st\` |" "router has a row for stage $st"
   done
 }
 
