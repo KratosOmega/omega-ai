@@ -29,7 +29,8 @@ With no text after the command, print one example and stop:
     new worktree, the path that command added, the same way.
   - Exit 1: no feature branch is recorded, or it is gone. Ask the user once
     which checkout to use, naming what was found: the `branch` value (or
-    that none is recorded) and the `git worktree list` paths.
+    that none is recorded) and the `git worktree list` paths; then
+    enter the chosen checkout the Exit 0 way.
   - If `EnterWorktree` refuses, stop and show its message; when another
     live session holds the worktree, close that session first. Never `cd`
     into a worktree another live session is using.
@@ -91,20 +92,21 @@ When two complaints may be one bug, treat them as one and say so.
    line `B<m>` itself plus the lines tagged `(from B<m>)`. `(from report)`
    is never counted: it is a first report, shared by unrelated failures.
    When the count is already 2 or more, this is the third failure (or a
-   later one): dispatch no fixer. After the other failures, suggest moving
-   it to the plan's `## Backlog` with the user's reason, and move it only on
-   the user's word.
+   later one): dispatch no fixer. After the other failures, and before §2,
+   suggest moving it to the plan's `## Backlog` with the user's reason; move
+   it only on the user's word, and commit the move in §2's commit.
 3. **Fix.** Dispatch a fresh fixer: `game-dev:feel-tuner` when the bug
    concerns a feel target (latency, forgiveness, acceleration, timing,
    camera, feedback), otherwise `game-dev:gameplay-programmer`. The brief
    carries the checkout's path, the bug block and the spec section, and
-   says: follow `systematic-debugging` before changing anything; when the
-   bug's `Regression test` line says `unit`, write that test first
-   (test-driven-development) and see it fail on the bug; fix; run
-   `studio-test`; commit `fix(B<n>): …`; report the commit and the
-   hypothesis (feel-tuner) or the root cause (gameplay-programmer).
-   Feel fixes change one variable per hypothesis: a feel-tuner report that
-   changed three values is sent back.
+   says: follow `superpowers:systematic-debugging` before changing
+   anything; when the bug's `Regression test` line says `unit`, write that
+   test first (`superpowers:test-driven-development`) and see it fail on
+   the bug; fix; run `studio-test`; commit `fix(B<n>): …`; report the
+   commit and the hypothesis (feel-tuner) or the root cause
+   (gameplay-programmer). Feel fixes change one variable per hypothesis: a
+   feel-tuner report that changed three values is
+   redone by a fresh feel-tuner with that finding.
 4. **Ledger.**
    `studio-state ledger "B<n> <title> — <commit, or backlog suggested>"`.
 

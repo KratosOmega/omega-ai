@@ -30,7 +30,7 @@ Check these first, in the checkout you are in:
   `stage`, `task` and `branch` (`studio-state get <key>`):
   - `plan` — a new run. First run the **finished-checkout guard**
     (Feature-checkout procedures, below) on the `branch` just read; it stops
-    before any state write. Then, beside the next step's
+    before any state write. Then, just before the next step's
     `studio-state set stage execute`, run `studio-state set branch -`: a
     new run clears `branch` before it isolates. A stop before isolation
     step (c) — the ancestor check's `git merge --ff-only` failing on a local
@@ -44,10 +44,13 @@ Check these first, in the checkout you are in:
   - `idle`, `brainstorm` or `retro` — no approved plan is waiting to run (at
     `idle` the pointers still name the finished feature): stop and name
     `/game-dev:studio`.
-- Run `studio-state set stage execute` (a new run also runs `studio-state set branch -` here).
-  Read `task` to find where to resume: `3/6` means tasks 1–3 are complete;
-  start at 4. `studio-state` keeps the pointer in the project's main
-  checkout, so every call below works the same from inside a worktree.
+- A new run first runs `studio-state set branch -`; then every run runs
+  `studio-state set stage execute`. An interruption between the two leaves
+  `stage plan`, so the re-run is a new run again, never a resume into the
+  previous feature's worktree. Read `task` to find where to resume: `3/6`
+  means tasks 1–3 are complete; start at 4. `studio-state` keeps the
+  pointer in the project's main checkout, so every call below works the
+  same from inside a worktree.
 
 **Isolation.** First note the current branch (`git branch --show-current`)
 — the noted branch — along with the spec's and plan's noted hashes. Then:
@@ -58,7 +61,7 @@ Check these first, in the checkout you are in:
     (`studio-state: no feature branch recorded` — an older pipeline's run,
     or a new run that stopped before (c)): isolate as a new run does (b),
     unless `task` is past `0/N` and the current checkout's feature ledger
-    has no `T<n> complete` line. Then stop and say:
+    has no `T<n> complete` line: then do not isolate; stop and say:
     "run `/game-dev:execute` from the feature's worktree" (a run an older
     pipeline started from the main checkout would get an empty worktree).
   - It exits 1 because the branch is gone
@@ -234,8 +237,9 @@ This overrides `superpowers:subagent-driven-development`'s fix loop (rounds 1–
    - the findings, verbatim;
    - the diff as a file, never pasted inline: SDD's review package for the
      task's commit range. `bash scripts/review-package <plan> <BASE> HEAD`,
-     run from SDD's skill directory with `<BASE>` the commit the task
-     started from, prints the file's path; the file holds
+     run by its path in SDD's skill directory, from the worktree root, with
+     `<BASE>` the commit the task started from, prints the file's path (the
+     script runs git in its working directory); the file holds
      `git log --oneline`, `git diff --stat` and `git diff -U10` for the
      range;
    - the file:line slices each finding cites (the cited line ± 20 lines);
@@ -280,8 +284,9 @@ the last task's review:
    (`requesting-code-review`'s `code-reviewer.md`). The brief:
    - `Scope: branch <name> vs <base>`;
    - the review package for `<merge-base>..HEAD`
-     (`bash scripts/review-package <plan> <merge-base> HEAD`), as SDD's
-     final review gets one;
+     (`bash scripts/review-package <plan> <merge-base> HEAD`, run by its
+     path in SDD's skill directory, from the worktree root), as SDD's final
+     review gets one;
    - the spec path and the project `CLAUDE.md` path — report every
      acceptance criterion as met or unmet, in the agent's own
      `Spec compliance: met: …; unmet: …` line;
@@ -432,8 +437,9 @@ it once §5 is done, with no question to the user:
 7. **Report**, in this order: the PR link (or the saved body path and the
    reason; on the default branch, that the work is committed locally); the
    play list, under `Play before merging`; the rulings, each with its cost
-   if wrong; the final review verdict line; the gate line; and the last
-   line, verbatim:
+   if wrong; the producer's gate result (milestone `<a> → <b>`, the missing
+   list, or PROGRESS skipped); the final review verdict line; the gate
+   line; and the last line, verbatim:
 
    ```
    Next: play the list; merge when it passes; report failures with /game-dev:playtest <what failed>; /clear before the next feature.

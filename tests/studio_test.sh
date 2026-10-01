@@ -269,6 +269,14 @@ test_execute_contract() {
     _fail "execute re-reviews after 3+ Importants"
   fi
   assert_not_contains "$E" 'set stage ''review' "execute no longer hands off to a review stage"
+  # Final-review fixes M1-M4: the producer's result has a report slot, branch
+  # is cleared before stage is written, the legacy stop does not isolate, and
+  # review-package runs from the worktree root.
+  for lit in "producer's gate result" 'A new run first runs `studio-state set branch -`' \
+             'then do not isolate' "run by its path in SDD's skill directory, from the worktree root"; do
+    assert_contains "$E" "$lit" "execute carries: $lit"
+  done
+  assert_not_contains "$E" "run from SDD's skill directory" "execute no longer reads review-package's directory as a cwd"
   assert_not_contains "$E" 'a side effect outside the worktree' "execute drops the old side-effect rule"
 }
 
@@ -324,6 +332,15 @@ test_review_contract() {
     assert_contains "$R" "$lit" "review carries: $lit"
   done
   assert_not_contains "$R" 'Three rounds' "review drops its own three-round loop"
+  # Final-review fix I1: the report-only gate is the ruling made in section 0,
+  # the ledger line needs the recorded branch on the branch/range path, an
+  # Exit-1 answer is entered, and a run without a ledger line reports its
+  # deferrals.
+  for lit in 'ruled the run report-only' 'studio-state get branch' \
+             'enter the chosen checkout the Exit 0 way' 'lists it in the report'; do
+    assert_contains "$R" "$lit" "review carries: $lit"
+  done
+  assert_not_contains "$R" 'HEAD is not the' "review's gate no longer keys on the recorded branch's checkout"
 }
 
 # Review, playtest and retro run on demand: they never change the stage, and
@@ -343,11 +360,13 @@ test_on_demand_skills_keep_stage() {
 test_playtest_contract() {
   P="$REPO_ROOT/studios/game-dev/skills/playtest/SKILL.md"
   for lit in 'subagent_type: "game-dev:playtester"' 'game-dev:feel-tuner' 'fix(B<n>)' 'gh pr comment' \
-             '## Backlog' 'systematic-debugging' '.studio/ledger <plan path>' 'chore(studio): ledger' \
-             'never counted' 'pointers now name' 'stage execute' 'MERGED'; do
+             '## Backlog' 'superpowers:systematic-debugging' '.studio/ledger <plan path>' 'chore(studio): ledger' \
+             'never counted' 'pointers now name' 'stage execute' 'MERGED' \
+             'enter the chosen checkout the Exit 0 way' 'superpowers:test-driven-development' \
+             'commit the move in' 'redone by a fresh feel-tuner'; do
     assert_contains "$P" "$lit" "playtest carries: $lit"
   done
-  for lit in 'AskUserQuestion' 'docs/game-dev/playtests' 'signed off' '## Script'; do
+  for lit in 'AskUserQuestion' 'docs/game-dev/playtests' 'signed off' '## Script' 'sent back'; do
     assert_not_contains "$P" "$lit" "playtest no longer carries: $lit"
   done
 }
@@ -360,6 +379,9 @@ test_retro_contract() {
              'read only `STATE.md`' 'for the current stage'; do
     assert_contains "$T" "$lit" "retro carries: $lit"
   done
+  # Final-review fix I2: exit 1 reads the current checkout's ledger (spec
+  # Data migration), not STATE.md's alone.
+  assert_contains "$T" "At exit 1, use the current checkout's feature ledger" "retro reads the current checkout's ledger at exit 1"
   for lit in 'AskUserQuestion' 'studio-state ledger' 'retro written' 'git commit'; do
     assert_not_contains "$T" "$lit" "retro no longer carries: $lit"
   done

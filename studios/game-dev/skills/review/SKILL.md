@@ -26,7 +26,8 @@ the user asks. It never changes `stage`.
     new worktree, the path that command added, the same way.
   - Exit 1: no feature branch is recorded, or it is gone. Ask the user once
     which checkout to use, naming what was found: the `branch` value (or
-    that none is recorded) and the `git worktree list` paths.
+    that none is recorded) and the `git worktree list` paths; then
+    enter the chosen checkout the Exit 0 way.
   - If `EnterWorktree` refuses, stop and show its message; when another
     live session holds the worktree, close that session first. Never `cd`
     into a worktree another live session is using.
@@ -42,9 +43,14 @@ the user asks. It never changes `stage`.
 
 ## 0. Scope and checkout
 
+§0 decides whether this run fixes. It is **report-only** in three cases: a
+branch or range argument that HEAD does not match, the default branch, and
+a `MERGED` or `CLOSED` PR (each below). A report-only run dispatches no
+fixer, writes no ledger line, edits no plan, and commits and pushes nothing.
+
 - When the argument is a branch or a range, skip the lookup: the scope is
   that argument. Fix only when HEAD is that branch (or the range ends at HEAD);
-  otherwise report findings only.
+  otherwise the run is report-only.
 - Otherwise **Enter the feature checkout**, and say which checkout.
 - **Which feature.** After the lookup, check that the checkout holds the
   ledger of the feature `spec` names: `<checkout>/.studio/ledger/<slug>.md`
@@ -57,13 +63,12 @@ the user asks. It never changes `stage`.
 - Every brief to a dispatched agent names the checkout's absolute path and
   tells the agent to work there: an agent starts in the session's working
   directory.
-- On the default branch (**Default branch**, above), this command commits
-  nothing: report findings only, with no fix dispatch, no ledger line and no
-  commit.
+- On the default branch (**Default branch**, above), the run is
+  report-only: no fix dispatch, no ledger line and no commit.
 - Before the first fix dispatch, run `gh pr view --json state` on the
-  branch. On `MERGED` or `CLOSED`, dispatch no fixer and push nothing:
-  report the findings and name `/game-dev:brainstorm` for a fix that must
-  reach the base.
+  branch. On `MERGED` or `CLOSED`, the run is report-only: dispatch no fixer
+  and push nothing; report the findings and name `/game-dev:brainstorm` for
+  a fix that must reach the base.
 - The scope: the argument when given (a range, a branch, a task number, a
   path list); otherwise the whole branch, `git merge-base <base> HEAD` to
   `HEAD`, where `<base>` is the PR's base
@@ -145,26 +150,35 @@ has handed back.
    fresh fix dispatch (same brief) and no further review. Report whatever
    that fixer could not close.
 
-The user may defer any finding; a deferred finding is written to the plan's
-`## Backlog` with the finding line and the reason.
+The user may defer any finding. A deferred finding is written to the plan's
+`## Backlog` with the finding line and the reason only in a run that writes
+§4's ledger line; any other run lists it in the report instead.
 
 ## 4. State and hand-off
 
-- **Report-only gate.** When the run is report-only — HEAD is not the
-  recorded feature branch's checkout (the branch or range scope without a
-  fix), the branch is the default branch, or its PR is `MERGED` or `CLOSED`
-  (run `gh pr view --json state` here if it has not run yet) — write no
-  ledger line, make no commit and push nothing: print the verdict, then
-  **Leave the feature checkout** if §0 entered one, and skip the rest of
-  this section.
-- `studio-state ledger "Review: <scope> — <Findings line>; <m> fixed, <k> deferred"`.
-- Commit it on the feature branch with the fixes and any `## Backlog`
-  deferral: `git add .studio/ledger <plan path>`, then
-  `git commit -m "chore(studio): ledger"`. When the branch tracks a remote
-  (`git rev-parse --abbrev-ref @{u}` succeeds), push the fix commits and
-  that commit; never force-push.
-- Print the final verdict line and the list of fix commits, then **Leave
-  the feature checkout** if §0 entered one.
+- **Report-only gate.** When §0 ruled the run report-only — the default
+  branch, a `MERGED` or `CLOSED` PR (when no fix was dispatched, run §0's
+  `gh pr view --json state` here), or a branch or range argument that HEAD
+  does not match — write no ledger line, edit no plan, make no commit and
+  push nothing: print the verdict and the findings, then **Leave the
+  feature checkout** if §0 entered one, and skip the rest of this section.
+- **Ledger line**, only in the feature's checkout. On the lookup path, that
+  is the checkout the lookup found, or the one the user chose at Exit 1;
+  the which-feature check has passed for it. On a branch or range argument,
+  it is HEAD's checkout only when HEAD is the branch
+  `studio-state get branch` prints and the checkout holds
+  `.studio/ledger/<slug>.md` (the which-feature check, which that path
+  skipped). There, `studio-state ledger "Review: <scope> — <Findings line>; <m> fixed, <k> deferred"`,
+  then commit it on the feature branch with any `## Backlog` deferral:
+  `git add .studio/ledger <plan path>`, then
+  `git commit -m "chore(studio): ledger"`.
+- Anywhere else, write no ledger line and edit no plan: the fix commits
+  stand alone, and the report lists the deferred findings.
+- When the branch tracks a remote (`git rev-parse --abbrev-ref @{u}`
+  succeeds), push the fix commits and any ledger commit; never force-push.
+- Print the final verdict line, the list of fix commits and any deferred
+  finding the plan did not take, then **Leave the feature checkout** if §0
+  entered one.
 
 ## Rules
 

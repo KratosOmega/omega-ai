@@ -28,8 +28,11 @@ pointer. It writes studio memory only.
   - At exit 3 the branch exists but no worktree has it: read
     `git show <branch>:.studio/ledger/<slug>.md`, with `<branch>` from
     `studio-state get branch`. Create and enter no worktree.
-  - At exit 1, or when that ledger does not exist, `spec` and `branch` name
-    different features or none: read only `STATE.md`'s ledger, and say so.
+  - At exit 1, use the current checkout's feature ledger from
+    `studio-state show` when `<slug>.md` exists there; when it does not,
+    read only `STATE.md`'s ledger and say so.
+  - At exit 0 or 3, when that ledger does not exist, `spec` and `branch`
+    name different features: read only `STATE.md`'s ledger, and say so.
 - Take every `Ruling:`, `Review:` and `B<n>` line. Read the spec only to
   understand a line. Earlier features' ledgers are not read.
 - A second retro reads the same lines; the existing-memory check in §3

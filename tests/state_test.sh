@@ -46,7 +46,6 @@ drop_line() {
   mv "$1.tmp" "$1"
 }
 
-
 test_state_needs_init() {
   P="$(fresh_project needs)"
   assert_status 1 "get fails without .studio/" -- sh -c "cd '$P' && sh '$STATE_BIN' get stage"
@@ -428,6 +427,7 @@ test_state_worktree() {
   ( cd "$P" && sh "$STATE_BIN" set branch nope )
   wt_run "$P"
   assert_eq "1" "$WT_STATUS" "worktree exits 1 when the branch does not exist"
+  assert_eq "" "$(cat "$TMP/wt.out")" "stdout is empty when the branch does not exist"
   assert_eq "studio-state: branch nope no longer exists" "$(cat "$TMP/wt.err")" "stderr names the missing branch"
 
   ( cd "$P" && git worktree add -q "$TMP/wt-f" -b feat/f ) >/dev/null 2>&1
@@ -459,6 +459,7 @@ test_state_worktree() {
   ( cd "$P" && sh "$STATE_BIN" set branch feat/f )
   wt_run "$P"
   assert_eq "3" "$WT_STATUS" "a worktree directory removed by hand (prunable entry) exits 3"
+  assert_eq "" "$(cat "$TMP/wt.out")" "stdout is empty for a prunable entry"
   assert_contains "$TMP/wt.cmd" "^git worktree prune && git worktree add" "line 2 prunes the stale entry first"
   ( cd "$P" && sh -c "$(cat "$TMP/wt.cmd")" ) >/dev/null 2>&1
   wt_run "$P"
@@ -469,6 +470,7 @@ test_state_worktree() {
   ( cd "$P" && sh "$STATE_BIN" set branch feat/h )
   wt_run "$P"
   assert_eq "3" "$WT_STATUS" "a locked worktree whose directory is gone exits 3"
+  assert_eq "" "$(cat "$TMP/wt.out")" "stdout is empty for a locked entry"
   assert_contains "$TMP/wt.cmd" "^git worktree unlock" "line 2 unlocks the locked entry first"
   assert_contains "$TMP/wt.cmd" "&& git worktree prune && git worktree add" "then prunes, then adds"
   ( cd "$P" && sh -c "$(cat "$TMP/wt.cmd")" ) >/dev/null 2>&1
