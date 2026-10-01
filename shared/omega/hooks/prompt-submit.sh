@@ -1,12 +1,17 @@
 #!/bin/sh
 # UserPromptSubmit hook for the omega global plugin. A typed /omega:<skill>
-# command reaches the hook as an envelope, not the literal text:
+# command reaches the hook in one of two shapes. Raw — the text as typed,
+# which Claude Code 2.1.286 sends:
+#
+#   /omega:parallel 3
+#
+# or an envelope, which some versions send:
 #
 #   <command-message>parallel</command-message>
 #   <command-name>/omega:parallel</command-name>
 #   <command-args>3</command-args>
 #
-# The hook turns the mode commands into omega-mode calls, so a typed command
+# Both are read the same way. The hook turns the mode commands into omega-mode calls, so a typed command
 # changes the mode before the model reads the skill, and then — only when a
 # mode is active — prints the "Omega modes:" block as the turn's additional
 # context. /omega:autopilot is the exception: only `off` acts here. The
@@ -58,13 +63,21 @@ case "$flat" in
 esac
 
 skill=""
+args=""
 case "$envelope" in
   '<command-name>'*)
     skill="$(printf '%s' "$envelope" \
-      | sed -n 's/.*<command-name>[[:space:]]*\/omega:\([a-z-]*\)[[:space:]]*<\/command-name>.*/\1/p' | head -n 1)" ;;
+      | sed -n 's/.*<command-name>[[:space:]]*\/omega:\([a-z-]*\)[[:space:]]*<\/command-name>.*/\1/p' | head -n 1)"
+    [ -z "$skill" ] \
+      || args="$(printf '%s' "$envelope" | sed -n 's/.*<command-args>\(.*\)<\/command-args>.*/\1/p' | head -n 1)" ;;
+  /omega:*)
+    # The raw shape: the text as typed, the name ended by whitespace or the
+    # end of the prompt, so /omega:replyx is not /omega:reply.
+    skill="$(printf '%s\n' "$envelope" \
+      | sed -n -E 's#^/omega:([a-z-]+)([[:space:]].*)?$#\1#p' | head -n 1)"
+    [ -z "$skill" ] || args="${envelope#/omega:"$skill"}" ;;
 esac
 if [ -n "$skill" ]; then
-  args="$(printf '%s' "$envelope" | sed -n 's/.*<command-args>\(.*\)<\/command-args>.*/\1/p' | head -n 1)"
   args="$(printf '%s' "$args" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
   case "$skill" in
     parallel)
