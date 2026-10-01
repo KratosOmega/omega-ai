@@ -1,6 +1,6 @@
 # Pressure scenarios: slim pipeline
 
-Status: written 2026-10-01; not yet run — `claude-gd` returns `403 oauth_not_allowed_for_organization`.
+Status: written 2026-10-01; scenarios not yet run. `claude-gd` logs in again after `/login` (the M2 session below ran in it), so they are unblocked.
 
 ## Fixture
 
@@ -76,10 +76,12 @@ Steps: start a fresh `claude-gd` session. Type `/game-dev:brainstorm` as the
 first prompt; it shows nothing. Then type `/game-dev:plan`; it shows the
 warning line.
 
-- `claude --version:`
-- `date:`
-- `first-stage prompt showed nothing: yes/no`
-- `warning shown: yes/no (paste it)`
+- `claude --version:` 2.1.287 (Claude Code)
+- `date:` 2026-10-01, in a phoenix `claude-gd` session
+- `first-stage prompt showed nothing:` not captured — the pasted session
+  excerpt begins at the brainstorm's reply, below its prompt line
+- `warning shown:` yes, once, and `/game-dev:plan` still ran:
+  `UserPromptSubmit says: game-dev: this session already ran /game-dev:brainstorm — its context is carried into plan. Run /clear, then /game-dev:plan.`
 
 ## Results
 
