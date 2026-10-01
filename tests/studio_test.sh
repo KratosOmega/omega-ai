@@ -328,12 +328,14 @@ test_review_contract() {
 }
 
 # Review, playtest and retro run on demand: they never change the stage, and
-# retro clears no pointer. Each skill joins the list when it is rewritten.
+# retro clears no pointer.
 test_on_demand_skills_keep_stage() {
   S="$REPO_ROOT/studios/game-dev/skills"
-  for sk in review playtest; do
+  for sk in review playtest retro; do
     assert_not_contains "$S/$sk/SKILL.md" 'studio-state set stage' "$sk writes no stage"
   done
+  assert_not_contains "$S/retro/SKILL.md" 'set spec -' "retro clears no spec pointer"
+  assert_not_contains "$S/retro/SKILL.md" 'set plan -' "retro clears no plan pointer"
 }
 
 # Playtest on demand (spec §5): the user's failure report in; a filed bug, a
@@ -351,10 +353,23 @@ test_playtest_contract() {
   done
 }
 
+# Retro on demand (spec §5): no questions, no ledger write, no commit; it
+# reads the recorded feature's ledger and writes studio memory only.
+test_retro_contract() {
+  T="$REPO_ROOT/studios/game-dev/skills/retro/SKILL.md"
+  for lit in 'CLAUDE_CONFIG_DIR' 'sync-memory.sh game-dev' 'studio-state worktree' 'git show' \
+             'read only `STATE.md`' 'for the current stage'; do
+    assert_contains "$T" "$lit" "retro carries: $lit"
+  done
+  for lit in 'AskUserQuestion' 'studio-state ledger' 'retro written' 'git commit'; do
+    assert_not_contains "$T" "$lit" "retro no longer carries: $lit"
+  done
+}
+
 run_tests test_plugin_manifests test_skill_frontmatter test_agent_frontmatter \
   test_external_references_declared test_required_plugins_enabled test_bin_syntax \
   test_role_agents_exist test_stage_skill_contracts test_plan_skill_contract \
   test_brainstorm_skill_contract \
   test_studio_skill_contract test_game_dev_agent_roster test_stage_skills_dispatch_agents \
   test_stage_chain test_execute_contract test_agent_contracts test_feature_checkout_copies test_next_lines \
-  test_review_contract test_on_demand_skills_keep_stage test_playtest_contract
+  test_review_contract test_on_demand_skills_keep_stage test_playtest_contract test_retro_contract
