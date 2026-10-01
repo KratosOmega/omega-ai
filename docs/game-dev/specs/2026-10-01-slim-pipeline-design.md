@@ -1,7 +1,7 @@
 # game-dev Slim Pipeline — Design
 
 Date: 2026-10-01
-Status: Draft (awaiting approval)
+Status: Approved 2026-10-01
 Issue: #9 — bundle 1 of 3. Bundle 2 is an overnight runner that starts a
 fresh `claude-gd -p` session per unit of work; bundle 3 is the plan shape
 (epic → story spec → just-in-time task files) and a plan falsifier.
@@ -1446,11 +1446,12 @@ Status in the file: "written 2026-10-01; not yet run — `claude-gd` returns
 - First falsifier pass: 2 Critical, 7 Important, 12 Minor, all applied; headline: the stage guard matched the wrong prompt shape, and `/clear` stayed in the finished worktree.
 - Second pass: 1 Critical, 4 Important, 13 Minor, all applied; headline: a run stopped during isolation re-entered the previous feature's worktree.
 
-## Open questions for the user
+## Open questions — resolved
 
-Each one is a conflict or gap the thirteen decisions do not settle. This
-draft is written to the recommendation, so the spec has one reading; a
-different ruling changes only the lines named.
+Each one was a conflict or gap the thirteen decisions did not settle. The
+user ruled 1, 3 and 6 as recommended on 2026-10-01 and approved the spec,
+with 2, 4 and 5 and the details below, as written. The spec is drafted to
+these rulings.
 
 1. **`local-merge` against "never merge".** `local-merge`'s precedence
    block says the mode wins on merge mechanics, and its `:23-26` names "a
