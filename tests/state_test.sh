@@ -16,6 +16,37 @@ fresh_project() {
   printf '%s\n' "$P"
 }
 
+# init_repo DIR — a git repository with one empty commit and studio state.
+init_repo() {
+  mkdir -p "$1"
+  ( cd "$1" && git init -q && git -c user.name=t -c user.email=t@t commit -q --allow-empty -m init ) >/dev/null 2>&1
+  ( cd "$1" && sh "$STATE_BIN" init >/dev/null )
+}
+
+# wt_run DIR — `studio-state worktree` from DIR: stdout in $TMP/wt.out,
+# stderr in $TMP/wt.err, its second line in $TMP/wt.cmd, status in WT_STATUS.
+wt_run() {
+  WT_STATUS=0
+  ( cd "$1" && sh "$STATE_BIN" worktree ) > "$TMP/wt.out" 2> "$TMP/wt.err" || WT_STATUS=$?
+  sed -n 2p "$TMP/wt.err" > "$TMP/wt.cmd"
+}
+
+# legacy_state DIR STAGE — a STATE.md from before this change: STAGE as the
+# stage, the inert last_playtest line, no branch line.
+legacy_state() {
+  mkdir -p "$1/.studio/ledger"
+  printf '# Studio State\n\nstage: %s\nspec: -\nplan: -\ntask: 8/8\nlast_playtest: docs/x.md\nmilestone: prototype\n\n## Ledger\n\n' \
+    "$2" > "$1/.studio/STATE.md"
+}
+
+# drop_line FILE PATTERN — remove the lines matching PATTERN, the way a
+# damaged or pre-change STATE.md lacks them.
+drop_line() {
+  grep -v -- "$2" "$1" > "$1.tmp"
+  mv "$1.tmp" "$1"
+}
+
+
 test_state_needs_init() {
   P="$(fresh_project needs)"
   assert_status 1 "get fails without .studio/" -- sh -c "cd '$P' && sh '$STATE_BIN' get stage"
@@ -34,7 +65,9 @@ test_state_init() {
   assert_contains "$P/.studio/STATE.md" "^spec: -" "spec starts empty"
   assert_contains "$P/.studio/STATE.md" "^plan: -" "plan starts empty"
   assert_contains "$P/.studio/STATE.md" "^task: -" "task starts empty"
-  assert_contains "$P/.studio/STATE.md" "^last_playtest: -" "last_playtest starts empty"
+  assert_not_contains "$P/.studio/STATE.md" "^last_playtest:" "init writes no last_playtest line"
+  assert_contains "$P/.studio/STATE.md" "^branch: -" "branch starts empty"
+  assert_eq "branch: -" "$(sed -n '/^task: /{n;p;}' "$P/.studio/STATE.md")" "branch sits right after task"
   assert_contains "$P/.studio/STATE.md" "^milestone: prototype" "milestone starts at prototype"
   assert_contains "$P/.studio/STATE.md" "^## Ledger" "state file has a ledger section"
   assert_status 1 "init refuses to overwrite an existing state" -- sh -c "cd '$P' && sh '$STATE_BIN' init"
@@ -309,10 +342,177 @@ test_state_reset() {
   assert_status 1 "reset rejects an unknown flag" -- sh -c "cd '$P' && sh '$STATE_BIN' reset --nope"
 }
 
+test_state_stage_list() {
+  P="$(fresh_project stages)"
+  ( cd "$P" && sh "$STATE_BIN" init >/dev/null )
+  for s in idle brainstorm plan execute; do
+    assert_status 0 "set stage accepts $s" -- sh -c "cd '$P' && sh '$STATE_BIN' set stage $s"
+  done
+  # Removed stages come from the loop variable (the deleted name split), so
+  # test_no_ship_references never matches this file's own lines.
+  for s in review playtest 'sh''ip' retro; do
+    status=0
+    ( cd "$P" && sh "$STATE_BIN" set stage "$s" ) > /dev/null 2> "$P/stage.err" || status=$?
+    assert_eq "1" "$status" "set stage rejects the removed stage $s"
+    assert_contains "$P/stage.err" "stage must be one of: idle brainstorm plan execute" "the error lists the four stages ($s)"
+  done
+  assert_eq "execute" "$(cd "$P" && sh "$STATE_BIN" get stage)" "a rejected stage leaves the last accepted one"
+  assert_status 1 "get last_playtest is an unknown key" -- sh -c "cd '$P' && sh '$STATE_BIN' get last_playtest"
+  assert_status 1 "set last_playtest is an unknown key" -- sh -c "cd '$P' && sh '$STATE_BIN' set last_playtest x"
+}
+
+test_state_legacy_file() {
+  P="$(fresh_project legacy)"
+  legacy_state "$P" retro
+  assert_eq "retro" "$(cd "$P" && sh "$STATE_BIN" get stage)" "get stage returns an old value unchanged"
+  assert_eq "" "$(cd "$P" && sh "$STATE_BIN" get branch)" "get branch prints nothing without the line"
+  assert_status 1 "worktree exits 1 without a branch line" -- sh -c "cd '$P' && sh '$STATE_BIN' worktree"
+  mkdir -p "$P/docs" && printf '# spec\n' > "$P/docs/2026-09-01-dash.md"
+  assert_status 0 "set spec works on a legacy file" -- sh -c "cd '$P' && sh '$STATE_BIN' set spec docs/2026-09-01-dash.md"
+  assert_status 0 "set task works on a legacy file" -- sh -c "cd '$P' && sh '$STATE_BIN' set task 2/8"
+  assert_status 0 "ledger works on a legacy file" -- sh -c "cd '$P' && sh '$STATE_BIN' ledger 'T1 complete a..b'"
+  assert_status 0 "check works on a legacy file" -- sh -c "cd '$P' && sh '$STATE_BIN' check"
+  assert_contains "$P/.studio/STATE.md" "^last_playtest: docs/x.md" "the inert last_playtest line survives"
+  assert_status 0 "set stage idle replaces an old value" -- sh -c "cd '$P' && sh '$STATE_BIN' set stage idle"
+  assert_eq "idle" "$(cd "$P" && sh "$STATE_BIN" get stage)" "the old value is gone"
+}
+
+test_state_branch_key() {
+  P="$(fresh_project branch)"
+  ( cd "$P" && sh "$STATE_BIN" init >/dev/null && sh "$STATE_BIN" set branch feat/x )
+  assert_eq "feat/x" "$(cd "$P" && sh "$STATE_BIN" get branch)" "set branch round-trips"
+  ( cd "$P" && sh "$STATE_BIN" reset >/dev/null )
+  assert_eq "-" "$(cd "$P" && sh "$STATE_BIN" get branch)" "reset clears branch"
+
+  P="$(fresh_project branch-missing)"
+  ( cd "$P" && sh "$STATE_BIN" init >/dev/null )
+  drop_line "$P/.studio/STATE.md" '^branch: '
+  assert_status 0 "set branch inserts a missing line" -- sh -c "cd '$P' && sh '$STATE_BIN' set branch feat/x"
+  assert_eq "branch: feat/x" "$(sed -n '/^task: /{n;p;}' "$P/.studio/STATE.md")" "the line lands right after task"
+  assert_eq "1" "$(grep -c '^branch: ' "$P/.studio/STATE.md")" "exactly one branch line"
+
+  P="$(fresh_project branch-reset)"
+  ( cd "$P" && sh "$STATE_BIN" init >/dev/null )
+  drop_line "$P/.studio/STATE.md" '^branch: '
+  assert_status 0 "reset inserts a missing branch line" -- sh -c "cd '$P' && sh '$STATE_BIN' reset"
+  assert_eq "branch: -" "$(sed -n '/^task: /{n;p;}' "$P/.studio/STATE.md")" "reset leaves branch: - after task"
+
+  P="$(fresh_project branch-damaged)"
+  ( cd "$P" && sh "$STATE_BIN" init >/dev/null )
+  drop_line "$P/.studio/STATE.md" '^branch: '
+  drop_line "$P/.studio/STATE.md" '^task: '
+  status=0
+  ( cd "$P" && sh "$STATE_BIN" set branch feat/x ) > /dev/null 2> "$P/set.err" || status=$?
+  assert_eq "1" "$status" "set branch fails without a task line either"
+  assert_contains "$P/set.err" "no 'task:' line" "the error names task:"
+}
+
+# Review focus 5: the insert path stores a value literally — '&' and '\1'
+# are replacement metacharacters to sed.
+test_state_branch_insert_is_literal() {
+  P="$(fresh_project branch-meta)"
+  ( cd "$P" && sh "$STATE_BIN" init >/dev/null )
+  drop_line "$P/.studio/STATE.md" '^branch: '
+  ( cd "$P" && sh "$STATE_BIN" set branch 'feat/a&b\1' )
+  assert_eq 'feat/a&b\1' "$(cd "$P" && sh "$STATE_BIN" get branch)" "an inserted value keeps & and \\1"
+}
+
+test_state_worktree() {
+  P="$(fresh_project wtree)"
+  init_repo "$P"
+  wt_run "$P"
+  assert_eq "1" "$WT_STATUS" "worktree exits 1 when branch is -"
+  assert_eq "" "$(cat "$TMP/wt.out")" "stdout is empty when branch is -"
+  assert_eq "studio-state: no feature branch recorded" "$(cat "$TMP/wt.err")" "stderr says no branch is recorded"
+
+  ( cd "$P" && sh "$STATE_BIN" set branch nope )
+  wt_run "$P"
+  assert_eq "1" "$WT_STATUS" "worktree exits 1 when the branch does not exist"
+  assert_eq "studio-state: branch nope no longer exists" "$(cat "$TMP/wt.err")" "stderr names the missing branch"
+
+  ( cd "$P" && git worktree add -q "$TMP/wt-f" -b feat/f ) >/dev/null 2>&1
+  WT_F="$(cd "$TMP/wt-f" && pwd -P)"
+  ( cd "$P" && sh "$STATE_BIN" set branch feat/f )
+  wt_run "$P"
+  assert_eq "0" "$WT_STATUS" "worktree exits 0 from the main checkout"
+  assert_eq "$WT_F" "$(cat "$TMP/wt.out")" "stdout is the worktree's physical path"
+  wt_run "$TMP/wt-f"
+  assert_eq "0" "$WT_STATUS" "worktree exits 0 from inside the worktree"
+  assert_eq "$WT_F" "$(cat "$TMP/wt.out")" "the same path from inside the worktree"
+
+  ( cd "$P" && git branch feat/g ) >/dev/null 2>&1
+  ( cd "$P" && sh "$STATE_BIN" set branch feat/g )
+  wt_run "$P"
+  assert_eq "3" "$WT_STATUS" "worktree exits 3 when no worktree has the branch"
+  assert_eq "" "$(cat "$TMP/wt.out")" "stdout is empty at exit 3"
+  assert_eq "2" "$(wc -l < "$TMP/wt.err" | tr -d ' ')" "stderr is exactly two lines"
+  assert_eq "studio-state: no worktree has feat/g checked out" "$(sed -n 1p "$TMP/wt.err")" "line 1 names the branch"
+  assert_contains "$TMP/wt.cmd" "^git worktree add" "line 2 is the git worktree add command"
+  assert_contains "$TMP/wt.cmd" ".claude/worktrees/feat-g" "line 2 targets .claude/worktrees/<branch with - for />"
+  assert_contains "$TMP/wt.cmd" "feat/g" "line 2 names the branch"
+  ( cd "$P" && sh -c "$(cat "$TMP/wt.cmd")" ) >/dev/null 2>&1
+  wt_run "$P"
+  assert_eq "0" "$WT_STATUS" "after the printed command, worktree exits 0"
+  assert_eq "$P/.claude/worktrees/feat-g" "$(cat "$TMP/wt.out")" "stdout is the new worktree"
+
+  rm -rf "$TMP/wt-f"
+  ( cd "$P" && sh "$STATE_BIN" set branch feat/f )
+  wt_run "$P"
+  assert_eq "3" "$WT_STATUS" "a worktree directory removed by hand (prunable entry) exits 3"
+  assert_contains "$TMP/wt.cmd" "^git worktree prune && git worktree add" "line 2 prunes the stale entry first"
+  ( cd "$P" && sh -c "$(cat "$TMP/wt.cmd")" ) >/dev/null 2>&1
+  wt_run "$P"
+  assert_eq "0" "$WT_STATUS" "the printed prune-and-add command works"
+
+  ( cd "$P" && git worktree add -q "$TMP/wt-h" -b feat/h && git worktree lock "$TMP/wt-h" ) >/dev/null 2>&1
+  rm -rf "$TMP/wt-h"
+  ( cd "$P" && sh "$STATE_BIN" set branch feat/h )
+  wt_run "$P"
+  assert_eq "3" "$WT_STATUS" "a locked worktree whose directory is gone exits 3"
+  assert_contains "$TMP/wt.cmd" "^git worktree unlock" "line 2 unlocks the locked entry first"
+  assert_contains "$TMP/wt.cmd" "&& git worktree prune && git worktree add" "then prunes, then adds"
+  ( cd "$P" && sh -c "$(cat "$TMP/wt.cmd")" ) >/dev/null 2>&1
+  wt_run "$P"
+  assert_eq "0" "$WT_STATUS" "the printed unlock-prune-add command works"
+}
+
+# Review focus 1, 2 and 4: a branch whose name prefixes another, a branch
+# checked out in the main checkout, and a main checkout path with a space.
+test_state_worktree_edges() {
+  P="$(fresh_project wtedge)"
+  init_repo "$P"
+  ( cd "$P" && git branch feat/p && git worktree add -q "$TMP/wt-p2" -b feat/p-2 ) >/dev/null 2>&1
+  ( cd "$P" && sh "$STATE_BIN" set branch feat/p )
+  wt_run "$P"
+  assert_eq "3" "$WT_STATUS" "a worktree for feat/p-2 is not one for feat/p"
+  ( cd "$P" && sh "$STATE_BIN" set branch feat/p-2 )
+  wt_run "$P"
+  assert_eq "$(cd "$TMP/wt-p2" && pwd -P)" "$(cat "$TMP/wt.out")" "feat/p-2 finds its own worktree"
+
+  ( cd "$P" && git switch -q feat/p ) >/dev/null 2>&1
+  ( cd "$P" && sh "$STATE_BIN" set branch feat/p )
+  wt_run "$P"
+  assert_eq "0" "$WT_STATUS" "a branch checked out in the main checkout is found"
+  assert_eq "$P" "$(cat "$TMP/wt.out")" "stdout is the main checkout"
+
+  P="$TMP/with space/proj"
+  init_repo "$P"
+  ( cd "$P" && git branch feat/s ) >/dev/null 2>&1
+  ( cd "$P" && sh "$STATE_BIN" set branch feat/s )
+  wt_run "$P"
+  assert_eq "3" "$WT_STATUS" "exit 3 under a main checkout path with a space"
+  ( cd "$P" && sh -c "$(cat "$TMP/wt.cmd")" ) >/dev/null 2>&1
+  wt_run "$P"
+  assert_eq "0" "$WT_STATUS" "the printed command runs despite the space"
+  assert_eq "$P/.claude/worktrees/feat-s" "$(cat "$TMP/wt.out")" "stdout is the path, unquoted"
+}
+
 run_tests test_state_needs_init test_state_init test_state_get_set test_state_validation \
   test_state_ledger test_state_ledger_keeps_all_words test_state_ledger_folds_newlines \
   test_state_set_keeps_backslashes test_state_show test_state_resolves_to_main_checkout \
   test_state_init_writes_config_ledger_and_gitignore_once test_state_init_gitignore_appends_safely \
   test_state_root_outside_git_is_quiet \
   test_state_set_hardening \
-  test_state_feature_ledger test_state_ledger_per_branch test_state_check test_state_reset
+  test_state_feature_ledger test_state_ledger_per_branch test_state_check test_state_reset \
+  test_state_stage_list test_state_legacy_file test_state_branch_key \
+  test_state_branch_insert_is_literal test_state_worktree test_state_worktree_edges
