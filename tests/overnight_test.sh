@@ -196,6 +196,29 @@ test_overnight_lock() {
   assert_missing "$P/.studio/overnight.lock" "the lock is removed when the run ends"
 }
 
+test_overnight_start_args() {
+  fixture args
+  run_start --dryrun
+  assert_eq 2 "$RS_STATUS" "an unknown start argument exits 2"
+  assert_contains "$RS_ERR" "usage:" "an unknown start argument prints usage"
+  assert_missing "$P/.studio/overnight.lock" "an unknown start argument takes no lock"
+  assert_eq 0 "$(calls)" "an unknown start argument launches no session"
+}
+
+test_overnight_reclaim_race() {
+  fixture race; live_dummy; export DUMMY
+  printf 'pid=999999\nrun=x\nstarted=y\n' > "$P/.studio/overnight.lock"
+  STUDIO_OVERNIGHT_RACE_HOOK='printf "pid=%s\nrun=z\nstarted=y\n" "$DUMMY" > "$LOCK"'
+  export STUDIO_OVERNIGHT_RACE_HOOK
+  run_start
+  unset STUDIO_OVERNIGHT_RACE_HOOK
+  kill "$DUMMY" 2>/dev/null; wait "$DUMMY" 2>/dev/null
+  assert_eq 2 "$RS_STATUS" "a lock retaken mid-reclaim exits 2"
+  assert_contains "$RS_ERR" "lock taken by another start" "the loser says so"
+  assert_contains "$P/.studio/overnight.lock" "^pid=$DUMMY$" "the other start's lock is not removed"
+  assert_eq 0 "$(calls)" "the loser launches no session"
+}
+
 test_overnight_first_use_ignores() {
   fixture ign
   scenario "stage execute; ledger shipped https://x/pull/1; stage idle; task -"
@@ -208,4 +231,5 @@ test_overnight_first_use_ignores() {
 
 run_tests test_overnight_help test_overnight_dry_run \
   test_overnight_preflight_refusals test_overnight_preflight_all_failures \
-  test_overnight_config_refusals test_overnight_deny_file_required
+  test_overnight_config_refusals test_overnight_deny_file_required \
+  test_overnight_start_args test_overnight_reclaim_race

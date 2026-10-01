@@ -166,7 +166,12 @@ preflight() {
 
 cmd_start() {
   _dry=0
-  [ "${1:-}" != "--dry-run" ] || _dry=1
+  case "${1:-}" in
+    '') ;;
+    --dry-run) _dry=1 ;;
+    *) usage >&2; exit 2 ;;
+  esac
+  [ "$#" -le 1 ] || { usage >&2; exit 2; }
   preflight
   if [ "$_dry" -eq 1 ]; then
     with_launch_args print_launch
@@ -174,8 +179,21 @@ cmd_start() {
   fi
   RUN_DIR="$REPORTS/overnight-$(date +%Y%m%d-%H%M%S)"
   if [ -f "$LOCK" ]; then
-    say "reclaiming stale lock (pid $(lock_pid))"
-    rm -f "$LOCK"
+    _stale="$(lock_pid)"
+    say "reclaiming stale lock (pid $_stale)"
+    # Test hook: runs between reading the stale pid and removing the lock.
+    [ -z "${STUDIO_OVERNIGHT_RACE_HOOK:-}" ] || eval "$STUDIO_OVERNIGHT_RACE_HOOK"
+    # mv is atomic: only one starter gets the stale file. If it no longer
+    # names the dead pid we read, another start already retook the lock.
+    if mv "$LOCK" "$LOCK.stale.$$" 2>/dev/null; then
+      _got="$(sed -n 's/^pid=//p' "$LOCK.stale.$$" | head -n 1)"
+      if [ "$_got" != "$_stale" ]; then
+        ln "$LOCK.stale.$$" "$LOCK" 2>/dev/null || true
+        rm -f "$LOCK.stale.$$"
+        say "lock taken by another start"; exit 2
+      fi
+      rm -f "$LOCK.stale.$$"
+    fi
   fi
   mkdir -p "$RUN_DIR" "$(dirname "$LOCK")"
   take_lock "$RUN_DIR" || { say "lock taken by another start"; exit 2; }
