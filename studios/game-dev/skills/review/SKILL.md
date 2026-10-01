@@ -50,7 +50,8 @@ the user asks. It never changes `stage`.
   ledger of the feature `spec` names: `<checkout>/.studio/ledger/<slug>.md`
   (slug as `studio-state` derives it) exists. When it does not, `spec` and
   `branch` name different features, and every ledger line written here would
-  land in a ledger named for the next feature. Stop with: "the studio
+  land in a ledger named for the next feature. **Leave the feature
+  checkout** if this command entered one, then stop with: "the studio
   pointers now name `<spec>`; the finished feature is `<branch>` — fix it on
   that branch by hand, or run this after `<spec>`'s finish".
 - Every brief to a dispatched agent names the checkout's absolute path and
@@ -149,6 +150,13 @@ The user may defer any finding; a deferred finding is written to the plan's
 
 ## 4. State and hand-off
 
+- **Report-only gate.** When the run is report-only — HEAD is not the
+  recorded feature branch's checkout (the branch or range scope without a
+  fix), the branch is the default branch, or its PR is `MERGED` or `CLOSED`
+  (run `gh pr view --json state` here if it has not run yet) — write no
+  ledger line, make no commit and push nothing: print the verdict, then
+  **Leave the feature checkout** if §0 entered one, and skip the rest of
+  this section.
 - `studio-state ledger "Review: <scope> — <Findings line>; <m> fixed, <k> deferred"`.
 - Commit it on the feature branch with the fixes and any `## Backlog`
   deferral: `git add .studio/ledger <plan path>`, then
