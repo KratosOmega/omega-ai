@@ -1,0 +1,16 @@
+# Deny rules for studio-overnight sessions (AC16). One Claude Code permission
+# rule per line; blank lines and lines starting with # are ignored. Each rule
+# becomes one --disallowedTools argument.
+Bash(git push --force:*)
+Bash(git push -f:*)
+Bash(git push --force-with-lease:*)
+Bash(git push origin --delete:*)
+Bash(git push --delete:*)
+Bash(gh pr merge:*)
+Bash(gh api -X DELETE:*)
+Read(**/.env*)
+Read(**/*.pem)
+Read(**/*.key)
+Read(~/.ssh/**)
+Read(~/.aws/**)
+Read(~/.config/gh/**)
