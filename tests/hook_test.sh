@@ -6,6 +6,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 STUDIO_DIR="$REPO_ROOT/studios/game-dev"
 HOOK="$STUDIO_DIR/hooks/session-start.sh"
 GUARD="$STUDIO_DIR/hooks/guard-state.sh"
+STAGE_GUARD="$STUDIO_DIR/hooks/stage-guard.sh"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
@@ -23,6 +24,58 @@ context() {
   else
     cat "$1"
   fi
+}
+
+# typed_line STAGE — a transcript line for a typed /game-dev:STAGE, as
+# Claude Code writes the command's envelope.
+typed_line() {
+  printf '{"type":"user","message":{"role":"user","content":"<command-message>game-dev:%s</command-message>\\n<command-name>/game-dev:%s</command-name>"}}\n' "$1" "$1"
+}
+
+# skill_line STAGE — a transcript line for a Skill tool call of game-dev:STAGE
+# (the router invoking a stage).
+skill_line() {
+  printf '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Skill","input":{"skill":"game-dev:%s"}}]}}\n' "$1"
+}
+
+# guard_input FILE — run the stage guard with FILE as its stdin, as Claude
+# Code would. Asserts exit 0; stdout lands in $TMP/guard.out.
+guard_input() {
+  _gst=0
+  CLAUDE_PLUGIN_ROOT="$STUDIO_DIR" sh "$STAGE_GUARD" < "$1" > "$TMP/guard.out" 2> "$TMP/guard.err" || _gst=$?
+  assert_eq "0" "$_gst" "the stage guard exits 0"
+}
+
+# run_guard PROMPT TRANSCRIPT — a UserPromptSubmit input whose prompt is
+# PROMPT (JSON string content, so '\n' stays an escape) and whose
+# transcript_path is TRANSCRIPT, fed to the guard.
+run_guard() {
+  printf '{"session_id":"s-1","transcript_path":"%s","cwd":"%s","hook_event_name":"UserPromptSubmit","prompt":"%s"}\n' \
+    "$2" "$TMP" "$1" > "$TMP/guard.in"
+  guard_input "$TMP/guard.in"
+}
+
+# warning PRIOR TYPED — the exact systemMessage text (spec §3).
+warning() {
+  printf 'game-dev: this session already ran /game-dev:%s — its context is carried into %s. Run /clear, then /game-dev:%s.' \
+    "$1" "$2" "$2"
+}
+
+# assert_warns PRIOR TYPED MSG — stdout is one JSON object whose only key is
+# systemMessage, carrying the warning text.
+assert_warns() {
+  assert_eq "1" "$(wc -l < "$TMP/guard.out" | tr -d ' ')" "$3 (one line)"
+  if command -v jq >/dev/null 2>&1; then
+    assert_eq "$(warning "$1" "$2")" "$(jq -r .systemMessage "$TMP/guard.out")" "$3"
+    assert_eq "systemMessage" "$(jq -r 'keys | join(",")' "$TMP/guard.out")" "$3 (systemMessage is the only key)"
+  else
+    assert_eq "{\"systemMessage\":\"$(warning "$1" "$2")\"}" "$(cat "$TMP/guard.out")" "$3"
+  fi
+}
+
+# assert_silent MSG — the guard printed nothing at all.
+assert_silent() {
+  assert_eq "" "$(cat "$TMP/guard.out")" "$1"
 }
 
 test_hook_files() {
@@ -184,7 +237,123 @@ test_hook_reports_stage() {
   assert_eq "" "$(cat "$TMP/hook.err")" "the hook is silent on stderr without state"
 }
 
+test_stage_guard_registered() {
+  assert_contains "$STUDIO_DIR/hooks/hooks.json" '"UserPromptSubmit"' "hooks.json registers UserPromptSubmit"
+  assert_contains "$STUDIO_DIR/hooks/hooks.json" 'CLAUDE_PLUGIN_ROOT}/hooks/stage-guard.sh' \
+    "hooks.json runs stage-guard.sh from the plugin root"
+  if command -v jq >/dev/null 2>&1; then
+    assert_status 0 "hooks.json is still valid JSON" -- jq -e . "$STUDIO_DIR/hooks/hooks.json"
+  fi
+  assert_file "$STAGE_GUARD" "stage-guard.sh exists"
+  assert_contains "$STAGE_GUARD" "trap 'exit 0' EXIT" "the guard turns every exit into exit 0"
+  assert_not_contains "$STAGE_GUARD" '^[[:space:]]*set -[a-z]*u' "the guard never sets -u"
+}
+
+test_stage_guard_first_stage_silent() {
+  : > "$TMP/t-empty.jsonl"
+  run_guard "/game-dev:plan" "$TMP/t-empty.jsonl"
+  assert_silent "a first stage in a session prints nothing"
+}
+
+test_stage_guard_warns_after_other_stage() {
+  typed_line plan > "$TMP/t-plan.jsonl"
+  run_guard "/game-dev:execute" "$TMP/t-plan.jsonl"
+  assert_warns plan execute "execute typed after a typed plan warns"
+  skill_line plan > "$TMP/t-plan-skill.jsonl"
+  run_guard "/game-dev:execute" "$TMP/t-plan-skill.jsonl"
+  assert_warns plan execute "execute typed after a Skill-tool plan warns"
+}
+
+test_stage_guard_raw_prompt_shape() {
+  typed_line plan > "$TMP/t-plan.jsonl"
+  run_guard "/game-dev:execute --inline" "$TMP/t-plan.jsonl"
+  assert_warns plan execute "a stage command with arguments warns"
+  run_guard "   /game-dev:execute" "$TMP/t-plan.jsonl"
+  assert_warns plan execute "leading spaces are ignored"
+  run_guard "please run /game-dev:execute" "$TMP/t-plan.jsonl"
+  assert_silent "a command after other text is not a typed stage"
+  run_guard "/game-dev:executes" "$TMP/t-plan.jsonl"
+  assert_silent "a longer name is not a stage"
+}
+
+test_stage_guard_envelope_prompt() {
+  typed_line plan > "$TMP/t-plan.jsonl"
+  run_guard '<command-message>game-dev:execute</command-message>\n<command-name>/game-dev:execute</command-name>' \
+    "$TMP/t-plan.jsonl"
+  assert_warns plan execute "the envelope shape warns the same way"
+}
+
+test_stage_guard_names_latest_prior_stage() {
+  { typed_line brainstorm; typed_line plan; } > "$TMP/t-bp.jsonl"
+  run_guard "/game-dev:execute" "$TMP/t-bp.jsonl"
+  assert_warns plan execute "the most recent different stage is named"
+}
+
+test_stage_guard_same_stage_silent() {
+  typed_line execute > "$TMP/t-exec.jsonl"
+  run_guard "/game-dev:execute" "$TMP/t-exec.jsonl"
+  assert_silent "the same stage again prints nothing"
+}
+
+test_stage_guard_ignores_mentions() {
+  {
+    printf '{"type":"user","message":{"content":"- `/game-dev:plan` — role- and verify-tagged tasks, producer scope cut, approval gate.\\n- `/game-dev:execute` — fresh role agent per task"}}\n'
+    printf '{"type":"assistant","message":{"content":[{"type":"text","text":"Spec approved; the next command is `/game-dev:plan`. A pasted <command-message>game-dev:plan</command-message> is prose too."}]}}\n'
+  } > "$TMP/t-prose.jsonl"
+  run_guard "/game-dev:execute" "$TMP/t-prose.jsonl"
+  assert_silent "prose mentions of a stage command do not count"
+}
+
+test_stage_guard_ordinary_prompt_silent() {
+  typed_line execute > "$TMP/t-exec.jsonl"
+  run_guard "keep going" "$TMP/t-exec.jsonl"
+  assert_silent "an ordinary prompt prints nothing"
+  run_guard "/game-dev:review" "$TMP/t-exec.jsonl"
+  assert_silent "an on-demand command prints nothing"
+  run_guard "/game-dev:studio" "$TMP/t-exec.jsonl"
+  assert_silent "the router prints nothing"
+}
+
+test_stage_guard_scheduled_task_silent() {
+  typed_line plan > "$TMP/t-plan.jsonl"
+  printf '{"session_id":"s-1","transcript_path":"%s","hook_event_name":"UserPromptSubmit","prompt":"/game-dev:execute","source":"<scheduled-task name=\\"nightly\\">"}\n' \
+    "$TMP/t-plan.jsonl" > "$TMP/guard-sched.in"
+  guard_input "$TMP/guard-sched.in"
+  assert_silent "a scheduled task is never warned"
+}
+
+test_stage_guard_no_transcript_silent() {
+  printf '{"session_id":"s-1","hook_event_name":"UserPromptSubmit","prompt":"/game-dev:execute"}\n' > "$TMP/g-nokey.in"
+  guard_input "$TMP/g-nokey.in"
+  assert_silent "no transcript_path key prints nothing"
+  run_guard "/game-dev:execute" "$TMP/no-such-transcript.jsonl"
+  assert_silent "a missing transcript file prints nothing"
+  : > "$TMP/g-empty.in"
+  guard_input "$TMP/g-empty.in"
+  assert_silent "an empty input prints nothing"
+  printf 'not json /game-dev:execute\n' > "$TMP/g-text.in"
+  guard_input "$TMP/g-text.in"
+  assert_silent "a non-JSON input prints nothing"
+}
+
+# Review focus 3: a pretty-printed input (spaces after the colons, one key
+# per line) whose transcript path holds a space still warns.
+test_stage_guard_spaced_input() {
+  mkdir -p "$TMP/a dir"
+  typed_line plan > "$TMP/a dir/t.jsonl"
+  printf '{\n  "session_id": "s-1",\n  "transcript_path": "%s",\n  "hook_event_name": "UserPromptSubmit",\n  "prompt": "/game-dev:execute"\n}\n' \
+    "$TMP/a dir/t.jsonl" > "$TMP/g-pretty.in"
+  guard_input "$TMP/g-pretty.in"
+  assert_warns plan execute "a pretty-printed input with a spaced transcript path warns"
+}
+
 run_tests test_hook_files test_hook_output_shape test_hook_defaults_from_studio_json \
   test_hook_reads_project_config test_hook_partial_config_falls_back test_hook_escapes_json \
   test_hook_fills_config_value_with_metacharacters test_guard_state_blocks_direct_writes \
-  test_hook_fails_without_bootstrap test_hook_strips_control_characters test_hook_reports_stage
+  test_hook_fails_without_bootstrap test_hook_strips_control_characters test_hook_reports_stage \
+  test_stage_guard_registered test_stage_guard_first_stage_silent \
+  test_stage_guard_warns_after_other_stage test_stage_guard_raw_prompt_shape \
+  test_stage_guard_envelope_prompt test_stage_guard_names_latest_prior_stage \
+  test_stage_guard_same_stage_silent test_stage_guard_ignores_mentions \
+  test_stage_guard_ordinary_prompt_silent test_stage_guard_scheduled_task_silent \
+  test_stage_guard_no_transcript_silent test_stage_guard_spaced_input
