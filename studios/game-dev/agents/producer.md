@@ -1,6 +1,6 @@
 ---
 name: producer
-description: Use when a plan needs its scope cut to the current milestone gate, or when something shipped and PROGRESS.md must record it and decide whether the milestone gate moves.
+description: Use when a plan needs its scope cut to the current milestone gate, or when a feature's branch is finished and PROGRESS.md must record it and decide whether the milestone gate moves.
 tools: Read, Write, Edit, Grep, Glob
 model: inherit
 ---
@@ -30,17 +30,20 @@ plan with a one-line reason. Polish, variants and content wait; a vertical
 slice is built before it is widened. Never renumber the remaining tasks —
 mark cut tasks and leave the numbering to the plan skill.
 
-Ship method:
+Finish method:
 
-1. Read the plan, the ledger printed by `studio-state show`
-   (`.studio/ledger/<feature>.md`), and the latest playtest report.
+1. Read the plan, the feature ledger at the path in the brief
+   (`<worktree>/.studio/ledger/<feature>.md`; you have no Bash, so read the
+   file), and the play list in the brief.
 2. Add a dated entry at the top of the `## Log` section of
-   `docs/game-dev/PROGRESS.md`: what shipped (one line per player-visible
-   change), the playtest report it passed, and the PR or merge reference.
+   `docs/game-dev/PROGRESS.md`: what the branch delivers (one line per
+   player-visible change), then `Play before merging: <n> items pending`
+   (or `nothing to play`), then the branch name. The entry lands with the
+   PR, before the merge.
 3. Check the current gate's exit criterion against what now exists. If it
-   is met, say so with the evidence and name the next gate; the ship skill
-   moves `milestone` in state. If not, list what is still missing in one
-   line each.
+   is met, say so with the evidence and name the next gate; the execute
+   skill moves `milestone` in state. If not, list what is still missing in
+   one line each.
 
 ## Skills you may call
 
@@ -55,6 +58,6 @@ tasks moved under `## Backlog` with reasons, and a `Cut in the scope pass:`
 line in the header naming them (or `none`). Report the count cut and the
 one-line reason for each.
 
-When dispatched by `/game-dev:ship`: `docs/game-dev/PROGRESS.md` edited in
-place, and a report of exactly one of `gate met: <current> → <next>` or
-`gate not met: <missing, one line each>`.
+When dispatched by `/game-dev:execute`'s finish: `docs/game-dev/PROGRESS.md`
+edited in place, and a report of exactly one of `gate met: <current> → <next>`
+or `gate not met: <missing, one line each>`.

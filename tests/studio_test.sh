@@ -142,7 +142,7 @@ test_stage_skill_contracts() {
   assert_contains "$S/execute/SKILL.md" "git log -1" "execute requires a committed spec and plan"
   assert_not_contains "$S/execute/SKILL.md" "godot-prompter:godot-game-dev" "execute no longer dispatches godot-prompter's game dev"
   assert_contains "$S/execute/SKILL.md" "game-dev:feel-tuner" "execute dispatches the studio's feel tuner"
-  assert_contains "$S/execute/SKILL.md" "unverified" "execute lists unverified items"
+  assert_contains "$S/execute/SKILL.md" "Play before merging" "execute hands the user a play list"
   assert_not_contains "$S/execute/SKILL.md" "bypass the event bus" "execute's reviewer no longer mandates bus-for-everything"
   assert_not_contains "$S/execute/SKILL.md" "[-][-]quit-after" "execute no longer re-implements the engine's own headless flags"
   assert_contains "$S/execute/SKILL.md" "SCRIPT ERROR" "execute's smoke boot checks for SCRIPT ERROR"
@@ -198,6 +198,7 @@ test_stage_skills_dispatch_agents() {
   S="$REPO_ROOT/studios/game-dev/skills"
   assert_contains "$S/execute/SKILL.md" 'subagent_type: "game-dev:<role>"' "execute dispatches game-dev:<role> agents"
   assert_contains "$S/execute/SKILL.md" 'game-dev:reviewer' "execute reviews with game-dev:reviewer"
+  assert_contains "$S/execute/SKILL.md" 'subagent_type: "game-dev:producer"' "execute dispatches the producer at the finish"
   assert_not_contains "$S/execute/SKILL.md" 'general-purpose' "execute no longer dispatches general-purpose"
   assert_not_contains "$S/execute/SKILL.md" 'Plan 2 of the studio' "execute carries no Plan 2 note"
   assert_contains "$S/brainstorm/SKILL.md" 'dispatch `game-dev:architect`' "brainstorm dispatches the architect"
@@ -243,9 +244,67 @@ test_stage_chain() {
   done
 }
 
+# Execute's slim-pipeline contract (spec §4): B2 fix rounds, the standalone
+# final review on Opus, the finish to a ready PR, and isolation that records
+# the feature branch and its base.
+test_execute_contract() {
+  E="$REPO_ROOT/studios/game-dev/skills/execute/SKILL.md"
+  for lit in 'never resume or message an implementer' 'superpowers:subagent-driven-development' \
+             '[Nn]ever a third' 'review-package' 'model: "opus"' 'never folded' 'Verify prior fixes' \
+             'final|gate|review' 'final fix wave' 'A task is complete' 'final review done' 'studio-lint' \
+             'subagent_type: "game-dev:producer"' 'gh pr create' '[-][-]draft' 'local, default branch' \
+             'Play before merging' 'studio-state set stage idle' 'new run clears' \
+             'studio-state set branch "$(git branch' 'before the fast-forward' 'ledger "base' \
+             "from the feature's worktree" 'set task 0/' 'N/N' 'SDD ledger — plan:' \
+             'Next: play the list; merge when it passes; report failures with /game-dev:playtest <what failed>; /clear before the next feature\.'; do
+    assert_contains "$E" "$lit" "execute carries: $lit"
+  done
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if grep -qE '3\+ Importants|three or more Importants' "$E"; then
+    _pass "execute re-reviews after 3+ Importants"
+  else
+    _fail "execute re-reviews after 3+ Importants"
+  fi
+  assert_not_contains "$E" 'set stage ''review' "execute no longer hands off to a review stage"
+  assert_not_contains "$E" 'a side effect outside the worktree' "execute drops the old side-effect rule"
+}
+
+# The agent contracts the slim pipeline changed. The producer records the
+# finish with the play list, and has no Bash, so it runs no studio-state.
+test_agent_contracts() {
+  A="$REPO_ROOT/studios/game-dev/agents"
+  assert_contains "$A/producer.md" 'Play before merging' "the producer's log entry carries the play list"
+  assert_not_contains "$A/producer.md" 'playtest report it passed' "the producer reads no playtest report"
+  assert_not_contains "$A/producer.md" 'sh''ip skill' "the producer names no deleted skill"
+  assert_not_contains "$A/producer.md" 'studio-state show' "the producer runs no studio-state"
+}
+
+# Every copy of a §1 feature-checkout procedure holds its key literals: skills
+# cannot include one another, so each skill that runs a procedure carries its
+# own copy. The three lists name the skills that carry each procedure.
+test_feature_checkout_copies() {
+  S="$REPO_ROOT/studios/game-dev/skills"
+  enter_leave="execute"
+  guard="execute"
+  default_branch="execute"
+  for sk in $enter_leave; do
+    for lit in 'studio-state worktree' 'EnterWorktree' 'another live session' 'ExitWorktree' '--git-common-dir'; do
+      assert_contains "$S/$sk/SKILL.md" "$lit" "$sk carries the enter/leave procedure: $lit"
+    done
+  done
+  for sk in $guard; do
+    for lit in 'studio-state get branch' 'previous, finished feature' 'start the next feature on this branch anyway'; do
+      assert_contains "$S/$sk/SKILL.md" "$lit" "$sk carries the finished-checkout guard: $lit"
+    done
+  done
+  for sk in $default_branch; do
+    assert_contains "$S/$sk/SKILL.md" 'refs/remotes/origin/HEAD' "$sk carries the default-branch procedure"
+  done
+}
+
 run_tests test_plugin_manifests test_skill_frontmatter test_agent_frontmatter \
   test_external_references_declared test_required_plugins_enabled test_bin_syntax \
   test_role_agents_exist test_stage_skill_contracts test_plan_skill_contract \
   test_brainstorm_skill_contract \
   test_studio_skill_contract test_game_dev_agent_roster test_stage_skills_dispatch_agents \
-  test_stage_chain
+  test_stage_chain test_execute_contract test_agent_contracts test_feature_checkout_copies
