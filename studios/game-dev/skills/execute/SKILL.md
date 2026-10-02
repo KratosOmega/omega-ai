@@ -483,17 +483,23 @@ runs exactly one unit, writes its state, commits, pushes, and ends the turn.
 - **Every stop** (§0's preconditions and isolation stops, §6's hard-stop
   list, §7 step 1's exit 2 and exit 3): run
   `studio-state ledger "Stop: <reason>"`, one line, reason first. Where:
-  once §0 step (c) has recorded `branch`, in the feature checkout. A stop
-  before step (c) has run — the ancestor check's failed fast-forward inside
-  the worktree a new run just created included — writes its `Stop:` line in
-  the main checkout, where the runner reads it: `cd` to the path on the
-  first `worktree` line of `git worktree list --porcelain`, then run
-  `studio-state ledger` there. Then, only
-  when `git branch --show-current` is not the default branch, commit it:
-  `git add .studio/ledger && git commit -m "chore(studio): stop"`. A stop
-  on the default branch leaves the line uncommitted in the main checkout: a
-  hard stop needs a human, and the runner reads the file either way. Then
-  end the turn.
+  - Once §0 step (c) has recorded `branch` — or a resume has entered the
+    feature checkout its recorded `branch` names — in the feature checkout,
+    then commit it there:
+    `git add .studio/ledger && git commit -m "chore(studio): stop"`.
+  - Any stop before that — §0's preconditions, §0 (a)'s stops, and a stop
+    before step (c) has recorded `branch`, the ancestor check's failed
+    fast-forward inside the worktree a new run just created included —
+    writes its `Stop:` line in the checkout this session was launched in
+    (its starting working directory: the runner's start directory, which
+    the runner always reads). If the session has already entered a new
+    worktree, return there first (`ExitWorktree` `action: "keep"`, or `cd`
+    to that directory), then run `studio-state ledger` there.
+    That line is never committed, whatever branch is checked out: a hard
+    stop needs a human, and the runner's preflight refuses a dirty ledger
+    on the re-run.
+
+  Then end the turn.
 - **§7 step 6, headless:** `ExitWorktree` `action: "keep"` runs as written.
   The "started in the feature worktree" note and the `Next:` line are
   skipped, because no human reads this session.

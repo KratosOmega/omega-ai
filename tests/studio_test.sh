@@ -430,7 +430,6 @@ test_execute_one_contract() {
   assert_contains "$S" "^    .git push -u origin <branch>.;$" "§8 task unit ends with the push (not §7 step 4)"
   assert_contains "$S" 'studio-state ledger "Stop: <reason>"' "every stop writes a Stop: line under --one"
   assert_contains "$S" 'git commit -m "chore(studio): stop"' "the Stop: line is committed in a feature checkout"
-  assert_contains "$S" "not the default branch" "a Stop: before isolation is not committed onto the default branch (D9)"
   assert_contains "$S" "A rejected push is a \`Ruling:\` line, not a stop" "a rejected push is a ruling"
   assert_contains "$S" "never runs \`omega:handoff\`" "--one writes no handoff"
   assert_contains "$S" "\`--one\` with \`--inline\` is refused" "--one is subagent-driven only"
@@ -439,8 +438,9 @@ test_execute_one_contract() {
   assert_eq 1 "$(sed -n '/^## 1\. Mode$/,/^\*\*`--inline`\.\*\*/p' "$S" | grep -c 'Under `--one`, see §8')" "§1's pointer sits on the SDD-loop paragraph"
   assert_eq 1 "$(sed -n '/^## 5\. Final review$/,/^1\. Run/p' "$S" | grep -c 'Under `--one`, see §8')" "§5 opens with a pointer, so a task unit cannot slide into §5"
   assert_contains "$S" "through step 6; §7 is not started" "the final-review unit does not start §7"
-  assert_contains "$S" "first \`worktree\` line of \`git worktree list --porcelain\`" "a stop before (c) is written in the main checkout"
-  assert_contains "$S" "on the default branch leaves the line uncommitted" "the D9 rule is worded by branch"
+  assert_contains "$S" "writes its \`Stop:\` line in the checkout this session was launched in" "a stop before (c) is written in the launch checkout the runner reads"
+  assert_contains "$S" "That line is never committed, whatever branch is checked out" "a stop before (c) is never committed (D9)"
+  assert_not_contains "$S" "the main checkout, where the runner reads it" "a stop before (c) is not routed to the main checkout"
   assert_not_contains "$S" "before isolation leaves" "no 'before isolation' wording for the uncommitted stop"
 }
 
