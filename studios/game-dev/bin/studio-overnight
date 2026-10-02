@@ -13,6 +13,9 @@
 # Self-contained on purpose (copy mode); calls its sibling studio-state.
 set -u
 
+# Manifest mode's per-unit words, set only by overnight-lanes.sh: never taken
+# from the user's environment, so a single-plan run evaluates and uses none.
+LAUNCH_ENV=""; UNIT_CWD=""; LDIR=""
 PROMPT="/game-dev:execute --one"
 SELF_ABS="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 self="$0"
@@ -178,7 +181,7 @@ run at a time across all lanes and the runner; a dead holder's lock is reclaimed
 Config: .studio/config.json "overnight" (defaults, ranges):
   session_usd          25    1-200    budget cap per session (USD)
   run_usd              0     0-5000   budget cap for the whole run (USD); 0 = no run-wide cap
-  session_minutes      90    10-480   wall-clock cap per session
+  session_minutes      90    10-480   wall-clock cap per session (and per merge command)
   retries              1     0-3      retries of an unchanged unit
   kill_grace_seconds   30    5-120    TERM-to-KILL grace
   max_lanes            0     0-8      lane processes (0 = one per chain)

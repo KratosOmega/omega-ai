@@ -322,7 +322,8 @@ STUB
 # never pushed (GitHub says MERGED; the commit is nowhere on origin). lagoid:
 # as ok, but the first view after it shows MERGED with no merge commit (the
 # oid arrives via pr-<n>.pending). nofetch: as ok, then origin's bare repo is
-# moved away, so the runner's next fetch fails.
+# moved away, so the runner's next fetch fails. hang: a child sleep 300 and
+# a wait, pids in $CALLS/merge.pid and $CALLS/merge-sleep.pid.
 cat > "$FAKE/merge-stub" <<'STUB'
 #!/bin/sh
 echo "s merge $(date +%s)" >> "$CALLS/gate.iv"
@@ -352,6 +353,7 @@ case "$out" in
     rm -rf "$d"
     [ "$out" != nofetch ] || mv "$url" "$url.gone" ;;
   refuse) echo "merge refused: the gate is red"; rc=1 ;;
+  hang) sleep 300 & echo "$!" > "$CALLS/merge-sleep.pid"; echo "$$" > "$CALLS/merge.pid"; wait ;;
 esac
 echo "e merge $(date +%s)" >> "$CALLS/gate.iv"
 exit "$rc"
@@ -514,6 +516,24 @@ test_lanes_manifest_refusals() {
     assert_contains "$LS_ERR" "$m" "refusal: $m"
   done
   assert_not_contains "$LS_ERR" "A: plan" "a good plan raises nothing"
+}
+
+# Final fix wave: a task the producer moved under ## Backlog keeps its heading
+# but is not run, so preflight never asks it for a Spec: line; a task above
+# the backlog still is.
+test_lanes_preflight_backlog_tasks() {
+  lanes_fixture backlog integration A:- B:-
+  printf '\n### Task 2: u\n\nSpec: docs/game-dev/specs/2026-10-01-demo.md:L1-2\n\n## Backlog\n\n### Task 3: cut\n\nReason: not needed for the gate\n' \
+    >> "$P/docs/game-dev/plans/2026-10-01-A.md"
+  printf '\n### Task 2: nospec\n\n## Backlog\n\n### Task 3: cut\n' >> "$P/docs/game-dev/plans/2026-10-01-B.md"
+  ( cd "$P" && git commit -qam backlog && git push -q origin run/demo ) >/dev/null 2>&1
+  _rev="$(git -C "$P" rev-parse HEAD)"
+  sed -i.bak "s/^Docs: .*/Docs: $_rev/" "$P/$MFP"; rm -f "$P/$MFP.bak"
+  ( cd "$P" && git commit -qam docs && git push -q origin run/demo ) >/dev/null 2>&1
+  run_lanes start --dry-run "$MFP"
+  assert_not_contains "$LS_ERR" "A: plan task has no Spec: line" "a backlog task needs no Spec: line"
+  assert_not_contains "$LS_ERR" "Task 3: cut" "no backlog task is named"
+  assert_contains "$LS_ERR" "B: plan task has no Spec: line (### Task 2: nospec)" "a task above the backlog still needs one"
 }
 
 test_lanes_manifest_header_refusals() {
@@ -1015,6 +1035,30 @@ test_lanes_direct_refused_then_repaired() {
   assert_eq 2 "$(grep -c '^s merge' "$CALLS/gate.iv" 2>/dev/null)" "the merge command ran twice"
   assert_eq 1 "$(grep -c '^pr ready ' "$GH/calls")" "a PR already ready is not made ready again"
 }
+# Final fix wave (ruling): the merge command runs under session_minutes (the
+# STUDIO_OVERNIGHT_SESSION_SECONDS hook here). A timeout ends its process
+# group, is a failed landing with no repair, releases the land and gate
+# locks, and the run still reports.
+test_lanes_direct_merge_timeout() {
+  LANES_CONFIG='{"merge_command": "scripts/merge.sh <pr>"}'; export LANES_CONFIG
+  lanes_fixture mto direct A:-
+  printf 'repair\n' > "$SCEN/A.land"
+  MERGE_OUTCOMES=hang; STUDIO_OVERNIGHT_SESSION_SECONDS=6; export MERGE_OUTCOMES STUDIO_OVERNIGHT_SESSION_SECONDS
+  _t0="$(date +%s)"
+  run_lanes start "$MFP"
+  _t1="$(date +%s)"
+  unset MERGE_OUTCOMES STUDIO_OVERNIGHT_SESSION_SECONDS
+  assert_contains "$(last_lanes_dir)/stories/A" "^stopped landing failed (merge command timed out)$" "a hung merge command is a failed landing"
+  assert_eq 0 "$(land_calls)" "a timed-out merge starts no repair"
+  assert_eq 1 "$(grep -c '^s merge' "$CALLS/gate.iv" 2>/dev/null)" "the merge command ran once"
+  _mp="$(cat "$CALLS/merge.pid" 2>/dev/null)"; _sp="$(cat "$CALLS/merge-sleep.pid" 2>/dev/null)"
+  assert_status 1 "the merge program is ended" -- kill -0 "${_mp:-999999}"
+  assert_status 1 "and its child, through the process group" -- kill -0 "${_sp:-999999}"
+  assert_missing "$(last_lanes_dir)/land.lock" "the land lock is released"
+  assert_missing "$P/.studio/gate.lock" "the gate lock is released"
+  assert_file "$(last_lanes_dir)/report.md" "the run still reports"
+  assert_eq 1 "$([ $((_t1 - _t0)) -lt 100 ] && echo 1 || echo 0)" "the run does not wait out the hung merge"
+}
 # A merge command whose PR GitHub reports MERGED never starts a repair: a
 # merge commit missing from origin, or a failed fetch, stops the landing
 # (return 4); a merge commit that arrives on the second view lands.
@@ -1405,6 +1449,32 @@ test_lanes_final_conflict_then_red() {
   assert_eq 1 "$(final_gates)" "one gate"
   assert_contains "$P/.studio/runs/demo/final" " red$" "the step ends red"
 }
+# Final fix wave: a stop during the final gate (a Ctrl-C reaches studio-gate,
+# exit 130) records no gate result, so a resume runs the gate again instead
+# of opening a [red] PR that no complete gate produced. A gate killed by a
+# signal (rc >= 128) with no stop file is not recorded either.
+test_lanes_final_gate_interrupted_not_recorded() {
+  lanes_fixture fingint integration A:-
+  use_gate "echo gate >> '$CALLS/final-gates'; if [ ! -f '$CALLS/gate-once' ]; then : > '$CALLS/gate-once'; : > '$P/.studio/overnight.stop'; exit 130; fi"
+  run_lanes start "$MFP"
+  assert_eq 1 "$(final_gates)" "the interrupted gate ran once"
+  assert_missing "$P/.studio/runs/demo/gate" "a stopped gate records no result"
+  assert_not_contains "$GH/calls" "^pr create" "no final PR after the stop"
+  assert_eq "" "$(prompt_calls '/omega:integration repair demo')" "no repair after a stopped gate"
+  sleep 1
+  run_lanes start "$MFP"
+  use_gate true
+  assert_eq 2 "$(final_gates)" "the resume runs the gate again"
+  assert_contains "$GH/calls" "^pr create --draft --base main --head integration/demo --title demo: the demo goal " "the resume's PR is green, not [red]"
+  assert_contains "$P/.studio/runs/demo/final" " green$" "the final record says green"
+  # A gate killed by a signal, no stop file: red this run, nothing recorded.
+  lanes_fixture fingsig integration A:-
+  use_gate "echo gate >> '$CALLS/final-gates'; exit 137"
+  run_lanes start "$MFP"
+  use_gate true
+  assert_missing "$P/.studio/runs/demo/gate" "a gate ended by a signal records no result"
+  assert_contains "$GH/calls" "^pr create --draft .*--title \[red\] " "the signalled gate's PR is [red]"
+}
 # ---- T12: status, report.md, run endings ----
 
 test_lanes_status_per_story() {
@@ -1651,7 +1721,7 @@ test_lanes_no_orphans() {
   assert_eq "" "$_left" "no stub session, lane or runner outlives its test"
 }
 
-run_tests test_lanes_chain_rule test_lanes_manifest_refusals test_lanes_manifest_header_refusals \
+run_tests test_lanes_chain_rule test_lanes_manifest_refusals test_lanes_preflight_backlog_tasks test_lanes_manifest_header_refusals \
   test_lanes_preflight_story_checks test_lanes_preflight_story_state test_lanes_docs_unreachable \
   test_lanes_git_too_old test_lanes_sourced_only test_lanes_next \
   test_lanes_next_all_planned_and_ambiguous test_lanes_next_plan_before_autopilot \
@@ -1660,13 +1730,13 @@ run_tests test_lanes_chain_rule test_lanes_manifest_refusals test_lanes_manifest
   test_lanes_docs_revision test_lanes_waiting_chain_starts_after_deps test_lanes_skip_on_stopped_dep \
   test_lanes_lane_kill9 test_lanes_end_sessions_spaced_path test_lanes_sigint test_lanes_runner_gone test_lanes_stop_file \
   test_lanes_land_clean_integration test_lanes_land_clean_direct test_lanes_land_conflict_one_repair \
-  test_lanes_land_second_conflict_stops test_lanes_land_repair_no_progress test_lanes_direct_refused_then_repaired test_lanes_direct_merged_never_repairs \
+  test_lanes_land_second_conflict_stops test_lanes_land_repair_no_progress test_lanes_direct_refused_then_repaired test_lanes_direct_merged_never_repairs test_lanes_direct_merge_timeout \
   test_lanes_land_once_explicit_branch test_lanes_land_idempotent \
   test_lanes_land_crash_after_push test_lanes_land_lock_reclaim test_lanes_land_shipped_resume \
   test_lanes_gate_never_overlaps test_lanes_final_step_once test_lanes_final_red_after_repair \
   test_lanes_final_repair_turns_green test_lanes_final_conflict test_lanes_final_resume_edits_pr \
   test_lanes_final_skipped_on_stop_or_nothing_landed test_lanes_final_gate_default test_lanes_direct_progress_landing \
-  test_lanes_final_dirty_unit_is_red test_lanes_final_budget test_lanes_final_conflict_then_red \
+  test_lanes_final_dirty_unit_is_red test_lanes_final_budget test_lanes_final_conflict_then_red test_lanes_final_gate_interrupted_not_recorded \
   test_lanes_status_per_story test_lanes_report_every_ending test_lanes_report_on_lane_crash \
   test_lanes_done_marker test_lanes_status_reaps_dead_runner test_lanes_reap_names_final_pr \
   test_lanes_detach_strips_env test_lanes_detach_refusal_in_foreground test_lanes_detach_child_refusal_surfaces \

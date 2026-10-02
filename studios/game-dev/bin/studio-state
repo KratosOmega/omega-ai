@@ -279,7 +279,8 @@ EOF
           case "$_plan" in ''|-) fail "check --rebuild needs a plan to count tasks" ;; esac
           case "$_plan" in /*) _pf="$_plan" ;; *) _pf="$WORK_ROOT/$_plan" ;; esac
           [ -f "$_pf" ] || fail "plan file missing: $_plan"
-          _N="$(grep -c '^### Task [0-9]' "$_pf" || true)"
+          # Only the tasks above ## Backlog: a producer cut keeps its heading.
+          _N="$(awk '/^## Backlog/ { exit } /^### Task [0-9]/ { n++ } END { print n + 0 }' "$_pf")"
           set_field task "0/$_N" ;;
         *) _N="${_task#*/}" ;;
       esac

@@ -169,6 +169,7 @@ mf_check() {
     awk '
       function close_task() { if (task != "" && !spec) print task; task = "" }
       /^### Task / { close_task(); task = $0; spec = 0; next }
+      /^## Backlog/ { close_task(); exit }
       /^## / { close_task(); next }
       /^Spec:/ { spec = 1 }
       END { close_task() }
@@ -375,13 +376,47 @@ land_once() {
     [ "$_lo_rej" -lt 2 ] || { LAND_WHY="push to $MF_TARGET rejected twice"; return 4; }
   done
 }
+# merge_wait ID PID — wait for the merge command PID (studio-gate leading its
+# own process group) under session_minutes (STUDIO_OVERNIGHT_SESSION_SECONDS
+# overrides), run_unit's watchdog rule: at the deadline TERM the group (the
+# gate forwards it to the merge program's group, waits for it and releases
+# the gate lock), KILL after GRACE. Who ended it is decided once by an atomic
+# mkdir of LDIR/ID-land.ended. Under a lane, LDIR/cpid and LDIR/wpid name it
+# for lanes_end_sessions. Returns 1 when the watchdog ended it (timed out).
+merge_wait() {
+  _mw_secs="${STUDIO_OVERNIGHT_SESSION_SECONDS:-$((SESSION_MINUTES * 60))}"
+  _mw_claim="${LDIR:-$RUN_DIR}/$1-land.ended"; rmdir "$_mw_claim" 2>/dev/null
+  [ -z "${LDIR:-}" ] || printf '%s\n' "$2" > "$LDIR/cpid"
+  ( _sp=; trap 'kill $_sp 2>/dev/null; exit 0' TERM
+    sleep "$_mw_secs" & _sp=$!; wait "$_sp"
+    mkdir "$_mw_claim" 2>/dev/null || [ ! -d "$_mw_claim" ] || exit 0
+    kill -TERM -"$2" 2>/dev/null || { pkill -TERM -P "$2"; kill -TERM "$2"; }
+    sleep "${GRACE:-30}" & _sp=$!; wait "$_sp"
+    kill -KILL -"$2" 2>/dev/null || { pkill -KILL -P "$2"; kill -KILL "$2"; }
+  ) > /dev/null 2>&1 &
+  _mw_w=$!
+  [ -z "${LDIR:-}" ] || printf '%s\n' "$_mw_w" > "$LDIR/wpid"
+  while :; do
+    wait "$2"
+    kill -0 "$2" 2>/dev/null || break
+  done
+  [ -z "${LDIR:-}" ] || rm -f "$LDIR/cpid"
+  _mw_to=0
+  mkdir "$_mw_claim" 2>/dev/null || _mw_to=1
+  kill "$_mw_w" 2>/dev/null; wait "$_mw_w" 2>/dev/null
+  [ -z "${LDIR:-}" ] || rm -f "$LDIR/wpid"
+  rmdir "$_mw_claim" 2>/dev/null
+  [ "$_mw_to" = 0 ]
+}
 # land_once_direct ID BRANCH — direct mode's land_once: step 0 the PR is
 # MERGED; step 1 `merge-tree` against origin/<default> (exit 1 = conflict);
 # step 2 `gh pr ready` for a draft, then MERGE_COMMAND with <pr> = the PR
 # number, its program from START_DIR (never the story's copy), run through
 # `studio-gate merge` from LAND_DIR when set (the direct progress landing's
 # worktree), else the story worktree (else START_DIR), stdin
-# /dev/null, output to LDIR/<id>-land.log (RUN_DIR outside a lane); step 3,
+# /dev/null, output to LDIR/<id>-land.log (RUN_DIR outside a lane), under
+# session_minutes (merge_wait: a timeout ends it and returns 4, `merge
+# command timed out`, no repair); step 3,
 # whatever its exit code, fetch (a failed fetch returns 4), then the PR is
 # MERGED and its merge commit is in origin/<default>: landed. A PR that is
 # MERGED never returns 3 (a repair on a landed story): its commit missing
@@ -409,9 +444,14 @@ land_once_direct() {
   _ld_log="${LDIR:-$RUN_DIR}/$1-land.log"
   _ld_cmd="$(printf '%s\n' "$MERGE_COMMAND" | sed "s/<pr>/$_ld_n/g")"
   _ld_w="${_ld_cmd%% *}"; _ld_a=""; [ "$_ld_cmd" = "$_ld_w" ] || _ld_a="${_ld_cmd#* }"
-  ( cd "${LAND_DIR:-$(feature_dir)}" || exit 2
+  _ld_dir="${LAND_DIR:-$(feature_dir)}"
+  set -m 2>/dev/null || true   # own process group, as start_session's session
+  ( cd "$_ld_dir" || exit 2
     set -f; set -- $_ld_a; set +f
-    exec sh "$SELF_DIR/studio-gate" merge -- "$START_DIR/$_ld_w" "$@" ) > "$_ld_log" 2>&1 < /dev/null
+    exec sh "$SELF_DIR/studio-gate" merge -- "$START_DIR/$_ld_w" "$@" ) > "$_ld_log" 2>&1 < /dev/null &
+  _ld_pid=$!
+  set +m 2>/dev/null || true
+  merge_wait "$1" "$_ld_pid" || { LAND_WHY="merge command timed out"; return 4; }
   _ld_try=0
   while :; do
     git_retry -C "$START_DIR" fetch -q origin || { LAND_WHY="cannot fetch origin"; return 4; }
@@ -1257,18 +1297,27 @@ final_integration() {
   if [ "$_fi_gs" = "$_fi_h" ] && [ -n "$_fi_gc" ]; then
     FINAL_GATE="$_fi_gc"; _fi_log="(recorded)"
   else
-    _fi_log="$RUN_DIR/final-gate.log"
-    if final_gate "$_fi_log"; then FINAL_GATE=green
+    # An interrupted gate (a stop arrived, or a signal ended it: rc >= 128)
+    # is no result: nothing is recorded, so a resume runs it again.
+    _fi_log="$RUN_DIR/final-gate.log"; _fi_int=0
+    final_gate "$_fi_log"; _fi_rc=$?
+    if [ "$_fi_rc" = 0 ]; then FINAL_GATE=green
+    elif [ -e "$STOP_FILE" ] || [ "$_fi_rc" -ge 128 ]; then
+      FINAL_GATE=red; _fi_int=1; final_note "the full gate was interrupted (exit $_fi_rc): no result recorded"
     else
       FINAL_GATE=red
       if [ "$_fi_rep" = 1 ]; then final_note "the conflict used the step's one final-repair unit"
       elif final_unit final-repair "/omega:integration repair $MF_SLUG" "STUDIO_REPAIR=$(sq "red:$_fi_log")"; then
         _fi_log="$RUN_DIR/final-gate-2.log"
-        final_gate "$_fi_log" && FINAL_GATE=green
+        final_gate "$_fi_log"; _fi_rc=$?
+        if [ "$_fi_rc" = 0 ]; then FINAL_GATE=green
+        elif [ -e "$STOP_FILE" ] || [ "$_fi_rc" -ge 128 ]; then
+          _fi_int=1; final_note "the full gate was interrupted (exit $_fi_rc): no result recorded"
+        fi
       fi
     fi
     _fi_h="$(git -C "$FINAL_W" rev-parse HEAD)"
-    printf '%s %s\n' "$_fi_h" "$FINAL_GATE" > "$RECORD/gate"
+    [ "$_fi_int" = 1 ] || printf '%s %s\n' "$_fi_h" "$FINAL_GATE" > "$RECORD/gate"
   fi
   [ "$FINAL_GATE" = green ] || { FINAL_COLOR=red; final_note "the full gate is red (log: $_fi_log)"; }
   final_stopped "the push" && return 1

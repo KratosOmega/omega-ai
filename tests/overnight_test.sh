@@ -305,6 +305,24 @@ test_overnight_launch_argv() {
   assert_eq "$P" "$(cat "$CALLS/1.pwd")" "every session starts in START_DIR"
 }
 
+# Final fix wave (AC19): a single-plan run never uses the manifest mode's
+# LAUNCH_ENV, UNIT_CWD or LDIR inherited from the user's environment.
+test_overnight_ignores_inherited_lane_vars() {
+  fixture hostile
+  LAUNCH_ENV="OMEGA_AUTOPILOT=hostile; : > '$CALLS/pwned'"; UNIT_CWD="$TMP"; LDIR="$TMP/hostile-ldir"
+  export LAUNCH_ENV UNIT_CWD LDIR
+  mkdir -p "$LDIR"
+  run_start --dry-run
+  assert_contains "$RS_OUT" "OMEGA_AUTOPILOT=1 claude-gd -p '/game-dev:execute --one'" "the dry run's launch line ignores an inherited LAUNCH_ENV"
+  done_scenario; run_start
+  unset LAUNCH_ENV UNIT_CWD LDIR
+  assert_eq "1" "$(cat "$CALLS/1.env")" "an inherited LAUNCH_ENV is never evaluated"
+  assert_missing "$CALLS/pwned" "nothing in it runs"
+  assert_eq "$P" "$(cat "$CALLS/1.pwd")" "an inherited UNIT_CWD never moves the session"
+  assert_missing "$TMP/hostile-ldir/cpid" "an inherited LDIR gets no cpid"
+  assert_missing "$TMP/hostile-ldir/wpid" "nor a wpid"
+}
+
 test_overnight_retry_then_no_progress() {
   fixture retry; scenario "cost 1" "cost 1"; run_start
   d="$(last_run_dir)"
@@ -653,7 +671,7 @@ run_tests test_overnight_report_done test_overnight_report_not_done \
   test_overnight_config_refusals test_overnight_deny_file_required \
   test_overnight_lock test_overnight_first_use_ignores \
   test_overnight_start_args test_overnight_reclaim_race \
-  test_overnight_sequence_to_done test_overnight_launch_argv \
+  test_overnight_sequence_to_done test_overnight_launch_argv test_overnight_ignores_inherited_lane_vars \
   test_overnight_retry_then_no_progress test_overnight_progress_resets_retry \
   test_overnight_retries_zero test_overnight_stop_line test_overnight_copied_stop_not_new \
   test_overnight_run_budget test_overnight_cost_unknown test_overnight_unexpected_stage \

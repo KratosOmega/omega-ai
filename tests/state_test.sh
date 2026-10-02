@@ -570,6 +570,19 @@ test_state_story_gap_from_k_of_n() {
   assert_contains "$TMP/out" "ledger gap: T2 missing" "D15: the gap is named from k/N"
 }
 
+# Final fix wave: check --rebuild from task - counts only the ### Task
+# headings above ## Backlog (a producer cut keeps its heading there).
+test_state_story_rebuild_skips_backlog() {
+  P="$TMP/story-bl"; mkdir -p "$P/docs"
+  ( cd "$P" && git init -q -b main && git -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
+    printf '# P\n\n### Task 1: a\n\n### Task 2: b\n\n## Backlog\n\n### Task 3: c\n\n### Task 4: d\n' > docs/p.md
+    export STUDIO_STORY=BL; sh "$STATE_BIN" init
+    sh "$STATE_BIN" set plan docs/p.md; sh "$STATE_BIN" set spec docs/s.md
+    sh "$STATE_BIN" ledger "T1 complete" ) >/dev/null 2>&1
+  ( cd "$P" && STUDIO_STORY=BL sh "$STATE_BIN" check --rebuild ) >/dev/null 2>&1
+  assert_eq 1/2 "$(cd "$P" && STUDIO_STORY=BL sh "$STATE_BIN" get task)" "N counts only the tasks above ## Backlog"
+}
+
 run_tests test_state_needs_init test_state_init test_state_get_set test_state_validation \
   test_state_ledger test_state_ledger_keeps_all_words test_state_ledger_folds_newlines \
   test_state_set_keeps_backslashes test_state_show test_state_resolves_to_main_checkout \
@@ -579,4 +592,4 @@ run_tests test_state_needs_init test_state_init test_state_get_set test_state_va
   test_state_feature_ledger test_state_ledger_per_branch test_state_check test_state_reset \
   test_state_stage_list test_state_legacy_file test_state_branch_key \
   test_state_branch_insert_is_literal test_state_worktree test_state_worktree_edges \
-  test_state_story_init_and_isolation test_state_story_rebuild test_state_story_gap_from_k_of_n
+  test_state_story_init_and_isolation test_state_story_rebuild test_state_story_gap_from_k_of_n test_state_story_rebuild_skips_backlog
