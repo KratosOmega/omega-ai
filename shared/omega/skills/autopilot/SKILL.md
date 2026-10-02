@@ -52,8 +52,10 @@ refs/remotes/origin/HEAD`, without `origin/`); `<dir>` is
 `studio-state root --work`; `<abs>` is `command -v studio-overnight` from this
 session (it is on `PATH` only inside a `claude-gd` session).
 
-1. **Discovery.** Read `.studio/run`: one line, the manifest's path.
-   - It names `docs/runs/<slug>.md` and `.studio/runs/<slug>/done` does not exist: that run is not done — resume it at step 2.
+1. **Discovery.** First, when `studio-overnight status` exits 0, a run is live: stop and say so — watch it with `studio-overnight status`, end it with `studio-overnight stop`; nothing is written. Then read `.studio/run`: one line, the manifest's path.
+   - It names `docs/runs/<slug>.md` and `.studio/runs/<slug>/done` does not exist: that run is not done.
+     When `.studio/runs/<slug>/` exists, the run was started: skip to step 4 (readiness, then how to start) — it is never planned or seeded again, and the runner resumes it from its record.
+     Otherwise resume it at step 2.
    - No pointer, or a pointer whose `.studio/runs/<slug>/done` exists (a done run's pointer is ignored): a new run.
 
    A new run:
@@ -61,9 +63,11 @@ session (it is on `PATH` only inside a `claude-gd` session).
      - **integration or direct** — integration: each story is tested once by its own gate, one full gate runs at the end, one PR to land in the morning; direct: one merge-command gate per story (the project's own gate; 15–20 minutes each on phoenix), each story lands on `main` overnight.
        An `integration slug=<slug>` line in `omega-mode show` pre-selects integration with that slug.
      - **how many lanes** — lanes are parallel dependency chains, while tests still run one at a time. The answer is `.studio/config.json`'s `overnight.max_lanes` (`0` = one lane per chain).
+        It must be an integer from 0 to 8 (the runner's range); refuse any other answer and ask again.
+        Merge it into the existing file, so every other key is kept (`merge_command` included): `python3 -c 'import json,sys; p=".studio/config.json"; c=json.load(open(p)); c.setdefault("overnight", {})["max_lanes"]=int(sys.argv[1]); open(p,"w").write(json.dumps(c, indent=2)+"\n")' <n>`; with no `.studio/config.json`, write `{"overnight": {"max_lanes": <n>}}`.
    - Then ask the story list: each story's id, branch, ticket (`-` when none) and the earlier rows it depends on. A story whose branch already exists (local or `origin/<Branch>`) is half-done.
    - **The run branch (before any planning stage).** The checkout must be on `<default>` or already on `run/<slug>`; otherwise stop with "switch this checkout to `<default>` first".
-     From `<default>`: `git fetch origin`, then `git switch -c run/<slug> origin/<default>`, so every brainstorm and plan commit lands on `run/<slug>` and the user's `main` never diverges.
+     From `<default>`: `git fetch origin`, then `git switch -c run/<slug> origin/<default>` (`git switch run/<slug>` when it already exists locally), so every brainstorm and plan commit lands on `run/<slug>` and the user's `main` never diverges.
    - Write the run manifest `docs/runs/<slug>.md` (Spec and Plan are `-` while planning; `Docs:` is written in step 3):
 
      ```
@@ -80,7 +84,7 @@ session (it is on `PATH` only inside a `claude-gd` session).
      ```
 
    - Write the pointer: `printf '%s\n' docs/runs/<slug>.md > .studio/run`.
-     Commit the manifest on `run/<slug>`: `git add docs/runs/<slug>.md && git commit -m "docs(run): <slug> manifest"`.
+     Commit the manifest and the lane count on `run/<slug>`: `git add docs/runs/<slug>.md .studio/config.json && git commit -m "docs(run): <slug> manifest"` — a dirty `config.json` would stop each story's first unit at execute §0's clean-tree check.
    - Check *Does not fit* now, before any planning stage.
 2. **Planning loop — one stage per session.** Run `studio-overnight next <manifest>`.
    It classifies every row as `brainstorm`, `plan` or `planned` from files and ledger lines alone and prints `next: <command>`.
@@ -88,23 +92,25 @@ session (it is on `PATH` only inside a `claude-gd` session).
    - `next: /game-dev:plan <id>` — when that row's spec is already approved, set `STATE.md` for it first: `studio-state set stage plan`, then `studio-state set spec <spec>`.
    - Either way: Print `/clear`, then the command, and stop. The stage runs in its own session and ends by printing `next`'s command; `/omega:autopilot` resumes here through `.studio/run`, so the loop survives `/clear`.
    - `next: /omega:autopilot` — every row is `planned`: go to step 3.
+   - When `next` exits non-zero: show its message, fix what it names (the manifest, a missing or ambiguous spec or plan), and stop; nothing is seeded.
 
    The question sweep for manifest stories belongs to `/game-dev:plan` (it writes `## Decisions` and ledgers `Decisions swept <id>`); this skill does not repeat it.
 3. **Seed every story** once every row is `planned`, in manifest order. Every `studio-state` call below runs with `STUDIO_STORY=<id>`.
-   - Each story (a not-started story in this checkout, a half-done one in its worktree, below): `studio-state init`; `set spec <spec>`; `set plan <plan>` (from `next`'s `spec=` and `plan=`); then the spec-slug ledger's `spec approved <spec>`, `plan approved <plan>` and `Decisions swept <id>` lines are re-ledgered through `studio-state ledger "<text after the date>"`, so each carries today's date.
+   - Each story, not-started and half-done alike, in this checkout (on `run/<slug>`), never in a story worktree: `studio-state init`; `set spec <spec>`; `set plan <plan>` (from `next`'s `spec=` and `plan=`); then the spec-slug ledger's `spec approved <spec>`, `plan approved <plan>` and `Decisions swept <id>` lines are re-ledgered through `studio-state ledger "<text after the date>"`, so each carries today's date.
+     They land in this checkout's `.studio/ledger/<id>.md` — the file the runner's preflight reads, and the one it requires clean — and are committed on `run/<slug>` below.
    - **Not started** (no branch): in this checkout, `set stage plan`, `set task 0/N` (`N` = the plan's task count), `set branch -`.
    - **Half-done** (an existing branch, `T<n> complete` lines, possibly `final review done`, `shipped`, or already merged):
      1. Create the story's worktree at the path execute §0 uses, `<STATE_ROOT>/.claude/worktrees/<Branch with / → ->`: `git worktree add --no-track <path> <Branch>` (only on origin: `git worktree add --no-track -b <Branch> <path> origin/<Branch>`); an existing worktree of that branch is used as it is.
         When another checkout holds `<Branch>`, stop with "switch that checkout off <Branch> first".
      2. When the branch has `.studio/ledger/<spec slug>.md` and no `.studio/ledger/<id>.md`: `git mv` it to `.studio/ledger/<id>.md` and commit `chore(studio): ledger keyed by story`.
-     3. In that worktree, run the "each story" lines above, then `set branch <Branch>`, `set stage execute`, `studio-state check --rebuild` — it sets `task 0/N`, then the longest contiguous run of `T<n> complete` lines.
+     3. In that worktree, only: `set branch <Branch>`, `set stage execute`, `studio-state check --rebuild` (the "each story" lines already ran in this checkout) — it sets `task 0/N`, then the longest contiguous run of `T<n> complete` lines.
         A gap exits 1: stop and name the missing task (*Does not fit*).
         `N/N` with `final review done` resumes at the finish; a `shipped` line: `set stage idle` (it waits to land); a merged PR or a head already in `origin/<Target>` is landed — the runner records it at start.
         An open bundle-2 PR into `main` in an integration run is named in `report.md`, never closed.
      Seeding never commits the spec or the plan onto a story branch: execute §0 syncs them from the run's `Docs:` revision under the lane.
    - Then, without `STUDIO_STORY`: `studio-state reset --keep-ledger` — `STATE.md` goes back to idle and the spec ledger survives for the epic's next plan.
-   - Integration: create `integration/<slug>` on origin when `git ls-remote --exit-code --heads origin integration/<slug>` fails: `git push origin origin/main:refs/heads/integration/<slug>` (`main` is the default branch).
-   - Fill each row's Spec and Plan cells, then `git add docs/runs/<slug>.md <specs> <plans> .studio/ledger/<id>.md …`, `git commit -m "docs(run): <slug> planned"`, `git push -u origin run/<slug>`.
+   - Integration: create `integration/<slug>` on origin when `git ls-remote --exit-code --heads origin integration/<slug>` fails: `git push origin origin/<default>:refs/heads/integration/<slug>`.
+   - Fill each row's Spec and Plan cells, then `git add docs/runs/<slug>.md .studio/config.json <specs> <plans> .studio/ledger/<id>.md …` (every story's ledger, half-done ones included), `git commit -m "docs(run): <slug> planned"`, `git push -u origin run/<slug>`.
      Write that commit's sha (`git rev-parse HEAD`) as `Docs:`, then commit `docs(run): <slug> docs <short sha>` and push `run/<slug>` again.
 4. **Readiness checklist.** Print it; every line must pass:
    - `studio-overnight start --dry-run <manifest>` exits 0 (the runner's own preflight: the manifest, `Docs:` on `origin/run/<slug>`, each plan's `Story:`, `Spec:` lines and `## Decisions`, each story's state and ledger, `claude-gd`, `gh auth status`, the deny list, config, `merge_command` in direct mode, no live run);
@@ -221,8 +227,9 @@ While `omega-mode show` lists `autopilot` — from the session file, or as
   while this mode is set), that PR is the run's PR and no second PR is opened;
   otherwise `gh pr create --fill --draft` when the plan is complete, based on
   the manifest's Target under a manifest run (`STUDIO_RUN` set; an
-  integration run opens no story PR) and on the repository's default branch
-  otherwise; `gh pr comment`; the handoff.
+  integration run opens no story PR);
+  when `STUDIO_RUN` is unset, the base is per `omega:local-merge` §3, unchanged (session mode and single-plan runs);
+  `gh pr comment`; the handoff.
 - **Merge rule**, in a studio (see *In a studio*) and outside one:
   - Never merge into `main` (the default branch) from a session: no session merges anything in any run mode; the runner lands.
   - In an integration run, nothing is merged into `main`, and the runner merges stories into `integration/<slug>`.
