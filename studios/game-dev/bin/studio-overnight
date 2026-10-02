@@ -128,7 +128,7 @@ take_lock() {
 
 usage() {
   cat <<EOF
-usage: $SELF_ABS start [--dry-run] [<manifest>] | status | stop | next [<manifest>]
+usage: $SELF_ABS start [--dry-run | --detach] [<manifest>] | status | stop | next [<manifest>]
 
   start [--dry-run]  preflight, then run the approved plan one unit per fresh
                      claude-gd session until it ships or a stop rule fires.
@@ -137,6 +137,16 @@ usage: $SELF_ABS start [--dry-run] [<manifest>] | status | stop | next [<manifes
                      manifest mode (docs/runs/<slug>.md): preflight every
                      story; --dry-run prints the chains, each chain's first
                      launch line and the deny rule count.
+  start --detach <manifest>
+                     manifest mode, detached from the chat: preflight runs in the
+                     foreground (a refusal exits 2), then the runner starts in
+                     its own session with stdin /dev/null and output in
+                     reports/overnight-<slug>-detached-<ts>.log (linked as
+                     runner.log in the run dir). Every variable named CLAUDECODE,
+                     CLAUDE_*, AI_AGENT, OMEGA_* or STUDIO_* is removed (the
+                     test hooks below included); CLAUDE_CONFIG_DIR and PATH stay.
+                     Exit 0 printing "detached: pid <p>, log <path>" once
+                     status answers within 10 s; else it prints the plain command.
   next [<manifest>]  the planning loop: classify each manifest row (brainstorm,
                      plan, planned) and print the one next command; no argument
                      reads .studio/run. Reads files and ledger lines only.
@@ -151,6 +161,19 @@ Exit: start 0 done, 1 any other ending, 2 refused.
 
 The run may: commit, push the feature branch, open a draft PR.
 The run may not: merge, force-push, delete a remote branch, read or write secrets.
+
+A manifest run has two modes (Mode: in docs/runs/<slug>.md); sessions never
+merge in either, the runner lands:
+  integration  each shipped story is merged by the runner into integration/<slug>
+               (a --no-ff merge commit); then one full gate and one draft PR
+               integration -> main. Nothing is merged into main, and the final
+               PR is never merged by the run.
+  direct       each shipped story is merged into main by the runner through
+               config merge_command <pr> (the project's own gate), one landing
+               at a time, each dependent after its dependency.
+Lanes are dependency chains, up to max_lanes at a time. next prints the planning
+loop's one next command. The gate lock (.studio/gate.lock) lets one test or gate
+run at a time across all lanes and the runner; a dead holder's lock is reclaimed.
 
 Config: .studio/config.json "overnight" (defaults, ranges):
   session_usd          25    1-200    budget cap per session (USD)
@@ -175,7 +198,13 @@ The morning report is written to .studio/reports/overnight-<ts>/report.md on
 every ending (manifest mode: overnight-<slug>-<ts>/report.md, a section per
 story, the resume command and the cleanup command).
 
-Test hooks (tests only; never set them for a real run):
+Test hooks (tests only; never set them for a real run; --detach strips them):
+  STUDIO_OVERNIGHT_POLL_SECONDS — test hook: a whole number of seconds between
+                     a lane's polls of a wait or a lock (default 5)
+  STUDIO_OVERNIGHT_LAND_HOOK — test hook: shell text evaluated after a landing's
+                     push and before it is recorded (the crash-after-push test)
+  STUDIO_OVERNIGHT_GATE_CMD — test hook: shell text that replaces the final
+                     step's full gate commands
   STUDIO_OVERNIGHT_SESSION_SECONDS — test hook: overrides session_minutes in
                      seconds; a whole number, else start refuses
   STUDIO_OVERNIGHT_LABEL — test hook: forces every unit's label (the
@@ -482,16 +511,74 @@ story_units() {
   done
 }
 
+# detach_start MANIFEST — start the run detached from the chat (D1a): the
+# preflight runs here in the foreground (a refusal shows and exits 2), then
+# this script re-execs itself in its own session (perl setsid), stdin
+# /dev/null, output to a log, with every CLAUDECODE, CLAUDE_*, AI_AGENT,
+# OMEGA_* and STUDIO_* variable removed (CLAUDE_CONFIG_DIR kept). Success
+# only when `status` exits 0 for that child within 10 s.
+detach_start() {
+  _dm="$1"
+  # The chat's variables go first, so the foreground preflight and the child
+  # both see the clean environment (a stray STUDIO_STORY would aim state at a
+  # story file). PATH and CLAUDE_CONFIG_DIR stay.
+  for _dn in $(env | sed -nE 's/^(CLAUDECODE|CLAUDE_[A-Za-z0-9_]*|AI_AGENT|OMEGA_[A-Za-z0-9_]*|STUDIO_[A-Za-z0-9_]*)=.*/\1/p' | grep -vx CLAUDE_CONFIG_DIR); do
+    unset "$_dn" 2>/dev/null || true
+  done
+  START_DIR="$(sh "$STATE_BIN" root --work 2>/dev/null || true)"
+  STATE_ROOT="$(sh "$STATE_BIN" root 2>/dev/null || true)"
+  preflight manifest
+  ( . "$SELF_DIR/overnight-lanes.sh"; lanes_start --dry-run "$_dm" ) > /dev/null || exit 2
+  _dmf="$_dm"; case "$_dmf" in /*) ;; *) _dmf="$START_DIR/$_dmf" ;; esac
+  _dslug="$(sed -n 's/^# Run:[ \t]*//p' "$_dmf" | head -n 1 | sed -e 's/[ \t]#.*$//' -e 's/[ \t]*$//')"
+  _dcmd="cd $(sq "$(pwd)") && $(sq "$SELF_ABS") start $(sq "$_dm")"
+  if ! command -v perl >/dev/null 2>&1; then
+    say "--detach is not available on this machine — run the printed command"
+    echo "$_dcmd"; exit 2
+  fi
+  mkdir -p "$REPORTS" || { say "cannot create $REPORTS"; exit 2; }
+  _dlog="$REPORTS/overnight-$_dslug-detached-$(date +%Y%m%d-%H%M%S).log"
+  nohup perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV' sh "$SELF_ABS" start "$_dm" </dev/null >"$_dlog" 2>&1 &
+  _dpid=$!
+  _di=0
+  while [ "$_di" -lt 10 ]; do
+    if kill -0 "$_dpid" 2>/dev/null; then
+      if sh "$SELF_ABS" status >/dev/null 2>&1 && [ "$(lock_pid)" = "$_dpid" ]; then
+        _drun="$(sed -n 's/^run=//p' "$LOCK" 2>/dev/null | head -n 1)"
+        [ -z "$_drun" ] || ln -sf "$_dlog" "$_drun/runner.log" 2>/dev/null || true
+        echo "detached: pid $_dpid, log $_dlog"
+        return 0
+      fi
+    else
+      _drc=0; wait "$_dpid" 2>/dev/null || _drc=$?
+      cat "$_dlog" >&2
+      say "the detached run did not start"
+      [ "$_drc" -ne 0 ] || _drc=1
+      return "$_drc"
+    fi
+    sleep 1; _di=$((_di + 1))
+  done
+  say "the detached run is not answering status after 10 s (log $_dlog) — run the plain command"
+  echo "$_dcmd"
+  return 1
+}
+
 cmd_start() {
   # Manifest mode: the first non-flag argument names the manifest (D18).
-  _mf=""
+  _mf=""; _dt=0; _dr=0
   for _a in "$@"; do
     case "$_a" in
-      --dry-run) ;;
+      --dry-run) _dr=1 ;;
+      --detach) _dt=1 ;;
       -*) usage >&2; exit 2 ;;
       *) [ -z "$_mf" ] || { usage >&2; exit 2; }; _mf="$_a" ;;
     esac
   done
+  if [ "$_dt" -eq 1 ]; then
+    { [ -n "$_mf" ] && [ "$_dr" -eq 0 ]; } || { usage >&2; exit 2; }
+    detach_start "$_mf"
+    exit $?
+  fi
   if [ -n "$_mf" ]; then
     preflight manifest
     . "$SELF_DIR/overnight-lanes.sh"

@@ -111,6 +111,7 @@ printf '%s\n' "$prompt" > "$CALLS/$n.prompt"
 pwd -P > "$CALLS/$n.pwd"
 printf 'OMEGA_AUTOPILOT=%s\nSTUDIO_RUN=%s\nSTUDIO_DOCS_REV=%s\nSTUDIO_REPAIR=%s\nSTUDIO_GATE_HELD=%s\n' \
   "${OMEGA_AUTOPILOT:-}" "${STUDIO_RUN:-}" "${STUDIO_DOCS_REV:-}" "${STUDIO_REPAIR:-}" "${STUDIO_GATE_HELD:-}" > "$CALLS/$n.env"
+env > "$CALLS/$n.fullenv"
 line="$(sed -n "${m}p" "$SCEN/$kind" 2>/dev/null)"
 
 st() { sh "$STUB_STATE_BIN" "$@"; }
@@ -1553,6 +1554,70 @@ test_lanes_reap_names_final_pr() {
   ( cd "$P" && sh "$RUNNER" status ) > "$TMP/st.out"
   assert_contains "$R/report.md" "^Final PR: https://gh.test/pr/1 (green)$" "the reaped report names the final PR"
 }
+# ---- T13: start --detach and --help ----
+
+# detach_stop — end a detached run: stop, then wait for the run lock to clear.
+detach_stop() {
+  ( cd "$P" && sh "$RUNNER" stop ) > /dev/null 2>&1
+  wait_for "[ ! -f '$P/.studio/overnight.lock' ]" 60
+  wait_for "[ -z \"\$(pgrep -f '$TMP'; pgrep -f '$RUNNER')\" ]" 20
+}
+test_lanes_detach_strips_env() {
+  lanes_fixture det integration A:-
+  st=0
+  ( cd "$P" && env CLAUDECODE=1 CLAUDE_CODE_ENTRYPOINT=x CLAUDE_EFFORT=max CLAUDE_PID=1 AI_AGENT=x \
+      CLAUDE_CONFIG_DIR="$TMP/cfg" OMEGA_X=1 STUDIO_STORY=Z STUDIO_X=1 \
+      sh "$RUNNER" start --detach "$MFP" ) > "$TMP/det.out" 2>&1 || st=$?
+  assert_eq 0 "$st" "detach reports success once status answers"
+  assert_contains "$TMP/det.out" "^detached: pid [0-9]*, log " "it prints the pid and the log"
+  wait_for "[ -f '$CALLS/1.fullenv' ]" 60
+  detach_stop
+  assert_not_contains "$CALLS/1.fullenv" "^CLAUDECODE=" "CLAUDECODE stripped"
+  assert_not_contains "$CALLS/1.fullenv" "^CLAUDE_CODE_ENTRYPOINT=" "CLAUDE_CODE_* stripped"
+  assert_not_contains "$CALLS/1.fullenv" "^CLAUDE_EFFORT=" "CLAUDE_EFFORT stripped"
+  assert_not_contains "$CALLS/1.fullenv" "^CLAUDE_PID=" "CLAUDE_PID stripped"
+  assert_not_contains "$CALLS/1.fullenv" "^AI_AGENT=" "AI_AGENT stripped"
+  assert_not_contains "$CALLS/1.fullenv" "^OMEGA_X=" "OMEGA_* stripped"
+  assert_not_contains "$CALLS/1.fullenv" "^STUDIO_X=" "STUDIO_* stripped"
+  assert_contains "$CALLS/1.fullenv" "^CLAUDE_CONFIG_DIR=$TMP/cfg$" "CLAUDE_CONFIG_DIR is kept"
+  assert_contains "$CALLS/1.fullenv" "^PATH=" "PATH is kept"
+  assert_contains "$CALLS/1.fullenv" "^STUDIO_STORY=A$" "the runner's own STUDIO_STORY is set fresh"
+  _dl="$(ls "$P"/.studio/reports/overnight-demo-detached-*.log 2>/dev/null | head -n 1)"
+  assert_eq 1 "$([ -n "$_dl" ] && echo 1 || echo 0)" "the detached log is under reports"
+  _dr="$(ls -d "$P"/.studio/reports/overnight-demo-[0-9]* 2>/dev/null | tail -n 1)"
+  assert_eq 1 "$([ -L "$_dr/runner.log" ] && echo 1 || echo 0)" "the run dir links runner.log"
+}
+test_lanes_detach_refusal_in_foreground() {
+  lanes_fixture detr direct A:-                        # direct without merge_command
+  st=0; ( cd "$P" && sh "$RUNNER" start --detach "$MFP" ) > "$TMP/detr.out" 2>&1 || st=$?
+  assert_eq 2 "$st" "preflight runs in the foreground"
+  assert_contains "$TMP/detr.out" "merge_command" "and its refusal is shown"
+  assert_eq 0 "$(calls)" "no runner was started"
+}
+test_lanes_detach_child_refusal_surfaces() {
+  lanes_fixture detk integration A:-
+  printf 'hang\n' > "$SCEN/A"
+  # A SIGKILLed runner whose lane still runs: the child's start refuses (2).
+  ( cd "$P" && exec sh "$RUNNER" start "$MFP" ) > /dev/null 2>&1 & RPID=$!
+  wait_for "[ -f '$CALLS/1.fullenv' ]" 60
+  kill -KILL "$RPID" 2>/dev/null
+  st=0; ( cd "$P" && sh "$RUNNER" start --detach "$MFP" ) > "$TMP/detk.out" 2>&1 || st=$?
+  pkill -f "$TMP/fakebin/claude" 2>/dev/null; pkill -f "$RUNNER start" 2>/dev/null
+  wait "$RPID" 2>/dev/null
+  wait_for "[ -z \"\$(pgrep -f '$TMP'; pgrep -f '$RUNNER')\" ]" 20
+  assert_eq 2 "$st" "a refused detached start exits with the refusal"
+  assert_contains "$TMP/detk.out" "lanes still run" "and shows the child's message"
+  assert_not_contains "$TMP/detk.out" "^detached:" "and prints no success line"
+}
+test_lanes_help_modes() {
+  sh "$RUNNER" --help > "$TMP/help"
+  for t in "integration" "direct" "next" "gate lock" "max_lanes" "merge_command" "--detach" \
+    "STUDIO_OVERNIGHT_POLL_SECONDS" "STUDIO_OVERNIGHT_LAND_HOOK" "STUDIO_OVERNIGHT_LABEL" "STUDIO_OVERNIGHT_GATE_CMD" "report.md"; do
+    assert_contains "$TMP/help" "$t" "help names $t"
+  done
+  assert_contains "$REPO_ROOT/README.md" "studio-overnight start <manifest>" "README documents manifest runs"
+  assert_contains "$REPO_ROOT/README.md" "studio-overnight next" "README documents next"
+}
 # Last: no process any test started is still alive.
 test_lanes_no_orphans() {
   _left="$(pgrep -f "$TMP" 2>/dev/null; pgrep -f "$RUNNER" 2>/dev/null)"
@@ -1577,4 +1642,5 @@ run_tests test_lanes_chain_rule test_lanes_manifest_refusals test_lanes_manifest
   test_lanes_final_dirty_unit_is_red test_lanes_final_budget test_lanes_final_conflict_then_red \
   test_lanes_status_per_story test_lanes_report_every_ending test_lanes_report_on_lane_crash \
   test_lanes_done_marker test_lanes_status_reaps_dead_runner test_lanes_reap_names_final_pr \
-  test_lanes_no_orphans
+  test_lanes_detach_strips_env test_lanes_detach_refusal_in_foreground test_lanes_detach_child_refusal_surfaces \
+  test_lanes_help_modes test_lanes_no_orphans
