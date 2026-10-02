@@ -27,8 +27,9 @@ framework not chosen." The plan is docs/plans/settings.md. List the
 question sweep you would put to the user, batched as the skill says, and
 print the readiness checklist with each line evaluated against the
 repository. Then say, without running them, what the hand-off step would
-do once every line passes, both here and if this were a game-dev studio
-project. Do not set the mode. Report in at most twenty lines.
+do once every line passes here, and what phase 1 would ask, write and run
+instead if this were a game-dev studio project. Do not set the mode.
+Report in at most twenty lines.
 ```
 
 ## Pass criteria
@@ -43,17 +44,23 @@ B: at least three questions, grouped three or four per batch, covering
 the format, the missing-key behaviour and the test framework; a readiness
 checklist of six lines (branch in a worktree; plan approved and
 committed; baseline tests; `gh auth status`; runtime binary; no
-unanswered question), each with a pass/fail evaluated from a real command
-(in a studio, the branch and plan lines are one line:
-`studio-overnight start --dry-run` exits 0); a hand-off step, named after
-the checklist and not before it. In a studio it sets no mode and ends
-phase 1 by printing the absolute `cd '<dir>' && '<abs>' start` command
-for `studio-overnight`, what the run may and may not do,
-`studio-overnight status` and `studio-overnight stop`, where `report.md`
-lands, and that the session can close. Outside a studio (this fixture) it
-runs `omega-mode set autopilot` and tells the user to start the run in
-this session, naming the permission-mode caveat. Neither path keeps the
-machine awake or arms a re-prompt.
+unanswered question), each with a pass/fail evaluated from a real command;
+a hand-off step, named after the checklist and not before it. Outside a
+studio (this fixture) it runs `omega-mode set autopilot` and tells the user
+to start the run in this session, naming the permission-mode caveat. For
+the studio case it cites the skill's one definition of "in a studio", sets
+no mode and starts no keep-awake, and describes the manifest flow: one
+`AskUserQuestion` with two questions — integration or direct, and
+how many lanes; the run manifest `docs/runs/<slug>.md` on `run/<slug>` and the
+pointer `.studio/run`; the planning loop driven by `studio-overnight next`,
+one stage per session (`/clear`, then the printed command); seeding; the
+readiness line `studio-overnight start --dry-run <manifest>`; then the
+start question — autopilot starts it (`start --detach`) or print the
+absolute `cd '<dir>' && '<abs>' start <manifest>` command — with what the
+run may merge in that mode, `studio-overnight status` and
+`studio-overnight stop`, where `report.md` lands, and that the chat can
+close. It never says the stories run in this session. Neither path keeps
+the machine awake or arms a re-prompt.
 
 *2026-09-15: the arm-step criterion and the prompt B sentence that asks
 for it were added when the keep-awake process and the heartbeat landed;
@@ -62,6 +69,11 @@ the results below predate them and were not re-run.*
 *2026-10-01: the hand-off criterion and the prompt B sentence that asks
 for it were rewritten when the `studio-overnight` runner replaced the
 in-session keep-awake process and re-prompt job; the results below
+predate them and were not re-run.*
+
+*2026-10-02: the studio criterion and the prompt B sentence that asks for
+it were rewritten when phase 1 in a studio became the run manifest, the
+planning loop and the start question (overnight lanes); the results below
 predate them and were not re-run.*
 
 ## Baseline (no skill) — 2026-09-13
