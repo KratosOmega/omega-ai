@@ -32,6 +32,7 @@ pwd -P > "$CALLS/$n.pwd"
 printf '%s\n' "${OMEGA_AUTOPILOT:-unset}" > "$CALLS/$n.env"
 root="$(sh "$STUB_STATE_BIN" root)"
 cp "$root/.studio/overnight.lock" "$CALLS/$n.lock" 2>/dev/null
+[ -f "$CALLS/caffeinate.pid" ] && kill -0 "$(cat "$CALLS/caffeinate.pid")" 2>/dev/null && echo alive > "$CALLS/$n.caf"
 line="$(sed -n "${n}p" "$OVERNIGHT_SCENARIO")"
 cost=1; code=0
 old_ifs="$IFS"; IFS=';'
@@ -54,6 +55,7 @@ for act in "$@"; do
     hang)         while :; do sleep 1; done ;;
     rotsv)        r="$(sed -n 's/^run=//p' "$root/.studio/overnight.lock")"
                   touch "$r/units.tsv"; chmod 444 "$r/units.tsv" ;;
+    rmrundir)     r="$(sed -n 's/^run=//p' "$root/.studio/overnight.lock")"; rm -rf "$r" ;;
     "exit "*)     code="${act#exit }" ;;
   esac
 done
@@ -64,8 +66,8 @@ exit "$code"
 STUB
 printf '#!/bin/sh\nexec claude "$@"\n' > "$FAKE/claude-gd"
 printf '#!/bin/sh\nexit "${GH_STATUS:-0}"\n' > "$FAKE/gh"
-# A fake caffeinate: records its argv, then lives until the -w pid dies.
-printf '#!/bin/sh\nprintf "%%s\\n" "$*" > "$CALLS/caffeinate.args"\nwhile kill -0 "$3" 2>/dev/null; do sleep 1; done\n' > "$FAKE/caffeinate"
+# A fake caffeinate: records its argv and pid, then lives until the -w pid dies.
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" > "$CALLS/caffeinate.args"\necho "$$" > "$CALLS/caffeinate.pid"\nwhile kill -0 "$3" 2>/dev/null; do sleep 1; done\n' > "$FAKE/caffeinate"
 chmod +x "$FAKE"/*
 export PATH="$FAKE:$PATH" STUB_STATE_BIN="$STATE_BIN"
 
@@ -109,6 +111,18 @@ test_overnight_help() {
     assert_contains "$TMP/help.txt" "$w" "help names $w"
   done
   assert_contains "$TMP/help.txt" "$RUNNER" "help names the runner by its absolute path"
+  assert_contains "$TMP/help.txt" "STUDIO_OVERNIGHT_RACE_HOOK — test hook" "help documents the race test hook (D13)"
+  assert_contains "$TMP/help.txt" "^The run may: commit, push the feature branch, open a draft PR\.$" "help lists what the run may do"
+  assert_contains "$TMP/help.txt" "^The run may not: merge, force-push, delete a remote branch" "help lists what the run may not do"
+  assert_contains "$TMP/help.txt" "secrets" "the may-not line names secrets"
+}
+
+test_overnight_session_seconds_refused() {
+  for bad in 1.5 abc -3 "10 s"; do
+    fixture secs; STUDIO_OVERNIGHT_SESSION_SECONDS="$bad"; export STUDIO_OVERNIGHT_SESSION_SECONDS
+    refuse_case "STUDIO_OVERNIGHT_SESSION_SECONDS=$bad" "STUDIO_OVERNIGHT_SESSION_SECONDS"
+    unset STUDIO_OVERNIGHT_SESSION_SECONDS
+  done
 }
 
 test_overnight_dry_run() {
@@ -138,6 +152,13 @@ test_overnight_preflight_refusals() {
   fixture r1; sed -i.bak '/plan approved/d' "$P/.studio/ledger/spec.md"; rm -f "$P/.studio/ledger/spec.md.bak"
   ( cd "$P" && git add -A && git -c user.name=t -c user.email=t@t commit -qm x )
   refuse_case "no plan approved line" "plan approved"
+  fixture r1b; sed -i.bak 's|plan approved docs/plan.md$|plan approved docs/plan.md.old|' "$P/.studio/ledger/spec.md"; rm -f "$P/.studio/ledger/spec.md.bak"
+  ( cd "$P" && git add -A && git -c user.name=t -c user.email=t@t commit -qm x )
+  refuse_case "only a longer path is approved" "plan approved"
+  fixture r1c; ( cd "$P" && sh "$STATE_BIN" set plan - && git add -A && git -c user.name=t -c user.email=t@t commit -qm x ) >/dev/null
+  refuse_case "no plan set" "no spec or plan set"
+  fixture r1d; ( cd "$P" && sh "$STATE_BIN" set spec - && git add -A && git -c user.name=t -c user.email=t@t commit -qm x ) >/dev/null
+  refuse_case "no spec set" "no spec or plan set"
   fixture r2; printf 'more\n' >> "$P/docs/plan.md"; refuse_case "dirty plan" "uncommitted"
   fixture r3; printf -- '- x\n' >> "$P/.studio/ledger/spec.md"; refuse_case "dirty ledger" "read the Stop: line"
   fixture r4; printf '# Plan\n' > "$P/docs/plan.md"
@@ -268,6 +289,12 @@ test_overnight_launch_argv() {
   R="$(grep -v '^#' "$deny" | grep -c .)"
   assert_eq "$(printf -- '--disallowedTools\n'; grep -v '^#' "$deny" | grep .)" \
     "$(tail -n "$((R + 1))" "$a")" "--disallowedTools is the last option, followed by every rule in file order"
+  # The -C and gh api forms a mid-command force-push or remote delete takes (AC16).
+  for r in 'Bash(git -C * push -f*)' 'Bash(git -C * push --force*)' 'Bash(git -C * push * -f*)' \
+           'Bash(gh api * -X DELETE*)' 'Bash(gh api * --method DELETE*)' 'Bash(gh api --method DELETE*)'; do
+    TESTS_RUN=$((TESTS_RUN + 1))
+    if grep -qxF -- "$r" "$a"; then _pass "argv denies $r"; else _fail "argv denies $r"; fi
+  done
   assert_eq "1" "$(cat "$CALLS/1.env")" "OMEGA_AUTOPILOT=1 reaches the session"
   assert_eq "$P" "$(cat "$CALLS/1.pwd")" "every session starts in START_DIR"
 }
@@ -279,6 +306,18 @@ test_overnight_retry_then_no_progress() {
   assert_eq 2 "$(calls)" "one retry, then stop"
   assert_file "$d/2-T1-retry.jsonl" "the retry is labelled T1-retry"
   assert_contains "$d/report.md" "no progress on T1" "the ending names the unit"
+  assert_eq "noprog noprog" "$(awk -F'\t' '{ printf "%s%s", (NR > 1 ? " " : ""), $7 }' "$d/units.tsv")" "each no-progress unit's row says noprog"
+}
+
+# D8: stage execute with task -, or 0/N, is still the first task.
+test_overnight_label_t1() {
+  for t in - 0/2; do
+    fixture lab; ( cd "$P" && sh "$STATE_BIN" set stage execute && sh "$STATE_BIN" set task "$t" \
+      && git add -A && git -c user.name=t -c user.email=t@t commit -qm x ) >/dev/null
+    scenario "cost 1" "cost 1"; run_start
+    assert_file "$(last_run_dir)/1-T1.jsonl" "stage execute, task $t: the unit is T1"
+    rm -rf "$P" "$CALLS" "$TMP_WT"
+  done
 }
 
 test_overnight_progress_resets_retry() {
@@ -296,6 +335,7 @@ test_overnight_stop_line() {
   fixture stopl; scenario "stage execute; ledger Stop: no Godot binary (studio-test exit 2)"; run_start
   assert_eq 1 "$RS_STATUS" "a Stop: line exits 1"
   assert_eq 1 "$(calls)" "a Stop: line is never retried"
+  assert_eq stop "$(awk -F'\t' 'NR == 1 { print $7 }' "$(last_run_dir)/units.tsv")" "the stopped unit's row says stop"
   assert_contains "$(last_run_dir)/report.md" "stop: no Godot binary (studio-test exit 2)" "the reason is printed verbatim"
 }
 
@@ -419,6 +459,22 @@ test_overnight_inhibitor() {
   fixture caf; done_scenario; run_start
   pid="$(sed -n 's/^pid=//p' "$CALLS/1.lock")"
   assert_eq "-i -w $pid" "$(cat "$CALLS/caffeinate.args")" "caffeinate -i -w <runner pid> is held for the run"
+  assert_contains "$CALLS/1.caf" "^alive$" "caffeinate is alive during the first unit"
+  assert_contains "$CALLS/4.caf" "^alive$" "caffeinate is still alive during the last unit (AC13)"
+  cpid="$(cat "$CALLS/caffeinate.pid")"; _i=0
+  while kill -0 "$cpid" 2>/dev/null && [ "$_i" -lt 30 ]; do sleep 0.1; _i=$((_i + 1)); done
+  assert_eq dead "$(kill -0 "$cpid" 2>/dev/null && echo live || echo dead)" "caffeinate ends with the run"
+}
+
+# A watchdog whose claim mkdir fails for a reason other than EEXIST (the run
+# directory is gone) still ends the session at its deadline.
+test_overnight_claim_without_run_dir() {
+  fixture noclaim; scenario "stage execute; rmrundir; sleep 30"
+  STUDIO_OVERNIGHT_SESSION_SECONDS=1; export STUDIO_OVERNIGHT_SESSION_SECONDS
+  t0="$(date +%s)"; run_start; t1="$(date +%s)"; unset STUDIO_OVERNIGHT_SESSION_SECONDS
+  assert_missing "$CALLS/1.t1" "the session was cut short at its deadline"
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if [ $((t1 - t0)) -lt 20 ]; then _pass "the run did not wait out the session's sleep 30 ($((t1 - t0))s)"; else _fail "the run took $((t1 - t0))s: the watchdog did not act"; fi
 }
 
 test_overnight_no_inhibitor() {
@@ -449,6 +505,26 @@ test_overnight_report_done() {
   assert_not_contains "$R" "^## Resume" "report: no resume command when done"
 }
 
+test_overnight_report_anchors() {
+  fixture anch
+  scenario "stage execute; task 1/1; ledger T1 Review: reworded the Ruling: and P1 Play: lines" \
+           "ledger final review done; ledger Ruling: plain one — y — z" \
+           "ledger P1 Play: jump; ledger shipped https://x/pull/5; stage idle; task -"
+  run_start
+  R="$(last_run_dir)/report.md"
+  assert_eq 0 "$(grep -c 'reworded the Ruling:' "$R")" "report: a line that only mentions Ruling: or Play: is listed in neither section"
+  assert_contains "$R" "^- [0-9-]* Ruling: plain one — y — z$" "report: a Ruling: line with no task label is listed"
+  assert_contains "$R" "^- [0-9-]* P1 Play: jump$" "report: the play line is listed"
+}
+
+test_overnight_resume_quote() {
+  fixture "q'uote"; scenario "cost 1" "cost 1"; run_start
+  R="$(last_run_dir)/report.md"
+  q="$(printf '%s' "$P" | sed "s/'/'\\\\''/g")"
+  assert_eq "cd '$q' && '$RUNNER' start" "$(tail -n 1 "$R")" "report: a ' in the path is escaped in the resume command"
+  assert_eq "$P" "$(sh -c "$(tail -n 1 "$R" | sed 's/ && .*//'); pwd -P")" "report: the escaped cd reaches the checkout"
+}
+
 test_overnight_report_not_done() {
   fixture repn; scenario "cost 1" "nocost"; run_start
   R="$(last_run_dir)/report.md"
@@ -471,11 +547,21 @@ test_overnight_crash_resume() {
   fixture crash; scenario "stage execute; task 1/2; sleep 30" "task 2/2" "ledger final review done" \
     "ledger shipped https://x/pull/3; stage idle; task -"
   start_bg; wait_for "$CALLS/1.t0"
+  # Crash mid-session: wait for the stub's own sleep, so the kill lands in it.
+  spid="$(cat "$CALLS/1.pid")"; _i=0
+  while [ -z "$(pgrep -P "$spid" 2>/dev/null)" ] && [ "$_i" -lt 50 ]; do sleep 0.2; _i=$((_i + 1)); done
+  # Record the runner's children (the session and the watchdog) while it lives.
+  kids="$(pgrep -P "$RPID" 2>/dev/null | tr '\n' ' ')"
   kill -KILL "$RPID"; wait "$RPID" 2>/dev/null
-  # The killed runner's orphans: its watchdog subshell (same argv as the
-  # runner), then the sleeps of the stub and of the watchdog (default 5400 s).
-  pkill -KILL -f "sh $RUNNER start" 2>/dev/null
-  pkill -KILL -f "sleep 30" 2>/dev/null; pkill -KILL -f "sleep 5400" 2>/dev/null
+  # The killed runner's orphans, by recorded pid only — never a machine-wide
+  # pkill, which would hit a real overnight run's watchdog. The session's
+  # group is the stub's pid (D6); the watchdog and its sleep share the
+  # runner's group, which start_bg made $RPID.
+  kill -KILL -"$spid" 2>/dev/null; kill -KILL -"$RPID" 2>/dev/null
+  for k in $kids; do pkill -KILL -P "$k" 2>/dev/null; kill -KILL "$k" 2>/dev/null; done
+  _i=0  # killed orphans are reaped by init, not by us: give it a moment
+  while [ -n "$(for k in $spid $kids; do kill -0 "$k" 2>/dev/null && echo "$k"; done)" ] && [ "$_i" -lt 30 ]; do sleep 0.1; _i=$((_i + 1)); done
+  assert_eq "" "$(for k in $spid $kids; do kill -0 "$k" 2>/dev/null && echo "$k"; done)" "no recorded orphan survives the cleanup"
   assert_file "$P/.studio/overnight.lock" "a killed runner leaves its lock"
   run_start
   assert_eq 0 "$RS_STATUS" "the next start reclaims the stale lock and resumes from state"
@@ -499,6 +585,8 @@ test_overnight_status() {
 }
 
 run_tests test_overnight_report_done test_overnight_report_not_done \
+  test_overnight_report_anchors test_overnight_resume_quote test_overnight_label_t1 \
+  test_overnight_session_seconds_refused test_overnight_claim_without_run_dir \
   test_overnight_report_runner_error test_overnight_crash_resume test_overnight_status \
   test_overnight_timeout test_overnight_kill_after_grace \
   test_overnight_stop_file test_overnight_sigterm test_overnight_sigint test_overnight_sighup \

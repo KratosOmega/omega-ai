@@ -24,6 +24,8 @@ STATE_BIN="$SELF_DIR/studio-state"
 DENY_FILE="$SELF_DIR/overnight-deny.txt"
 
 say() { printf 'studio-overnight: %s\n' "$*" >&2; }
+# sq TEXT — TEXT as one single-quoted shell word ('\'' for each ').
+sq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 state() { ( cd "$START_DIR" && sh "$STATE_BIN" "$@" ); }
 FAILED=0
 refuse() { say "$*"; FAILED=1; }
@@ -62,8 +64,8 @@ with_launch_args() {
   "$_fn" "$@"
 }
 print_launch() {
-  printf 'cd %s && OMEGA_AUTOPILOT=1 claude-gd -p' "'$START_DIR'"
-  for _a in "$@"; do printf " '%s'" "$_a"; done
+  printf 'cd %s && OMEGA_AUTOPILOT=1 claude-gd -p' "$(sq "$START_DIR")"
+  for _a in "$@"; do printf ' %s' "$(sq "$_a")"; done
   printf '\n'
 }
 
@@ -92,6 +94,9 @@ usage: $SELF_ABS start [--dry-run] | status | stop
 
 Exit: start 0 done, 1 any other ending, 2 refused.
 
+The run may: commit, push the feature branch, open a draft PR.
+The run may not: merge, force-push, delete a remote branch, read or write secrets.
+
 Config: .studio/config.json "overnight" (defaults, ranges):
   session_usd          25    1-200    budget cap per session (USD)
   run_usd              150   1-2000   budget cap for the whole run (USD)
@@ -106,8 +111,11 @@ Deny rules: $DENY_FILE
 The morning report is written to .studio/reports/overnight-<ts>/report.md on
 every ending.
 
-Test hook:
-  STUDIO_OVERNIGHT_SESSION_SECONDS — test hook: overrides session_minutes in seconds
+Test hooks (tests only; never set them for a real run):
+  STUDIO_OVERNIGHT_SESSION_SECONDS — test hook: overrides session_minutes in
+                     seconds; a whole number, else start refuses
+  STUDIO_OVERNIGHT_RACE_HOOK — test hook: shell text evaluated between reading
+                     a stale lock's pid and reclaiming it (the reclaim-race test)
 EOF
 }
 
@@ -131,16 +139,24 @@ preflight() {
   }
   plan="$(state get plan 2>/dev/null)"
   spec="$(state get spec 2>/dev/null)"
-  state show 2>/dev/null | grep -qF -- "plan approved $plan" \
-    || refuse "plan not approved: no 'plan approved $plan' ledger line"
-  if [ -n "$(git -C "$START_DIR" status --porcelain -- "$spec" "$plan" 2>/dev/null)" ]; then
-    refuse "uncommitted spec or plan — commit them first"
-  fi
+  case "$spec:$plan" in
+    :*|-:*|*:|*:-) refuse "no spec or plan set (studio-state get spec, get plan)" ;;
+    *)
+      # Whole line: an approval of docs/plan.md.old does not approve docs/plan.md.
+      state show 2>/dev/null | sed -n 's/^- [0-9-]* plan approved //p' | grep -qxF -- "$plan" \
+        || refuse "plan not approved: no 'plan approved $plan' ledger line"
+      if [ -n "$(git -C "$START_DIR" status --porcelain -- "$spec" "$plan" 2>/dev/null)" ]; then
+        refuse "uncommitted spec or plan — commit them first"
+      fi
+      grep -q '^## Decisions' "$START_DIR/$plan" 2>/dev/null \
+        || refuse "plan has no ## Decisions section (run /omega:autopilot's question sweep)" ;;
+  esac
   if [ -n "$(git -C "$START_DIR" status --porcelain -- .studio/ledger .studio/config.json 2>/dev/null)" ]; then
     refuse "uncommitted ledger change — read the Stop: line, resolve it, commit"
   fi
-  grep -q '^## Decisions' "$START_DIR/$plan" 2>/dev/null \
-    || refuse "plan has no ## Decisions section (run /omega:autopilot's question sweep)"
+  case "${STUDIO_OVERNIGHT_SESSION_SECONDS:-0}" in
+    *[!0-9]*) refuse "STUDIO_OVERNIGHT_SESSION_SECONDS must be a whole number of seconds, got ${STUDIO_OVERNIGHT_SESSION_SECONDS}" ;;
+  esac
   case "$_stage" in
     plan|execute) ;;
     *) refuse "stage $_stage: nothing approved to run" ;;
@@ -182,7 +198,8 @@ snapshot() {
   SIG_FRD="$(printf '%s\n' "$_l" | grep -c '^- [0-9-]* final review done$')"
   SIG_SHIPPED="$(printf '%s\n' "$_l" | grep -c '^- [0-9-]* shipped ')"
   SIG="stage=$SIG_STAGE;task=$SIG_TASK;frd=$SIG_FRD;shipped=$SIG_SHIPPED"
-  { printf '%s\n' "$_l"; ledger_of "$START_DIR"; } | grep '^- [0-9-]* Stop: ' | sort -u > "$1"
+  if [ "$FEATURE_DIR" = "$START_DIR" ]; then printf '%s\n' "$_l"   # one ledger: read it once
+  else { printf '%s\n' "$_l"; ledger_of "$START_DIR"; }; fi | grep '^- [0-9-]* Stop: ' | sort -u > "$1"
 }
 # label_for — the unit's name from the SIG_* values (D8); names files only.
 label_for() {
@@ -224,7 +241,9 @@ run_unit() {
   # it at once and the trap reaps it (no orphaned sleep).
   ( _sp=; trap 'kill $_sp 2>/dev/null; exit 0' TERM
     sleep "$_secs" & _sp=$!; wait "$_sp"
-    mkdir "$_claim" 2>/dev/null || exit 0
+    # Lost only to the runner's claim (the dir exists); a mkdir failing for
+    # any other reason (run dir gone, disk full) still ends a hung session.
+    mkdir "$_claim" 2>/dev/null || [ ! -d "$_claim" ] || exit 0
     kill -TERM -"$CPID" 2>/dev/null || { pkill -TERM -P "$CPID"; kill -TERM "$CPID"; }
     sleep "$GRACE" & _sp=$!; wait "$_sp"
     kill -KILL -"$CPID" 2>/dev/null || { pkill -KILL -P "$CPID"; kill -KILL "$CPID"; }
@@ -239,6 +258,7 @@ run_unit() {
   UNIT_EXIT="$_st"; UNIT_TIMED_OUT=0
   mkdir "$_claim" 2>/dev/null || UNIT_TIMED_OUT=1
   kill "$WPID" 2>/dev/null; wait "$WPID" 2>/dev/null
+  WPID=""   # reaped: end_session must not signal a pid number since reused
   rmdir "$_claim" 2>/dev/null
   UNIT_MIN="$(awk -v s="$(( $(date +%s) - _t0 ))" 'BEGIN { printf "%.1f", s / 60 }')"
   UNIT_COST="$(cost_of "$RUN_DIR/$UNIT_STEM.jsonl")"; [ -n "$UNIT_COST" ] || UNIT_COST=unknown
@@ -267,11 +287,11 @@ write_report() {
     printf '## Units\n\n| # | Unit | Exit | Cost | Minutes | Timed out | Outcome |\n|---|------|------|------|---------|-----------|---------|\n'
     awk -F'\t' '{ printf "| %s | %s | %s | %s | %s | %s | %s |\n", $1, $2, $3, $4, $5, $6, $7 }' "$_tsv"
     printf '\n## Rulings\n\n'
-    printf '%s\n' "$_ld" | grep 'Ruling:' || echo '(none)'
+    printf '%s\n' "$_ld" | grep -E '^- [0-9-]* ([^ ]+ )?Ruling: ' || echo '(none)'
     printf '\n## Play list\n\n'
-    printf '%s\n' "$_ld" | grep 'P[0-9]* Play:' || echo '(none)'
+    printf '%s\n' "$_ld" | grep -E '^- [0-9-]* P[0-9]+ Play: ' || echo '(none)'
     if [ "$1" != done ]; then
-      printf '\n## Resume\n\ncd %s && %s start\n' "'$START_DIR'" "'$SELF_ABS'"
+      printf '\n## Resume\n\ncd %s && %s start\n' "$(sq "$START_DIR")" "$(sq "$SELF_ABS")"
     fi
   } > "$RUN_DIR/report.md"
 }
@@ -351,8 +371,13 @@ cmd_start() {
       rm -f "$LOCK.stale.$$"
     fi
   fi
-  mkdir -p "$RUN_DIR" "$(dirname "$LOCK")"
+  # A stop file left over from an earlier run goes before the lock, so a
+  # `stop` issued once this run holds the lock is never lost.
+  rm -f "$STOP_FILE"
+  mkdir -p "$(dirname "$LOCK")"
   take_lock "$RUN_DIR" || { say "lock taken by another start"; exit 2; }
+  # The run dir only once the lock is ours: a lost race leaves nothing behind.
+  mkdir -p "$RUN_DIR" || { rm -f "$LOCK"; say "cannot create $RUN_DIR"; exit 2; }
   trap 'on_exit $?' EXIT
   STOP_REQ=0
   trap 'STOP_REQ=1' INT TERM
@@ -377,7 +402,6 @@ cmd_start() {
   for _e in .studio/overnight.lock .studio/overnight.stop; do
     grep -qxF "$_e" "$_excl" 2>/dev/null || printf '%s\n' "$_e" >> "$_excl"
   done
-  rm -f "$STOP_FILE"
   n=0; noprog=0; suffix=""
   while :; do
     { [ -f "$STOP_FILE" ] || [ "$STOP_REQ" = 1 ]; } && finish_run "stopped by user"
