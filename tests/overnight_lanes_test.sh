@@ -63,7 +63,8 @@ last_lanes_dir() { ls -d "$P"/.studio/reports/overnight-demo-* 2>/dev/null | tai
 # '-'). A clone $P of the bare origin $TMP/NAME.git, on branch run/demo
 # (pushed): one spec with a ## Stories table, one approved and swept plan per
 # story, studio state per story at stage plan, task 0/1; .studio/config.json
-# from $LANES_CONFIG (default {}); the manifest docs/runs/demo.md with Docs:
+# from $LANES_CONFIG (default {}); LANES_CELLS=dash writes '-' in every Spec and
+# Plan cell; the manifest docs/runs/demo.md with Docs:
 # the docs commit, committed and pushed; integration/demo on origin for
 # MODE integration. Exports P, MFP, CALLS, GH, TMP_WT; unsets LANES_*.
 lanes_fixture() {
@@ -75,6 +76,7 @@ lanes_fixture() {
   mkdir -p "$P" "$CALLS" "$GH" "$TMP_WT"
   git init -q --bare "$TMP/$_lf_name.git"
   _lf_cfg="${LANES_CONFIG:-}"; [ -n "$_lf_cfg" ] || _lf_cfg='{}'
+  _lf_cells="${LANES_CELLS:-}"
   _lf_spec=docs/game-dev/specs/2026-10-01-demo.md
   ( set -e
     cd "$P"
@@ -108,7 +110,11 @@ lanes_fixture() {
       printf '| Story | Branch | Ticket | Spec | Plan | Depends on |\n|-------|--------|--------|------|------|------------|\n'
       for _r in "$@"; do
         _id="${_r%%:*}"; _deps="$(printf '%s' "${_r#*:}" | sed 's/,/, /g')"
-        printf '| %s | %s-b | %s | %s | docs/game-dev/plans/2026-10-01-%s.md | %s |\n' "$_id" "$_id" "$_id" "$_lf_spec" "$_id" "$_deps"
+        if [ "$_lf_cells" = dash ]; then
+          printf '| %s | %s-b | %s | - | - | %s |\n' "$_id" "$_id" "$_id" "$_deps"
+        else
+          printf '| %s | %s-b | %s | %s | docs/game-dev/plans/2026-10-01-%s.md | %s |\n' "$_id" "$_id" "$_id" "$_lf_spec" "$_id" "$_deps"
+        fi
       done
     } > "$MFP"
     git add -A && git commit -q -m manifest && git push -q origin run/demo
@@ -246,6 +252,51 @@ test_lanes_sourced_only() {
   assert_eq "overnight-lanes.sh: sourced by studio-overnight" "$_out" "and says why"
 }
 
+test_lanes_next() {
+  LANES_CELLS=dash; export LANES_CELLS
+  lanes_fixture nxt integration A:- B:A C:-
+  printf -- '- 2026-10-01 spec approved docs/game-dev/specs/2026-10-01-demo.md\n- 2026-10-01 plan approved docs/game-dev/plans/2026-10-01-A.md\n- 2026-10-01 Decisions swept A\n- 2026-10-01 plan approved docs/game-dev/plans/2026-10-01-B.md\n' > "$P/.studio/ledger/demo.md"
+  grep -v '^| C |' "$P/docs/game-dev/specs/2026-10-01-demo.md" > "$TMP/s" && mv "$TMP/s" "$P/docs/game-dev/specs/2026-10-01-demo.md"
+  rm -f "$P/docs/game-dev/plans/2026-10-01-C.md"
+  ( cd "$P" && git add -A && git commit -qm planning-state ) >/dev/null 2>&1
+  run_lanes next "$MFP"
+  assert_eq 0 "$LS_STATUS" "next exits 0"
+  assert_contains "$LS_OUT" "^A  planned  spec=docs/game-dev/specs/2026-10-01-demo.md  plan=docs/game-dev/plans/2026-10-01-A.md$" "A resolved and planned"
+  assert_contains "$LS_OUT" "^B  plan  " "B lacks its sweep line"
+  assert_contains "$LS_OUT" "^C  brainstorm  spec=-  plan=-$" "C has no spec row"
+  assert_contains "$LS_OUT" "^next: /game-dev:brainstorm C$" "brainstorm comes before plan"
+  printf '%s\n' "$MFP" > "$P/.studio/run"
+  run_lanes next
+  assert_contains "$LS_OUT" "^next: /game-dev:brainstorm C$" "no argument reads .studio/run"
+  rm "$P/.studio/run"; run_lanes next
+  assert_eq 2 "$LS_STATUS" "no pointer and no argument exits 2"
+  assert_contains "$LS_ERR" "no run manifest (.studio/run)" "and says why"
+}
+test_lanes_next_all_planned_and_ambiguous() {
+  LANES_CELLS=dash; export LANES_CELLS
+  lanes_fixture nxt2 integration A:-
+  printf -- '- 2026-10-01 spec approved docs/game-dev/specs/2026-10-01-demo.md\n- 2026-10-01 plan approved docs/game-dev/plans/2026-10-01-A.md\n- 2026-10-01 Decisions swept A\n' > "$P/.studio/ledger/demo.md"
+  run_lanes next "$MFP"
+  assert_contains "$LS_OUT" "^next: /omega:autopilot$" "every row planned"
+  cp "$P/docs/game-dev/plans/2026-10-01-A.md" "$P/docs/game-dev/plans/2026-10-02-A2.md"
+  ( cd "$P" && git add -A && git commit -qm dup ) >/dev/null 2>&1
+  run_lanes next "$MFP"
+  assert_eq 2 "$LS_STATUS" "two plans for one story"
+  assert_contains "$LS_ERR" "A matches two plans" "the refusal names both"
+}
+test_lanes_next_plan_before_autopilot() {
+  LANES_CELLS=dash; export LANES_CELLS
+  lanes_fixture nxt3 integration A:- B:A
+  printf -- '- 2026-10-01 spec approved docs/game-dev/specs/2026-10-01-demo.md\n- 2026-10-01 plan approved docs/game-dev/plans/2026-10-01-A.md\n- 2026-10-01 Decisions swept A\n' > "$P/.studio/ledger/demo.md"
+  run_lanes next "$MFP"
+  assert_contains "$LS_OUT" "^B  plan  " "B has no plan approval"
+  assert_contains "$LS_OUT" "^next: /game-dev:plan B$" "plan comes when nothing needs brainstorming"
+  _before="$(cd "$P" && git status --porcelain | wc -l | tr -d ' ')"
+  run_lanes next "$MFP"
+  assert_eq "$_before" "$(cd "$P" && git status --porcelain | wc -l | tr -d ' ')" "next writes nothing"
+}
+
 run_tests test_lanes_chain_rule test_lanes_manifest_refusals test_lanes_manifest_header_refusals \
   test_lanes_preflight_story_checks test_lanes_preflight_story_state test_lanes_docs_unreachable \
-  test_lanes_git_too_old test_lanes_sourced_only
+  test_lanes_git_too_old test_lanes_sourced_only test_lanes_next \
+  test_lanes_next_all_planned_and_ambiguous test_lanes_next_plan_before_autopilot

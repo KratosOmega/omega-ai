@@ -251,3 +251,67 @@ lanes_start() {
   say "manifest runs are not available yet: use start --dry-run <manifest>"
   exit 2
 }
+
+# next_match KIND ID — the one tracked *.md file for story ID: KIND spec = a
+# `## Stories` table whose first column equals ID; plan = a line exactly
+# `Story: ID`. Prints the path (relative to START_DIR), nothing for none;
+# two matches refuse with the stated message and return 1.
+next_match() {
+  _nm_hits="$(git -C "$START_DIR" ls-files '*.md' | while IFS= read -r _nm_f; do
+    [ -f "$START_DIR/$_nm_f" ] || continue
+    if [ "$1" = spec ]; then
+      awk -F'|' -v id="$2" '
+        /^## / { in_s = ($0 ~ /^## Stories[ \t]*$/); next }
+        in_s && /^\|/ { c = $2; gsub(/^[ \t]+|[ \t]+$/, "", c); if (c == id) { f = 1 } }
+        END { exit f ? 0 : 1 }' "$START_DIR/$_nm_f" && printf '%s\n' "$_nm_f"
+    else
+      grep -qxF "Story: $2" "$START_DIR/$_nm_f" && printf '%s\n' "$_nm_f"
+    fi
+  done)"
+  case "$_nm_hits" in
+    *'
+'*) say "next: $2 matches two ${1}s: $(printf '%s\n' "$_nm_hits" | sed -n 1p), $(printf '%s\n' "$_nm_hits" | sed -n 2p)"; return 1 ;;
+  esac
+  printf '%s' "$_nm_hits"
+  return 0
+}
+
+# lanes_next MANIFEST — classify each row (brainstorm | plan | planned) from
+# files and ledger lines alone and print one line per row, then the one next
+# command. Pure read: no preflight, no studio state written.
+lanes_next() {
+  MF_ROWS="$(mktemp "${TMPDIR:-/tmp}/lanes-next.XXXXXX")" || exit 2
+  trap 'rm -f "$MF_ROWS"' EXIT
+  mf_load "$1" || exit 2
+  _ln_bs=""; _ln_pl=""
+  while IFS="$(printf '\t')" read -r _ln_id _ln_b _ln_t _ln_spec _ln_plan _ln_d; do
+    [ -n "$_ln_id" ] || continue
+    if [ "$_ln_spec" = - ] || [ -z "$_ln_spec" ]; then
+      _ln_spec="$(next_match spec "$_ln_id")" || exit 2
+    fi
+    if [ "$_ln_plan" = - ] || [ -z "$_ln_plan" ]; then
+      _ln_plan="$(next_match plan "$_ln_id")" || exit 2
+    fi
+    _ln_class=brainstorm
+    if [ -n "$_ln_spec" ]; then
+      _ln_slug="$(basename "$_ln_spec" | sed -e 's/\.md$//' -e 's/^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}-//')"
+      _ln_led="$START_DIR/.studio/ledger/$_ln_slug.md"
+      if [ -f "$_ln_led" ] && grep -qF "spec approved $_ln_spec" "$_ln_led"; then
+        _ln_class=plan
+        if [ -n "$_ln_plan" ] && grep -qF "plan approved $_ln_plan" "$_ln_led" \
+           && grep -qF "Decisions swept $_ln_id" "$_ln_led"; then
+          _ln_class=planned
+        fi
+      fi
+    fi
+    printf '%s  %s  spec=%s  plan=%s\n' "$_ln_id" "$_ln_class" "${_ln_spec:--}" "${_ln_plan:--}"
+    case "$_ln_class" in
+      brainstorm) [ -n "$_ln_bs" ] || _ln_bs="$_ln_id" ;;
+      plan) [ -n "$_ln_pl" ] || _ln_pl="$_ln_id" ;;
+    esac
+  done < "$MF_ROWS"
+  if [ -n "$_ln_bs" ]; then echo "next: /game-dev:brainstorm $_ln_bs"
+  elif [ -n "$_ln_pl" ]; then echo "next: /game-dev:plan $_ln_pl"
+  else echo "next: /omega:autopilot"; fi
+  rm -f "$MF_ROWS"
+}
