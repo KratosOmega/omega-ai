@@ -60,7 +60,7 @@ the self-review. Two studio rules override its defaults:
   Role: game-dev:gameplay-programmer
   Verify: unit+playtest
   Files: src/player/dash_state.gd, tests/unit/test_dash_input.gd
-  Spec: docs/game-dev/specs/2026-10-01-dash.md:L40-52, docs/game-dev/specs/2026-10-01-dash.md§### Feel targets
+  Spec: docs/game-dev/specs/2026-10-01-dash.md:L40-52, docs/game-dev/specs/2026-10-01-dash.md§## Feel targets
   Review: task
   ```
 
@@ -175,8 +175,8 @@ and in the same session, before anything is printed:
 1. SDD's pre-flight conflict scan: the plan's tasks against each other and
    against the code on the default branch, for files two tasks both write,
    and an interface one task assumes another changes. Write each finding
-   and its resolution into the plan's `## Decisions` (add the section after
-   Global Constraints when absent).
+   and its resolution into the plan's `## Decisions`.
+   Always add the section after Global Constraints when absent, writing `none` when it is empty.
 2. The question sweep (autopilot's sweep procedure, moved here). Read the
    approved spec and plan and list every decision the implementation could
    still meet: naming, error handling, test depth, tie-breaks between two

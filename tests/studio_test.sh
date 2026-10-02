@@ -523,6 +523,8 @@ test_plan_brainstorm_lanes() {
   assert_contains "$PL" 'new seam, cross-system, gameplay feel, data or schema, or importer' "the risk rule for Review: task"
   assert_contains "$PL" 'a `Spec:` line whose ranges exist, and a `Review:` line' "self-review checks Spec: and Review:"
   assert_contains "$PL" 'Decisions swept <id>' "the sweep is ledgered per story"
+  assert_contains "$PL" 'Always add the section after Global Constraints when absent, writing `none` when it is empty.' "the plan always carries ## Decisions, none when empty"
+  assert_contains "$PL" 'dash.md§## Feel targets' "the section example cites a real spec heading"
   assert_contains "$PL" 'pre-flight conflict scan' "the sweep runs SDD's conflict scan"
   assert_contains "$PL" 'does not print `/game-dev:execute` for a manifest story' "a manifest story never prints execute"
   assert_contains "$PL" 'studio-overnight next' "plan prints next's command"
