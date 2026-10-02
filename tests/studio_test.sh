@@ -427,7 +427,7 @@ test_execute_one_contract() {
   assert_contains "$S" "exactly one unit" "--one runs exactly one unit"
   assert_contains "$S" "no next implementer is dispatched" "--one cuts SDD's loop after one task"
   assert_contains "$S" "overrides SDD's instruction to continue to the next task" "the cut overrides SDD"
-  assert_contains "$S" "git push -u origin <branch>" "a task unit pushes its branch"
+  assert_contains "$S" "^    .git push -u origin <branch>.;$" "§8 task unit ends with the push (not §7 step 4)"
   assert_contains "$S" 'studio-state ledger "Stop: <reason>"' "every stop writes a Stop: line under --one"
   assert_contains "$S" 'git commit -m "chore(studio): stop"' "the Stop: line is committed in a feature checkout"
   assert_contains "$S" "not the default branch" "a Stop: before isolation is not committed onto the default branch (D9)"
