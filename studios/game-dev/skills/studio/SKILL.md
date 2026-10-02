@@ -15,6 +15,9 @@ names the next stage, and hands freeform requests to the right stage skill.
 
 Run `studio-state show` from the project root.
 
+- **Overnight run live:** when `$(studio-state root)/.studio/overnight.lock`
+  exists and its `pid=` is live (`kill -0`), print `Overnight run in progress (pid <pid>) — studio-overnight status`
+  and stop: the router routes nothing else while a run holds the project.
 - **Exit 0:** parse the header fields (`stage`, `spec`, `plan`, `task`,
   `branch`, `milestone`) and the ledger lines. Then run
   `studio-state check`: on exit 1, end the state line with ` · ` followed by

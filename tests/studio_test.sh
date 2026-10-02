@@ -438,6 +438,13 @@ test_execute_one_contract() {
   assert_eq 5 "$(grep -c 'Under `--one`, see §8' "$S")" "five pointers: §0, §1, §5 step 6, §7 step 6, §7 step 7"
 }
 
+test_router_overnight_lock() {
+  S="$REPO_ROOT/studios/game-dev/skills/studio/SKILL.md"
+  assert_contains "$S" ".studio/overnight.lock" "the router checks the runner's lock"
+  assert_contains "$S" "Overnight run in progress (pid <pid>) — studio-overnight status" "the router names status when a run is live"
+  assert_contains "$S" "routes nothing else" "a live run blocks routing"
+}
+
 run_tests test_plugin_manifests test_skill_frontmatter test_agent_frontmatter \
   test_external_references_declared test_required_plugins_enabled test_bin_syntax \
   test_role_agents_exist test_stage_skill_contracts test_plan_skill_contract \
@@ -446,4 +453,4 @@ run_tests test_plugin_manifests test_skill_frontmatter test_agent_frontmatter \
   test_stage_chain test_execute_contract test_agent_contracts test_feature_checkout_copies test_next_lines \
   test_review_contract test_on_demand_skills_keep_stage test_playtest_contract test_retro_contract \
   test_no_ship_references test_superpowers_requires_referenced test_no_last_playtest_callers \
-  test_execute_one_contract
+  test_execute_one_contract test_router_overnight_lock

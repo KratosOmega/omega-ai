@@ -124,7 +124,7 @@ and `claude-gen` both carry these seven skills beside their own:
 | `/omega:parallel [N]` | Runs a plan's independent tasks concurrently — one worktree and one reviewer per task, cherry-picked back — capped at N when given; `off` clears it |
 | `/omega:local-merge` | Skips GitHub checks: runs the project's local CI and merges through `gh pr merge --admin` on exit 0, with the strategy the project uses; `off` clears it |
 | `/omega:integration start\|add\|status\|finish` | An `integration/<slug>` branch several stories merge into, tracked in `docs/integrations/<slug>.md`, landed on `main` as one |
-| `/omega:autopilot` | Asks every open decision up front, then runs unattended: rulings logged, a push after every task, a draft PR, never a merge, and a handoff at the end; keeps the machine awake (`omega-caffeine`) and re-prompts itself every 30 minutes while idle; `off` clears it |
+| `/omega:autopilot` | Asks every open decision up front, checks readiness with `studio-overnight start --dry-run`, then prints the runner command: one fresh headless session per unit, rulings logged, a draft PR, never a merge. |
 | `/omega:delegate` | The main session only dispatches, reads reports and runs status commands; every edit, search and document goes to a subagent, never fixed by hand; `off` clears it |
 | `/omega:reply` | Explanations and decisions arrive as one concrete scenario from the project's world — what the player sees, or what the tool's user hits — in five lines at most, with no paths, symbols, config keys or raw values in the prose; code, commands, exact errors, test results and safety warnings stay verbatim; `off` clears it |
 
