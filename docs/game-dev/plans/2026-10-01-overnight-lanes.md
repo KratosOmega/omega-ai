@@ -265,6 +265,50 @@ as D1a-D1d.
   - (d) phoenix `merge.sh`'s behaviour is read from its source and from a
     non-merging invocation. A merging run happens only in the live run (play
     list) or on a throwaway PR the user approves.
+  - D1a: pending the human close (T1 step 2).
+  - D1b: probed 2026-10-01 with `BASH_DEFAULT_TIMEOUT_MS=900000
+    BASH_MAX_TIMEOUT_MS=900000 claude-gd -p "Run exactly this Bash command
+    with no timeout argument and report its output: sleep 660; echo slept"
+    --output-format stream-json --verbose --permission-mode auto`. The
+    session ended in 10 s without running the command: the Bash tool
+    returned `Blocked: sleep 660 followed by: echo slept. To wait for a
+    condition, use Monitor with an until-loop ... use run_in_background:
+    true. Do not chain shorter sleeps to work around this block.` So the
+    env vars were never exercised: the harness refuses a long foreground
+    `sleep` before any timeout applies, and the probe is inconclusive on
+    `BASH_*_TIMEOUT_MS`. Path chosen: the fallback. T14 makes the
+    background `studio-test` + wait-for-notification path the default in §0,
+    and writes the foreground path as an option only after a probe that
+    uses a non-`sleep` long command (not run here, to avoid circumventing
+    the guard).
+  - D1c: probed with `script -q /dev/null sh probe-pg.sh`, which ran
+    `( set -m; sleep 30 & echo "$!" > pg.child; wait ) &`, then `ps -o
+    pid,pgid,tpgid -p <child>`, then `kill -INT -<own pgid>` with INT
+    ignored in the probe. Observed: probe pid=pgid=70344; child pid=70349,
+    pgid=70349 (own group, differs from the probe's), tpgid 70344; after the
+    INT the child was still alive (`child SURVIVED INT`, state S). Path
+    chosen: the primary. `set -m` in a background subshell gives its own
+    process group, so `run_unit` needs no `perl setpgrp` launch; (c)'s
+    fallback is not used by T8.
+  - D1d: read phoenix `.github/scripts/merge.sh` in full, then ran
+    `sh -c 'sh .github/scripts/merge.sh 999999 </dev/null'` under a
+    120 s `perl alarm` from a throwaway detached phoenix worktree (removed
+    afterwards). Observed: stderr `error: could not read PR #999999 from
+    GitHub.`, exit 1, instant, no prompt, no hang, nothing written. From the
+    source: exit 0 only after a merge or `--dry-run`; every other outcome is
+    `die` = exit 1 (usage, dirty tracked tree, resources/ or web-tools/data/
+    untracked files, HEAD not the PR head, base not `main`, REFUSE, red gate
+    step, failed `gh pr merge`); a nonzero `gh pr checks` is tolerated. It
+    never reads a TTY (`read` is only on here-strings) and never deletes a
+    head branch (no `--delete-branch`, no `git push --delete`), but it does
+    `git push --force-with-lease` the PR branch when behind main (not under
+    `--dry-run`) and posts a PR comment. Assumptions: bash shebang (runs
+    under `sh` on macOS), self-`cd` to the repo root, `gh` authenticated,
+    `python3`, `npm`, `actionlint` and Godot present, local HEAD checked out
+    at the PR head as a branch, `SKIP_WEB_TOOLS` and `SKIP_TOOL_TESTS`
+    unset; a Mode 2 gate takes 7-20 minutes. Path chosen: it needs no tty,
+    so the runner runs it from a plain parent with `</dev/null` and a
+    timeout of `session_minutes`; the merging run stays in the live run.
 - **D2. One crash text** (A1). Both the lane's EXIT trap and the parent's
   sweep write `stopped: lane crashed (<rc>)`, as spec 115, spec 376 and
   AC16 say. Spec 497's "lane exited" is superseded. A chain that no lane
