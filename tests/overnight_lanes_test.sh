@@ -1538,6 +1538,21 @@ test_lanes_status_reaps_dead_runner() {
   assert_contains "$R/report.md" "^Ending: stop: runner gone$" "start writes the stale run's report before it resumes"
   assert_eq 0 "$LS_STATUS" "the resumed run lands A"
 }
+# A runner SIGKILLed after its final step recorded the PR: the reap's report
+# names that PR (the report a finished run would have written), not "none".
+test_lanes_reap_names_final_pr() {
+  LANES_PROGRESS=1; LANES_MAIN_MOVES=main.txt; export LANES_PROGRESS LANES_MAIN_MOVES
+  lanes_fixture reapf integration A:-
+  printf 'progress\n' > "$SCEN/progress"
+  use_gate "echo gate >> '$CALLS/final-gates'"
+  run_lanes start "$MFP"
+  R="$(last_lanes_dir)"
+  assert_contains "$P/.studio/runs/demo/final" " https://gh.test/pr/1 green$" "the fixture: the final step recorded its PR"
+  # The runner died after that record: no report, no lock holder.
+  rm -f "$R/report.md" "$R/done"
+  ( cd "$P" && sh "$RUNNER" status ) > "$TMP/st.out"
+  assert_contains "$R/report.md" "^Final PR: https://gh.test/pr/1 (green)$" "the reaped report names the final PR"
+}
 # Last: no process any test started is still alive.
 test_lanes_no_orphans() {
   _left="$(pgrep -f "$TMP" 2>/dev/null; pgrep -f "$RUNNER" 2>/dev/null)"
@@ -1561,5 +1576,5 @@ run_tests test_lanes_chain_rule test_lanes_manifest_refusals test_lanes_manifest
   test_lanes_final_skipped_on_stop_or_nothing_landed test_lanes_final_gate_default test_lanes_direct_progress_landing \
   test_lanes_final_dirty_unit_is_red test_lanes_final_budget test_lanes_final_conflict_then_red \
   test_lanes_status_per_story test_lanes_report_every_ending test_lanes_report_on_lane_crash \
-  test_lanes_done_marker test_lanes_status_reaps_dead_runner \
+  test_lanes_done_marker test_lanes_status_reaps_dead_runner test_lanes_reap_names_final_pr \
   test_lanes_no_orphans

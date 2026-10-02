@@ -948,6 +948,16 @@ lanes_load_run() {
     DEFAULT_BRANCH="${DEFAULT_BRANCH#origin/}"
   fi
   FINAL_PR=""; FINAL_COLOR=""; FINAL_NOTE=""; FINAL_RAN=0; FINAL_RC=1
+  # A runner killed after its final step left RECORD/final: the PR it names
+  # (while the record's head is still origin/<Target>'s) is the run's final PR.
+  if [ -f "$RECORD/final" ]; then
+    _lr_s=""; _lr_u=""; _lr_c=""
+    read -r _lr_s _lr_u _lr_c < "$RECORD/final"
+    _lr_h="$(git -C "$START_DIR" rev-parse -q --verify "refs/remotes/origin/$MF_TARGET^{commit}" 2>/dev/null)"
+    if [ -n "$_lr_u" ] && [ "$_lr_s" = "$_lr_h" ]; then
+      FINAL_PR="$_lr_u"; FINAL_COLOR="${_lr_c:-red}"; FINAL_RAN=1; FINAL_RC=0
+    fi
+  fi
 }
 # lanes_live_lanes — the pids of RUN_DIR's lanes that still run (a lane is a
 # subshell of studio-overnight: its args name it).
