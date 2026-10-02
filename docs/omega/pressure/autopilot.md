@@ -55,6 +55,10 @@ runs `omega-mode set autopilot` and tells the user to start the run in
 this session, naming the permission-mode caveat. Neither path keeps the
 machine awake or arms a re-prompt.
 
+*2026-09-15: the arm-step criterion and the prompt B sentence that asks
+for it were added when the keep-awake process and the heartbeat landed;
+the results below predate them and were not re-run.*
+
 *2026-10-01: the hand-off criterion and the prompt B sentence that asks
 for it were rewritten when the `studio-overnight` runner replaced the
 in-session keep-awake process and re-prompt job; the results below

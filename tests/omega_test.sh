@@ -199,6 +199,33 @@ autopilot source=env" "$out" "the file's lines, then the env line"
   assert_eq "" "$(env -u OMEGA_AUTOPILOT CLAUDE_CONFIG_DIR="$TMP/cfg-env" sh "$MODE" --session none show)" "no env, no file: nothing"
   assert_status 1 "without the env, a missing session id still dies" -- env -u CLAUDE_CODE_SESSION_ID -u OMEGA_AUTOPILOT sh "$MODE" show
   assert_status 1 "set still needs a session id under the env" -- env -u CLAUDE_CODE_SESSION_ID OMEGA_AUTOPILOT=1 sh "$MODE" set reply
+  assert_status 0 "brief with OMEGA_AUTOPILOT=1 and no session id exits 0" -- \
+    env -u CLAUDE_CODE_SESSION_ID OMEGA_AUTOPILOT=1 CLAUDE_CONFIG_DIR="$TMP/cfg-env" sh "$MODE" brief
+  # OMEGA_AUTOPILOT set to anything but 1: no env line.
+  assert_eq "" "$(OMEGA_AUTOPILOT=0 CLAUDE_CONFIG_DIR="$TMP/cfg-env" sh "$MODE" --session none show)" "OMEGA_AUTOPILOT=0 adds no env line"
+  assert_eq "" "$(OMEGA_AUTOPILOT=yes CLAUDE_CONFIG_DIR="$TMP/cfg-env" sh "$MODE" --session none brief)" "OMEGA_AUTOPILOT=yes gives no brief"
+  # A hand-edited file whose last line has no newline: the env line is its own line.
+  mkdir -p "$TMP/cfg-env/omega/modes"; printf 'reply' > "$TMP/cfg-env/omega/modes/glue"
+  assert_eq "reply
+autopilot source=env" "$(OMEGA_AUTOPILOT=1 CLAUDE_CONFIG_DIR="$TMP/cfg-env" sh "$MODE" --session glue show)" "show never glues the env line onto a last line with no newline"
+  OMEGA_AUTOPILOT=1 CLAUDE_CONFIG_DIR="$TMP/cfg-env" sh "$MODE" --session glue brief > "$TMP/env-glue.txt"
+  assert_contains "$TMP/env-glue.txt" "^Omega modes: reply · autopilot source=env$" "brief never glues the env line either"
+  # A session file set to source=env by hand, without the env: today's text.
+  CLAUDE_CONFIG_DIR="$TMP/cfg-env" sh "$MODE" --session hand set autopilot source=env
+  env -u OMEGA_AUTOPILOT CLAUDE_CONFIG_DIR="$TMP/cfg-env" sh "$MODE" --session hand brief > "$TMP/env-hand.txt"
+  assert_not_contains "$TMP/env-hand.txt" "overnight runner" "the runner's text needs OMEGA_AUTOPILOT=1"
+  assert_contains "$TMP/env-hand.txt" "end with handoff" "a hand-set source=env keeps today's text"
+}
+
+test_session_start_env_autopilot() {
+  rm -rf "$CFG"
+  printf '%s' '{"session_id":"run1","hook_event_name":"SessionStart","source":"startup"}' \
+    | CLAUDE_PLUGIN_ROOT="$OMEGA" CLAUDE_CONFIG_DIR="$CFG" CLAUDE_CODE_SESSION_ID= OMEGA_AUTOPILOT=1 \
+      sh "$OMEGA/hooks/session-start.sh" > "$TMP/hook.out" 2> "$TMP/hook.err"
+  assert_status 0 "session-start under OMEGA_AUTOPILOT=1 is valid JSON" -- valid_json "$TMP/hook.out"
+  context > "$TMP/ctx.txt"
+  assert_contains "$TMP/ctx.txt" "Omega modes: autopilot source=env" "the session-start context lists the env autopilot"
+  assert_contains "$TMP/ctx.txt" "autopilot (overnight runner): never AskUserQuestion" "the session-start context carries the runner's autopilot line"
 }
 
 # hook NAME JSON — run a hook as Claude Code would: the JSON on stdin, the
@@ -614,6 +641,6 @@ test_skill_contracts() {
 
 run_tests test_plugin_files test_skill_stubs test_marketplace \
   test_mode_round_trip test_mode_validation test_mode_brief test_mode_env_autopilot \
-  test_hooks_json test_session_start test_session_start_prunes_old_files \
+  test_hooks_json test_session_start test_session_start_env_autopilot test_session_start_prunes_old_files \
   test_prompt_submit test_prompt_submit_raw_shape test_session_end test_pre_tool_use \
   test_no_keepawake_or_cron test_skill_contracts

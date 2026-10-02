@@ -30,7 +30,10 @@ it is set.
 Phase 1 runs with no session-file `autopilot` mode. An attended phase 1
 session never has `OMEGA_AUTOPILOT=1`, so an `autopilot` line in
 `omega-mode show` without `source=env` is a previous run's leftover: clear
-it first with `omega-mode clear autopilot`.
+it first with `omega-mode clear autopilot`. When `OMEGA_AUTOPILOT=1` is set
+(`omega-mode show` lists `autopilot source=env`), the runner started this
+session and nobody can answer a sweep: phase 1 does not run — stop and say
+so; phase 2 governs the session.
 
 1. **Design and plan as the studio does — unless that is done.** When the
    spec and the plan are already approved and committed — the studio
@@ -71,7 +74,8 @@ it first with `omega-mode clear autopilot`.
    - in a studio: `studio-overnight start --dry-run` exits 0 (the runner's own preflight: plan approved and committed, `## Decisions`, stage, `claude-gd`, `gh`, deny list, config, no live run);
    - outside a studio: the feature branch is checked out in a worktree —
      `git branch --show-current`, and `git rev-parse --show-toplevel` is
-     not the main checkout; and the plan is approved and committed —
+     not the main checkout;
+   - outside a studio: the plan is approved and committed —
      `git log -1 --format=%h -- <plan>` prints a hash and
      `git status --porcelain -- <spec> <plan>` prints nothing;
    - the baseline test run is green — the project's test command, `exit 0`;

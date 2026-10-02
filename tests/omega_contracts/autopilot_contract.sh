@@ -27,4 +27,13 @@ test_autopilot_contract() {
   assert_not_contains "$S" "Cron""Delete" "no heartbeat is deleted"
   assert_not_contains "$S" "heartbeat" "no heartbeat at all"
   assert_not_contains "$S" "on the feature branch, in a worktree" "the worktree readiness line is replaced by the dry run"
+  # Outside a studio the checklist has six lines, as the pressure doc's B
+  # criterion counts: the worktree and plan lines are two bullets.
+  assert_contains "$S" "^   - outside a studio: the feature branch is checked out in a worktree" "outside a studio: the worktree line"
+  assert_contains "$S" "^   - outside a studio: the plan is approved and committed" "outside a studio: the plan line, its own bullet"
+  assert_contains "$S" "phase 1 does not run" "a runner-started session (OMEGA_AUTOPILOT=1) never runs phase 1's sweep"
+  D="$REPO_ROOT/docs/omega/pressure/autopilot.md"
+  assert_contains "$D" "checklist of six lines" "the pressure doc counts six checklist lines"
+  assert_contains "$D" "^\*2026-09-15: the arm-step criterion" "the 2026-09-15 dated note is kept (D10)"
+  assert_contains "$D" "^\*2026-10-01: the hand-off criterion" "the 2026-10-01 note follows it"
 }

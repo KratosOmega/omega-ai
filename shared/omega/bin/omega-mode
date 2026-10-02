@@ -157,7 +157,7 @@ mode_clear() {
 env_line() { [ "${OMEGA_AUTOPILOT:-}" = 1 ] || return 0; [ -n "$FILE" ] && [ -f "$FILE" ] && awk '$1 == "autopilot" { f = 1 } END { exit !f }' "$FILE" && return 0; echo "autopilot source=env"; }
 
 mode_show() {
-  [ -n "$FILE" ] && [ -f "$FILE" ] && cat "$FILE"
+  [ -n "$FILE" ] && [ -f "$FILE" ] && awk '{ print }' "$FILE"   # awk ends a newline-less last line
   env_line
   return 0
 }
@@ -165,7 +165,7 @@ mode_show() {
 # The rule lines are the summary of the precedence contract every mode skill
 # carries; they are fixed text so the hooks never invent them.
 mode_brief() {
-  _in="$({ [ -n "$FILE" ] && cat "$FILE" 2>/dev/null; env_line; })"
+  _in="$({ [ -n "$FILE" ] && [ -f "$FILE" ] && awk '{ print }' "$FILE"; env_line; })"
   [ -n "$_in" ] || return 0
   _heads="$(printf '%s\n' "$_in" | awk 'BEGIN { ORS = "" } NR > 1 { printf " · " } { printf "%s", $0 }')"
   printf 'Omega modes: %s\n' "$_heads"
@@ -188,7 +188,7 @@ mode_brief() {
         [ -n "$_slug" ] || _slug="<slug>"
         printf '  integration: story branches PR into integration/%s; docs/integrations/%s.md is the set; finish only when every row is merged.\n' "$_slug" "$_slug" ;;
       autopilot)
-        if [ "$_rest" = "source=env" ]; then
+        if [ "$_rest" = "source=env" ] && [ "${OMEGA_AUTOPILOT:-}" = 1 ]; then
           printf '  autopilot (overnight runner): never AskUserQuestion — rule by the standards, log the ruling with its cost if wrong, continue; commit, push and open a draft PR, never merge; on a hard stop write Stop: <reason> to the ledger and end; no handoff — the runner starts the next session.\n'
         else
           printf '  autopilot: never AskUserQuestion — rule by the standards, log the ruling with its cost if wrong, continue; commit, push and open a PR, never merge; end with handoff.\n'
