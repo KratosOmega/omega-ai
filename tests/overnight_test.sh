@@ -78,7 +78,9 @@ fixture() {
   OVERNIGHT_SCENARIO="$TMP/scenario-$1"
   export CALLS TMP_WT OVERNIGHT_SCENARIO
   mkdir -p "$P/docs" "$CALLS" "$TMP_WT"; : > "$OVERNIGHT_SCENARIO"
+  rm -rf "$TMP/$1.git"; git init -q --bare "$TMP/$1.git"
   ( cd "$P" && git init -q -b main && git -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
+    git remote add origin "$TMP/$1.git" && git push -q origin main && git remote set-head origin main
     sh "$STATE_BIN" init >/dev/null
     [ -z "${2:-}" ] || printf '%s\n' "$2" > .studio/config.json
     printf '# Spec\n' > docs/spec.md
@@ -107,7 +109,8 @@ test_overnight_help() {
   out="$(sh "$RUNNER" --help 2>&1)"; st=$?
   assert_eq 0 "$st" "--help exits 0"
   printf '%s\n' "$out" > "$TMP/help.txt"
-  for w in "start \[--dry-run\]" "status" "stop" "STUDIO_OVERNIGHT_SESSION_SECONDS" "overnight-deny.txt" "report.md"; do
+  for w in "start \[--dry-run\]" "status" "stop" "STUDIO_OVERNIGHT_SESSION_SECONDS" "overnight-deny.txt" "report.md" \
+           "run_usd .*0-5000" "max_lanes" "model_task" "model_final" "model_finish" "model_repair" "model_progress" "merge_command"; do
     assert_contains "$TMP/help.txt" "$w" "help names $w"
   done
   assert_contains "$TMP/help.txt" "$RUNNER" "help names the runner by its absolute path"
@@ -178,8 +181,8 @@ test_overnight_preflight_all_failures() {
 }
 
 test_overnight_config_refusals() {
-  for bad in '"session_usd": 0' '"session_usd": 201' '"run_usd": 2001' '"session_minutes": 9' \
-             '"session_minutes": 1.5' '"retries": 4' '"retries": "two"' '"kill_grace_seconds": 4'; do
+  for bad in '"session_usd": 0' '"session_usd": 201' '"run_usd": 5001' '"session_minutes": 9' \
+             '"session_minutes": 1.5' '"run_usd": 0.5' '"retries": 4' '"retries": "two"' '"kill_grace_seconds": 4'; do
     key="$(printf '%s' "$bad" | sed 's/^"\([a-z_]*\)".*/\1/')"
     fixture cfg "{ \"overnight\": { $bad } }"
     refuse_case "config $bad" "$key"
@@ -286,8 +289,11 @@ test_overnight_launch_argv() {
     assert_contains "$a" "^$f\$" "argv has $f as its own element"
   done
   assert_contains "$a" "^Bash(git push --force:\*)\$" "a deny rule with spaces is one element"
-  R="$(grep -v '^#' "$deny" | grep -c .)"
-  assert_eq "$(printf -- '--disallowedTools\n'; grep -v '^#' "$deny" | grep .)" \
+  assert_eq "--model" "$(sed -n 3p "$a")" "--model is element 3 (D6)"
+  assert_eq "sonnet" "$(sed -n 4p "$a")" "task units default to model_task"
+  grep -v '^#' "$deny" | grep . | grep -v '{merge_basename}' | sed 's/{default_branch}/main/g' > "$TMP/rules.txt"
+  R="$(grep -c . "$TMP/rules.txt")"
+  assert_eq "$(printf -- '--disallowedTools\n'; cat "$TMP/rules.txt")" \
     "$(tail -n "$((R + 1))" "$a")" "--disallowedTools is the last option, followed by every rule in file order"
   # The -C and gh api forms a mid-command force-push or remote delete takes (AC16).
   for r in 'Bash(git -C * push -f*)' 'Bash(git -C * push --force*)' 'Bash(git -C * push * -f*)' \
@@ -297,6 +303,24 @@ test_overnight_launch_argv() {
   done
   assert_eq "1" "$(cat "$CALLS/1.env")" "OMEGA_AUTOPILOT=1 reaches the session"
   assert_eq "$P" "$(cat "$CALLS/1.pwd")" "every session starts in START_DIR"
+}
+
+# Final fix wave (AC19): a single-plan run never uses the manifest mode's
+# LAUNCH_ENV, UNIT_CWD or LDIR inherited from the user's environment.
+test_overnight_ignores_inherited_lane_vars() {
+  fixture hostile
+  LAUNCH_ENV="OMEGA_AUTOPILOT=hostile; : > '$CALLS/pwned'"; UNIT_CWD="$TMP"; LDIR="$TMP/hostile-ldir"
+  export LAUNCH_ENV UNIT_CWD LDIR
+  mkdir -p "$LDIR"
+  run_start --dry-run
+  assert_contains "$RS_OUT" "OMEGA_AUTOPILOT=1 claude-gd -p '/game-dev:execute --one'" "the dry run's launch line ignores an inherited LAUNCH_ENV"
+  done_scenario; run_start
+  unset LAUNCH_ENV UNIT_CWD LDIR
+  assert_eq "1" "$(cat "$CALLS/1.env")" "an inherited LAUNCH_ENV is never evaluated"
+  assert_missing "$CALLS/pwned" "nothing in it runs"
+  assert_eq "$P" "$(cat "$CALLS/1.pwd")" "an inherited UNIT_CWD never moves the session"
+  assert_missing "$TMP/hostile-ldir/cpid" "an inherited LDIR gets no cpid"
+  assert_missing "$TMP/hostile-ldir/wpid" "nor a wpid"
 }
 
 test_overnight_retry_then_no_progress() {
@@ -366,6 +390,16 @@ test_overnight_cost_unknown() {
 test_overnight_unexpected_stage() {
   fixture stage; scenario "stage idle"; run_start
   assert_contains "$(last_run_dir)/report.md" "stop: unexpected stage idle" "idle without shipped stops"
+}
+
+test_overnight_unknown_label_stops() {
+  fixture badlabel; scenario "stage execute; task 1/1"
+  STUDIO_OVERNIGHT_LABEL=bogus; export STUDIO_OVERNIGHT_LABEL
+  run_start
+  unset STUDIO_OVERNIGHT_LABEL
+  assert_eq 1 "$RS_STATUS" "an unknown unit label is a runner error"
+  assert_contains "$(last_run_dir)/report.md" "^Ending: stop: runner error (exit 3)$" "the report names the runner error"
+  assert_missing "$CALLS/1.argv" "no claude session launches with an empty --model"
 }
 
 test_overnight_overhead() {
@@ -584,6 +618,47 @@ test_overnight_status() {
   assert_eq "no run" "$(cd "$P" && sh "$RUNNER" status 2>&1)" "status prints no run"
 }
 
+test_overnight_models_by_unit() {
+  fixture models '{"overnight": {"model_final": "opus-x", "model_finish": "son.1"}}'
+  scenario "stage execute; task 1/1; ledger T1 complete" "ledger final review done" "ledger shipped https://x/pr/1; stage idle"
+  run_start
+  assert_eq 0 "$RS_STATUS" "the run ends done"
+  assert_eq sonnet "$(sed -n 4p "$CALLS/1.argv")" "a task unit gets model_task (default sonnet)"
+  assert_eq opus-x "$(sed -n 4p "$CALLS/2.argv")" "the final review gets model_final"
+  assert_eq son.1 "$(sed -n 4p "$CALLS/3.argv")" "the finish gets model_finish"
+}
+test_overnight_config_refusals_v2() {
+  fixture cfgv2 '{"overnight": {"max_lanes": 9, "run_usd": 0.5, "model_task": "Sonnet 4"}, "merge_command": "missing.sh"}'
+  run_start --dry-run
+  assert_eq 2 "$RS_STATUS" "refused"
+  assert_contains "$RS_ERR" "overnight.max_lanes" "max_lanes out of range"
+  assert_contains "$RS_ERR" "run_usd" "run_usd between 0 and 1"
+  assert_contains "$RS_ERR" "model_task" "a model with a space"
+  assert_contains "$RS_ERR" "merge_command" "merge_command without <pr> and not an executable under the checkout"
+}
+test_overnight_default_branch_required() {
+  fixture nohead
+  git -C "$P" remote set-head origin -d >/dev/null 2>&1
+  run_start --dry-run
+  assert_eq 2 "$RS_STATUS" "no origin/HEAD is a refusal"
+  assert_contains "$RS_ERR" "origin/HEAD is not set" "the refusal says how to fix it"
+}
+test_overnight_deny_merge_basename() {
+  fixture denymb '{"merge_command": "scripts/merge.sh <pr>"}'
+  mkdir -p "$P/scripts"; printf '#!/bin/sh\n' > "$P/scripts/merge.sh"; chmod +x "$P/scripts/merge.sh"
+  ( cd "$P" && git add -A && git -c user.name=t -c user.email=t@t commit -q -m m ) >/dev/null 2>&1
+  run_start --dry-run
+  assert_eq 0 "$RS_STATUS" "a valid merge_command passes"
+  assert_contains "$RS_OUT" "'Bash(\*merge.sh\*)'" "the merge program is denied by basename"
+  assert_contains "$RS_OUT" "'Bash(gh api \*pulls/\*/merge\*)'" "the merge endpoint is denied"
+}
+test_overnight_run_usd_default_uncapped() {
+  fixture uncapped
+  scenario "stage execute; task 1/1; ledger T1 complete; cost 400" "ledger final review done; cost 400" "ledger shipped u; stage idle; cost 1"
+  run_start
+  assert_eq 0 "$RS_STATUS" "run_usd 0 caps nothing: an \$801 run ends done"
+}
+
 run_tests test_overnight_report_done test_overnight_report_not_done \
   test_overnight_report_anchors test_overnight_resume_quote test_overnight_label_t1 \
   test_overnight_session_seconds_refused test_overnight_claim_without_run_dir \
@@ -596,8 +671,11 @@ run_tests test_overnight_report_done test_overnight_report_not_done \
   test_overnight_config_refusals test_overnight_deny_file_required \
   test_overnight_lock test_overnight_first_use_ignores \
   test_overnight_start_args test_overnight_reclaim_race \
-  test_overnight_sequence_to_done test_overnight_launch_argv \
+  test_overnight_sequence_to_done test_overnight_launch_argv test_overnight_ignores_inherited_lane_vars \
   test_overnight_retry_then_no_progress test_overnight_progress_resets_retry \
   test_overnight_retries_zero test_overnight_stop_line test_overnight_copied_stop_not_new \
   test_overnight_run_budget test_overnight_cost_unknown test_overnight_unexpected_stage \
-  test_overnight_overhead
+  test_overnight_overhead test_overnight_unknown_label_stops \
+  test_overnight_models_by_unit test_overnight_config_refusals_v2 \
+  test_overnight_default_branch_required test_overnight_deny_merge_basename \
+  test_overnight_run_usd_default_uncapped

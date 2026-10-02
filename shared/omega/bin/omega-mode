@@ -189,9 +189,9 @@ mode_brief() {
         printf '  integration: story branches PR into integration/%s; docs/integrations/%s.md is the set; finish only when every row is merged.\n' "$_slug" "$_slug" ;;
       autopilot)
         if [ "$_rest" = "source=env" ] && [ "${OMEGA_AUTOPILOT:-}" = 1 ]; then
-          printf '  autopilot (overnight runner): never AskUserQuestion — rule by the standards, log the ruling with its cost if wrong, continue; commit, push and open a draft PR, never merge; on a hard stop write Stop: <reason> to the ledger and end; no handoff — the runner starts the next session.\n'
+          printf '  autopilot (overnight runner): never AskUserQuestion — rule by the standards, log the ruling with its cost if wrong, continue; commit, push and open a draft PR, no session merges anything in any run mode — nothing into main; the runner lands; on a hard stop write Stop: <reason> to the ledger and end; no handoff — the runner starts the next session.\n'
         else
-          printf '  autopilot: never AskUserQuestion — rule by the standards, log the ruling with its cost if wrong, continue; commit, push and open a PR, never merge; end with handoff.\n'
+          printf '  autopilot: never AskUserQuestion — rule by the standards, log the ruling with its cost if wrong, continue; commit, push and open a PR; no session merges anything in any run mode — nothing into main, the default branch; the user merges; end with handoff.\n'
         fi ;;
       delegate)
         printf '  delegate: the main session dispatches, reads reports and runs status commands; every edit, search and document goes to a subagent; never fix by hand.\n' ;;

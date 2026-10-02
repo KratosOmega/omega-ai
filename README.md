@@ -96,11 +96,37 @@ The shim puts `studios/game-dev/bin/` on `PATH`. From a Godot project root:
 | `studio-run [--scene S] [--seconds N] [--windowed]` | Boots the project for N seconds and scans the log for script errors | 0 clean · 1 errors · 2 no Godot |
 | `studio-lint [PATH]` | `gdlint` and `gdformat --check` when gdtoolkit is installed | 0 clean · 1 findings · 3 not installed |
 | `studio-state …` | Reads and writes `.studio/STATE.md` | 0 · 1 |
+| `studio-overnight start [<manifest>] \| status \| stop \| next` | Runs approved plans unattended, one fresh headless session per unit; see below | start: 0 done · 1 other ending · 2 refused |
 
 The verbs never name Godot; `studios/game-dev/engines/godot/` does. Godot is
 found through `GODOT_PATH`, then `/Applications/Godot*.app`, then `godot` on
 `PATH`. GUT is installed per project with the `Install:` line in
 `engines/godot/GUIDE.md` (`studio-test` prints it when GUT is missing).
+
+### Overnight runs
+
+`studio-overnight start` runs one approved plan to a draft PR. With a run
+manifest (`docs/runs/<slug>.md`, written by `/omega:autopilot`) it runs several
+stories as parallel lanes of dependency chains:
+
+- `studio-overnight start <manifest>` runs the stories; `--dry-run` prints the
+  chains and launch lines; `--detach` preflights in the foreground, then starts
+  the runner in its own session, free of the chat's `CLAUDE*`, `OMEGA_*` and
+  `STUDIO_*` variables (watch it with `status`, end it with `stop`).
+- `studio-overnight next` reads the manifest and the ledgers and prints the one
+  next planning command for the stories not yet planned.
+- Two modes, set in the manifest. **integration**: the runner merges each
+  shipped story into `integration/<slug>`, runs one full gate, and opens one
+  draft PR into `main`; nothing reaches `main` until you land that PR.
+  **direct**: the runner merges each story into `main` through the project's
+  `merge_command`, each dependent after its dependency. Sessions never merge in
+  either mode.
+- One gate lock per project (`.studio/gate.lock`): `studio-test`, `studio-run`,
+  the merge command and the final gate take it, so only one test or gate run
+  happens at a time across all lanes.
+- `report.md` in the run's reports directory is written on every ending; its
+  `## Cleanup` section holds the one command that deletes the run's remote
+  branches, to run after the final PR lands.
 
 ### MCP (optional)
 

@@ -79,7 +79,7 @@ After a merge, `git fetch origin` and verify it landed:
 Hand back to the invoking skill's own cleanup — worktree removal, its
 `stage` write, its progress update.
 
-When `omega-mode show` lists `autopilot`, skip this step: the PR stays
+When `omega-mode show` lists `autopilot`, skip this step: no session merges anything in any run mode — nothing is merged into `main` (the default branch); in an overnight run the runner lands stories. The PR stays
 open, the CI result goes into `gh pr comment <n> --body "<result>"`, and
 the morning report says so. Nothing merged, nothing to verify — the
 procedure ends here.

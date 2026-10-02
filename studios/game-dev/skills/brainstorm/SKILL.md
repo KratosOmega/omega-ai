@@ -210,6 +210,22 @@ What could sink this and the cheapest way to find out early. `n/a` when none.
 An explicit list. Anything cut in step 4 goes here with a one-line reason.
 ```
 
+**Epic under a manifest.** Invoked with an id under an active manifest
+(`.studio/run` names a manifest that lists it), write one spec for the whole
+epic, and add this section after `## Not doing`, with one row per manifest
+story the user puts in the epic:
+
+```markdown
+## Stories
+| Story | Acceptance criteria | Depends on |
+|-------|---------------------|------------|
+| <id>  | 1, 3-5              | <id or none> |
+```
+
+The `Acceptance criteria` cell holds comma-separated AC numbers or ranges
+(`1, 3-5`) from `## Acceptance criteria`, and nothing else. `studio-brief
+final` prints exactly those numbered items.
+
 Every section states a decision. A section that reads as a possibility is
 not finished. A bounded spec writes `n/a` in a section that does not apply
 rather than dropping it.
@@ -237,7 +253,9 @@ Revise on request and re-render. On approval: change the spec's `Status:` to
 `Approved`, run `studio-state ledger "spec approved <spec path>"`, commit the
 spec, its artifact (§6) and the state that must travel with them —
 `git add <spec path> docs/game-dev/artifacts/YYYY-MM-DD-<topic>.html .gitignore .studio/ledger .studio/config.json && git commit -m "docs(specs): approve <topic>"` —
-and print `Next: run /clear, then /game-dev:plan`. Without studio
+and print `Next: run /clear, then /game-dev:plan`. Under a manifest
+(an id and an active manifest, §5), print `/clear` and then the command
+`studio-overnight next` prints instead. Without studio
 state (§0), drop `.gitignore` and the two `.studio/` paths from that
 `git add`; the spec and its artifact still commit. Do not invoke the next
 command yourself.

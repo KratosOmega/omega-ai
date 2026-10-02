@@ -75,6 +75,30 @@ the row to `merged` with the PR number, commit
 `docs(integration): <branch> merged (#<n>)` on the integration branch, and
 push.
 
+## Autopilot run
+
+In a studio run under the overnight runner (`OMEGA_AUTOPILOT=1`) with an
+integration plan, the runner merges each story into `integration/<slug>`,
+runs the final step, and opens the one draft PR into `main`. No story PRs
+are opened. Sessions never merge: no session merges anything in any run mode — nothing is merged into `main` (the default branch); the runner lands (AC22). The attended flow in the rest of this skill is unchanged (AC20).
+
+## `repair <slug>`
+
+Run by the runner's one final repair, in the integration worktree
+`.claude/worktrees/integration-<slug>` (detached HEAD), with a fresh fixer.
+Read `STUDIO_REPAIR`:
+
+- `conflict`: the worktree is clean at the unmerged integration head. Run
+  `git merge --no-edit origin/main` (the default branch), resolve the
+  conflicts, and commit the merge. Done means no `MERGE_HEAD` and
+  `origin/main` an ancestor of `HEAD`.
+- `red:<abs path>`: the path is the red full gate's output
+  (`final-gate.log`). Read it, fix the cause, and commit. Uncommitted work
+  is discarded and counts as red.
+
+Never push, and never open a PR: the runner gates once more and pushes. Never
+merge into `main` (the default branch).
+
 ## `status [<slug>]`
 
 The slug is the mode's; with no `integration` line, the argument names
