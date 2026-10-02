@@ -218,6 +218,31 @@ test_mode_brief() {
   assert_eq "7" "$(wc -l < "$TMP/brief3.txt" | tr -d ' ')" "an unknown mode gets no rule line"
 }
 
+test_mode_env_autopilot() {
+  # No session id at all: the env line alone, exit 0.
+  out="$(env -u CLAUDE_CODE_SESSION_ID OMEGA_AUTOPILOT=1 CLAUDE_CONFIG_DIR="$TMP/cfg-env" sh "$MODE" show)"; st=$?
+  assert_eq 0 "$st" "show with OMEGA_AUTOPILOT=1 and no session id exits 0"
+  assert_eq "autopilot source=env" "$out" "show prints the env line"
+  out="$(env -u CLAUDE_CODE_SESSION_ID OMEGA_AUTOPILOT=1 CLAUDE_CONFIG_DIR="$TMP/cfg-env" sh "$MODE" brief)"
+  printf '%s\n' "$out" > "$TMP/env-brief.txt"
+  assert_contains "$TMP/env-brief.txt" "^Omega modes: autopilot source=env$" "brief heads with the env line"
+  assert_contains "$TMP/env-brief.txt" "autopilot (overnight runner): never AskUserQuestion — rule by the standards, log the ruling with its cost if wrong, continue; commit, push and open a draft PR, never merge; on a hard stop write Stop: <reason> to the ledger and end; no handoff — the runner starts the next session\." "brief carries the runner's rule text"
+  # A session file with reply: both lines, file first.
+  CLAUDE_CONFIG_DIR="$TMP/cfg-env" sh "$MODE" --session envs set reply
+  out="$(OMEGA_AUTOPILOT=1 CLAUDE_CONFIG_DIR="$TMP/cfg-env" sh "$MODE" --session envs show)"
+  assert_eq "reply
+autopilot source=env" "$out" "the file's lines, then the env line"
+  # A session-file autopilot line wins: no duplicate, today's text.
+  CLAUDE_CONFIG_DIR="$TMP/cfg-env" sh "$MODE" --session envs set autopilot
+  assert_eq 1 "$(OMEGA_AUTOPILOT=1 CLAUDE_CONFIG_DIR="$TMP/cfg-env" sh "$MODE" --session envs show | grep -c '^autopilot')" "no env line when the file lists autopilot"
+  OMEGA_AUTOPILOT=1 CLAUDE_CONFIG_DIR="$TMP/cfg-env" sh "$MODE" --session envs brief > "$TMP/env-brief2.txt"
+  assert_contains "$TMP/env-brief2.txt" "end with handoff" "a session-file autopilot keeps today's text"
+  # Unset or not 1: nothing.
+  assert_eq "" "$(env -u OMEGA_AUTOPILOT CLAUDE_CONFIG_DIR="$TMP/cfg-env" sh "$MODE" --session none show)" "no env, no file: nothing"
+  assert_status 1 "without the env, a missing session id still dies" -- env -u CLAUDE_CODE_SESSION_ID -u OMEGA_AUTOPILOT sh "$MODE" show
+  assert_status 1 "set still needs a session id under the env" -- env -u CLAUDE_CODE_SESSION_ID OMEGA_AUTOPILOT=1 sh "$MODE" set reply
+}
+
 # hook NAME JSON — run a hook as Claude Code would: the JSON on stdin, the
 # plugin root and the temporary config root in the environment, no session
 # id in the environment so the one in the JSON is what counts. Output lands
@@ -781,7 +806,7 @@ test_skill_contracts() {
 }
 
 run_tests test_plugin_files test_skill_stubs test_marketplace \
-  test_mode_round_trip test_mode_validation test_mode_brief \
+  test_mode_round_trip test_mode_validation test_mode_brief test_mode_env_autopilot \
   test_hooks_json test_session_start test_session_start_prunes_old_files \
   test_prompt_submit test_prompt_submit_raw_shape test_session_end test_pre_tool_use \
   test_caffeine test_skill_contracts
