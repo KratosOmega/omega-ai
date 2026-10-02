@@ -52,13 +52,30 @@ the self-review. Two studio rules override its defaults:
 
 - Save the plan to `docs/game-dev/plans/YYYY-MM-DD-<topic>.md` in the game
   project, not `docs/superpowers/plans/`.
-- Every task carries two extra lines directly under its heading:
+- Every task carries four lines directly under its heading, beside `Role:`,
+  `Verify:` and `Files:`:
 
   ```markdown
   ### Task 3: Input action and buffer window
   Role: game-dev:gameplay-programmer
   Verify: unit+playtest
   Files: src/player/dash_state.gd, tests/unit/test_dash_input.gd
+  Spec: docs/game-dev/specs/2026-10-01-dash.md:L40-52, docs/game-dev/specs/2026-10-01-dash.md§### Feel targets
+  Review: task
+  ```
+
+  - `Spec: <spec>:L<a>-<b>[, <spec>:L<c>-<d>][, <spec>§<heading>]` cites the
+    spec lines the task implements; items are separated by `, `. `§<heading>`
+    names a heading line exactly as written in the spec, including its `#`s.
+    The lines must exist.
+  - `Review: task|final` says whether execute reviews the task by itself.
+    `task` is for new seam, cross-system, gameplay feel, data or schema, or importer work; `final` is for the rest, which
+    folds into the final review.
+- Invoked with an id (`/game-dev:plan <id>`), the plan header gains the line
+  below, exactly that, on its own line:
+
+  ```markdown
+Story: <id>
   ```
 
 The plan header's **Spec:** line points at the approved spec, and its
@@ -128,7 +145,8 @@ Vertical slice first; polish, variants and content wait.
 Run the writing-plans self-review (spec coverage, placeholder scan, name
 consistency). Additionally check: every acceptance criterion in the spec maps
 to a task; every `Verify: unit` task names a test file; every
-`Verify: playtest` task states its playtest item.
+`Verify: playtest` task states its playtest item; every task has
+a `Spec:` line whose ranges exist, and a `Review:` line.
 
 Then run `studio-state set stage plan`, `studio-state set plan <plan path>`,
 `studio-state set task 0/N` (N = number of tasks outside the backlog), and
@@ -142,8 +160,33 @@ On approval: change the plan's `Status:` line to `Approved`, run
 spec and the state that must travel with them into the execution worktree —
 `git add <spec path> <plan path> .studio/ledger .studio/config.json && git commit -m "docs(plans): approve <topic>"`
 (a no-op for an already-committed, unchanged spec; it captures the spec
-approved in §0) —
-and print
-`Next: run /clear, then /game-dev:execute` (subagent-driven by default;
-`--inline` for checkpointed execution in this session). Do not invoke it
-yourself.
+approved in §0).
+
+**Not a manifest story** (no `.studio/run`, or its manifest does not list the
+id): print `Next: run /clear, then /game-dev:execute` (subagent-driven by
+default; `--inline` for checkpointed execution in this session). Do not
+invoke it yourself.
+
+## 7. Sweep, for a manifest story
+
+When `.studio/run` names a manifest that lists the id, then after approval
+and in the same session, before anything is printed:
+
+1. SDD's pre-flight conflict scan: the plan's tasks against each other and
+   against the code on the default branch, for files two tasks both write,
+   and an interface one task assumes another changes. Write each finding
+   and its resolution into the plan's `## Decisions` (add the section after
+   Global Constraints when absent).
+2. The question sweep (autopilot's sweep procedure, moved here). Read the
+   approved spec and plan and list every decision the implementation could
+   still meet: naming, error handling, test depth, tie-breaks between two
+   acceptable patterns, what to do when a tool is missing, which of two
+   libraries. An item the spec calls open stays in the sweep until
+   `## Decisions` answers it; a committed file or a prior ledger entry is not
+   a substitute. Ask all of them, three or four per `AskUserQuestion`, until
+   none is left, and write each answer into `## Decisions`.
+3. Run `studio-state ledger "Decisions swept <id>"`, then commit the plan and
+   `.studio/ledger`: `git add <plan path> .studio/ledger && git commit -m "docs(plans): sweep <id>"`.
+4. Print `/clear`, then the command `studio-overnight next` prints. The plan
+   does not print `/game-dev:execute` for a manifest story. Do not invoke
+   anything yourself.

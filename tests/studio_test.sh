@@ -513,6 +513,25 @@ test_execute_land_and_progress() {
   assert_contains "$E" '^- `--progress`' "§1 lists --progress"
 }
 
+test_plan_brainstorm_lanes() {
+  PL="$REPO_ROOT/studios/game-dev/skills/plan/SKILL.md"
+  BR="$REPO_ROOT/studios/game-dev/skills/brainstorm/SKILL.md"
+  assert_contains "$PL" '^Story: <id>' "plan writes the Story: header for an id"
+  assert_contains "$PL" 'Spec: <spec>:L<a>-<b>' "every task cites spec line ranges"
+  assert_contains "$PL" '§<heading>' "a Spec: item may cite a heading as written, with its #s"
+  assert_contains "$PL" 'Review: task|final' "every task carries a Review: tag"
+  assert_contains "$PL" 'new seam, cross-system, gameplay feel, data or schema, or importer' "the risk rule for Review: task"
+  assert_contains "$PL" 'a `Spec:` line whose ranges exist, and a `Review:` line' "self-review checks Spec: and Review:"
+  assert_contains "$PL" 'Decisions swept <id>' "the sweep is ledgered per story"
+  assert_contains "$PL" 'pre-flight conflict scan' "the sweep runs SDD's conflict scan"
+  assert_contains "$PL" 'does not print `/game-dev:execute` for a manifest story' "a manifest story never prints execute"
+  assert_contains "$PL" 'studio-overnight next' "plan prints next's command"
+  assert_contains "$BR" '^## Stories' "brainstorm's epic spec has a Stories section"
+  assert_contains "$BR" '| Story | Acceptance criteria | Depends on |' "brainstorm writes the Stories table"
+  assert_contains "$BR" 'comma-separated AC numbers or ranges' "the AC cell form (D24)"
+  assert_contains "$BR" 'studio-overnight next' "brainstorm prints next's command"
+}
+
 run_tests test_plugin_manifests test_skill_frontmatter test_agent_frontmatter \
   test_external_references_declared test_required_plugins_enabled test_bin_syntax \
   test_role_agents_exist test_stage_skill_contracts test_plan_skill_contract \
@@ -521,4 +540,5 @@ run_tests test_plugin_manifests test_skill_frontmatter test_agent_frontmatter \
   test_stage_chain test_execute_contract test_agent_contracts test_feature_checkout_copies test_next_lines \
   test_review_contract test_on_demand_skills_keep_stage test_playtest_contract test_retro_contract \
   test_no_ship_references test_superpowers_requires_referenced test_no_last_playtest_callers \
-  test_execute_one_contract test_router_overnight_lock test_execute_lanes test_execute_land_and_progress
+  test_execute_one_contract test_router_overnight_lock test_execute_lanes test_execute_land_and_progress \
+  test_plan_brainstorm_lanes
