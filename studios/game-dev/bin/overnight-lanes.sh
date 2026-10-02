@@ -374,7 +374,8 @@ land_once() {
 # MERGED; step 1 `merge-tree` against origin/<default> (exit 1 = conflict);
 # step 2 `gh pr ready` for a draft, then MERGE_COMMAND with <pr> = the PR
 # number, its program from START_DIR (never the story's copy), run through
-# `studio-gate merge` from the story worktree (else START_DIR), stdin
+# `studio-gate merge` from LAND_DIR when set (the direct progress landing's
+# worktree), else the story worktree (else START_DIR), stdin
 # /dev/null, output to LDIR/<id>-land.log (RUN_DIR outside a lane); step 3,
 # whatever its exit code, fetch (a failed fetch returns 4), then the PR is
 # MERGED and its merge commit is in origin/<default>: landed. A PR that is
@@ -403,7 +404,7 @@ land_once_direct() {
   _ld_log="${LDIR:-$RUN_DIR}/$1-land.log"
   _ld_cmd="$(printf '%s\n' "$MERGE_COMMAND" | sed "s/<pr>/$_ld_n/g")"
   _ld_w="${_ld_cmd%% *}"; _ld_a=""; [ "$_ld_cmd" = "$_ld_w" ] || _ld_a="${_ld_cmd#* }"
-  ( cd "$(feature_dir)" || exit 2
+  ( cd "${LAND_DIR:-$(feature_dir)}" || exit 2
     set -f; set -- $_ld_a; set +f
     exec sh "$SELF_DIR/studio-gate" merge -- "$START_DIR/$_ld_w" "$@" ) > "$_ld_log" 2>&1 < /dev/null
   _ld_try=0
@@ -496,7 +497,7 @@ lanes_resume() {
 # run budget sums every lane's units.tsv (spec 531-534).
 stop_requested() { lane_halt; }
 spent_all() {
-  cat "$RUN_DIR"/lanes/*/units.tsv 2>/dev/null \
+  cat "$RUN_DIR"/lanes/*/units.tsv "$RUN_DIR"/final/units.tsv 2>/dev/null \
     | awk -F'\t' '$4 != "unknown" { s += $4 } END { printf "%.2f\n", s + 0 }'
 }
 spent() { spent_all; }
@@ -766,6 +767,8 @@ lanes_report() {
     printf '# Overnight run — %s\n\n' "$(basename "$RUN_DIR")"
     printf 'Ending: %s\n' "$1"
     printf 'Mode: %s\nTarget: %s\n' "$MF_MODE" "$MF_TARGET"
+    [ -z "${FINAL_PR:-}" ] || printf 'Final PR: %s (%s)\n' "$FINAL_PR" "${FINAL_COLOR:-red}"
+    [ -z "${FINAL_NOTE:-}" ] || printf 'Final note: %s\n' "$FINAL_NOTE"
     printf 'Spent: $%s\n\n## Stories\n\n' "$(spent_all)"
     for _id in $(cut -f1 "$MF_ROWS" | awk '!seen[$0]++'); do
       printf -- '- %s: %s\n' "$_id" "$(story_get "$_id")"
@@ -794,12 +797,294 @@ lanes_on_exit() {
   if [ "$HUP_REQ" = 1 ]; then _oe_why="stop: terminal closed (SIGHUP)"
   else _oe_why="stop: runner error (exit $1)"; fi
   printf '%s\n' "$_oe_why" > "$STOP_FILE"
+  end_session   # a final-step unit the runner itself is waiting on
   lanes_end_sessions
   lanes_wait_all
   lanes_sweep
   lanes_report "$_oe_why"
   unlock
   exit 1
+}
+
+# ---- The final step (spec 587-626, AC9; D5, D13, D17, D21, D23) ----
+# Run by the parent once every lane has exited, no stop was requested and at
+# least one story landed. Integration: final_integration. Direct:
+# progress_direct, only when PROGRESS.md exists. Results for the report:
+# FINAL_PR (url), FINAL_COLOR (green|red), FINAL_NOTE. Nothing is ever
+# merged into the default branch by the integration step, and its PR is
+# never merged by the run.
+
+# any_landed — at least one story of the run ended landed.
+any_landed() {
+  for _al in $(cut -f1 "$MF_ROWS" | awk '!seen[$0]++'); do
+    case "$(story_get "$_al")" in landed*) return 0 ;; esac
+  done
+  return 1
+}
+# progress_exists — docs/game-dev/PROGRESS.md exists at the Docs revision.
+progress_exists() { git -C "$START_DIR" cat-file -e "$MF_DOCS:docs/game-dev/PROGRESS.md" 2>/dev/null; }
+# final_note TEXT — append TEXT to FINAL_NOTE ("; "-joined).
+final_note() { FINAL_NOTE="${FINAL_NOTE:+$FINAL_NOTE; }$1"; }
+# final_stopped STEP — true (with a note) when a stop arrived during the
+# final step: the step ends before STEP, nothing more is launched or pushed.
+final_stopped() {
+  [ -e "$STOP_FILE" ] || return 1
+  FINAL_COLOR=red; final_note "stopped before $1"
+}
+
+# final_unit LABEL PROMPT [ENV_WORDS] — one unit run by the parent (label
+# progress or final-repair; model by model_for, D23) with cwd FINAL_W
+# (UNIT_CWD) and its files under RUN_DIR/final (UNIT_DIR). Env words:
+# OMEGA_AUTOPILOT, STUDIO_RUN, STUDIO_DOCS_REV and the Bash timeouts, plus
+# ENV_WORDS (KEY='value', sq-quoted); never STUDIO_STORY. Its row in
+# final/units.tsv is `progress` when FINAL_W's HEAD moved, else `noprog`.
+# Returns 1, launching nothing, when a stop was requested.
+final_unit() {
+  [ ! -e "$STOP_FILE" ] || return 1
+  UNIT_DIR="$RUN_DIR/final"; UNIT_PREFIX=""; CUR_ID=""
+  mkdir -p "$UNIT_DIR" || return 1
+  _fu_ms=$((SESSION_MINUTES * 60000))
+  LAUNCH_ENV="OMEGA_AUTOPILOT=$(sq 1) STUDIO_RUN=$(sq "$RUN_DIR/manifest.md") STUDIO_DOCS_REV=$(sq "$MF_DOCS") BASH_DEFAULT_TIMEOUT_MS=$(sq "$_fu_ms") BASH_MAX_TIMEOUT_MS=$(sq "$_fu_ms")${3:+ $3}"
+  _fu_p="$PROMPT"; PROMPT="$2"; UNIT_CWD="$FINAL_W"
+  _fu_h0="$(git -C "$FINAL_W" rev-parse HEAD 2>/dev/null)"
+  FINAL_N=$((${FINAL_N:-0} + 1)); run_unit "$FINAL_N" "$1"
+  PROMPT="$_fu_p"; UNIT_CWD=""; LAUNCH_ENV=""
+  if [ "$(git -C "$FINAL_W" rev-parse HEAD 2>/dev/null)" != "$_fu_h0" ]; then row "$FINAL_N" "$1" progress
+  else row "$FINAL_N" "$1" noprog; fi
+  return 0
+}
+
+# final_gate_cmds — the full gate's shell text: execute §7 step 1's
+# commands and exit rules (studio-lint's exit 3, no linter, is not red).
+# The test hook STUDIO_OVERNIGHT_GATE_CMD replaces it.
+final_gate_cmds() {
+  if [ -n "${STUDIO_OVERNIGHT_GATE_CMD:-}" ]; then printf '%s\n' "$STUDIO_OVERNIGHT_GATE_CMD"; return; fi
+  printf 'sh %s && { sh %s; _lint=$?; [ "$_lint" -eq 0 ] || [ "$_lint" -eq 3 ]; } && sh %s --seconds 10\n' \
+    "$(sq "$SELF_DIR/studio-test")" "$(sq "$SELF_DIR/studio-lint")" "$(sq "$SELF_DIR/studio-run")"
+}
+# final_gate LOG — the full gate in FINAL_W under the gate lock (studio-gate
+# final-gate, D17), stdin /dev/null, output to LOG. Its exit code.
+final_gate() {
+  _fg_c="$(final_gate_cmds)"
+  ( cd "$FINAL_W" && exec sh "$SELF_DIR/studio-gate" final-gate -- sh -c "$_fg_c" ) > "$1" 2>&1 < /dev/null
+}
+
+# final_pr_open BRANCH — the open PR of BRANCH into the default branch
+# (`gh pr list`): FP_NUM and FP_URL. 0 found · 1 none · 2 gh failed.
+final_pr_open() {
+  FP_NUM=""; FP_URL=""
+  _fp="$(cd "$START_DIR" && gh pr list --head "$1" --base "$DEFAULT_BRANCH" --state open --json number,url 2>/dev/null)" || return 2
+  _fp="$(printf '%s' "$_fp" | tr -d '\n')"
+  FP_NUM="$(printf '%s\n' "$_fp" | sed -n 's/^[^{]*{[^}]*"number"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p')"
+  FP_URL="$(printf '%s\n' "$_fp" | sed -n 's/^[^{]*{[^}]*"url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+  [ -n "$FP_NUM" ]
+}
+
+# final_body FILE HEAD — the final PR's body, assembled with git and sed (no
+# session): per landed story a `## <id>` section with its spec's `## Purpose`
+# at the Docs revision, its ledger's `Ruling:` and `P<k> Play:` lines (from
+# origin/<Branch>; a deleted branch's from its merge commit's second parent,
+# a fast-forward's from the commit itself) and its merge sha; `## Not
+# landed` with every other story's ending; the gate line.
+final_body() {
+  _fb_nl=""
+  {
+    for _fb_id in $(cut -f1 "$MF_ROWS" | awk '!seen[$0]++'); do
+      _fb_s="$(story_get "$_fb_id")"
+      case "$_fb_s" in
+        landed*) ;;
+        *) _fb_nl="$_fb_nl- $_fb_id: ${_fb_s:-no ending}
+"; continue ;;
+      esac
+      _fb_sha="${_fb_s#landed }"; _fb_b="$(row_field "$_fb_id" branch)"
+      printf '## %s\n\n' "$_fb_id"
+      git -C "$START_DIR" show "$MF_DOCS:$(row_field "$_fb_id" spec)" 2>/dev/null \
+        | awk '/^## / { p = ($0 ~ /^## Purpose[ \t]*$/); next } p'
+      { git -C "$START_DIR" show "refs/remotes/origin/$_fb_b:.studio/ledger/$_fb_id.md" 2>/dev/null \
+          || git -C "$START_DIR" show "$_fb_sha^2:.studio/ledger/$_fb_id.md" 2>/dev/null \
+          || git -C "$START_DIR" show "$_fb_sha:.studio/ledger/$_fb_id.md" 2>/dev/null; } \
+        | grep -E '^- [0-9-]+ (Ruling: |P[0-9]+ Play: )'
+      printf '\nMerge: %s\n\n' "$_fb_sha"
+    done
+    [ -z "$_fb_nl" ] || printf '## Not landed\n\n%s\n' "$_fb_nl"
+    printf 'Gate: %s on %s (studio-test, studio-lint, studio-run --seconds 10)\n' "$FINAL_GATE" "$2"
+    [ -z "$FINAL_NOTE" ] || printf '\nFailure: %s\n' "$FINAL_NOTE"
+  } > "$1"
+}
+
+# final_integration — the integration final step in FINAL_W =
+# STATE_ROOT/.claude/worktrees/integration-<slug>, idempotent per step (D5):
+# 0 RECORD/final names origin/<Target>'s head and its PR is open: skip.
+# 1 add the worktree --detach (else, clean, keep a HEAD that descends from
+#   origin/<Target>, or switch to it); merge origin/<default>. A conflict:
+#   abort, one final-repair unit (STUDIO_REPAIR=conflict: the worktree is
+#   clean at the unmerged head; the unit redoes `git merge --no-edit
+#   origin/<default>`, resolves and commits); still unmerged: red, back to
+#   origin/<Target>'s head.
+# 2 PROGRESS.md at the Docs revision and no `docs(progress): <slug>` subject
+#   yet: one progress unit.
+# 3 unless RECORD/gate names HEAD: the full gate (RUN_DIR/final-gate.log);
+#   red: one final-repair unit (STUDIO_REPAIR=red:<that log>), the gate once
+#   more (final-gate-2.log). RECORD/gate = `<HEAD> green|red`.
+# 4 push HEAD to <Target>. 5 the body; `gh pr edit` the open PR, else `gh pr
+#   create --draft` into the default branch; `[red] ` when red.
+# 6 RECORD/final = `<head> <url> <color>`.
+final_integration() {
+  _fi_b="$MF_TARGET"; _fi_rb="refs/remotes/origin/$MF_TARGET"; _fi_m="origin/$DEFAULT_BRANCH"
+  FINAL_W="$STATE_ROOT/.claude/worktrees/integration-$MF_SLUG"; FINAL_GATE=red
+  git_retry -C "$START_DIR" fetch -q origin || { FINAL_COLOR=red; final_note "cannot fetch origin"; return 1; }
+  _fi_h0="$(git -C "$START_DIR" rev-parse -q --verify "$_fi_rb^{commit}")" \
+    || { FINAL_COLOR=red; final_note "no origin/$_fi_b"; return 1; }
+  # Step 0.
+  if [ -f "$RECORD/final" ]; then
+    _fi_rs=""; _fi_ru=""; _fi_rc=""
+    read -r _fi_rs _fi_ru _fi_rc < "$RECORD/final"
+    if [ "$_fi_rs" = "$_fi_h0" ] && final_pr_open "$_fi_b" && [ "$FP_URL" = "$_fi_ru" ]; then
+      FINAL_PR="$_fi_ru"; FINAL_COLOR="${_fi_rc:-red}"; final_note "unchanged since the last final step"
+      return 0
+    fi
+  fi
+  # Step 1.
+  if [ ! -d "$FINAL_W" ]; then
+    git_retry -C "$START_DIR" worktree prune
+    mkdir -p "$(dirname "$FINAL_W")" \
+      && git_retry -C "$START_DIR" worktree add -q --detach "$FINAL_W" "$_fi_rb" >/dev/null \
+      || { FINAL_COLOR=red; final_note "cannot add the worktree $FINAL_W"; return 1; }
+  else
+    [ -z "$(git -C "$FINAL_W" status --porcelain 2>&1)" ] \
+      || { FINAL_COLOR=red; final_note "the worktree $FINAL_W is not clean"; return 1; }
+    if ! git -C "$FINAL_W" merge-base --is-ancestor "$_fi_rb" HEAD 2>/dev/null; then
+      git_retry -C "$FINAL_W" switch -q --detach "$_fi_rb" \
+        || { FINAL_COLOR=red; final_note "cannot switch $FINAL_W to origin/$_fi_b"; return 1; }
+    fi
+  fi
+  if ! git -C "$FINAL_W" merge-base --is-ancestor "$_fi_m" HEAD 2>/dev/null \
+     && ! git_retry -C "$FINAL_W" merge -q --no-edit "$_fi_m" > "$RUN_DIR/final-merge.log" 2>&1; then
+    git -C "$FINAL_W" merge --abort 2>/dev/null
+    final_unit final-repair "/omega:integration repair $MF_SLUG" "STUDIO_REPAIR=$(sq conflict)"
+    if git -C "$FINAL_W" rev-parse -q --verify MERGE_HEAD >/dev/null \
+       || ! git -C "$FINAL_W" merge-base --is-ancestor "$_fi_m" HEAD 2>/dev/null; then
+      git -C "$FINAL_W" merge --abort 2>/dev/null
+      git_retry -C "$FINAL_W" switch -q --discard-changes --detach "$_fi_rb" \
+        || { FINAL_COLOR=red; final_note "cannot reset $FINAL_W to origin/$_fi_b"; return 1; }
+      FINAL_COLOR=red; final_note "$_fi_m does not merge cleanly"
+    fi
+  fi
+  # Step 2.
+  final_stopped "the progress unit" && return 1
+  if progress_exists && ! git -C "$FINAL_W" log --format=%s HEAD | grep -qxF "docs(progress): $MF_SLUG"; then
+    final_unit progress "/game-dev:execute --progress"
+    git -C "$FINAL_W" log --format=%s HEAD | grep -qxF "docs(progress): $MF_SLUG" \
+      || final_note "the progress unit made no docs(progress): $MF_SLUG commit"
+  fi
+  # Step 3.
+  final_stopped "the full gate" && return 1
+  _fi_h="$(git -C "$FINAL_W" rev-parse HEAD)"
+  _fi_gs=""; _fi_gc=""
+  [ ! -f "$RECORD/gate" ] || read -r _fi_gs _fi_gc < "$RECORD/gate"
+  if [ "$_fi_gs" = "$_fi_h" ] && [ -n "$_fi_gc" ]; then
+    FINAL_GATE="$_fi_gc"; _fi_log="(recorded)"
+  else
+    _fi_log="$RUN_DIR/final-gate.log"
+    if final_gate "$_fi_log"; then FINAL_GATE=green
+    else
+      FINAL_GATE=red
+      if final_unit final-repair "/omega:integration repair $MF_SLUG" "STUDIO_REPAIR=$(sq "red:$_fi_log")"; then
+        _fi_log="$RUN_DIR/final-gate-2.log"
+        final_gate "$_fi_log" && FINAL_GATE=green
+      fi
+    fi
+    _fi_h="$(git -C "$FINAL_W" rev-parse HEAD)"
+    printf '%s %s\n' "$_fi_h" "$FINAL_GATE" > "$RECORD/gate"
+  fi
+  [ "$FINAL_GATE" = green ] || { FINAL_COLOR=red; final_note "the full gate is red (log: $_fi_log)"; }
+  final_stopped "the push" && return 1
+  # Step 4.
+  _fi_pushed=1
+  git_retry -C "$FINAL_W" push -q origin "HEAD:refs/heads/$_fi_b" \
+    || { _fi_pushed=0; FINAL_COLOR=red; final_note "push to $_fi_b failed"; }
+  # Step 5.
+  _fi_t="$MF_SLUG: $MF_GOAL"; [ "$FINAL_COLOR" = green ] || _fi_t="[red] $_fi_t"
+  final_body "$RUN_DIR/final-body.md" "$_fi_h"
+  final_pr_open "$_fi_b"
+  case $? in
+    0) FINAL_PR="$FP_URL"
+       ( cd "$START_DIR" && gh pr edit "$FP_NUM" --title "$_fi_t" --body-file "$RUN_DIR/final-body.md" ) >/dev/null 2>&1 \
+         || final_note "gh pr edit $FP_NUM failed" ;;
+    1) FINAL_PR="$( cd "$START_DIR" && gh pr create --draft --base "$DEFAULT_BRANCH" --head "$_fi_b" \
+         --title "$_fi_t" --body-file "$RUN_DIR/final-body.md" 2>/dev/null | tail -n 1 )"
+       [ -n "$FINAL_PR" ] || final_note "gh pr create failed" ;;
+    *) final_note "gh pr list failed" ;;
+  esac
+  # Step 6.
+  if [ "$_fi_pushed" = 1 ] && [ -n "$FINAL_PR" ]; then
+    printf '%s %s %s\n' "$_fi_h" "$FINAL_PR" "$FINAL_COLOR" > "$RECORD/final"
+  fi
+}
+
+# progress_direct — direct mode's one PROGRESS entry (D13): the branch
+# progress/<slug> from origin/<default> in STATE_ROOT/.claude/worktrees/
+# progress-<slug> (an existing branch is reused), one progress unit there
+# (skipped when HEAD already has the `docs(progress): <slug>` commit), push,
+# a ready PR into the default branch (reused when open), then land_once's
+# direct steps 0-4 with the id `progress`, no repair. A PR already MERGED is
+# landed. A refusal leaves the PR open and named in FINAL_NOTE.
+progress_direct() {
+  _pd_b="progress/$MF_SLUG"
+  FINAL_W="$STATE_ROOT/.claude/worktrees/progress-$MF_SLUG"
+  if pr_view "$_pd_b" && [ "$PR_STATE" = MERGED ]; then
+    FINAL_PR="#$PR_NUM"; final_note "progress landed ${PR_OID:-}"; return 0
+  fi
+  git_retry -C "$START_DIR" fetch -q origin || { FINAL_COLOR=red; final_note "cannot fetch origin"; return 1; }
+  if [ ! -d "$FINAL_W" ]; then
+    git_retry -C "$START_DIR" worktree prune
+    mkdir -p "$(dirname "$FINAL_W")" || { FINAL_COLOR=red; final_note "cannot create $(dirname "$FINAL_W")"; return 1; }
+    if git -C "$START_DIR" rev-parse -q --verify "refs/heads/$_pd_b" >/dev/null; then
+      git_retry -C "$START_DIR" worktree add -q "$FINAL_W" "$_pd_b" >/dev/null
+    else
+      git_retry -C "$START_DIR" worktree add -q --no-track -b "$_pd_b" "$FINAL_W" "origin/$DEFAULT_BRANCH" >/dev/null
+    fi || { FINAL_COLOR=red; final_note "cannot add the worktree $FINAL_W"; return 1; }
+  else
+    [ -z "$(git -C "$FINAL_W" status --porcelain 2>&1)" ] \
+      || { FINAL_COLOR=red; final_note "the worktree $FINAL_W is not clean"; return 1; }
+  fi
+  if ! git -C "$FINAL_W" log --format=%s HEAD | grep -qxF "docs(progress): $MF_SLUG"; then
+    final_stopped "the progress unit" && return 1
+    final_unit progress "/game-dev:execute --progress"
+    git -C "$FINAL_W" log --format=%s HEAD | grep -qxF "docs(progress): $MF_SLUG" \
+      || { FINAL_COLOR=red; final_note "the progress unit made no docs(progress): $MF_SLUG commit"; return 1; }
+  fi
+  final_stopped "the progress landing" && return 1
+  git_retry -C "$FINAL_W" push -q origin "HEAD:refs/heads/$_pd_b" \
+    || { FINAL_COLOR=red; final_note "push to $_pd_b failed"; return 1; }
+  final_pr_open "$_pd_b"
+  case $? in
+    0) FINAL_PR="$FP_URL" ;;
+    1) FINAL_PR="$( cd "$START_DIR" && gh pr create --base "$DEFAULT_BRANCH" --head "$_pd_b" \
+         --title "docs(progress): $MF_SLUG" --body "The run's PROGRESS entry ($MF_SLUG)." 2>/dev/null | tail -n 1 )"
+       [ -n "$FINAL_PR" ] || { FINAL_COLOR=red; final_note "gh pr create for $_pd_b failed"; return 1; } ;;
+    *) FINAL_COLOR=red; final_note "gh pr list failed"; return 1 ;;
+  esac
+  LAND_DIR="$FINAL_W"; land_once progress "$_pd_b"; _pd_st=$?; LAND_DIR=""
+  if [ "$_pd_st" = 0 ]; then final_note "progress landed $LAND_SHA"; return 0; fi
+  case "$_pd_st" in
+    3) _pd_why="${LAND_REPAIR%%:*}" ;;
+    *) _pd_why="${LAND_WHY:-land_once returned $_pd_st}" ;;
+  esac
+  FINAL_COLOR=red; final_note "progress PR $FINAL_PR left open: landing failed ($_pd_why)"
+  return 1
+}
+
+# final_step — the run's final step: FINAL_PR, FINAL_COLOR, FINAL_NOTE.
+final_step() {
+  FINAL_PR=""; FINAL_COLOR=green; FINAL_NOTE=""; FINAL_N=0
+  unset STUDIO_STORY   # the final units are the run's, never a story's
+  if [ "$MF_MODE" = direct ]; then
+    progress_exists || { FINAL_COLOR=""; return 0; }
+    progress_direct
+  else
+    final_integration
+  fi
 }
 
 # lanes_run — the run path, once the manifest preflight passed.
@@ -820,6 +1105,8 @@ lanes_run() {
   run_setup
   # The record is this machine's run state, like the lock: kept out of git.
   grep -qxF .studio/runs/ "$_excl" 2>/dev/null || printf '%s\n' .studio/runs/ >> "$_excl"
+  # The final step's worktrees live inside the checkout: never untracked noise.
+  grep -qxF .claude/worktrees/ "$_excl" 2>/dev/null || printf '%s\n' .claude/worktrees/ >> "$_excl"
   RUNNER_PID=$$
   _nch="$(wc -l < "$CHAINS" | tr -d ' ')"
   _L="$_nch"
@@ -832,7 +1119,8 @@ lanes_run() {
   done
   lanes_wait_all
   lanes_sweep
-  # T11: the final step.
+  # The final step: only when no stop was requested and a story landed (AC9).
+  if [ ! -e "$STOP_FILE" ] && any_landed; then final_step; fi
   lanes_finish "$(lanes_ending)"
 }
 

@@ -316,10 +316,12 @@ spent() { awk -F'\t' '$4 != "unknown" { s += $4 } END { printf "%.2f\n", s + 0 }
 # start_session ARGS — the session in the background, its pid in CPID. Its
 # env words are LAUNCH_ENV (manifest mode: the story's, story_launch_env),
 # else OMEGA_AUTOPILOT=1; STUDIO_GATE_HELD never reaches a session (D17).
-# Under a lane (LDIR set) the pid is also written to LDIR/cpid.
+# Under a lane (LDIR set) the pid is also written to LDIR/cpid. The session
+# starts in UNIT_CWD when set (manifest mode's final-step units), else in
+# START_DIR.
 start_session() {
   set -m 2>/dev/null || true   # own process group: a terminal Ctrl-C reaches only the runner (D6; a lane subshell too, D1c)
-  ( cd "$START_DIR" && unset STUDIO_GATE_HELD && eval "export ${LAUNCH_ENV:-OMEGA_AUTOPILOT=1}" \
+  ( cd "${UNIT_CWD:-$START_DIR}" && unset STUDIO_GATE_HELD && eval "export ${LAUNCH_ENV:-OMEGA_AUTOPILOT=1}" \
       && exec claude-gd -p "$@" ) \
     > "$UNIT_DIR/$UNIT_STEM.jsonl" 2> "$UNIT_DIR/$UNIT_STEM.err" < /dev/null &
   CPID=$!

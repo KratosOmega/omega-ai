@@ -72,8 +72,13 @@ export GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
 #                   target`, commit, push
 #   fakerepair      terminal: ledgers `Repair: merged target` and commits it
 #                   in the story worktree; no merge, no push
-#   progress        terminal (`--progress`): appends a line to PROGRESS.md in
-#                   the cwd and commits "docs(progress): demo"
+#   progress        terminal (`--progress`): appends a line to
+#                   docs/game-dev/PROGRESS.md in the cwd and commits
+#                   "docs(progress): demo"
+#   mergemain       terminal (final repair): in the cwd, merge origin/main
+#                   with -X theirs (resolving the final step's conflict)
+#   fixgate         terminal (final repair): commits the file `fixed` in the
+#                   cwd (a gate that tests for it turns green)
 cat > "$FAKE/claude" <<'STUB'
 #!/bin/sh
 if [ "${1:-}" = "--version" ]; then
@@ -196,8 +201,10 @@ for act in "$@"; do
     fakerepair)       terminal=1; w="$(story_wt)"
                       ( cd "$w" && st ledger "Repair: merged target" && commit_ledger repair ) ;;
     progress)         terminal=1
-                      printf -- '- %s: demo progress\n' "$(date +%Y-%m-%d)" >> PROGRESS.md
-                      git add PROGRESS.md && git commit -qm "docs(progress): demo" ;;
+                      printf -- '- %s: demo progress\n' "$(date +%Y-%m-%d)" >> docs/game-dev/PROGRESS.md
+                      git add docs/game-dev/PROGRESS.md && git commit -qm "docs(progress): demo" ;;
+    mergemain)        terminal=1; git merge -q --no-edit -X theirs origin/main >&2 ;;
+    fixgate)          terminal=1; : > fixed; git add fixed && git commit -qm "fix: the gate" ;;
     *)                echo "stub: unknown action '$act'" >&2 ;;
   esac
 done
@@ -214,13 +221,14 @@ printf '#!/bin/sh\nexec claude "$@"\n' > "$FAKE/claude-gd"
 # $GH/pr-count.
 # - auth status: succeeds.
 # - pr create [--draft] --base B --head H [--title T] [--body…]: a new PR,
-#   prints https://gh.test/pr/<n>.
+#   prints https://gh.test/pr/<n>; --body-file F's content is saved as
+#   $GH/body-<n>.
 # - pr view <n|head> --json …: {"state":…,"isDraft":…,"number":n,
 #   "mergeCommit":{"oid":…}} (mergeCommit null before a merge); no PR -> exit 1.
 #   A $GH/pr-<n>.pending file is appended to the PR file after the view (a
 #   GitHub read that lags the merge by one view).
 # - pr ready <n>: draft=0. pr edit <n> [--title T] [--body-file F]: records
-#   the title, and F's content in $GH/pr-<n>.body.
+#   the title, and F's content in $GH/pr-<n>.body and $GH/body-<n>.
 # - pr list --head H --base B --state open --json number,url: [] or one object.
 cat > "$FAKE/gh" <<'STUB'
 #!/bin/sh
@@ -241,18 +249,20 @@ pr_file() {
 case "$1 ${2:-}" in
   "auth status") exit 0 ;;
   "pr create")
-    shift 2; _d=0; _b=""; _h=""; _t=""
+    shift 2; _d=0; _b=""; _h=""; _t=""; _bf=""
     while [ "$#" -gt 0 ]; do
       case "$1" in
         --draft) _d=1 ;;
         --base) _b="$2"; shift ;;
         --head) _h="$2"; shift ;;
         --title) _t="$2"; shift ;;
-        --body|--body-file) shift ;;
+        --body) shift ;;
+        --body-file) _bf="$2"; shift ;;
       esac
       shift
     done
     _n=$(( $(cat "$GH/pr-count" 2>/dev/null || echo 0) + 1 )); echo "$_n" > "$GH/pr-count"
+    [ -z "$_bf" ] || cat "$_bf" > "$GH/body-$_n"
     printf 'head=%s\nbase=%s\nstate=OPEN\ndraft=%s\noid=\ntitle=%s\n' "$_h" "$_b" "$_d" "$_t" > "$GH/pr-$_n"
     echo "https://gh.test/pr/$_n" ;;
   "pr view")
@@ -271,7 +281,7 @@ case "$1 ${2:-}" in
     while [ "$#" -gt 0 ]; do
       case "$1" in
         --title) echo "title=$2" >> "$_f"; shift ;;
-        --body-file) cat "$2" > "$_f.body"; shift ;;
+        --body-file) cat "$2" > "$_f.body"; cat "$2" > "$GH/body-${_f##*/pr-}"; shift ;;
       esac
       shift
     done ;;
@@ -353,9 +363,12 @@ last_lanes_dir() { ls -d "$P"/.studio/reports/overnight-demo-* 2>/dev/null | tai
 # (pushed): one spec with a ## Stories table, one approved and swept plan per
 # story, studio state per story at stage plan, task 0/1; .studio/config.json
 # from $LANES_CONFIG (default {}); LANES_CELLS=dash writes '-' in every Spec and
-# Plan cell; LANES_PROGRESS=1 puts a PROGRESS.md on main (default: none); the
-# manifest docs/runs/demo.md with Docs: the docs commit, committed and pushed;
-# integration/demo on origin for MODE integration; for MODE direct, an
+# Plan cell; LANES_PROGRESS=1 puts docs/game-dev/PROGRESS.md on main, so on
+# run/demo too (default: none); the manifest docs/runs/demo.md with Docs: the
+# docs commit, committed and pushed; integration/demo on origin for MODE
+# integration; LANES_MAIN_MOVES=<file> then commits <file> (content `main`)
+# on main and pushes it, so origin/main is not in integration/demo until the
+# final step merges it; for MODE direct, an
 # executable scripts/merge.sh (the stub merge program) committed on run/demo.
 # Exports P, MFP, CALLS, GH,
 # TMP_WT and SCEN (an empty scenario dir: every unit is `auto`); unsets LANES_*.
@@ -369,13 +382,14 @@ lanes_fixture() {
   mkdir -p "$P" "$CALLS" "$GH" "$TMP_WT" "$SCEN"
   git init -q --bare "$TMP/$_lf_name.git"
   _lf_cfg="${LANES_CONFIG:-}"; [ -n "$_lf_cfg" ] || _lf_cfg='{}'
-  _lf_cells="${LANES_CELLS:-}"; _lf_progress="${LANES_PROGRESS:-}"
+  _lf_cells="${LANES_CELLS:-}"; _lf_progress="${LANES_PROGRESS:-}"; _lf_moves="${LANES_MAIN_MOVES:-}"
   _lf_spec=docs/game-dev/specs/2026-10-01-demo.md
   ( set -e
     cd "$P"
     git init -q -b main
     if [ "$_lf_progress" = 1 ]; then
-      printf '# Progress\n' > PROGRESS.md && git add PROGRESS.md && git commit -q -m init
+      mkdir -p docs/game-dev && printf '# Progress\n' > docs/game-dev/PROGRESS.md \
+        && git add docs/game-dev/PROGRESS.md && git commit -q -m init
     else
       git commit -q --allow-empty -m init
     fi
@@ -420,8 +434,12 @@ lanes_fixture() {
     } > "$MFP"
     git add -A && git commit -q -m manifest && git push -q origin run/demo
     [ "$_lf_mode" != integration ] || git push -q origin origin/main:refs/heads/integration/demo
+    if [ -n "$_lf_moves" ]; then
+      git checkout -q main && printf 'main\n' > "$_lf_moves" && git add "$_lf_moves" \
+        && git commit -q -m "main moves" && git push -q origin main && git checkout -q run/demo
+    fi
   ) >/dev/null 2>&1 || { TESTS_RUN=$((TESTS_RUN + 1)); _fail "lanes_fixture $_lf_name: setup failed"; }
-  unset LANES_CONFIG LANES_CELLS LANES_PROGRESS
+  unset LANES_CONFIG LANES_CELLS LANES_PROGRESS LANES_MAIN_MOVES
 }
 
 # run_lanes ARGS — `studio-overnight ARGS` in $P: LS_STATUS, and LS_OUT and
@@ -924,6 +942,7 @@ test_lanes_land_clean_direct() {
     assert_contains "$(last_lanes_dir)/stories/$id" "^landed " "$id ends landed"
     assert_eq 1 "$(ls "$(last_lanes_dir)"/lanes/*/"$id-land.log" 2>/dev/null | wc -l | tr -d ' ')" "$id: the merge program's output goes to <id>-land.log"
   done
+  assert_not_contains "$GH/calls" "progress/demo" "no PROGRESS.md: no progress PR"
 }
 test_lanes_land_conflict_one_repair() {
   # Two lanes: both branches start from the same target, A lands first (B's
@@ -1126,6 +1145,194 @@ test_lanes_gate_never_overlaps() {
   assert_eq 12 "$(grep -c '^s ' "$CALLS/gate.iv" 2>/dev/null)" "nine unit tests and three merge commands in one gate.iv"
   assert_eq "" "$(awk '$1=="s"{if(open)print "overlap at " $3; open=1} $1=="e"{open=0}' "$CALLS/gate.iv")" "unit tests and merge commands never overlap"
 }
+# ---- T11: the integration final step and the direct progress landing ----
+
+# prompt_calls PROMPT — the stub call numbers whose prompt is exactly PROMPT.
+prompt_calls() { grep -lxF -- "$1" "$CALLS"/*.prompt 2>/dev/null | sed 's#.*/\([0-9]*\)\.prompt$#\1#'; }
+# final_gates — how many final gates ran (the test gate logs one line each).
+final_gates() { cat "$CALLS/final-gates" 2>/dev/null | wc -l | tr -d ' '; }
+# use_gate CMD — the final step's gate for the next run (restore with use_gate true).
+use_gate() { STUDIO_OVERNIGHT_GATE_CMD="$1"; export STUDIO_OVERNIGHT_GATE_CMD; }
+
+test_lanes_final_step_once() {
+  LANES_PROGRESS=1; LANES_MAIN_MOVES=main.txt; export LANES_PROGRESS LANES_MAIN_MOVES
+  lanes_fixture fin integration A:- B:-
+  printf 'progress\n' > "$SCEN/progress"
+  main0="$(git -C "$P" rev-parse origin/main)"
+  W="$P/.claude/worktrees/integration-demo"
+  assert_status 1 "the fixture: origin/main is not yet in the integration branch" -- git -C "$P" merge-base --is-ancestor origin/main origin/integration/demo
+  use_gate "echo gate >> '$CALLS/final-gates'"
+  run_lanes start "$MFP"
+  assert_eq 0 "$LS_STATUS" "the run is done"
+  assert_eq 1 "$(final_gates)" "one full gate on the combined head"
+  assert_eq 1 "$(grep -c '^pr create --draft --base main --head integration/demo' "$GH/calls")" "one draft PR into main"
+  assert_contains "$GH/pr-1" "^title=demo: the demo goal$" "the title is <slug>: <Goal>"
+  assert_contains "$GH/body-1" "^## A$" "a section per landed story"
+  assert_contains "$GH/body-1" "^## B$" "B's section"
+  git -C "$P" fetch -q origin
+  assert_status 0 "origin/main is merged into the integration head" -- git -C "$P" merge-base --is-ancestor origin/main origin/integration/demo
+  assert_eq 1 "$(git -C "$P" log --format=%s origin/integration/demo | grep -c '^docs(progress): demo$')" "one PROGRESS commit"
+  _h="$(git -C "$P" rev-parse origin/integration/demo)"
+  assert_contains "$P/.studio/runs/demo/gate" "^$_h green$" "the gate names the pushed head (PROGRESS commit included)"
+  assert_contains "$P/.studio/runs/demo/final" "^$_h https://gh.test/pr/1 green$" "the final record: head, PR, color"
+  _n="$(prompt_calls '/game-dev:execute --progress')"
+  assert_eq 1 "$(printf '%s' "$_n" | grep -c .)" "one progress unit"
+  [ -n "$_n" ] || _n=0
+  assert_eq "" "$(cat "$CALLS/$_n.story" 2>/dev/null)" "the progress unit has no STUDIO_STORY"
+  assert_contains "$CALLS/$_n.env" "^STUDIO_RUN=.*/overnight-demo-[0-9-]*/manifest.md$" "and STUDIO_RUN"
+  assert_eq "$W" "$(cat "$CALLS/$_n.pwd" 2>/dev/null)" "it runs in the integration worktree"
+  assert_eq sonnet "$(sed -n 4p "$CALLS/$_n.argv" 2>/dev/null)" "on model_progress"
+  assert_contains "$(last_lanes_dir)/final/units.tsv" "	progress	" "the progress unit has a units.tsv row"
+  assert_eq "$main0" "$(git -C "$P" rev-parse origin/main)" "nothing is merged into main"
+  assert_not_contains "$GH/calls" "^pr merge" "the final PR is never merged"
+  assert_contains "$(last_lanes_dir)/report.md" "^Final PR: https://gh.test/pr/1 (green)$" "the report names the final PR"
+  assert_eq "" "$(git -C "$P" status --porcelain)" "the integration worktree leaves the checkout clean"
+  # Resume with an unchanged head and the PR open: nothing more.
+  sleep 1
+  run_lanes start "$MFP"
+  assert_eq 0 "$LS_STATUS" "the resumed run is done"
+  assert_eq 1 "$(final_gates)" "a resume at an unchanged head runs no gate"
+  assert_eq 0 "$(grep -c '^pr edit ' "$GH/calls")" "and edits no PR"
+  assert_eq 1 "$(grep -c '^pr create ' "$GH/calls")" "and opens none"
+  assert_eq 1 "$(prompt_calls '/game-dev:execute --progress' | grep -c .)" "and runs no second progress unit"
+  use_gate true
+}
+test_lanes_final_red_after_repair() {
+  lanes_fixture finred integration A:-
+  printf 'noop\n' > "$SCEN/final-repair"
+  use_gate "echo gate >> '$CALLS/final-gates'; exit 1"
+  run_lanes start "$MFP"
+  use_gate true
+  assert_eq 2 "$(final_gates)" "one gate, one repair, one more gate"
+  assert_contains "$GH/calls" "^pr create --draft .*--title \[red\] " "a red gate still opens the draft PR, titled [red]"
+  _n="$(prompt_calls '/omega:integration repair demo')"
+  assert_eq 1 "$(printf '%s' "$_n" | grep -c .)" "one final-repair unit"
+  [ -n "$_n" ] || _n=0
+  _log="$(last_lanes_dir)/final-gate.log"
+  assert_contains "$CALLS/$_n.env" "^STUDIO_REPAIR=red:$_log$" "the repair reads the red gate's log"
+  assert_file "$_log" "the gate's output is kept"
+  assert_eq opus "$(sed -n 4p "$CALLS/$_n.argv" 2>/dev/null)" "the final repair runs on model_repair"
+  assert_eq "$P/.claude/worktrees/integration-demo" "$(cat "$CALLS/$_n.pwd" 2>/dev/null)" "in the integration worktree"
+  assert_contains "$(last_lanes_dir)/final/units.tsv" "	final-repair	" "the final repair has a units.tsv row"
+  assert_contains "$P/.studio/runs/demo/gate" "^[0-9a-f]\{40\} red$" "the gate record says red"
+  assert_contains "$P/.studio/runs/demo/final" " red$" "the final record says red"
+  assert_eq "" "$(prompt_calls '/game-dev:execute --progress')" "no PROGRESS.md: no progress unit"
+}
+test_lanes_final_repair_turns_green() {
+  lanes_fixture fingreen integration A:-
+  printf 'fixgate\n' > "$SCEN/final-repair"
+  use_gate "echo gate >> '$CALLS/final-gates'; [ -f fixed ]"
+  run_lanes start "$MFP"
+  use_gate true
+  assert_eq 2 "$(final_gates)" "red, the repair, green"
+  assert_contains "$GH/calls" "^pr create --draft --base main --head integration/demo --title demo: the demo goal " "a green PR has no [red] prefix"
+  git -C "$P" fetch -q origin
+  assert_status 0 "the repair's commit is pushed" -- git -C "$P" cat-file -e origin/integration/demo:fixed
+  assert_contains "$P/.studio/runs/demo/gate" "^$(git -C "$P" rev-parse origin/integration/demo) green$" "the gate record names the repaired head"
+}
+test_lanes_final_conflict() {
+  LANES_MAIN_MOVES=shared.txt; export LANES_MAIN_MOVES
+  lanes_fixture fincf integration A:-
+  printf 'conflict shared.txt\n' > "$SCEN/A"; printf 'mergemain\n' > "$SCEN/final-repair"
+  run_lanes start "$MFP"
+  _n="$(prompt_calls '/omega:integration repair demo')"
+  assert_eq 1 "$(printf '%s' "$_n" | grep -c .)" "one final-repair unit for the conflict"
+  [ -n "$_n" ] || _n=0
+  assert_contains "$CALLS/$_n.env" "^STUDIO_REPAIR=conflict$" "the repair knows it is a conflict"
+  git -C "$P" fetch -q origin
+  assert_status 0 "the repaired merge is pushed" -- git -C "$P" merge-base --is-ancestor origin/main origin/integration/demo
+  assert_contains "$P/.studio/runs/demo/final" " green$" "a resolved conflict and a green gate: green"
+  # The repair cannot resolve it: red, the integration head unmerged.
+  LANES_MAIN_MOVES=shared.txt; export LANES_MAIN_MOVES
+  lanes_fixture fincf2 integration A:-
+  printf 'conflict shared.txt\n' > "$SCEN/A"; printf 'noop\n' > "$SCEN/final-repair"
+  run_lanes start "$MFP"
+  git -C "$P" fetch -q origin
+  assert_status 1 "the integration head stays unmerged" -- git -C "$P" merge-base --is-ancestor origin/main origin/integration/demo
+  assert_contains "$GH/calls" "^pr create --draft .*--title \[red\] " "titled [red]"
+  assert_contains "$GH/body-1" "origin/main does not merge cleanly" "the body names the failure"
+  assert_eq "" "$(git -C "$P/.claude/worktrees/integration-demo" status --porcelain 2>&1)" "no half-done merge is left in the worktree"
+  assert_contains "$P/.studio/runs/demo/final" " red$" "the final record says red"
+}
+test_lanes_final_resume_edits_pr() {
+  lanes_fixture finedit integration A:-
+  use_gate "echo gate >> '$CALLS/final-gates'"
+  run_lanes start "$MFP"
+  rm -f "$P/.studio/runs/demo/final"; sleep 1
+  run_lanes start "$MFP"
+  use_gate true
+  assert_eq 1 "$(final_gates)" "the gate record names HEAD: no second gate"
+  assert_eq 1 "$(grep -c '^pr create ' "$GH/calls")" "one PR"
+  assert_eq 1 "$(grep -c '^pr edit 1 --title demo: the demo goal --body-file ' "$GH/calls")" "the open PR is edited"
+  assert_contains "$GH/body-1" "^## A$" "with the body"
+}
+test_lanes_final_skipped_on_stop_or_nothing_landed() {
+  lanes_fixture finstop integration A:-
+  printf 'stop no\n' > "$SCEN/A"
+  run_lanes start "$MFP"
+  assert_not_contains "$GH/calls" "^pr create" "no final PR when no story landed"
+  assert_missing "$P/.claude/worktrees/integration-demo" "and no integration worktree"
+  # A lands, then the user stops the run while B finishes: no final step.
+  lanes_fixture finstop2 integration A:- B:-
+  printf 'auto\nauto\nsleep 8\n' > "$SCEN/B"
+  ( cd "$P" && exec sh "$RUNNER" start "$MFP" ) > /dev/null 2>&1 & RPID=$!
+  wait_for "[ -s '$P/.studio/runs/demo/landed.tsv' ]" 60
+  ( cd "$P" && sh "$RUNNER" stop ) >/dev/null
+  wait_pid_or_fail "$RPID" 60 "the runner ends after stop"
+  assert_contains "$(last_lanes_dir)/stories/A" "^landed " "A landed before the stop"
+  assert_not_contains "$GH/calls" "^pr create" "no final PR after a stop"
+  assert_missing "$P/.claude/worktrees/integration-demo" "the final step does not start after a stop"
+}
+# The default full gate (no test hook): studio-test, studio-lint (exit 3 =
+# no linter, not red), studio-run --seconds 10, from the runner's own bin.
+test_lanes_final_gate_default() {
+  _gb="$TMP/gate bin"; mkdir -p "$_gb"
+  printf '#!/bin/sh\necho test >> "%s/gd.log"\n' "$TMP" > "$_gb/studio-test"
+  printf '#!/bin/sh\necho lint >> "%s/gd.log"; exit "${GD_LINT:-0}"\n' "$TMP" > "$_gb/studio-lint"
+  printf '#!/bin/sh\necho "run $*" >> "%s/gd.log"\n' "$TMP" > "$_gb/studio-run"
+  for _c in 0 3 1; do
+    rm -f "$TMP/gd.log"
+    _st="$( unset STUDIO_OVERNIGHT_GATE_CMD; SELF_DIR="$_gb"; GD_LINT="$_c"; export GD_LINT
+            sq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
+            . "$BIN/overnight-lanes.sh"; sh -c "$(final_gate_cmds)"; echo $? )"
+    case "$_c" in
+      1) assert_eq "1" "$_st" "lint exit 1 is red" ;;
+      *) assert_eq "0" "$_st" "lint exit $_c is not red" ;;
+    esac
+  done
+  assert_eq "test lint" "$(tr '\n' ' ' < "$TMP/gd.log" | sed 's/ $//')" "a red lint stops the gate before studio-run"
+  rm -f "$TMP/gd.log"
+  ( unset STUDIO_OVERNIGHT_GATE_CMD; SELF_DIR="$_gb"
+    sq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
+    . "$BIN/overnight-lanes.sh"; sh -c "$(final_gate_cmds)" )
+  assert_eq "test lint run --seconds 10" "$(tr '\n' ' ' < "$TMP/gd.log" | sed 's/ $//')" "test, lint, then a 10 s run"
+}
+test_lanes_direct_progress_landing() {
+  LANES_CONFIG='{"merge_command": "scripts/merge.sh <pr>"}'; LANES_PROGRESS=1; export LANES_CONFIG LANES_PROGRESS
+  lanes_fixture dprog direct A:-
+  printf 'progress\n' > "$SCEN/progress"
+  run_lanes start "$MFP"
+  assert_eq 0 "$LS_STATUS" "the run is done"
+  assert_contains "$GH/calls" "^pr create --base main --head progress/demo" "a ready progress PR"
+  git -C "$P" fetch -q origin
+  assert_eq 1 "$(git -C "$P" log --format=%s origin/main | grep -c '^docs(progress): demo$')" "the progress entry landed on main through the merge command"
+  assert_eq 2 "$(grep -c '^s merge' "$CALLS/gate.iv" 2>/dev/null)" "the merge command ran for A and for the progress PR"
+  _n="$(prompt_calls '/game-dev:execute --progress')"; [ -n "$_n" ] || _n=0
+  assert_eq "$P/.claude/worktrees/progress-demo" "$(cat "$CALLS/$_n.pwd" 2>/dev/null)" "the progress unit runs in its own worktree"
+  assert_eq "" "$(cat "$CALLS/$_n.story" 2>/dev/null)" "with no STUDIO_STORY"
+  assert_contains "$(last_lanes_dir)/report.md" "^Final PR: https://gh.test/pr/2 (green)$" "the report names the progress PR"
+  # A refused progress landing: the PR stays open, no repair, the report names it.
+  LANES_CONFIG='{"merge_command": "scripts/merge.sh <pr>"}'; LANES_PROGRESS=1; export LANES_CONFIG LANES_PROGRESS
+  lanes_fixture dprogr direct A:-
+  printf 'progress\n' > "$SCEN/progress"
+  MERGE_OUTCOMES="ok refuse"; export MERGE_OUTCOMES
+  run_lanes start "$MFP"
+  unset MERGE_OUTCOMES
+  assert_eq OPEN "$(sed -n 's/^state=//p' "$GH/pr-2" 2>/dev/null | tail -n 1)" "the refused progress PR stays open"
+  assert_eq 0 "$(land_calls)" "with no repair"
+  assert_eq "" "$(prompt_calls '/omega:integration repair demo')" "and no final repair"
+  assert_contains "$(last_lanes_dir)/report.md" "progress PR https://gh.test/pr/2 left open" "the report names it"
+}
 # Last: no process any test started is still alive.
 test_lanes_no_orphans() {
   _left="$(pgrep -f "$TMP" 2>/dev/null; pgrep -f "$RUNNER" 2>/dev/null)"
@@ -1144,4 +1351,7 @@ run_tests test_lanes_chain_rule test_lanes_manifest_refusals test_lanes_manifest
   test_lanes_land_second_conflict_stops test_lanes_land_repair_no_progress test_lanes_direct_refused_then_repaired test_lanes_direct_merged_never_repairs \
   test_lanes_land_once_explicit_branch test_lanes_land_idempotent \
   test_lanes_land_crash_after_push test_lanes_land_lock_reclaim test_lanes_land_shipped_resume \
-  test_lanes_gate_never_overlaps test_lanes_no_orphans
+  test_lanes_gate_never_overlaps test_lanes_final_step_once test_lanes_final_red_after_repair \
+  test_lanes_final_repair_turns_green test_lanes_final_conflict test_lanes_final_resume_edits_pr \
+  test_lanes_final_skipped_on_stop_or_nothing_landed test_lanes_final_gate_default test_lanes_direct_progress_landing \
+  test_lanes_no_orphans
