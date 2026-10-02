@@ -665,12 +665,12 @@ test_lanes_lane_kill9() {
   wait_for "[ -n \"\$(story_calls A)\" ] && _k1=\"\$(cat \"\$(last_lanes_dir)\"/claims/1/lane 2>/dev/null)\" && [ -s \"\$(last_lanes_dir)/lanes/\$_k1/cpid\" ]" 20
   R="$(last_lanes_dir)"; _k1="$(cat "$R"/claims/1/lane 2>/dev/null)"
   lane1="$(cat "$R"/claims/1/pid 2>/dev/null)"; cpid1="$(cat "$R/lanes/${_k1:-0}/cpid" 2>/dev/null)"
-  # The lane's children other than its session (the unit watchdog) would
-  # outlive it as orphans: noted now, ended after the SIGKILL. The session is
-  # left for the runner's sweep to end.
+  # The lane's children other than its session (the unit watchdog) and
+  # their own children (its sleep) are noted, not killed: the runner's sweep
+  # must end them, as it ends the session.
   _kids="$(pgrep -P "${lane1:-0}" 2>/dev/null | grep -vx "${cpid1:-none}")"
+  _gkids=""; for _k in $_kids; do _gkids="$_gkids $(pgrep -P "$_k" 2>/dev/null)"; done
   kill -9 "${lane1:-0}"
-  for _k in $_kids; do kill "$_k" 2>/dev/null; done
   wait_pid_or_fail "$RPID" 60 "the runner does not hang on a dead lane"
   assert_eq 1 "$WP_STATUS" "a crashed lane makes the run partial"
   assert_contains "$R/stories/A" "^stopped: lane crashed (137)$" "the parent marks the crashed lane's story with its rc"
@@ -680,7 +680,36 @@ test_lanes_lane_kill9() {
   assert_contains "$R/report.md" "^Ending: partial: 1 landed, 1 stopped, 2 skipped$" "the report is written with every story ended"
   assert_missing "$P/.studio/overnight.lock" "the run releases its lock"
   assert_eq "" "$(pgrep -f "$TMP/fakebin/claude" 2>/dev/null)" "the dead lane's hung session is ended by the runner"
+  assert_eq 1 "$([ -n "$_kids" ] && echo 1 || echo 0)" "the dead lane had a unit watchdog"
+  _left=""; for _k in $_kids $_gkids; do ! pid_alive "$_k" || _left="$_left $_k"; done
+  assert_eq "" "$_left" "the dead lane's watchdog and its sleep are ended by the runner"
   pkill -9 -f "$TMP/fakebin/claude" 2>/dev/null
+  for _k in $_kids $_gkids; do kill -9 "$_k" 2>/dev/null; done
+}
+# lanes_end_sessions under a run dir whose path has a space: the session in
+# lanes/K/cpid (its own group) and the watchdog in lanes/K/wpid are ended and
+# both files removed; with no lane named, every lane's.
+test_lanes_end_sessions_spaced_path() {
+  _sp_out="$( (
+    SELF_DIR="$BIN"; GRACE=2; RUN_DIR="$TMP/spaced run/r"
+    . "$BIN/overnight-lanes.sh"
+    mkdir -p "$RUN_DIR/lanes/1" "$RUN_DIR/lanes/2"
+    set -m; sleep 301 & _c1=$!; sleep 302 & _c2=$!; set +m
+    sleep 303 & _w1=$!
+    printf '%s\n' "$_c1" > "$RUN_DIR/lanes/1/cpid"; printf '%s\n' "$_w1" > "$RUN_DIR/lanes/1/wpid"
+    printf '%s\n' "$_c2" > "$RUN_DIR/lanes/2/cpid"
+    lanes_end_sessions 1
+    sleep 1
+    pid_live "$_c1" && echo "c1 alive"; pid_live "$_w1" && echo "w1 alive"
+    pid_live "$_c2" || echo "c2 dead early"
+    [ ! -f "$RUN_DIR/lanes/1/cpid" ] || echo "cpid 1 left"; [ ! -f "$RUN_DIR/lanes/1/wpid" ] || echo "wpid 1 left"
+    lanes_end_sessions
+    sleep 1
+    pid_live "$_c2" && echo "c2 alive"; [ ! -f "$RUN_DIR/lanes/2/cpid" ] || echo "cpid 2 left"
+    kill -9 "$_c1" "$_c2" "$_w1" 2>/dev/null
+    echo done
+  ) 2>/dev/null )"   # stderr: only the shell's own "Terminated" job notices
+  assert_eq "done" "$_sp_out" "sessions and watchdogs end on a spaced path, named lane first, then every lane"
 }
 test_lanes_sigint() {
   LANES_CONFIG='{"overnight": {"max_lanes": 2}}'; export LANES_CONFIG
@@ -747,4 +776,4 @@ run_tests test_lanes_chain_rule test_lanes_manifest_refusals test_lanes_manifest
   test_lanes_two_independent_to_landed test_lanes_max_lanes_one_serializes test_lanes_models_and_env \
   test_lanes_story_stop_isolated test_lanes_budget test_lanes_budget_sums_all_lanes test_lanes_overhead \
   test_lanes_docs_revision test_lanes_waiting_chain_starts_after_deps test_lanes_skip_on_stopped_dep \
-  test_lanes_lane_kill9 test_lanes_sigint test_lanes_runner_gone test_lanes_stop_file test_lanes_no_orphans
+  test_lanes_lane_kill9 test_lanes_end_sessions_spaced_path test_lanes_sigint test_lanes_runner_gone test_lanes_stop_file test_lanes_no_orphans

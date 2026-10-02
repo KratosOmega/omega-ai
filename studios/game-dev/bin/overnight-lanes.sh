@@ -312,7 +312,7 @@ chain_skip_after() {
 lane_exit() {
   trap '' INT TERM HUP
   end_session
-  [ -z "${LDIR:-}" ] || rm -f "$LDIR/cpid"   # ended and reaped: never signal a reused pid
+  [ -z "${LDIR:-}" ] || rm -f "$LDIR/cpid" "$LDIR/wpid"   # ended and reaped: never signal a reused pid
   if [ -n "${CUR_ID:-}" ] && ! is_ending "$(story_get "$CUR_ID")"; then
     story_write "$CUR_ID" "stopped: lane crashed ($1)"
     chain_skip_after "$CUR_ID" "skipped $CUR_ID"
@@ -430,14 +430,25 @@ lanes_wait() {
 # lanes_end_sessions [K…] — TERM the live session of lanes K… (every lane
 # when none is named): its process group, else the session's children and
 # pid. After up to GRACE s, KILL whatever of it is still alive, group or
-# not. Used by the runner's exit path (lanes then see the stop and end) and
-# by the sweep for a lane that died with its session live.
+# not. The lane's unit watchdog (lanes/K/wpid) is ended first, so a dead
+# lane's watchdog never outlives it to signal a reused pgid at its deadline.
+# Used by the runner's exit path (lanes then see the stop and end) and by
+# the sweep for a lane that died with its session live. Paths are quoted
+# throughout (a project path may hold a space); lane names are numbers.
 lanes_end_sessions() {
-  _es_files=""
-  if [ "$#" -eq 0 ]; then _es_files="$(ls "$RUN_DIR"/lanes/*/cpid 2>/dev/null)"
-  else for _es_k in "$@"; do [ ! -f "$RUN_DIR/lanes/$_es_k/cpid" ] || _es_files="$_es_files $RUN_DIR/lanes/$_es_k/cpid"; done; fi
+  if [ "$#" -eq 0 ]; then
+    for _es_d in "$RUN_DIR"/lanes/*; do [ ! -d "$_es_d" ] || set -- "$@" "${_es_d##*/}"; done
+  fi
   _es_pids=""
-  for _es_f in $_es_files; do _es_pids="$_es_pids $(cat "$_es_f" 2>/dev/null)"; done
+  for _es_k in "$@"; do
+    _es_d="$RUN_DIR/lanes/$_es_k"
+    if [ -f "$_es_d/wpid" ]; then
+      _es_w="$(cat "$_es_d/wpid" 2>/dev/null)"
+      [ -z "$_es_w" ] || kill "$_es_w" 2>/dev/null   # its TERM trap ends its sleep
+      rm -f "$_es_d/wpid"
+    fi
+    [ ! -f "$_es_d/cpid" ] || _es_pids="$_es_pids $(cat "$_es_d/cpid" 2>/dev/null)"
+  done
   for _es_p in $_es_pids; do
     kill -TERM -"$_es_p" 2>/dev/null || { pkill -TERM -P "$_es_p"; kill -TERM "$_es_p"; } 2>/dev/null
   done
@@ -453,7 +464,7 @@ lanes_end_sessions() {
   for _es_p in $_es_pids; do
     kill -KILL -"$_es_p" 2>/dev/null || { pkill -KILL -P "$_es_p"; kill -KILL "$_es_p"; } 2>/dev/null
   done
-  [ -z "$_es_files" ] || rm -f $_es_files
+  for _es_k in "$@"; do rm -f "$RUN_DIR/lanes/$_es_k/cpid"; done
 }
 
 # lanes_sweep — the parent's sweep once every lane has exited (D2): in a

@@ -353,6 +353,8 @@ run_unit() {
     kill -KILL -"$CPID" 2>/dev/null || { pkill -KILL -P "$CPID"; kill -KILL "$CPID"; }
   ) > /dev/null 2>&1 &
   WPID=$!
+  # Under a lane, LDIR/wpid lets the runner end this watchdog if the lane dies.
+  [ -z "${LDIR:-}" ] || printf '%s\n' "$WPID" > "$LDIR/wpid"
   _st=0
   while :; do
     wait "$CPID"; _st=$?
@@ -362,7 +364,7 @@ run_unit() {
   UNIT_EXIT="$_st"; UNIT_TIMED_OUT=0
   mkdir "$_claim" 2>/dev/null || UNIT_TIMED_OUT=1
   kill "$WPID" 2>/dev/null; wait "$WPID" 2>/dev/null
-  WPID=""   # reaped: end_session must not signal a pid number since reused
+  WPID=""; [ -z "${LDIR:-}" ] || rm -f "$LDIR/wpid"   # reaped: never signal a pid number since reused
   rmdir "$_claim" 2>/dev/null
   UNIT_MIN="$(awk -v s="$(( $(date +%s) - _t0 ))" 'BEGIN { printf "%.1f", s / 60 }')"
   UNIT_COST="$(cost_of "$UNIT_DIR/$UNIT_STEM.jsonl")"; [ -n "$UNIT_COST" ] || UNIT_COST=unknown
