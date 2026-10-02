@@ -838,9 +838,17 @@ final_stopped() {
 # OMEGA_AUTOPILOT, STUDIO_RUN, STUDIO_DOCS_REV and the Bash timeouts, plus
 # ENV_WORDS (KEY='value', sq-quoted); never STUDIO_STORY. Its row in
 # final/units.tsv is `progress` when FINAL_W's HEAD moved, else `noprog`.
-# Returns 1, launching nothing, when a stop was requested.
+# Returns 1, launching nothing, when a stop was requested or the run budget
+# (story_units' rule: spent_all + SESSION_USD > RUN_USD) refuses it, with a
+# note. Returns 2 when the unit left FINAL_W dirty: the uncommitted work is
+# discarded (reset --hard, clean -fd) and the step is red, so no gate ever
+# tests work that HEAD, and so the push, does not hold.
 final_unit() {
   [ ! -e "$STOP_FILE" ] || return 1
+  if awk -v r="$RUN_USD" 'BEGIN { exit !(r > 0) }' \
+     && awk -v s="$(spent_all)" -v u="$SESSION_USD" -v r="$RUN_USD" 'BEGIN { exit !(s + u > r) }'; then
+    final_note "run budget: no $1 unit"; return 1
+  fi
   UNIT_DIR="$RUN_DIR/final"; UNIT_PREFIX=""; CUR_ID=""
   mkdir -p "$UNIT_DIR" || return 1
   _fu_ms=$((SESSION_MINUTES * 60000))
@@ -851,6 +859,13 @@ final_unit() {
   PROMPT="$_fu_p"; UNIT_CWD=""; LAUNCH_ENV=""
   if [ "$(git -C "$FINAL_W" rev-parse HEAD 2>/dev/null)" != "$_fu_h0" ]; then row "$FINAL_N" "$1" progress
   else row "$FINAL_N" "$1" noprog; fi
+  if [ -n "$(git -C "$FINAL_W" status --porcelain 2>&1)" ]; then
+    FINAL_COLOR=red; final_note "the $1 unit left uncommitted changes (discarded)"
+    git -C "$FINAL_W" merge --abort >/dev/null 2>&1
+    git -C "$FINAL_W" reset -q --hard HEAD >/dev/null 2>&1
+    git -C "$FINAL_W" clean -fdq >/dev/null 2>&1
+    return 2
+  fi
   return 0
 }
 
@@ -903,7 +918,7 @@ final_body() {
       { git -C "$START_DIR" show "refs/remotes/origin/$_fb_b:.studio/ledger/$_fb_id.md" 2>/dev/null \
           || git -C "$START_DIR" show "$_fb_sha^2:.studio/ledger/$_fb_id.md" 2>/dev/null \
           || git -C "$START_DIR" show "$_fb_sha:.studio/ledger/$_fb_id.md" 2>/dev/null; } \
-        | grep -E '^- [0-9-]+ (Ruling: |P[0-9]+ Play: )'
+        | grep -E '^- [0-9-]+ (([^ ]+ )?Ruling: |P[0-9]+ Play: )'
       printf '\nMerge: %s\n\n' "$_fb_sha"
     done
     [ -z "$_fb_nl" ] || printf '## Not landed\n\n%s\n' "$_fb_nl"
@@ -925,11 +940,14 @@ final_body() {
 #   yet: one progress unit.
 # 3 unless RECORD/gate names HEAD: the full gate (RUN_DIR/final-gate.log);
 #   red: one final-repair unit (STUDIO_REPAIR=red:<that log>), the gate once
-#   more (final-gate-2.log). RECORD/gate = `<HEAD> green|red`.
+#   more (final-gate-2.log); none when step 1 already ran the step's one
+#   final-repair unit (AC9), no second gate when the repair left W dirty.
+#   RECORD/gate = `<HEAD> green|red`.
 # 4 push HEAD to <Target>. 5 the body; `gh pr edit` the open PR, else `gh pr
 #   create --draft` into the default branch; `[red] ` when red.
 # 6 RECORD/final = `<head> <url> <color>`.
 final_integration() {
+  _fi_rep=0
   _fi_b="$MF_TARGET"; _fi_rb="refs/remotes/origin/$MF_TARGET"; _fi_m="origin/$DEFAULT_BRANCH"
   FINAL_W="$STATE_ROOT/.claude/worktrees/integration-$MF_SLUG"; FINAL_GATE=red
   git_retry -C "$START_DIR" fetch -q origin || { FINAL_COLOR=red; final_note "cannot fetch origin"; return 1; }
@@ -961,6 +979,7 @@ final_integration() {
   if ! git -C "$FINAL_W" merge-base --is-ancestor "$_fi_m" HEAD 2>/dev/null \
      && ! git_retry -C "$FINAL_W" merge -q --no-edit "$_fi_m" > "$RUN_DIR/final-merge.log" 2>&1; then
     git -C "$FINAL_W" merge --abort 2>/dev/null
+    _fi_rep=1
     final_unit final-repair "/omega:integration repair $MF_SLUG" "STUDIO_REPAIR=$(sq conflict)"
     if git -C "$FINAL_W" rev-parse -q --verify MERGE_HEAD >/dev/null \
        || ! git -C "$FINAL_W" merge-base --is-ancestor "$_fi_m" HEAD 2>/dev/null; then
@@ -989,7 +1008,8 @@ final_integration() {
     if final_gate "$_fi_log"; then FINAL_GATE=green
     else
       FINAL_GATE=red
-      if final_unit final-repair "/omega:integration repair $MF_SLUG" "STUDIO_REPAIR=$(sq "red:$_fi_log")"; then
+      if [ "$_fi_rep" = 1 ]; then final_note "the conflict used the step's one final-repair unit"
+      elif final_unit final-repair "/omega:integration repair $MF_SLUG" "STUDIO_REPAIR=$(sq "red:$_fi_log")"; then
         _fi_log="$RUN_DIR/final-gate-2.log"
         final_gate "$_fi_log" && FINAL_GATE=green
       fi

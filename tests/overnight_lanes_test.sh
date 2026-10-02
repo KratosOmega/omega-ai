@@ -79,6 +79,10 @@ export GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
 #                   with -X theirs (resolving the final step's conflict)
 #   fixgate         terminal (final repair): commits the file `fixed` in the
 #                   cwd (a gate that tests for it turns green)
+#   dirtyfix        terminal (final unit): writes the file `fixed` in the cwd
+#                   and commits nothing (uncommitted work)
+#   ruling <text>   modifier: ledgers <text> in the story worktree and
+#                   commits it, before auto runs
 cat > "$FAKE/claude" <<'STUB'
 #!/bin/sh
 if [ "${1:-}" = "--version" ]; then
@@ -205,6 +209,9 @@ for act in "$@"; do
                       git add docs/game-dev/PROGRESS.md && git commit -qm "docs(progress): demo" ;;
     mergemain)        terminal=1; git merge -q --no-edit -X theirs origin/main >&2 ;;
     fixgate)          terminal=1; : > fixed; git add fixed && git commit -qm "fix: the gate" ;;
+    dirtyfix)         terminal=1; : > fixed ;;
+    "ruling "*)       w="$(story_wt)"
+                      ( cd "$w" && st ledger "${act#ruling }" && commit_ledger ruling ) ;;
     *)                echo "stub: unknown action '$act'" >&2 ;;
   esac
 done
@@ -1158,6 +1165,7 @@ test_lanes_final_step_once() {
   LANES_PROGRESS=1; LANES_MAIN_MOVES=main.txt; export LANES_PROGRESS LANES_MAIN_MOVES
   lanes_fixture fin integration A:- B:-
   printf 'progress\n' > "$SCEN/progress"
+  printf 'auto\nruling T1 Ruling: kept the cap — fits — a refactor; auto\n' > "$SCEN/A"
   main0="$(git -C "$P" rev-parse origin/main)"
   W="$P/.claude/worktrees/integration-demo"
   assert_status 1 "the fixture: origin/main is not yet in the integration branch" -- git -C "$P" merge-base --is-ancestor origin/main origin/integration/demo
@@ -1169,6 +1177,7 @@ test_lanes_final_step_once() {
   assert_contains "$GH/pr-1" "^title=demo: the demo goal$" "the title is <slug>: <Goal>"
   assert_contains "$GH/body-1" "^## A$" "a section per landed story"
   assert_contains "$GH/body-1" "^## B$" "B's section"
+  assert_contains "$GH/body-1" "^- [0-9-]* T1 Ruling: kept the cap" "a task's T<n> Ruling: line is in the body"
   git -C "$P" fetch -q origin
   assert_status 0 "origin/main is merged into the integration head" -- git -C "$P" merge-base --is-ancestor origin/main origin/integration/demo
   assert_eq 1 "$(git -C "$P" log --format=%s origin/integration/demo | grep -c '^docs(progress): demo$')" "one PROGRESS commit"
@@ -1333,6 +1342,56 @@ test_lanes_direct_progress_landing() {
   assert_eq "" "$(prompt_calls '/omega:integration repair demo')" "and no final repair"
   assert_contains "$(last_lanes_dir)/report.md" "progress PR https://gh.test/pr/2 left open" "the report names it"
 }
+# A final unit that leaves uncommitted work: discarded, never gated, red.
+test_lanes_final_dirty_unit_is_red() {
+  lanes_fixture findirty integration A:-
+  printf 'dirtyfix\n' > "$SCEN/final-repair"
+  use_gate "echo gate >> '$CALLS/final-gates'; [ -f fixed ]"
+  run_lanes start "$MFP"
+  use_gate true
+  W="$P/.claude/worktrees/integration-demo"
+  assert_eq 1 "$(final_gates)" "an uncommitted repair gets no second gate"
+  assert_contains "$P/.studio/runs/demo/gate" "^[0-9a-f]\{40\} red$" "the gate record says red"
+  assert_contains "$P/.studio/runs/demo/final" " red$" "the final record says red"
+  assert_contains "$GH/calls" "^pr create --draft .*--title \[red\] " "titled [red]"
+  assert_contains "$GH/body-1" "final-repair unit left uncommitted changes" "the body names the uncommitted work"
+  assert_eq "" "$(git -C "$W" status --porcelain 2>&1)" "the integration worktree is left clean"
+  # A progress unit that commits, then leaves more work uncommitted: red too.
+  LANES_PROGRESS=1; export LANES_PROGRESS
+  lanes_fixture findirty2 integration A:-
+  printf 'progress; dirtyfix\n' > "$SCEN/progress"
+  run_lanes start "$MFP"
+  assert_contains "$P/.studio/runs/demo/final" " red$" "a dirty progress unit makes the step red"
+  assert_contains "$GH/body-1" "progress unit left uncommitted changes" "the body names it"
+  assert_eq "" "$(git -C "$P/.claude/worktrees/integration-demo" status --porcelain 2>&1)" "and the worktree is clean"
+}
+# The run budget caps the final units too: at the cap, none launches.
+test_lanes_final_budget() {
+  LANES_CONFIG='{"overnight": {"run_usd": 10, "session_usd": 8}}'; LANES_PROGRESS=1; export LANES_CONFIG LANES_PROGRESS
+  lanes_fixture finbudget integration A:-
+  printf 'progress\n' > "$SCEN/progress"; printf 'fixgate\n' > "$SCEN/final-repair"
+  use_gate "echo gate >> '$CALLS/final-gates'; exit 1"
+  run_lanes start "$MFP"
+  use_gate true
+  assert_contains "$(last_lanes_dir)/stories/A" "^landed " "A lands within the cap (2 + 8 = 10)"
+  assert_eq 3 "$(calls)" "no final unit launches past the cap (3 + 8 > 10)"
+  assert_eq 1 "$(final_gates)" "one gate, no repair, no second gate"
+  assert_contains "$(last_lanes_dir)/report.md" "run budget: no progress unit" "the progress refusal is recorded"
+  assert_contains "$(last_lanes_dir)/report.md" "run budget: no final-repair unit" "the repair refusal is recorded"
+  assert_contains "$P/.studio/runs/demo/final" " red$" "the final record says red"
+}
+# One final-repair unit in total: after a conflict repair, a red gate is final.
+test_lanes_final_conflict_then_red() {
+  LANES_MAIN_MOVES=shared.txt; export LANES_MAIN_MOVES
+  lanes_fixture fincfred integration A:-
+  printf 'conflict shared.txt\n' > "$SCEN/A"; printf 'mergemain\nfixgate\n' > "$SCEN/final-repair"
+  use_gate "echo gate >> '$CALLS/final-gates'; exit 1"
+  run_lanes start "$MFP"
+  use_gate true
+  assert_eq 1 "$(prompt_calls '/omega:integration repair demo' | grep -c .)" "exactly one final-repair unit"
+  assert_eq 1 "$(final_gates)" "one gate"
+  assert_contains "$P/.studio/runs/demo/final" " red$" "the step ends red"
+}
 # Last: no process any test started is still alive.
 test_lanes_no_orphans() {
   _left="$(pgrep -f "$TMP" 2>/dev/null; pgrep -f "$RUNNER" 2>/dev/null)"
@@ -1354,4 +1413,5 @@ run_tests test_lanes_chain_rule test_lanes_manifest_refusals test_lanes_manifest
   test_lanes_gate_never_overlaps test_lanes_final_step_once test_lanes_final_red_after_repair \
   test_lanes_final_repair_turns_green test_lanes_final_conflict test_lanes_final_resume_edits_pr \
   test_lanes_final_skipped_on_stop_or_nothing_landed test_lanes_final_gate_default test_lanes_direct_progress_landing \
+  test_lanes_final_dirty_unit_is_red test_lanes_final_budget test_lanes_final_conflict_then_red \
   test_lanes_no_orphans
