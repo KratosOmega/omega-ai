@@ -141,7 +141,12 @@ mf_check() {
       _stg="$(story_state "$_id" get stage 2>/dev/null)"
       case "$_stg" in
         plan|execute) ;;
-        idle) printf '%s\n' "$_show" | grep -q '^- [0-9-]* shipped ' \
+        # The shipped line is ledgered in the story's own checkout (its
+        # worktree), so a resumed shipped story is read from there too.
+        idle) _wt="$(story_state "$_id" worktree 2>/dev/null)"
+              { printf '%s\n' "$_show"
+                [ -z "$_wt" ] || [ ! -d "$_wt" ] || ( cd "$_wt" && STUDIO_STORY="$_id" sh "$STATE_BIN" show 2>/dev/null )
+              } | grep -q '^- [0-9-]* shipped ' \
                 || refuse "$_id: stage idle with no shipped line: nothing approved to run" ;;
         *) refuse "$_id: stage $_stg: nothing approved to run" ;;
       esac
@@ -252,17 +257,229 @@ record_landed() {
   story_write "$1" "landed $2"
 }
 
-# land_story ID — the stub landing (T10 replaces it): record the story
-# branch's head on origin as landed. Returns 0 when landed; else writes the
-# story's stopped ending and returns 1.
-land_story() {
-  _lb="$(row_field "$1" branch)"
-  if ! git_retry -C "$START_DIR" fetch -q origin "+refs/heads/$_lb:refs/remotes/origin/$_lb"; then
-    story_write "$1" "stopped landing failed (cannot fetch origin/$_lb)"; return 1
+# ---- Landing (spec 555-585, AC7, AC8): no Claude session for a clean merge ----
+
+# land_lock_take — one attempt at RUN_DIR/land.lock (mkdir; `pid` = LANE_PID)
+# under the reclaim mutex land.lock.mutex, studio-gate's rule (T4): the
+# mutex is a symlink naming its taker's pid, made in one atomic step and held
+# for milliseconds; a mutex naming a dead pid is removed by whoever finds it.
+# Under the mutex, a lock whose pid is dead (a zombie lane counts) or missing
+# (a taker that died before writing it) is cleared, so a SIGKILLed holder
+# never wedges the run. Returns 0 when this lane holds the lock (LAND_HELD=1).
+land_lock_take() {
+  _ll="$RUN_DIR/land.lock"
+  if ! ln -s "$LANE_PID" "$_ll.mutex" 2>/dev/null; then
+    _llm="$(readlink "$_ll.mutex" 2>/dev/null)"
+    if [ -n "$_llm" ] && ! pid_live "$_llm" && [ "$(readlink "$_ll.mutex" 2>/dev/null)" = "$_llm" ]; then
+      rm -f "$_ll.mutex"
+    fi
+    return 1
   fi
-  _lsha="$(git -C "$START_DIR" rev-parse -q --verify "refs/remotes/origin/$_lb^{commit}")" \
-    || { story_write "$1" "stopped landing failed (no origin/$_lb)"; return 1; }
-  record_landed "$1" "$_lsha"
+  if [ -d "$_ll" ]; then
+    _llh="$(cat "$_ll/pid" 2>/dev/null)"
+    { [ -n "$_llh" ] && pid_live "$_llh"; } || rm -rf "$_ll"
+  fi
+  _llr=1
+  if mkdir "$_ll" 2>/dev/null; then
+    printf '%s\n' "$LANE_PID" > "$_ll/pid"; LAND_HELD=1; _llr=0
+  fi
+  rm -f "$_ll.mutex"
+  return "$_llr"
+}
+# land_lock_release — drop the land lock when this lane holds it: renamed
+# aside first, so no taker ever sees a half-deleted lock.
+land_lock_release() {
+  [ "${LAND_HELD:-0}" = 1 ] || return 0
+  LAND_HELD=0
+  _ll="$RUN_DIR/land.lock"
+  [ "$(cat "$_ll/pid" 2>/dev/null)" = "$LANE_PID" ] || return 0
+  mv "$_ll" "$_ll.gone.$LANE_PID" 2>/dev/null && rm -rf "$_ll.gone.$LANE_PID"
+}
+
+# pr_view REF — `gh pr view REF --json state,mergeCommit,isDraft,number`
+# from START_DIR (REF a number or a head branch), fields pulled out by sed:
+# PR_STATE, PR_OID (empty before a merge), PR_DRAFT (1|0), PR_NUM. Returns
+# 1 when gh fails or names no state (no such PR).
+pr_view() {
+  _pv="$(cd "$START_DIR" && gh pr view "$1" --json state,mergeCommit,isDraft,number 2>/dev/null)" || return 1
+  _pv="$(printf '%s' "$_pv" | tr -d '\n')"
+  PR_STATE="$(printf '%s\n' "$_pv" | sed -n 's/.*"state"[[:space:]]*:[[:space:]]*"\([A-Z_]*\)".*/\1/p')"
+  PR_OID="$(printf '%s\n' "$_pv" | sed -n 's/.*"mergeCommit"[[:space:]]*:[[:space:]]*{[^}]*"oid"[[:space:]]*:[[:space:]]*"\([0-9a-f]*\)".*/\1/p')"
+  PR_NUM="$(printf '%s\n' "$_pv" | sed -n 's/.*"number"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p')"
+  PR_DRAFT=0
+  printf '%s\n' "$_pv" | grep -q '"isDraft"[[:space:]]*:[[:space:]]*true' && PR_DRAFT=1
+  [ -n "$PR_STATE" ]
+}
+
+# land_confirm ID — step 0, "already landed?", with LAND_SHA set. Direct:
+# the PR of ID's branch is MERGED; LAND_SHA is its merge commit. Integration
+# (after the caller's fetch): origin/<Branch> exists, is an ancestor of
+# origin/<Target>, and its own ledger has a `shipped` line (so a branch with
+# no commits of its own never counts); LAND_SHA is the oldest merge on
+# `--ancestry-path origin/<Branch>..origin/<Target>`, else the branch head
+# (D4: a fast-forward). Reads only; returns 1 when not confirmed.
+land_confirm() {
+  _lc_b="$(row_field "$1" branch)"
+  if [ "$MF_MODE" = direct ]; then
+    pr_view "$_lc_b" && [ "$PR_STATE" = MERGED ] && [ -n "$PR_OID" ] || return 1
+    LAND_SHA="$PR_OID"; return 0
+  fi
+  _lc_rb="refs/remotes/origin/$_lc_b"; _lc_rt="refs/remotes/origin/$MF_TARGET"
+  git -C "$START_DIR" rev-parse -q --verify "$_lc_rb^{commit}" >/dev/null || return 1
+  git -C "$START_DIR" merge-base --is-ancestor "$_lc_rb" "$_lc_rt" 2>/dev/null || return 1
+  git -C "$START_DIR" show "$_lc_rb:.studio/ledger/$1.md" 2>/dev/null | grep -q '^- [0-9-]* shipped ' || return 1
+  LAND_SHA="$(git -C "$START_DIR" log --merges --ancestry-path --format=%H "$_lc_rb..$_lc_rt" | tail -n 1)"
+  [ -n "$LAND_SHA" ] || LAND_SHA="$(git -C "$START_DIR" rev-parse "$_lc_rb")"
+}
+
+# land_once ID — one landing attempt for shipped story ID; touches no
+# checkout. Returns 0 landed (LAND_SHA set) · 3 needs repair (LAND_REPAIR =
+# conflict or red:<abs log>) · 4 failed (LAND_WHY set). Integration: fetch;
+# step 0 (land_confirm); step 1 `merge-tree --write-tree` of origin/<Target>
+# and origin/<Branch> (exit 1 = conflict); step 2 a `commit-tree` --no-ff
+# merge pushed to <Target>; a rejected push fetches and goes back to step 0
+# once. Test hook: STUDIO_OVERNIGHT_LAND_HOOK is evaluated right after a
+# successful push (D20). Direct: land_once_direct. BRANCH defaults to ID's
+# manifest row; a caller landing a branch with no row (Task 11's direct
+# progress landing) names it.
+land_once() {
+  LAND_SHA=""; LAND_REPAIR=""; LAND_WHY=""
+  _lo_b="${2:-$(row_field "$1" branch)}"
+  if [ "$MF_MODE" = direct ]; then land_once_direct "$1" "$_lo_b"; return $?; fi
+  _lo_rb="refs/remotes/origin/$_lo_b"; _lo_rt="refs/remotes/origin/$MF_TARGET"
+  _lo_rej=0
+  while :; do
+    git_retry -C "$START_DIR" fetch -q origin || { LAND_WHY="cannot fetch origin"; return 4; }
+    land_confirm "$1" && return 0
+    git -C "$START_DIR" rev-parse -q --verify "$_lo_rb^{commit}" >/dev/null || { LAND_WHY="no origin/$_lo_b"; return 4; }
+    _lo_tree="$(git -C "$START_DIR" merge-tree --write-tree "$_lo_rt" "$_lo_rb" 2>/dev/null)"; _lo_st=$?
+    case "$_lo_st" in
+      0) ;;
+      1) LAND_REPAIR=conflict; return 3 ;;
+      *) LAND_WHY="merge-tree failed ($_lo_st)"; return 4 ;;
+    esac
+    _lo_tree="$(printf '%s\n' "$_lo_tree" | head -n 1)"
+    _lo_sha="$(git_retry -C "$START_DIR" commit-tree "$_lo_tree" -p "$_lo_rt" -p "$_lo_rb" -m "Merge $_lo_b ($1) into $MF_TARGET")" \
+      || { LAND_WHY="commit-tree failed"; return 4; }
+    if git_retry -C "$START_DIR" push -q origin "$_lo_sha:refs/heads/$MF_TARGET"; then
+      [ -z "${STUDIO_OVERNIGHT_LAND_HOOK:-}" ] || eval "$STUDIO_OVERNIGHT_LAND_HOOK"
+      LAND_SHA="$_lo_sha"; return 0
+    fi
+    _lo_rej=$((_lo_rej + 1))
+    [ "$_lo_rej" -lt 2 ] || { LAND_WHY="push to $MF_TARGET rejected twice"; return 4; }
+  done
+}
+# land_once_direct ID BRANCH — direct mode's land_once: step 0 the PR is
+# MERGED; step 1 `merge-tree` against origin/<default> (exit 1 = conflict);
+# step 2 `gh pr ready` for a draft, then MERGE_COMMAND with <pr> = the PR
+# number, its program from START_DIR (never the story's copy), run through
+# `studio-gate merge` from the story worktree (else START_DIR), stdin
+# /dev/null, output to LDIR/<id>-land.log (RUN_DIR outside a lane); step 3,
+# whatever its exit code, the PR is MERGED and its merge commit is in
+# origin/<default> after a fetch, else red:<log>. MERGE_COMMAND is split on
+# blanks (no quoting inside it).
+land_once_direct() {
+  pr_view "$2" || { LAND_WHY="no PR for $2"; return 4; }
+  if [ "$PR_STATE" = MERGED ]; then
+    [ -n "$PR_OID" ] || { LAND_WHY="PR #$PR_NUM is MERGED with no merge commit"; return 4; }
+    LAND_SHA="$PR_OID"; return 0
+  fi
+  [ "$PR_STATE" = OPEN ] || { LAND_WHY="PR #$PR_NUM is $PR_STATE"; return 4; }
+  _ld_n="$PR_NUM"; _ld_rd="refs/remotes/origin/$DEFAULT_BRANCH"
+  git_retry -C "$START_DIR" fetch -q origin || { LAND_WHY="cannot fetch origin"; return 4; }
+  git -C "$START_DIR" merge-tree --write-tree "$_ld_rd" "refs/remotes/origin/$2" >/dev/null 2>&1; _ld_st=$?
+  case "$_ld_st" in
+    0) ;;
+    1) LAND_REPAIR=conflict; return 3 ;;
+    *) LAND_WHY="merge-tree failed ($_ld_st)"; return 4 ;;
+  esac
+  if [ "$PR_DRAFT" = 1 ]; then
+    ( cd "$START_DIR" && gh pr ready "$_ld_n" ) >/dev/null 2>&1 || { LAND_WHY="gh pr ready $_ld_n failed"; return 4; }
+  fi
+  _ld_log="${LDIR:-$RUN_DIR}/$1-land.log"
+  _ld_cmd="$(printf '%s\n' "$MERGE_COMMAND" | sed "s/<pr>/$_ld_n/g")"
+  _ld_w="${_ld_cmd%% *}"; _ld_a=""; [ "$_ld_cmd" = "$_ld_w" ] || _ld_a="${_ld_cmd#* }"
+  ( cd "$(feature_dir)" || exit 2
+    set -f; set -- $_ld_a; set +f
+    exec sh "$SELF_DIR/studio-gate" merge -- "$START_DIR/$_ld_w" "$@" ) > "$_ld_log" 2>&1 < /dev/null
+  git_retry -C "$START_DIR" fetch -q origin
+  if pr_view "$_ld_n" && [ "$PR_STATE" = MERGED ] && [ -n "$PR_OID" ] \
+     && git -C "$START_DIR" merge-base --is-ancestor "$PR_OID" "$_ld_rd" 2>/dev/null; then
+    LAND_SHA="$PR_OID"; return 0
+  fi
+  LAND_REPAIR="red:$_ld_log"; return 3
+}
+
+# land_repair ID — the one repair unit of a landing: stories/ID = repair,
+# then `/game-dev:execute --land` (label repair, model_repair; D23) with
+# STUDIO_REPAIR=$LAND_REPAIR added to the story's env words. Returns 0 when
+# the story ledger (feature checkout) gained a `Repair:` line — retry; else
+# writes the ending (`stopped stop: <reason>` for a new Stop: line, `stopped
+# repair made no progress` for neither, the halt reason when the lane must
+# stop) and returns 1. Called after studio-gate has exited, so the repair's
+# own gate takes the gate lock itself (D17).
+land_repair() {
+  if lane_halt; then story_write "$1" "stopped $(lane_halt_reason)"; return 1; fi
+  story_write "$1" repair
+  snapshot "$UNIT_DIR/stops.before"
+  _lr_b="$(ledger_of "$FEATURE_DIR" | grep -c '^- [0-9-]* Repair: ')"
+  _lr_p="$PROMPT"; _lr_e="$LAUNCH_ENV"
+  PROMPT="/game-dev:execute --land"; LAUNCH_ENV="$LAUNCH_ENV STUDIO_REPAIR=$(sq "$LAND_REPAIR")"
+  n=$((${n:-0} + 1)); run_unit "$n" repair
+  PROMPT="$_lr_p"; LAUNCH_ENV="$_lr_e"
+  snapshot "$UNIT_DIR/stops.after"
+  _lr_new="$(comm -13 "$UNIT_DIR/stops.before" "$UNIT_DIR/stops.after" | tail -n 1)"
+  _lr_a="$(ledger_of "$FEATURE_DIR" | grep -c '^- [0-9-]* Repair: ')"
+  if [ -n "$_lr_new" ]; then
+    row "$n" repair stop; story_write "$1" "stopped stop: ${_lr_new#*Stop: }"; return 1
+  fi
+  if [ "$_lr_a" -gt "$_lr_b" ]; then
+    row "$n" repair progress
+    if lane_halt; then story_write "$1" "stopped $(lane_halt_reason)"; return 1; fi
+    story_write "$1" landing; return 0
+  fi
+  row "$n" repair noprog; story_write "$1" "stopped repair made no progress"; return 1
+}
+
+# land_story ID — land shipped story ID: take the land lock (polled every
+# STUDIO_OVERNIGHT_POLL_SECONDS s; a halt ends the story with its reason),
+# land_once, and on a first conflict or red one repair unit and one retry;
+# a second one is `stopped landing failed after repair (<conflict|red>)`.
+# The lock is held through the repair and its retry, and released on every
+# path (the lane's EXIT trap releases it too). Lock order: the land lock,
+# then the gate lock (taken by studio-gate in land_once_direct). Returns 0
+# when landed (record_landed); else writes the stopped ending, returns 1.
+land_story() {
+  until land_lock_take; do
+    if lane_halt; then story_write "$1" "stopped $(lane_halt_reason)"; return 1; fi
+    sleep "${STUDIO_OVERNIGHT_POLL_SECONDS:-5}"
+  done
+  _ls_rep=0
+  while :; do
+    land_once "$1"; _ls_st=$?
+    case "$_ls_st" in
+      0) record_landed "$1" "$LAND_SHA"; land_lock_release; return 0 ;;
+      3) if [ "$_ls_rep" = 1 ]; then
+           story_write "$1" "stopped landing failed after repair (${LAND_REPAIR%%:*})"; break
+         fi
+         _ls_rep=1
+         land_repair "$1" || break ;;
+      *) story_write "$1" "stopped landing failed (${LAND_WHY:-land_once returned $_ls_st})"; break ;;
+    esac
+  done
+  land_lock_release
+  return 1
+}
+
+# lanes_resume — before the lanes start: each story whose landing git
+# (integration) or GitHub (direct) confirms (land_confirm) is recorded
+# landed, its landed.tsv line appended when missing (AC8, AC24). Every other
+# story starts from its studio state.
+lanes_resume() {
+  if [ "$MF_MODE" != direct ]; then git_retry -C "$START_DIR" fetch -q origin || return 0; fi
+  for _rs_id in $(cut -f1 "$MF_ROWS" | awk '!seen[$0]++'); do
+    if land_confirm "$_rs_id"; then record_landed "$_rs_id" "$LAND_SHA"; fi
+  done
 }
 
 # Manifest mode's story_units helpers: a stop is the lane's halt, and the
@@ -312,6 +529,7 @@ chain_skip_after() {
 lane_exit() {
   trap '' INT TERM HUP
   end_session
+  land_lock_release
   [ -z "${LDIR:-}" ] || rm -f "$LDIR/cpid" "$LDIR/wpid"   # ended and reaped: never signal a reused pid
   if [ -n "${CUR_ID:-}" ] && ! is_ending "$(story_get "$CUR_ID")"; then
     story_write "$CUR_ID" "stopped: lane crashed ($1)"
@@ -357,8 +575,9 @@ wait_deps() {
 lane_main() {
   trap 'lane_exit $?' EXIT; trap 'lane_stopflag' INT TERM HUP
   LANE_K="$1"; LDIR="$RUN_DIR/lanes/$1"; UNIT_DIR="$LDIR"
-  CPID=""; WPID=""; CUR_ID=""; LANE_BUDGET=0
+  CPID=""; WPID=""; CUR_ID=""; LANE_BUDGET=0; LAND_HELD=0
   mkdir -p "$LDIR" || exit 3
+  sh -c 'echo $PPID' > "$LDIR/pid"; LANE_PID="$(cat "$LDIR/pid")"   # the land lock's holder
   for _c in $(cut -f1 "$CHAINS"); do
     lane_halt && break
     mkdir "$RUN_DIR/claims/$_c" 2>/dev/null || continue
@@ -378,6 +597,8 @@ run_chain() {
   _rc_skip=""; _rc_first=1
   _rc_w="$(chain_waits "$1")"
   for _rc_id in $(chain_members "$1"); do
+    # Landed already (lanes_resume confirmed it): nothing to run or wait for.
+    case "$(story_get "$_rc_id")" in landed*) _rc_first=0; continue ;; esac
     if [ -n "$_rc_skip" ]; then story_write "$_rc_id" "$_rc_skip"; continue; fi
     if [ "$_rc_first" = 1 ] && [ "$_rc_w" != - ]; then
       CUR_ID="$_rc_id"   # a lane that dies while waiting still ends the story
@@ -404,7 +625,10 @@ run_story() {
   LAUNCH_ENV="$(story_launch_env "$1")"
   UNIT_PREFIX=""   # run_unit names files <n>-<id>-<label> from CUR_ID (T5)
   story_write "$1" running
-  # A story already shipped (stage idle, a shipped line) only lands.
+  # A story already shipped (stage idle, a shipped line) only lands: no
+  # unit, straight to land_story (resume, AC24). n is the story's unit
+  # counter (story_units'); a landing repair takes the next number.
+  n=0
   snapshot "$UNIT_DIR/stops.before"
   if [ "$SIG_STAGE" = idle ] && [ "$SIG_SHIPPED" -gt 0 ]; then ENDING=done; else story_units; fi
   # story_units says `stopped by user` for any halt; name the real one. A
@@ -477,6 +701,14 @@ lanes_sweep() {
     if [ -d "$RUN_DIR/claims/$_sw_c" ]; then
       for _sw_id in $(chain_members "$_sw_c"); do
         is_ending "$(story_get "$_sw_id")" && continue
+        # A lane killed between a landing's push and its record: git or
+        # GitHub confirms the landing (Review Focus 1), so it is landed.
+        case "$(story_get "$_sw_id")" in
+          landing|repair)
+            if { [ "$MF_MODE" = direct ] || git_retry -C "$START_DIR" fetch -q origin; } && land_confirm "$_sw_id"; then
+              record_landed "$_sw_id" "$LAND_SHA"; continue
+            fi ;;
+        esac
         _sw_k="$(cat "$RUN_DIR/claims/$_sw_c/lane" 2>/dev/null)"; _sw_rc=unknown
         case "$_sw_k" in
           ''|*[!0-9]*) ;;
@@ -571,6 +803,7 @@ lanes_run() {
   RECORD="$STATE_ROOT/.studio/runs/$MF_SLUG"
   mkdir -p "$RECORD" && touch "$RECORD/landed.tsv" || { rm -f "$LOCK"; say "cannot create $RECORD"; exit 2; }
   for _id in $(cut -f1 "$MF_ROWS" | awk '!seen[$0]++'); do story_write "$_id" queued; done
+  lanes_resume
   LANES_LIVE=1; LANE_PIDS=""
   trap '[ -e "$STOP_FILE" ] || : > "$STOP_FILE"' INT TERM
   trap 'HUP_REQ=1; exit 129' HUP

@@ -208,18 +208,111 @@ date +%s > "$CALLS/$n.t1"
 exit "$code"
 STUB
 printf '#!/bin/sh\nexec claude "$@"\n' > "$FAKE/claude-gd"
-# The stub gh: logs its argv; `auth status` succeeds; `pr create` prints a
-# PR url numbered by a counter (T10 fills the rest).
+# The stub gh (harness part 3): every call's argv is logged to $GH/calls.
+# PRs live as files $GH/pr-<n> of key=value lines (head, base, state
+# OPEN|MERGED, draft 1|0, oid, title; a later line wins), numbered by
+# $GH/pr-count.
+# - auth status: succeeds.
+# - pr create [--draft] --base B --head H [--title T] [--body…]: a new PR,
+#   prints https://gh.test/pr/<n>.
+# - pr view <n|head> --json …: {"state":…,"isDraft":…,"number":n,
+#   "mergeCommit":{"oid":…}} (mergeCommit null before a merge); no PR -> exit 1.
+# - pr ready <n>: draft=0. pr edit <n> [--title T] [--body-file F]: records
+#   the title, and F's content in $GH/pr-<n>.body.
+# - pr list --head H --base B --state open --json number,url: [] or one object.
 cat > "$FAKE/gh" <<'STUB'
 #!/bin/sh
 printf '%s\n' "$*" >> "$GH/calls"
+get() { sed -n "s/^$1=//p" "$2" | tail -n 1; }
+# pr_file N|HEAD — the PR file for a number, or the newest PR with that head.
+pr_file() {
+  case "$1" in
+    ''|*[!0-9]*) _pf=""
+       for _f in "$GH"/pr-[0-9]*; do
+         case "$_f" in *.body) continue ;; esac
+         [ -f "$_f" ] && [ "$(get head "$_f")" = "$1" ] && _pf="$_f"
+       done
+       [ -n "$_pf" ] && printf '%s\n' "$_pf" ;;
+    *) [ -f "$GH/pr-$1" ] && printf '%s\n' "$GH/pr-$1" ;;
+  esac
+}
 case "$1 ${2:-}" in
   "auth status") exit 0 ;;
   "pr create")
+    shift 2; _d=0; _b=""; _h=""; _t=""
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --draft) _d=1 ;;
+        --base) _b="$2"; shift ;;
+        --head) _h="$2"; shift ;;
+        --title) _t="$2"; shift ;;
+        --body|--body-file) shift ;;
+      esac
+      shift
+    done
     _n=$(( $(cat "$GH/pr-count" 2>/dev/null || echo 0) + 1 )); echo "$_n" > "$GH/pr-count"
-    echo "https://example.test/pull/$_n" ;;
+    printf 'head=%s\nbase=%s\nstate=OPEN\ndraft=%s\noid=\ntitle=%s\n' "$_h" "$_b" "$_d" "$_t" > "$GH/pr-$_n"
+    echo "https://gh.test/pr/$_n" ;;
+  "pr view")
+    _f="$(pr_file "${3:-}")" || { echo "no pull requests found for ${3:-}" >&2; exit 1; }
+    _o="$(get oid "$_f")"; if [ -n "$_o" ]; then _mc="{\"oid\":\"$_o\"}"; else _mc=null; fi
+    if [ "$(get draft "$_f")" = 1 ]; then _dr=true; else _dr=false; fi
+    printf '{"state":"%s","isDraft":%s,"number":%s,"mergeCommit":%s}\n' \
+      "$(get state "$_f")" "$_dr" "${_f##*/pr-}" "$_mc" ;;
+  "pr ready")
+    _f="$(pr_file "${3:-}")" || exit 1
+    echo draft=0 >> "$_f" ;;
+  "pr edit")
+    _f="$(pr_file "${3:-}")" || exit 1
+    shift 3
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --title) echo "title=$2" >> "$_f"; shift ;;
+        --body-file) cat "$2" > "$_f.body"; shift ;;
+      esac
+      shift
+    done ;;
+  "pr list")
+    shift 2; _h=""; _b=""
+    while [ "$#" -gt 0 ]; do
+      case "$1" in --head) _h="$2"; shift ;; --base) _b="$2"; shift ;; esac
+      shift
+    done
+    _f="$(pr_file "$_h")"
+    if [ -n "$_f" ] && [ "$(get state "$_f")" = OPEN ] && { [ -z "$_b" ] || [ "$(get base "$_f")" = "$_b" ]; }; then
+      printf '[{"number":%s,"url":"https://gh.test/pr/%s"}]\n' "${_f##*/pr-}" "${_f##*/pr-}"
+    else
+      echo '[]'
+    fi ;;
 esac
 exit 0
+STUB
+# The stub merge program (direct fixtures commit scripts/merge.sh, which
+# execs this): `s merge <epoch>` and `e merge <epoch>` around its work in
+# $CALLS/gate.iv; its outcome is the next word of $MERGE_OUTCOMES (default
+# ok; a counter file $CALLS/merge-count). ok: a temp clone of origin merges
+# origin/<head> into <base> with --no-ff, pushes, and writes state=MERGED and
+# oid=<merge sha> to the PR file; MERGE_DELETES_BRANCH=1 also deletes
+# origin/<head>. refuse: exit 1, no merge.
+cat > "$FAKE/merge-stub" <<'STUB'
+#!/bin/sh
+echo "s merge $(date +%s)" >> "$CALLS/gate.iv"
+k=$(( $(cat "$CALLS/merge-count" 2>/dev/null || echo 0) + 1 )); echo "$k" > "$CALLS/merge-count"
+out="$(printf '%s\n' ${MERGE_OUTCOMES:-ok} | sed -n "${k}p")"; [ -n "$out" ] || out=ok
+f="$GH/pr-$1"; rc=0
+case "$out" in
+  ok)
+    head="$(sed -n 's/^head=//p' "$f" | tail -n 1)"; base="$(sed -n 's/^base=//p' "$f" | tail -n 1)"
+    url="$(git remote get-url origin)"; d="$(mktemp -d)"
+    ( cd "$d" && git clone -q "$url" c && cd c && git checkout -q "$base" \
+      && git merge -q --no-ff --no-edit "origin/$head" && git push -q origin "$base" \
+      && printf 'state=MERGED\noid=%s\n' "$(git rev-parse HEAD)" >> "$f" \
+      && { [ "${MERGE_DELETES_BRANCH:-0}" != 1 ] || git push -q origin --delete "$head"; } ) || rc=1
+    rm -rf "$d" ;;
+  refuse) echo "merge refused: the gate is red"; rc=1 ;;
+esac
+echo "e merge $(date +%s)" >> "$CALLS/gate.iv"
+exit "$rc"
 STUB
 # A fake caffeinate: lives until the -w pid dies (no real keep-awake in tests).
 printf '#!/bin/sh\nwhile kill -0 "$3" 2>/dev/null; do sleep 1; done\n' > "$FAKE/caffeinate"
@@ -242,7 +335,9 @@ last_lanes_dir() { ls -d "$P"/.studio/reports/overnight-demo-* 2>/dev/null | tai
 # from $LANES_CONFIG (default {}); LANES_CELLS=dash writes '-' in every Spec and
 # Plan cell; LANES_PROGRESS=1 puts a PROGRESS.md on main (default: none); the
 # manifest docs/runs/demo.md with Docs: the docs commit, committed and pushed;
-# integration/demo on origin for MODE integration. Exports P, MFP, CALLS, GH,
+# integration/demo on origin for MODE integration; for MODE direct, an
+# executable scripts/merge.sh (the stub merge program) committed on run/demo.
+# Exports P, MFP, CALLS, GH,
 # TMP_WT and SCEN (an empty scenario dir: every unit is `auto`); unsets LANES_*.
 lanes_fixture() {
   _lf_name="$1"; _lf_mode="$2"; shift 2
@@ -273,6 +368,9 @@ lanes_fixture() {
     } > "$_lf_spec"
     sh "$STATE_BIN" init >/dev/null
     printf '%s\n' "$_lf_cfg" > .studio/config.json
+    if [ "$_lf_mode" = direct ]; then
+      mkdir -p scripts && printf '#!/bin/sh\nexec sh %s "$@"\n' "'$FAKE/merge-stub'" > scripts/merge.sh && chmod +x scripts/merge.sh
+    fi
     for _r in "$@"; do
       _id="${_r%%:*}"; _plan="docs/game-dev/plans/2026-10-01-$_id.md"
       printf '# Plan: %s\n\nStory: %s\n\n## Global Constraints\n\n- none\n\n## Decisions\n\n- none\n\n### Task 1: t\n\nSpec: %s:L1-2\nReview: final\n' \
@@ -763,6 +861,199 @@ test_lanes_stop_file() {
   assert_contains "$R/stories/C" "^skipped: run stopped$" "a waiting chain ends skipped: run stopped"
   assert_file "$R/report.md" "the report is written"
 }
+# ---- T10: landing ----
+
+# land_calls — how many sessions ran an `execute --land` repair unit.
+land_calls() { grep -l -- '--land' "$CALLS"/*.argv 2>/dev/null | wc -l | tr -d ' '; }
+# land_call — the call number of the (one) repair unit.
+land_call() { grep -l -- '--land' "$CALLS"/*.argv 2>/dev/null | sed 's#.*/\([0-9]*\)\.argv#\1#' | head -n 1; }
+# merges_of ID — runner merge commits for ID's branch on origin/integration/demo.
+merges_of() { git -C "$P" log --merges --format=%s origin/integration/demo | grep -c "^Merge $1-b ($1) into integration/demo$"; }
+
+test_lanes_land_clean_integration() {
+  lanes_fixture landi integration A:- B:-
+  main0="$(git -C "$P" rev-parse origin/main)"
+  run_lanes start "$MFP"
+  assert_eq 0 "$LS_STATUS" "both land"
+  assert_eq 0 "$(land_calls)" "no session for a clean landing"
+  git -C "$P" fetch -q origin
+  assert_eq 2 "$(git -C "$P" log --merges --format=%s origin/integration/demo | grep -c '^Merge .* into integration/demo$')" "two runner merge commits on the integration branch"
+  for id in A B; do
+    assert_eq 1 "$(merges_of "$id")" "$id: one merge commit, named for its branch and id"
+    _sha="$(awk -F'\t' -v id="$id" '$1 == id { print $3 }' "$P/.studio/runs/demo/landed.tsv")"
+    assert_eq "$(git -C "$P" rev-parse "origin/$id-b")" "$(git -C "$P" rev-parse -q --verify "${_sha:-none}^2" 2>/dev/null)" \
+      "$id: the recorded sha is a --no-ff merge whose second parent is the story branch"
+  done
+  assert_eq "$main0" "$(git -C "$P" rev-parse origin/main)" "nothing reaches main"
+  assert_eq 2 "$(wc -l < "$P/.studio/runs/demo/landed.tsv" | tr -d ' ')" "two landed lines"
+  assert_eq "run/demo" "$(git -C "$P" rev-parse --abbrev-ref HEAD)" "no checkout is touched"
+}
+test_lanes_land_clean_direct() {
+  LANES_CONFIG='{"merge_command": "scripts/merge.sh <pr>"}'; export LANES_CONFIG
+  lanes_fixture landd direct A:- B:-
+  run_lanes start "$MFP"
+  assert_eq 0 "$LS_STATUS" "both land"
+  assert_eq 0 "$(land_calls)" "no session for a clean landing"
+  assert_eq 2 "$(grep -c '^pr ready ' "$GH/calls")" "each draft PR is made ready by the runner"
+  assert_eq 2 "$(grep -c '^s merge' "$CALLS/gate.iv" 2>/dev/null)" "the merge program ran once per story"
+  git -C "$P" fetch -q origin
+  for id in A B; do
+    assert_status 0 "$id is in origin/main" -- git -C "$P" merge-base --is-ancestor "origin/$id-b" origin/main
+    _f="$(grep -l "^head=$id-b$" "$GH"/pr-[0-9]* | head -n 1)"
+    assert_contains "$P/.studio/runs/demo/landed.tsv" "^$id	main	$(sed -n 's/^oid=//p' "$_f" | tail -n 1)	" "$id: landed.tsv records the PR's merge commit"
+    assert_contains "$(last_lanes_dir)/stories/$id" "^landed " "$id ends landed"
+    assert_eq 1 "$(ls "$(last_lanes_dir)"/lanes/*/"$id-land.log" 2>/dev/null | wc -l | tr -d ' ')" "$id: the merge program's output goes to <id>-land.log"
+  done
+}
+test_lanes_land_conflict_one_repair() {
+  # Two lanes: both branches start from the same target, A lands first (B's
+  # finish sleeps), so B's landing conflicts on shared.txt. One lane would
+  # not conflict: B would branch from the target after A landed.
+  lanes_fixture landc integration A:- B:-
+  printf 'conflict shared.txt\n' > "$SCEN/A"; printf 'conflict shared.txt\nauto\nsleep 4\n' > "$SCEN/B"
+  printf 'repair\n' > "$SCEN/B.land"
+  run_lanes start "$MFP"
+  assert_eq 1 "$(land_calls)" "exactly one repair unit"
+  n="$(land_call)"; [ -n "$n" ] || n=0
+  assert_eq B "$(cat "$CALLS/$n.story" 2>/dev/null)" "the repair is the conflicting story's"
+  assert_contains "$CALLS/$n.env" "^STUDIO_REPAIR=conflict$" "the repair knows why"
+  assert_eq opus "$(sed -n 4p "$CALLS/$n.argv" 2>/dev/null)" "the repair runs on model_repair"
+  assert_eq "/game-dev:execute --land" "$(cat "$CALLS/$n.prompt" 2>/dev/null)" "the repair prompt"
+  assert_contains "$(last_lanes_dir)/stories/B" "^landed " "the retry lands"
+  assert_contains "$(last_lanes_dir)/stories/A" "^landed " "the first story lands"
+  assert_eq 1 "$(cat "$(last_lanes_dir)"/lanes/*/units.tsv | grep -c '	B-repair	')" "the repair unit has a units.tsv row"
+  git -C "$P" fetch -q origin
+  assert_eq "1 1" "$(merges_of A) $(merges_of B)" "one runner merge per story"
+}
+test_lanes_land_second_conflict_stops() {
+  lanes_fixture landc2 integration A:- B:-
+  printf 'conflict shared.txt\n' > "$SCEN/A"; printf 'conflict shared.txt\nauto\nsleep 4\n' > "$SCEN/B"
+  printf 'fakerepair\n' > "$SCEN/B.land"
+  run_lanes start "$MFP"
+  assert_eq 1 "$(land_calls)" "one repair, no second"
+  assert_contains "$(last_lanes_dir)/stories/B" "^stopped landing failed after repair (conflict)$" "a second conflict stops the story"
+  assert_contains "$(last_lanes_dir)/report.md" "^Ending: partial: 1 landed, 1 stopped, 0 skipped$" "the run is partial"
+  assert_eq "" "$(ls -d "$(last_lanes_dir)/land.lock" 2>/dev/null)" "the land lock is released"
+}
+test_lanes_land_repair_no_progress() {
+  lanes_fixture landnp integration A:- B:-
+  printf 'conflict shared.txt\n' > "$SCEN/A"; printf 'conflict shared.txt\nauto\nsleep 4\n' > "$SCEN/B"
+  printf 'noop\n' > "$SCEN/B.land"
+  run_lanes start "$MFP"
+  assert_contains "$(last_lanes_dir)/stories/B" "^stopped repair made no progress$" "a repair with no Repair: line stops"
+  lanes_fixture landst integration A:- B:-
+  printf 'conflict shared.txt\n' > "$SCEN/A"; printf 'conflict shared.txt\nauto\nsleep 4\n' > "$SCEN/B"
+  printf 'stop cannot resolve\n' > "$SCEN/B.land"
+  run_lanes start "$MFP"
+  assert_contains "$(last_lanes_dir)/stories/B" "^stopped stop: cannot resolve$" "a repair's Stop: line stops with its reason"
+}
+test_lanes_direct_refused_then_repaired() {
+  LANES_CONFIG='{"merge_command": "scripts/merge.sh <pr>"}'; export LANES_CONFIG
+  lanes_fixture landr direct A:-
+  printf 'repair\n' > "$SCEN/A.land"
+  MERGE_OUTCOMES="refuse ok"; export MERGE_OUTCOMES
+  run_lanes start "$MFP"
+  unset MERGE_OUTCOMES
+  assert_eq 1 "$(land_calls)" "one repair unit"
+  n="$(land_call)"; [ -n "$n" ] || n=0
+  assert_contains "$CALLS/$n.env" "^STUDIO_REPAIR=red:/.*/A-land.log$" "a refused merge command repairs with its log"
+  assert_contains "$(last_lanes_dir)/stories/A" "^landed " "the retry lands"
+  assert_eq 2 "$(grep -c '^s merge' "$CALLS/gate.iv" 2>/dev/null)" "the merge command ran twice"
+  assert_eq 1 "$(grep -c '^pr ready ' "$GH/calls")" "a PR already ready is not made ready again"
+}
+test_lanes_land_idempotent() {
+  LANES_CONFIG='{"merge_command": "scripts/merge.sh <pr>"}'; export LANES_CONFIG
+  lanes_fixture idem direct A:-
+  MERGE_DELETES_BRANCH=1; export MERGE_DELETES_BRANCH
+  run_lanes start "$MFP"                                  # lands A, and the merge deletes A-b
+  unset MERGE_DELETES_BRANCH
+  _oid="$(sed -n 's/^oid=//p' "$GH/pr-1" | tail -n 1)"
+  : > "$CALLS/gate.iv"; rm -rf "$P/.studio/runs/demo"     # forget the runner's record
+  _c0="$(calls)"
+  run_lanes start "$MFP"
+  assert_eq 0 "$LS_STATUS" "the resumed run is done"
+  assert_eq 0 "$(grep -c '^s merge' "$CALLS/gate.iv")" "a merged PR is recorded with no merge command"
+  assert_eq "$_c0" "$(calls)" "and no session"
+  assert_contains "$P/.studio/runs/demo/landed.tsv" "^A	main	${_oid:-none}	[0-9]\{10\}$" "and appended to landed.tsv from GitHub alone, with the PR's merge commit"
+  assert_contains "$(last_lanes_dir)/stories/A" "^landed ${_oid:-none}$" "A is landed with the existing merge commit"
+}
+test_lanes_land_crash_after_push() {
+  lanes_fixture crashp integration A:-
+  # The hook's `sh -c` is the lane's own child, so $PPID is the lane (a
+  # `$(…)` would name a command-substitution subshell instead).
+  STUDIO_OVERNIGHT_LAND_HOOK="sh -c 'kill -9 \$PPID'; : > '$CALLS/survived'"; export STUDIO_OVERNIGHT_LAND_HOOK
+  run_lanes start "$MFP"
+  unset STUDIO_OVERNIGHT_LAND_HOOK
+  assert_missing "$CALLS/survived" "the lane is killed between its push and its record"
+  R1="$(last_lanes_dir)"
+  rm -rf "$P/.studio/runs/demo"     # the killed lane wrote no landed.tsv line
+  sleep 1                           # a new run dir name
+  run_lanes start "$MFP"
+  git -C "$P" fetch -q origin
+  assert_eq 1 "$(merges_of A)" "no second merge commit"
+  assert_eq 0 "$(land_calls)" "no repair"
+  assert_eq 1 "$([ "$(last_lanes_dir)" != "$R1" ] && echo 1 || echo 0)" "the resume is a second run"
+  _m="$(git -C "$P" log --merges --format=%H origin/integration/demo | head -n 1)"
+  assert_contains "$(last_lanes_dir)/stories/A" "^landed ${_m:-none}$" "the resume records the landing from git alone"
+  assert_contains "$P/.studio/runs/demo/landed.tsv" "^A	integration/demo	${_m:-none}	" "and appends landed.tsv"
+}
+test_lanes_land_lock_reclaim() {
+  # A's lane is SIGKILLed right after its push, holding the land lock; B's
+  # finish runs 4 s later, so B finds the dead holder's lock and reclaims it.
+  lanes_fixture landk integration A:- B:-
+  printf 'auto\nauto\nsleep 4\n' > "$SCEN/B"
+  STUDIO_OVERNIGHT_POLL_SECONDS=1
+  STUDIO_OVERNIGHT_LAND_HOOK="[ \"\$CUR_ID\" != A ] || { sh -c 'kill -9 \$PPID'; : > '$CALLS/survived'; }"
+  export STUDIO_OVERNIGHT_POLL_SECONDS STUDIO_OVERNIGHT_LAND_HOOK
+  run_lanes start "$MFP"
+  unset STUDIO_OVERNIGHT_POLL_SECONDS STUDIO_OVERNIGHT_LAND_HOOK
+  assert_missing "$CALLS/survived" "A's lane is killed holding the land lock"
+  R="$(last_lanes_dir)"
+  assert_contains "$R/stories/B" "^landed " "the other lane reclaims the dead holder's land lock and lands"
+  assert_contains "$R/stories/A" "^landed " "the killed story is recorded landed from git by the sweep"
+  git -C "$P" fetch -q origin
+  assert_eq 1 "$(merges_of A)" "A merged once"
+  assert_eq 2 "$(wc -l < "$P/.studio/runs/demo/landed.tsv" | tr -d ' ')" "two landed lines"
+  assert_eq "" "$(ls -d "$R/land.lock" 2>/dev/null)" "the land lock is released"
+}
+test_lanes_land_shipped_resume() {
+  # A half-done story already at stage idle with a shipped line, its branch
+  # on origin, not yet landed: the run lands it with no unit (run_story's
+  # shortcut). A second run with the record forgotten confirms it from git.
+  lanes_fixture shipres integration A:-
+  _ab="$TMP/ab-shipres"
+  ( cd "$P" && git worktree add -q --no-track -b A-b "$_ab" origin/integration/demo \
+    && cd "$_ab" && git checkout -q run/demo -- docs/game-dev .studio/ledger/A.md \
+    && printf 'A\n' > A-T1.txt && printf -- '- 2026-10-01 shipped A-b\n' >> .studio/ledger/A.md \
+    && git add -A && git commit -qm a-shipped && git push -q origin A-b \
+    && cd "$P" && git worktree remove --force "$_ab" && git branch -q -D A-b \
+    && STUDIO_STORY=A sh "$STATE_BIN" set stage idle && STUDIO_STORY=A sh "$STATE_BIN" set task - \
+    && printf -- '- 2026-10-01 shipped A-b\n' >> .studio/ledger/A.md \
+    && git add -A && git commit -qm shipped && git push -q origin run/demo ) >/dev/null 2>&1
+  run_lanes start "$MFP"
+  assert_eq 0 "$LS_STATUS" "the shipped story lands"
+  assert_eq 0 "$(calls)" "with no unit"
+  git -C "$P" fetch -q origin
+  assert_eq 1 "$(merges_of A)" "one runner merge"
+  _m="$(git -C "$P" log --merges --format=%H origin/integration/demo | head -n 1)"
+  assert_contains "$(last_lanes_dir)/stories/A" "^landed ${_m:-none}$" "recorded with its merge commit"
+  rm -rf "$P/.studio/runs/demo"; sleep 1
+  run_lanes start "$MFP"
+  git -C "$P" fetch -q origin
+  assert_eq 1 "$(merges_of A)" "an already-landed story is not merged again"
+  assert_eq 0 "$(calls)" "no unit and no repair"
+  assert_contains "$P/.studio/runs/demo/landed.tsv" "^A	integration/demo	${_m:-none}	" "it is recorded with the existing merge commit"
+}
+test_lanes_gate_never_overlaps() {
+  LANES_CONFIG='{"merge_command": "scripts/merge.sh <pr>"}'; export LANES_CONFIG
+  lanes_fixture gate direct A:- B:- C:-
+  for id in A B C; do printf 'gate 1; auto\ngate 1; auto\ngate 1; auto\n' > "$SCEN/$id"; done
+  run_lanes start "$MFP"
+  assert_eq 0 "$LS_STATUS" "all three land"
+  assert_eq 3 "$(grep -c '^s merge' "$CALLS/gate.iv" 2>/dev/null)" "three merge commands"
+  assert_eq 12 "$(grep -c '^s ' "$CALLS/gate.iv" 2>/dev/null)" "nine unit tests and three merge commands in one gate.iv"
+  assert_eq "" "$(awk '$1=="s"{if(open)print "overlap at " $3; open=1} $1=="e"{open=0}' "$CALLS/gate.iv")" "unit tests and merge commands never overlap"
+}
 # Last: no process any test started is still alive.
 test_lanes_no_orphans() {
   _left="$(pgrep -f "$TMP" 2>/dev/null; pgrep -f "$RUNNER" 2>/dev/null)"
@@ -776,4 +1067,8 @@ run_tests test_lanes_chain_rule test_lanes_manifest_refusals test_lanes_manifest
   test_lanes_two_independent_to_landed test_lanes_max_lanes_one_serializes test_lanes_models_and_env \
   test_lanes_story_stop_isolated test_lanes_budget test_lanes_budget_sums_all_lanes test_lanes_overhead \
   test_lanes_docs_revision test_lanes_waiting_chain_starts_after_deps test_lanes_skip_on_stopped_dep \
-  test_lanes_lane_kill9 test_lanes_end_sessions_spaced_path test_lanes_sigint test_lanes_runner_gone test_lanes_stop_file test_lanes_no_orphans
+  test_lanes_lane_kill9 test_lanes_end_sessions_spaced_path test_lanes_sigint test_lanes_runner_gone test_lanes_stop_file \
+  test_lanes_land_clean_integration test_lanes_land_clean_direct test_lanes_land_conflict_one_repair \
+  test_lanes_land_second_conflict_stops test_lanes_land_repair_no_progress test_lanes_direct_refused_then_repaired test_lanes_land_idempotent \
+  test_lanes_land_crash_after_push test_lanes_land_lock_reclaim test_lanes_land_shipped_resume \
+  test_lanes_gate_never_overlaps test_lanes_no_orphans
