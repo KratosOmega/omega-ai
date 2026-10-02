@@ -246,19 +246,54 @@ row() {  # row N LABEL OUTCOME
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$UNIT_EXIT" "$UNIT_COST" "$UNIT_MIN" "$UNIT_TIMED_OUT" "$3" \
     >> "$RUN_DIR/units.tsv" || { say "cannot write $RUN_DIR/units.tsv"; exit 3; }
 }
-# write_report REASON — stub; Task 4 writes the morning report here.
+# write_report REASON — the morning report: how it ended, what it cost, the
+# rulings to check, what to play, the PR, and how to resume.
 write_report() {
-  printf 'Ending: %s\n' "$1" > "$RUN_DIR/report.md"
+  _ld="$(ledger_of "$(feature_dir)")"
+  _tsv="$RUN_DIR/units.tsv"; [ -f "$_tsv" ] || _tsv=/dev/null
+  _pr="$(printf '%s\n' "$_ld" | sed -n 's/^- [0-9-]* shipped //p' | tail -n 1)"
+  _unk="$(awk -F'\t' '$4 == "unknown" { n++ } END { print n + 0 }' "$_tsv")"
+  _spent="$(spent)"; [ "$_unk" -eq 0 ] || _spent="$_spent (cost unknown for $_unk unit(s))"
+  _started="$(sed -n 's/^started=//p' "$LOCK" 2>/dev/null | head -n 1)"
+  {
+    printf '# Overnight run — %s\n\n' "$(basename "$RUN_DIR")"
+    printf 'Ending: %s\n' "$1"
+    printf 'Plan: %s\n' "$(state get plan 2>/dev/null)"
+    printf 'Branch: %s\n' "$(state get branch 2>/dev/null)"
+    printf 'PR: %s\n' "${_pr:-none}"
+    printf 'Spent: $%s\n' "$_spent"
+    printf 'Started: %s · Ended: %s\n\n' "${_started:-unknown}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf '## Units\n\n| # | Unit | Exit | Cost | Minutes | Timed out | Outcome |\n|---|------|------|------|---------|-----------|---------|\n'
+    awk -F'\t' '{ printf "| %s | %s | %s | %s | %s | %s | %s |\n", $1, $2, $3, $4, $5, $6, $7 }' "$_tsv"
+    printf '\n## Rulings\n\n'
+    printf '%s\n' "$_ld" | grep 'Ruling:' || echo '(none)'
+    printf '\n## Play list\n\n'
+    printf '%s\n' "$_ld" | grep 'P[0-9]* Play:' || echo '(none)'
+    if [ "$1" != done ]; then
+      printf '\n## Resume\n\ncd %s && %s start\n' "'$START_DIR'" "'$SELF_ABS'"
+    fi
+  } > "$RUN_DIR/report.md"
 }
 unlock() {
   [ -z "${INHIB_PID:-}" ] || kill "$INHIB_PID" 2>/dev/null
+  INHIB_PID=""
   rm -f "$LOCK" "$STOP_FILE"
 }
 # finish_run REASON — report, unlock, exit (0 only for done).
 finish_run() {
   write_report "$1"
   unlock
+  REPORTED=1
   [ "$1" = done ] && exit 0
+  exit 1
+}
+# on_exit CODE — the EXIT trap (D18): an ending that never reached
+# finish_run is a runner error; it still gets a report and unlocks.
+REPORTED=0
+on_exit() {
+  [ "$REPORTED" = 1 ] && return 0
+  write_report "stop: runner error (exit $1)"
+  unlock
   exit 1
 }
 
@@ -295,7 +330,7 @@ cmd_start() {
   fi
   mkdir -p "$RUN_DIR" "$(dirname "$LOCK")"
   take_lock "$RUN_DIR" || { say "lock taken by another start"; exit 2; }
-  trap 'unlock' EXIT
+  trap 'on_exit $?' EXIT
   STOP_REQ=0
   trap 'STOP_REQ=1' INT TERM
   INHIB_PID=""
@@ -343,7 +378,14 @@ cmd_start() {
 
 case "$1" in
   start)  shift; cmd_start "$@" ;;
-  status) echo "no run"; exit 1 ;;
+  status)
+    if lock_live; then
+      RUN_DIR="$(sed -n 's/^run=//p' "$LOCK" | head -n 1)"
+      printf 'run: %s\nunit: %s\ntask: %s\nspent: $%s\npid: %s\n' "$RUN_DIR" \
+        "$(cat "$RUN_DIR/current" 2>/dev/null)" "$(state get task 2>/dev/null)" "$(spent)" "$(lock_pid)"
+      exit 0
+    fi
+    echo "no run"; exit 1 ;;
   stop)
     if lock_live; then
       : > "$STOP_FILE"

@@ -422,7 +422,70 @@ test_overnight_no_inhibitor() {
   assert_contains "$TMP/rs.err" "no sleep inhibitor" "one warning names the missing inhibitor"
 }
 
-run_tests test_overnight_timeout test_overnight_kill_after_grace \
+test_overnight_report_done() {
+  fixture rep; done_scenario; run_start
+  R="$(last_run_dir)/report.md"
+  assert_contains "$R" "^Ending: done$" "report: the ending"
+  assert_contains "$R" "^PR: https://github.com/o/r/pull/9$" "report: the PR URL from the shipped line"
+  assert_contains "$R" "^Spent: \\\$8.25$" "report: the total spend"
+  assert_contains "$R" "| 3 | final-review | 0 | 3 |" "report: one row per unit with exit and cost"
+  assert_contains "$R" "T2 Ruling: kept x — y — z" "report: every Ruling: line, verbatim with its cost"
+  assert_contains "$R" "P1 Play: jump on the box" "report: the play list"
+  assert_not_contains "$R" "^## Resume" "report: no resume command when done"
+}
+
+test_overnight_report_not_done() {
+  fixture repn; scenario "cost 1" "nocost"; run_start
+  R="$(last_run_dir)/report.md"
+  assert_contains "$R" "^Ending: no progress on T1$" "report: the stop reason"
+  assert_contains "$R" "cost unknown" "report: an unknown cost is said next to the total"
+  assert_contains "$R" "^## Resume" "report: a resume section when not done"
+  assert_contains "$R" "cd '$P' && '$RUNNER' start" "report: the absolute resume command (D16)"
+  assert_contains "$R" "^PR: none$" "report: no PR yet"
+}
+
+test_overnight_report_runner_error() {
+  fixture err; scenario "stage execute; task 1/2; rotsv"; run_start
+  R="$(last_run_dir)/report.md"
+  assert_eq 1 "$RS_STATUS" "a runner error exits 1"
+  assert_contains "$R" "^Ending: stop: runner error (exit 3)$" "the EXIT trap writes the report"
+  assert_missing "$P/.studio/overnight.lock" "the EXIT trap unlocks"
+}
+
+test_overnight_crash_resume() {
+  fixture crash; scenario "stage execute; task 1/2; sleep 30" "task 2/2" "ledger final review done" \
+    "ledger shipped https://x/pull/3; stage idle; task -"
+  start_bg; wait_for "$CALLS/1.t0"
+  kill -KILL "$RPID"; wait "$RPID" 2>/dev/null
+  # The killed runner's orphans: its watchdog subshell (same argv as the
+  # runner), then the sleeps of the stub and of the watchdog (default 5400 s).
+  pkill -KILL -f "sh $RUNNER start" 2>/dev/null
+  pkill -KILL -f "sleep 30" 2>/dev/null; pkill -KILL -f "sleep 5400" 2>/dev/null
+  assert_file "$P/.studio/overnight.lock" "a killed runner leaves its lock"
+  run_start
+  assert_eq 0 "$RS_STATUS" "the next start reclaims the stale lock and resumes from state"
+  assert_contains "$RS_ERR" "reclaiming stale lock" "with a warning"
+  assert_contains "$(last_run_dir)/report.md" "^Ending: done$" "and writes the morning report"
+}
+
+test_overnight_status() {
+  fixture stat; scenario "stage execute; task 1/2; cost 1.5" "sleep 3; task 2/2"
+  start_bg; wait_for "$CALLS/2.t0"
+  ( cd "$P" && sh "$RUNNER" status ) > "$TMP/st.out"; st=$?
+  assert_eq 0 "$st" "status exits 0 while a run is live"
+  assert_contains "$TMP/st.out" "^run: $P/.studio/reports/overnight-" "status: run dir"
+  assert_contains "$TMP/st.out" "^unit: T2$" "status: the running unit"
+  assert_contains "$TMP/st.out" "^task: 1/2$" "status: task k/N"
+  assert_contains "$TMP/st.out" "^spent: \\\$1.50$" "status: spend so far"
+  assert_contains "$TMP/st.out" "^pid: $RPID$" "status: the lock pid"
+  ( cd "$P" && sh "$RUNNER" stop ) >/dev/null; bg_status
+  assert_status 1 "status with no run exits 1" -- sh -c "cd '$P' && sh '$RUNNER' status"
+  assert_eq "no run" "$(cd "$P" && sh "$RUNNER" status 2>&1)" "status prints no run"
+}
+
+run_tests test_overnight_report_done test_overnight_report_not_done \
+  test_overnight_report_runner_error test_overnight_crash_resume test_overnight_status \
+  test_overnight_timeout test_overnight_kill_after_grace \
   test_overnight_stop_file test_overnight_sigterm test_overnight_sigint \
   test_overnight_stop_no_run test_overnight_inhibitor test_overnight_no_inhibitor \
   test_overnight_help test_overnight_dry_run \
