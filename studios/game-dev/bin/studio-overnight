@@ -313,12 +313,18 @@ spent_all() { spent; }
 stop_requested() { [ -f "$STOP_FILE" ] || [ "$STOP_REQ" = 1 ]; }
 spent() { awk -F'\t' '$4 != "unknown" { s += $4 } END { printf "%.2f\n", s + 0 }' "$RUN_DIR/units.tsv" 2>/dev/null || echo 0.00; }
 
+# start_session ARGS — the session in the background, its pid in CPID. Its
+# env words are LAUNCH_ENV (manifest mode: the story's, story_launch_env),
+# else OMEGA_AUTOPILOT=1; STUDIO_GATE_HELD never reaches a session (D17).
+# Under a lane (LDIR set) the pid is also written to LDIR/cpid.
 start_session() {
-  set -m 2>/dev/null || true   # own process group: a terminal Ctrl-C reaches only the runner (D6)
-  ( cd "$START_DIR" && OMEGA_AUTOPILOT=1 exec claude-gd -p "$@" ) \
+  set -m 2>/dev/null || true   # own process group: a terminal Ctrl-C reaches only the runner (D6; a lane subshell too, D1c)
+  ( cd "$START_DIR" && unset STUDIO_GATE_HELD && eval "export ${LAUNCH_ENV:-OMEGA_AUTOPILOT=1}" \
+      && exec claude-gd -p "$@" ) \
     > "$UNIT_DIR/$UNIT_STEM.jsonl" 2> "$UNIT_DIR/$UNIT_STEM.err" < /dev/null &
   CPID=$!
   set +m 2>/dev/null || true
+  [ -z "${LDIR:-}" ] || printf '%s\n' "$CPID" > "$LDIR/cpid"
 }
 # run_unit N LABEL — one session, waited for; sets UNIT_* (D7's wait loop).
 # CUR_ID (empty in single-plan mode) names the story: stem N-ID-LABEL, and
@@ -352,7 +358,7 @@ run_unit() {
     wait "$CPID"; _st=$?
     kill -0 "$CPID" 2>/dev/null || break
   done
-  CPID=""
+  CPID=""; [ -z "${LDIR:-}" ] || rm -f "$LDIR/cpid"   # reaped: never signal a reused pid
   UNIT_EXIT="$_st"; UNIT_TIMED_OUT=0
   mkdir "$_claim" 2>/dev/null || UNIT_TIMED_OUT=1
   kill "$WPID" 2>/dev/null; wait "$WPID" 2>/dev/null
@@ -440,13 +446,14 @@ on_exit() {
 
 # story_units — bundle 2's unit loop for the current story. Returns with
 # ENDING set: done · stopped by user · stop: <reason> · stop: run budget ·
-# no progress on <label> · stop: unexpected stage <s>.
+# no progress on <label> · stop: unexpected stage <s>. Its scratch files
+# live in UNIT_DIR (the run dir; a lane's own dir in manifest mode).
 story_units() {
   n=0; noprog=0; suffix=""
   while :; do
     if stop_requested; then ENDING="stopped by user"; return 0; fi
     # First pass takes the before-snapshot; later passes reuse the previous after-snapshot.
-    if [ "$n" -eq 0 ]; then snapshot "$RUN_DIR/stops.before"; else cp "$RUN_DIR/stops.after" "$RUN_DIR/stops.before"; fi
+    if [ "$n" -eq 0 ]; then snapshot "$UNIT_DIR/stops.before"; else cp "$UNIT_DIR/stops.after" "$UNIT_DIR/stops.before"; fi
     _stage="$SIG_STAGE"
     case "$_stage" in plan|execute) ;; *) ENDING="stop: unexpected stage $_stage"; return 0 ;; esac
     if awk -v r="$RUN_USD" 'BEGIN { exit !(r > 0) }' \
@@ -455,8 +462,8 @@ story_units() {
     fi
     _before="$SIG"; _base="${STUDIO_OVERNIGHT_LABEL:-$(label_for)}"
     n=$((n + 1)); run_unit "$n" "$_base$suffix"
-    snapshot "$RUN_DIR/stops.after"
-    _new="$(comm -13 "$RUN_DIR/stops.before" "$RUN_DIR/stops.after" | tail -n 1)"
+    snapshot "$UNIT_DIR/stops.after"
+    _new="$(comm -13 "$UNIT_DIR/stops.before" "$UNIT_DIR/stops.after" | tail -n 1)"
     if [ -n "$_new" ]; then row "$n" "$_base$suffix" stop; ENDING="stop: ${_new#*Stop: }"; return 0; fi
     if [ "$SIG_STAGE" = idle ] && [ "$SIG_SHIPPED" -gt 0 ]; then row "$n" "$_base$suffix" done; ENDING=done; return 0; fi
     if [ "$SIG" != "$_before" ]; then row "$n" "$_base$suffix" progress; noprog=0; suffix=""; continue; fi
@@ -496,6 +503,20 @@ cmd_start() {
     exit 0
   fi
   RUN_DIR="$REPORTS/overnight-$(date +%Y%m%d-%H%M%S)"
+  acquire_run_lock
+  trap 'on_exit $?' EXIT
+  STOP_REQ=0
+  trap 'STOP_REQ=1' INT TERM
+  trap 'HUP_REQ=1; exit 129' HUP
+  run_setup
+  UNIT_DIR="$RUN_DIR"; UNIT_PREFIX=""; CUR_ID=""
+  story_units
+  finish_run "$ENDING"
+}
+
+# acquire_run_lock — the run lock for RUN_DIR (a stale one reclaimed), then
+# RUN_DIR itself; exit 2 when another start holds it. Both modes (D18).
+acquire_run_lock() {
   if [ -f "$LOCK" ]; then
     _stale="$(lock_pid)"
     say "reclaiming stale lock (pid $_stale)"
@@ -520,10 +541,10 @@ cmd_start() {
   take_lock "$RUN_DIR" || { say "lock taken by another start"; exit 2; }
   # The run dir only once the lock is ours: a lost race leaves nothing behind.
   mkdir -p "$RUN_DIR" || { rm -f "$LOCK"; say "cannot create $RUN_DIR"; exit 2; }
-  trap 'on_exit $?' EXIT
-  STOP_REQ=0
-  trap 'STOP_REQ=1' INT TERM
-  trap 'HUP_REQ=1; exit 129' HUP
+}
+# run_setup — once the lock and traps are in place: the sleep inhibitor, the
+# reports dir's .gitignore, and the lock and stop files kept out of git.
+run_setup() {
   INHIB_PID=""
   case "$(uname -s)" in
     Darwin)
@@ -544,9 +565,6 @@ cmd_start() {
   for _e in .studio/overnight.lock .studio/overnight.stop; do
     grep -qxF "$_e" "$_excl" 2>/dev/null || printf '%s\n' "$_e" >> "$_excl"
   done
-  UNIT_DIR="$RUN_DIR"; UNIT_PREFIX=""; CUR_ID=""
-  story_units
-  finish_run "$ENDING"
 }
 
 case "$1" in

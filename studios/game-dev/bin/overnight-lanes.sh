@@ -1,10 +1,14 @@
 #!/bin/sh
 # overnight-lanes.sh — studio-overnight's manifest mode (D18): the run
-# manifest, dependency chains, the manifest preflight and the dry run.
+# manifest, dependency chains, the manifest preflight, the dry run, and the
+# run itself: lane processes, each running its chains' stories one fresh
+# session per unit (story_units), then each story's landing.
 # Sourced by studio-overnight after its own helpers (say, sq, refuse, state,
-# cfg*, deny_rules, model_for, label_for, with_launch_args, print_launch) are
-# defined and its preflight has run; never run on its own. Reads studio state
-# and the manifest; never writes either.
+# cfg*, deny_rules, model_for, label_for, with_launch_args, print_launch,
+# run_unit, row, snapshot, story_units, acquire_run_lock, run_setup, unlock)
+# are defined and its preflight has run; never run on its own. Reads studio
+# state and the manifest; never writes either. It redefines stop_requested,
+# spent_all and spent for manifest mode.
 [ -n "${SELF_DIR:-}" ] || { echo "overnight-lanes.sh: sourced by studio-overnight" >&2; exit 2; }
 
 # git_retry ARGS… — git ARGS, retried up to three times (sleeps 1, 2, 4 s)
@@ -229,6 +233,230 @@ lanes_dry_run() {
   printf 'deny: %s rules\n' "$(deny_rules | grep -c .)"
 }
 
+# ---- The run: lanes and the per-story unit loop (spec 489-499, 517-544) ----
+
+# story_write ID TEXT — RUN_DIR/stories/ID = TEXT (D19), by temp file and mv
+# so a reader never sees half a line. Only the lane holding ID writes it,
+# plus the parent before the lanes start and in its sweep.
+story_write() {
+  printf '%s\n' "$2" > "$RUN_DIR/stories/.$1.tmp" && mv -f "$RUN_DIR/stories/.$1.tmp" "$RUN_DIR/stories/$1"
+}
+# story_get ID — the story's record line (empty when none).
+story_get() { cat "$RUN_DIR/stories/$1" 2>/dev/null; }
+
+# record_landed ID SHA — the D27 line `<id>\t<Target>\t<sha>\t<epoch>` in
+# RECORD/landed.tsv (only when the id has none), then stories/ID = landed SHA.
+record_landed() {
+  awk -F'\t' -v id="$1" '$1 == id { f = 1 } END { exit !f }' "$RECORD/landed.tsv" 2>/dev/null \
+    || printf '%s\t%s\t%s\t%s\n' "$1" "$MF_TARGET" "$2" "$(date +%s)" >> "$RECORD/landed.tsv"
+  story_write "$1" "landed $2"
+}
+
+# land_story ID — the stub landing (T10 replaces it): record the story
+# branch's head on origin as landed. Returns 0 when landed; else writes the
+# story's stopped ending and returns 1.
+land_story() {
+  _lb="$(row_field "$1" branch)"
+  if ! git_retry -C "$START_DIR" fetch -q origin "+refs/heads/$_lb:refs/remotes/origin/$_lb"; then
+    story_write "$1" "stopped landing failed (cannot fetch origin/$_lb)"; return 1
+  fi
+  _lsha="$(git -C "$START_DIR" rev-parse -q --verify "refs/remotes/origin/$_lb^{commit}")" \
+    || { story_write "$1" "stopped landing failed (no origin/$_lb)"; return 1; }
+  record_landed "$1" "$_lsha"
+}
+
+# Manifest mode's story_units helpers: a stop is the lane's halt, and the
+# run budget sums every lane's units.tsv (spec 531-534).
+stop_requested() { lane_halt; }
+spent_all() {
+  cat "$RUN_DIR"/lanes/*/units.tsv 2>/dev/null \
+    | awk -F'\t' '$4 != "unknown" { s += $4 } END { printf "%.2f\n", s + 0 }'
+}
+spent() { spent_all; }
+
+# lane_halt — true when this lane must claim and launch no more: the stop
+# file exists, the runner is gone, or the lane hit the run budget.
+lane_halt() {
+  [ -f "$STOP_FILE" ] || ! kill -0 "$RUNNER_PID" 2>/dev/null || [ "${LANE_BUDGET:-0}" = 1 ]
+}
+lane_stopflag() { : > "$STOP_FILE"; }
+# lane_exit RC — the lane's EXIT trap: end a live session, and a story this
+# lane holds that has no ending is `stopped lane crashed (<rc>)` (D2).
+lane_exit() {
+  trap '' INT TERM HUP
+  end_session
+  if [ -n "${CUR_ID:-}" ]; then
+    case "$(story_get "$CUR_ID")" in
+      landed*|stopped*|skipped*) ;;
+      *) story_write "$CUR_ID" "stopped lane crashed ($1)" ;;
+    esac
+  fi
+  exit "$1"
+}
+
+# lane_main K — one lane, in a background subshell: claim chains in order
+# (mkdir RUN_DIR/claims/<c>, the lane's pid and number inside) and run each,
+# until none is left or lane_halt.
+lane_main() {
+  trap 'lane_exit $?' EXIT; trap 'lane_stopflag' INT TERM HUP
+  LANE_K="$1"; LDIR="$RUN_DIR/lanes/$1"; UNIT_DIR="$LDIR"
+  CPID=""; WPID=""; CUR_ID=""; LANE_BUDGET=0
+  mkdir -p "$LDIR" || exit 3
+  for _c in $(cut -f1 "$CHAINS"); do
+    lane_halt && break
+    mkdir "$RUN_DIR/claims/$_c" 2>/dev/null || continue
+    sh -c 'echo $PPID' > "$RUN_DIR/claims/$_c/pid"   # this subshell's pid (no $BASHPID in sh)
+    printf '%s\n' "$LANE_K" > "$RUN_DIR/claims/$_c/lane"
+    run_chain "$_c"
+  done
+  exit 0
+}
+
+# run_chain C — chain C's stories in order; a story after one that did not
+# land is skipped (T9 extends this to the whole chain and to waits).
+run_chain() {
+  _rc_prev=""
+  for _rc_id in $(chain_members "$1"); do
+    if [ -n "$_rc_prev" ]; then
+      case "$(story_get "$_rc_prev")" in
+        landed*) ;;
+        *) story_write "$_rc_id" "skipped $_rc_prev"; _rc_prev="$_rc_id"; continue ;;
+      esac
+    fi
+    run_story "$_rc_id"
+    _rc_prev="$_rc_id"
+  done
+}
+
+# run_story ID — bundle 2's unit loop for one story, one fresh session per
+# unit, under the story's env; then its landing.
+run_story() {
+  CUR_ID="$1"
+  STUDIO_STORY="$1"; STUDIO_RUN="$RUN_DIR/manifest.md"; STUDIO_DOCS_REV="$MF_DOCS"
+  BASH_DEFAULT_TIMEOUT_MS=$((SESSION_MINUTES * 60000)); BASH_MAX_TIMEOUT_MS="$BASH_DEFAULT_TIMEOUT_MS"
+  export STUDIO_STORY STUDIO_RUN STUDIO_DOCS_REV BASH_DEFAULT_TIMEOUT_MS BASH_MAX_TIMEOUT_MS
+  LAUNCH_ENV="$(story_launch_env "$1")"
+  UNIT_PREFIX=""   # run_unit names files <n>-<id>-<label> from CUR_ID (T5)
+  story_write "$1" running
+  # A story already shipped (stage idle, a shipped line) only lands.
+  snapshot "$UNIT_DIR/stops.before"
+  if [ "$SIG_STAGE" = idle ] && [ "$SIG_SHIPPED" -gt 0 ]; then ENDING=done; else story_units; fi
+  case "$ENDING" in
+    done) story_write "$1" landing; land_story "$1" ;;
+    *) story_write "$1" "stopped $ENDING"
+       [ "$ENDING" != "stop: run budget" ] || LANE_BUDGET=1 ;;
+  esac
+  CUR_ID=""; LAUNCH_ENV=""
+}
+
+# lanes_wait PID — bundle 2's D7 wait: a trapped signal interrupts `wait`,
+# and the loop waits for the same pid again; sets LW_RC.
+lanes_wait() {
+  while :; do
+    wait "$1"; LW_RC=$?
+    kill -0 "$1" 2>/dev/null || break
+  done
+}
+# lanes_end_sessions — TERM every lane's live session group, then KILL after
+# the grace (the runner's exit path: lanes then see the stop and end).
+lanes_end_sessions() {
+  _es_pids="$(cat "$RUN_DIR"/lanes/*/cpid 2>/dev/null)"
+  [ -n "$_es_pids" ] || return 0
+  for _p in $_es_pids; do kill -TERM -"$_p" 2>/dev/null || kill -TERM "$_p" 2>/dev/null; done
+  _g=0
+  while [ "$_g" -lt "${GRACE:-30}" ]; do
+    _alive=0
+    for _p in $_es_pids; do kill -0 -"$_p" 2>/dev/null && _alive=1; done
+    [ "$_alive" = 1 ] || break
+    sleep 1; _g=$((_g + 1))
+  done
+  for _p in $_es_pids; do kill -KILL -"$_p" 2>/dev/null; done
+}
+
+# lanes_ending — done when every story landed, else partial with counts.
+lanes_ending() {
+  _n=0; _s=0; _k=0; _all=1
+  for _id in $(cut -f1 "$MF_ROWS" | awk '!seen[$0]++'); do
+    case "$(story_get "$_id")" in
+      landed*) _n=$((_n + 1)) ;;
+      stopped*) _s=$((_s + 1)); _all=0 ;;
+      skipped*) _k=$((_k + 1)); _all=0 ;;
+      *) _all=0 ;;
+    esac
+  done
+  if [ "$_all" = 1 ]; then echo done; else echo "partial: $_n landed, $_s stopped, $_k skipped"; fi
+}
+# lanes_report ENDING — a minimal report.md (T12 writes the full one).
+lanes_report() {
+  {
+    printf '# Overnight run — %s\n\n' "$(basename "$RUN_DIR")"
+    printf 'Ending: %s\n' "$1"
+    printf 'Mode: %s\nTarget: %s\n' "$MF_MODE" "$MF_TARGET"
+    printf 'Spent: $%s\n\n## Stories\n\n' "$(spent_all)"
+    for _id in $(cut -f1 "$MF_ROWS" | awk '!seen[$0]++'); do
+      printf -- '- %s: %s\n' "$_id" "$(story_get "$_id")"
+    done
+  } > "$RUN_DIR/report.md"
+}
+# lanes_finish ENDING — report, unlock, exit (0 only for done).
+lanes_finish() {
+  lanes_report "$1"
+  unlock
+  REPORTED=1
+  [ "$1" = done ] && exit 0
+  exit 1
+}
+# lanes_on_exit RC — the one EXIT trap of manifest mode: removes the
+# preflight's scratch dir; once lanes run, an exit that never reached
+# lanes_finish stops the lanes, ends their sessions, waits for them, and
+# still writes the report and unlocks (a runner error, or SIGHUP).
+lanes_on_exit() {
+  [ -z "${MF_TMP:-}" ] || rm -rf "$MF_TMP"
+  [ "${LANES_LIVE:-0}" = 1 ] || return 0
+  [ "$REPORTED" = 1 ] && return 0
+  trap '' HUP INT TERM
+  : > "$STOP_FILE"
+  lanes_end_sessions
+  for _p in $LANE_PIDS; do lanes_wait "$_p"; done
+  if [ "$HUP_REQ" = 1 ]; then lanes_report "stop: terminal closed (SIGHUP)"
+  else lanes_report "stop: runner error (exit $1)"; fi
+  unlock
+  exit 1
+}
+
+# lanes_run — the run path, once the manifest preflight passed.
+lanes_run() {
+  acquire_run_lock
+  mkdir -p "$RUN_DIR/claims" "$RUN_DIR/stories" "$RUN_DIR/lanes" \
+    && cp "$MF" "$RUN_DIR/manifest.md" && cp "$MF_ROWS" "$RUN_DIR/rows.tsv" && cp "$CHAINS" "$RUN_DIR/chains" \
+    || { rm -f "$LOCK"; say "cannot populate $RUN_DIR"; exit 2; }
+  MF_ROWS="$RUN_DIR/rows.tsv"; CHAINS="$RUN_DIR/chains"
+  rm -rf "$MF_TMP"; MF_TMP=""
+  RECORD="$STATE_ROOT/.studio/runs/$MF_SLUG"
+  mkdir -p "$RECORD" && touch "$RECORD/landed.tsv" || { rm -f "$LOCK"; say "cannot create $RECORD"; exit 2; }
+  for _id in $(cut -f1 "$MF_ROWS" | awk '!seen[$0]++'); do story_write "$_id" queued; done
+  LANES_LIVE=1; LANE_PIDS=""
+  trap ': > "$STOP_FILE"' INT TERM
+  trap 'HUP_REQ=1; exit 129' HUP
+  run_setup
+  # The record is this machine's run state, like the lock: kept out of git.
+  grep -qxF .studio/runs/ "$_excl" 2>/dev/null || printf '%s\n' .studio/runs/ >> "$_excl"
+  RUNNER_PID=$$
+  _nch="$(wc -l < "$CHAINS" | tr -d ' ')"
+  _L="$_nch"
+  [ "$MAX_LANES" -eq 0 ] || [ "$MAX_LANES" -ge "$_nch" ] || _L="$MAX_LANES"
+  _k=1
+  while [ "$_k" -le "$_L" ]; do
+    ( lane_main "$_k" ) &
+    LANE_PIDS="$LANE_PIDS $!"
+    _k=$((_k + 1))
+  done
+  for _p in $LANE_PIDS; do lanes_wait "$_p"; done
+  LANE_PIDS=""
+  # T9: the parent's sweep. T11: the final step.
+  lanes_finish "$(lanes_ending)"
+}
+
 # lanes_start [--dry-run] MANIFEST — manifest mode's start, after
 # studio-overnight's preflight (which deferred its exit to here).
 lanes_start() {
@@ -238,7 +466,7 @@ lanes_start() {
   done
   MF_TMP="$STATE_ROOT/.studio/tmp.$$"
   mkdir -p "$MF_TMP" || { say "cannot create $MF_TMP"; exit 2; }
-  trap 'rm -rf "$MF_TMP"' EXIT
+  trap 'lanes_on_exit $?' EXIT
   MF_ROWS="$MF_TMP/rows.tsv"; CHAINS="$MF_TMP/chains"
   if mf_load "$_ls_mf"; then mf_check; fi
   [ "$FAILED" -eq 0 ] || exit 2
@@ -248,8 +476,7 @@ lanes_start() {
     lanes_dry_run
     exit 0
   fi
-  say "manifest runs are not available yet: use start --dry-run <manifest>"
-  exit 2
+  lanes_run
 }
 
 # next_match KIND ID — the one tracked *.md file for story ID: KIND spec = a
