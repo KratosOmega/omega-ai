@@ -423,6 +423,50 @@ test_gate_signal_waits_for_child_then_releases() {
   assert_eq no "$_alive" "TERM to studio-gate reaches the child"
   assert_missing "$GP/.studio/gate.lock" "the lock is gone once the child is"
 }
+# Three contenders on a dead holder's lock. Each cmd marks "s <pid>" and
+# "e <pid>"; an s while another cmd is open means two ran at once. A slow `mv`
+# on PATH (1 s before it acts) and staggered starts open the old race window:
+# a reads the dead pid and reclaims; b reads the same dead pid before a's mv
+# lands, so b's mv moves a's live lock aside; c then finds no lock and runs.
+test_gate_three_reclaimers_never_overlap() {
+  gate_proj three
+  rm -f "$TMP/g3"
+  mkdir -p "$TMP/slowmv"
+  printf '#!/bin/sh\nsleep 1\nexec /bin/mv "$@"\n' > "$TMP/slowmv/mv"; chmod +x "$TMP/slowmv/mv"
+  mkdir -p "$GP/.studio/gate.lock"; echo 999999 > "$GP/.studio/gate.lock/pid"
+  for _w in a b c; do
+    case "$_w" in b) sleep 0.6 ;; c) sleep 1.3 ;; esac
+    ( cd "$GP" && PATH="$TMP/slowmv:$PATH" sh "$GATE" $_w -- sh -c "echo \"s \$\$\" >> '$TMP/g3'; sleep 2; echo \"e \$\$\" >> '$TMP/g3'" ) 2>/dev/null &
+  done
+  wait
+  _bad="$(awk '$1=="s"{if(open!="")bad=bad" "NR; open=$2} $1=="e"{if(open!=$2)bad=bad" "NR; open=""} END{print bad}' "$TMP/g3")"
+  assert_eq "" "$_bad" "no two commands run at once (overlapping lines of the marks file)"
+  assert_eq 3 "$(grep -c '^s ' "$TMP/g3")" "all three contenders run"
+  assert_missing "$GP/.studio/gate.lock" "no lock is left behind"
+}
+# The cmd starts a grandchild; TERM to studio-gate must reach it too, and the
+# lock must outlive it.
+test_gate_signal_reaches_the_grandchild() {
+  gate_proj group
+  rm -f "$TMP/ggc"
+  ( cd "$GP" && sh "$GATE" grp -- sh -c "sleep 30 & echo \$! > '$TMP/ggc'; wait" ) >/dev/null 2>&1 &
+  _i=0; while [ ! -s "$TMP/ggc" ] && [ "$_i" -lt 50 ]; do sleep 0.2; _i=$((_i + 1)); done
+  _gc="$(cat "$TMP/ggc")"
+  _gp="$(cat "$GP/.studio/gate.lock/pid")"
+  kill -TERM "$_gp"
+  # Watch while studio-gate lives: the lock must not vanish before the grandchild.
+  _early=no; _i=0
+  while kill -0 "$_gp" 2>/dev/null && [ "$_i" -lt 200 ]; do
+    if [ ! -e "$GP/.studio/gate.lock" ] && kill -0 "$_gc" 2>/dev/null; then _early=yes; fi
+    sleep 0.05; _i=$((_i + 1))
+  done
+  wait
+  _alive=no; kill -0 "$_gc" 2>/dev/null && _alive=yes
+  if [ "$_alive" = yes ]; then _early=yes; kill -KILL "$_gc" 2>/dev/null; fi
+  assert_eq no "$_alive" "TERM to studio-gate reaches the cmd's grandchild"
+  assert_eq no "$_early" "the lock is not released while the grandchild lives"
+  assert_missing "$GP/.studio/gate.lock" "the lock is released afterwards"
+}
 test_gate_wraps_test_and_run() {
   assert_contains "$BIN/studio-test" 'studio-gate" studio-test --' "studio-test goes through studio-gate"
   assert_contains "$BIN/studio-run" 'studio-gate" studio-run --' "studio-run goes through studio-gate"
@@ -430,7 +474,8 @@ test_gate_wraps_test_and_run() {
 
 run_tests test_gate_no_overlap test_gate_status_and_held test_gate_stale_reclaim_race \
   test_gate_waiting_message test_gate_records_pid_and_who test_gate_without_a_project_just_runs \
-  test_gate_signal_waits_for_child_then_releases test_gate_wraps_test_and_run \
+  test_gate_signal_waits_for_child_then_releases test_gate_three_reclaimers_never_overlap \
+  test_gate_signal_reaches_the_grandchild test_gate_wraps_test_and_run \
   test_dispatch_rejects_unknown_engine test_dispatch_needs_a_studio_root \
   test_resolve_honours_godot_path test_resolve_ignores_a_non_executable_godot_path \
   test_resolve_finds_an_app_bundle test_resolve_finds_godot_on_path test_guide_has_an_install_line \

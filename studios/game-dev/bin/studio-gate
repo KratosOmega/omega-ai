@@ -3,10 +3,11 @@
 # gate lock, so at most one test or gate run happens at a time.
 #
 # Lock: STATE_ROOT/.studio/gate.lock/ (mkdir), holding `pid` (this script's
-# $$) and `who`. The command runs as a child with STUDIO_GATE_HELD=<this pid>
-# in its environment only; a nested studio-gate that sees STUDIO_GATE_HELD
-# naming the live holder execs the command without locking. A lock whose pid
-# is dead is reclaimed by an atomic mv.
+# $$) and `who`. The command runs as a child, leading its own process group,
+# with STUDIO_GATE_HELD=<this pid> in its environment only; a nested
+# studio-gate that sees STUDIO_GATE_HELD naming the live holder execs the
+# command without locking. A lock whose pid is dead (or that has no pid) is
+# reclaimed under the reclaim mutex below.
 # Exit: the command's status · 2 usage · 128+n when TERM/INT/HUP ended it.
 # With no .studio/ project there is nothing to protect: the command just runs.
 
@@ -24,6 +25,7 @@ if [ -z "$ROOT" ] || [ ! -d "$ROOT/.studio" ]; then
   exec "$@"
 fi
 LOCK="$ROOT/.studio/gate.lock"
+MUTEX="$LOCK.mutex"
 
 alive() { [ -n "$1" ] && kill -0 "$1" 2>/dev/null; }
 lock_pid() { cat "$LOCK/pid" 2>/dev/null; }
@@ -34,22 +36,94 @@ if [ -n "${STUDIO_GATE_HELD:-}" ] && [ "$(lock_pid)" = "$STUDIO_GATE_HELD" ] && 
 fi
 
 OWNED=0
+HAVE_MUTEX=0
+RUNNING=0
 CHILD=""
 SIGSTATUS=""
 
+# ---- Reclaim mutex -------------------------------------------------------
+# Every change to the lock dir except its live owner's own release happens
+# while holding this mutex: taking it (mkdir + pid write) and reclaiming it.
+# So, under the mutex, a lock dir naming a dead pid cannot change under us
+# and is removed safely, and a lock dir with no pid is a taker that died
+# before writing one. The owner's release is a rename aside, so nobody ever
+# sees a half-deleted lock.
+#
+# The mutex is a symlink whose target is its owner's pid: `ln -s` creates it
+# and names its owner in one atomic step, so it is never ownerless. It is held
+# for a few milliseconds and its taker removes it on every path (the EXIT trap
+# included). Stale rule: a mutex naming a dead pid is removed by whoever finds
+# it, after re-reading the target just before the rm.
+mutex_take() {
+  if ln -s "$$" "$MUTEX" 2>/dev/null; then
+    HAVE_MUTEX=1
+    return 0
+  fi
+  _m="$(readlink "$MUTEX" 2>/dev/null)"
+  if [ -n "$_m" ] && ! alive "$_m" && [ "$(readlink "$MUTEX" 2>/dev/null)" = "$_m" ]; then
+    rm -f "$MUTEX"
+  fi
+  return 1
+}
+mutex_drop() {
+  if [ "$HAVE_MUTEX" = 1 ]; then rm -f "$MUTEX"; fi
+  HAVE_MUTEX=0
+}
+
+# One attempt: under the mutex, clear a dead or pidless holder's lock, then
+# try to take it. Returns 0 when we hold the lock.
+try_take() {
+  mutex_take || return 1
+  if [ -d "$LOCK" ]; then
+    _h="$(lock_pid)"
+    if [ -z "$_h" ] || ! alive "$_h"; then rm -rf "$LOCK"; fi
+  fi
+  _took=1
+  if mkdir "$LOCK" 2>/dev/null; then
+    OWNED=1
+    printf '%s\n' "$$" > "$LOCK/pid"
+    printf '%s\n' "$WHO" > "$LOCK/who"
+    _took=0
+  fi
+  mutex_drop
+  return "$_took"
+}
+
 release() {
+  mutex_drop
   if [ "$OWNED" = 1 ] && [ "$(lock_pid)" = "$$" ]; then
-    rm -rf "$LOCK"
+    mv "$LOCK" "$LOCK.gone.$$" 2>/dev/null && rm -rf "$LOCK.gone.$$"
   fi
   OWNED=0
 }
 
-# Before the child exists a signal just ends us (the EXIT trap releases). Once
-# it runs, forward the signal and keep the lock until the child is gone.
+# What a forwarded signal goes to: the child's process group ("-<pgid>") when
+# it leads one, else (dash with no tty refuses `set -m`) the child and its
+# descendants from one ps snapshot. `kill -SIG -<n>` (no `--`) is the form
+# both bash and dash parse as a group.
+TARGETS=""
+targets() {
+  if kill -0 "-$1" 2>/dev/null; then printf '%s\n' "-$1"; return; fi
+  ps -A -o pid= -o ppid= 2>/dev/null | awk -v r="$1" '
+    { kid[$2] = kid[$2] " " $1 }
+    END { q = r; while (q != "") { n = split(q, a, " "); q = ""
+          for (i = 1; i <= n; i++) { print a[i]; q = q kid[a[i]] } } }'
+}
+targets_alive() {
+  for _t in $TARGETS; do kill -0 "$_t" 2>/dev/null && return 0; done
+  return 1
+}
+
+# Before the child exists a signal just ends us (the EXIT trap releases).
+# Once it runs, TERM goes to all of TARGETS (an engine the command runs in
+# the foreground included), and the lock is kept until they are gone.
+# ${CHILD:-$!} covers a signal landing between the launch and CHILD=$!.
 on_signal() {
   SIGSTATUS="$1"
-  if [ -n "$CHILD" ]; then
-    kill -TERM "$CHILD" 2>/dev/null
+  if [ "$RUNNING" = 1 ]; then
+    _c="${CHILD:-$!}"
+    if [ -z "$TARGETS" ] && [ -n "$_c" ]; then TARGETS="$(targets "$_c")"; fi
+    if [ -n "$TARGETS" ]; then kill -TERM $TARGETS 2>/dev/null; fi
   else
     exit "$1"
   fi
@@ -59,60 +133,40 @@ trap 'on_signal 130' INT
 trap 'on_signal 143' TERM
 trap 'on_signal 129' HUP
 
-# Reclaim a lock whose holder pid is $1 (dead). The mv is atomic, so one
-# reclaimer wins; a loser's mv fails and it waits like everyone else. If the
-# dir we moved is not the dead holder's (someone re-took the lock between our
-# read and our mv), put it back.
-reclaim() {
-  _stale="$LOCK.stale.$$"
-  if mv "$LOCK" "$_stale" 2>/dev/null; then
-    if [ "$(cat "$_stale/pid" 2>/dev/null)" = "$1" ]; then
-      rm -rf "$_stale"
-    elif [ ! -e "$LOCK" ]; then
-      mv "$_stale" "$LOCK" 2>/dev/null || rm -rf "$_stale"
-    else
-      rm -rf "$_stale"
-    fi
-  fi
-}
-
 waited=0
-nopid=0
-while :; do
-  if mkdir "$LOCK" 2>/dev/null; then
-    OWNED=1
-    printf '%s\n' "$$" > "$LOCK/pid"
-    printf '%s\n' "$WHO" > "$LOCK/who"
-    break
-  fi
-  holder="$(lock_pid)"
-  if [ -z "$holder" ]; then
-    # Between the holder's mkdir and its pid write; a crash there leaves a
-    # pidless dir, so give it a few polls and then reclaim.
-    nopid=$((nopid + 1))
-    if [ "$nopid" -gt 5 ]; then reclaim ""; nopid=0; fi
-  else
-    nopid=0
-    if ! alive "$holder"; then
-      reclaim "$holder"
-      continue
-    fi
-  fi
+until try_take; do
   if [ $((waited % 60)) -eq 0 ]; then
-    printf 'gate: waiting for %s (pid %s)\n' "$(cat "$LOCK/who" 2>/dev/null)" "$holder" >&2
+    printf 'gate: waiting for %s (pid %s)\n' "$(cat "$LOCK/who" 2>/dev/null)" "$(lock_pid)" >&2
   fi
   waited=$((waited + 1))
   sleep 1
 done
 
+# `set -m` makes the child lead its own process group (pgid == its pid), so
+# a forwarded signal reaches everything it started, and its signal
+# dispositions are not the ignored SIGINT of a plain background job.
+RUNNING=1
+{ set -m; } 2>/dev/null
 STUDIO_GATE_HELD="$$" "$@" &
 CHILD=$!
+set +m
 rc=0
 while :; do
   wait "$CHILD"
   rc=$?
   alive "$CHILD" || break
 done
+if [ -n "$TARGETS" ]; then
+  # Hold the lock until the targets are gone: KILL stragglers after ~10 s
+  # and stop waiting after ~15 s so a stuck process cannot wedge the gate.
+  _n=0
+  while targets_alive && [ "$_n" -lt 15 ]; do
+    if [ "$_n" -eq 10 ]; then kill -KILL $TARGETS 2>/dev/null; fi
+    _n=$((_n + 1))
+    sleep 1
+  done
+fi
+RUNNING=0
 CHILD=""
 release
 if [ -n "$SIGSTATUS" ]; then exit "$SIGSTATUS"; fi
