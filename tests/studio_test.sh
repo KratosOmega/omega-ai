@@ -452,6 +452,33 @@ test_router_overnight_lock() {
   assert_contains "$S" "\`studio-overnight status\`; exit 0 is the liveness test" "the router tests liveness with status exit 0"
 }
 
+test_execute_lanes() {
+  E="$REPO_ROOT/studios/game-dev/skills/execute/SKILL.md"
+  assert_contains "$E" 'Under a lane\*\* (`STUDIO_STORY` and `STUDIO_RUN` both set)' "§0 has one lane paragraph keyed on both variables"
+  assert_contains "$E" 'git status --porcelain -- <spec> <plan> .studio/ledger/<id>.md .studio/config.json' "§0 under a lane checks only the story's ledger"
+  assert_contains "$E" 'git worktree add --no-track -b <Branch>' "§0 creates the story branch with --no-track"
+  assert_contains "$E" 'git checkout $STUDIO_DOCS_REV -- <spec> <plan> .studio/ledger/<id>.md' "a new branch takes docs and ledger from the docs revision"
+  assert_contains "$E" 'git checkout $STUDIO_DOCS_REV -- <spec> <plan>`, and only when' "an existing branch syncs spec and plan only when they differ (D3)"
+  assert_contains "$E" 'docs(<id>): plan at run docs' "an existing branch syncs spec and plan, never the ledger"
+  assert_contains "$E" 'The ledger is never touched' "an existing branch's ledger is never touched"
+  assert_contains "$E" 'studio-state ledger "base origin/<Target>"' "the base is recorded as the remote target"
+  assert_contains "$E" 'retry a git write whose stderr says `could not lock` or `cannot lock ref`' "git lock retry rule"
+  assert_contains "$E" 'run `studio-test` in the background and wait for its notification' "D1 fallback: studio-test runs in the background under a lane"
+  assert_contains "$E" '`Review: final` gets no per-task review' "§4 honours Review: final"
+  assert_contains "$E" 'a per-task reviewer is dispatched with `model: "opus"`' "the per-task reviewer runs on Opus"
+  assert_contains "$E" 'Under a lane, §5 step 1 is skipped' "the final review runs no tests under a lane"
+  assert_contains "$E" 'Under a lane, step 5 still commits the ledger' "§7 step 5 stays under a lane"
+  assert_contains "$E" 'the runner confirms a landing from the `shipped` line on origin/<Branch>' "the runner reads the shipped line"
+  assert_contains "$E" 'shipped <Branch>' "integration ships by branch, no PR"
+  assert_contains "$E" 'open a \*\*draft\*\* PR into the default branch' "direct opens a draft PR"
+  assert_contains "$E" 'no session merges anything in any run mode' "§6 names the rule"
+  assert_contains "$E" 'the runner lands the story' "§6 names the runner as the lander"
+  assert_contains "$E" 'studio-brief task <n>' "§8 task inputs"
+  assert_contains "$E" 'studio-brief final' "§8 final inputs"
+  assert_contains "$E" 'never reads the plan or the spec whole' "§8 forbids whole reads"
+  assert_contains "$E" "never runs SDD's pre-flight conflict scan" "§8 skips the conflict scan"
+}
+
 run_tests test_plugin_manifests test_skill_frontmatter test_agent_frontmatter \
   test_external_references_declared test_required_plugins_enabled test_bin_syntax \
   test_role_agents_exist test_stage_skill_contracts test_plan_skill_contract \
@@ -460,4 +487,4 @@ run_tests test_plugin_manifests test_skill_frontmatter test_agent_frontmatter \
   test_stage_chain test_execute_contract test_agent_contracts test_feature_checkout_copies test_next_lines \
   test_review_contract test_on_demand_skills_keep_stage test_playtest_contract test_retro_contract \
   test_no_ship_references test_superpowers_requires_referenced test_no_last_playtest_callers \
-  test_execute_one_contract test_router_overnight_lock
+  test_execute_one_contract test_router_overnight_lock test_execute_lanes

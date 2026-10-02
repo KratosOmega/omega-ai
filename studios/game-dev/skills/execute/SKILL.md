@@ -55,6 +55,40 @@ Check these first, in the checkout you are in:
 
 Under `--one`, see §8. It changes what every stop here does.
 
+**Under a lane** (`STUDIO_STORY` and `STUDIO_RUN` both set) this paragraph
+replaces the clean-tree check above, and a new run's isolation (b) with its
+ancestor check and (c); a resume still enters its checkout by (a). `<id>`
+is `STUDIO_STORY`:
+
+- The clean-tree check is
+  `git status --porcelain -- <spec> <plan> .studio/ledger/<id>.md .studio/config.json`:
+  another lane's uncommitted `Stop:` line is never seen.
+- Git lock rule: retry a git write whose stderr says `could not lock` or `cannot lock ref`
+  three times, after 1, 2 and 4 seconds, before treating it as a failure.
+  Run `git fetch origin` and `git fetch origin run/<slug>` with that retry.
+- Read Target, Branch and slug from `$STUDIO_RUN` (its header and this
+  story's row).
+- **Branch exists** (local, or `origin/<Branch>`): enter its worktree
+  (`studio-state worktree`, else
+  `git worktree add --no-track [-b <Branch>] <path> <Branch or origin/<Branch>>`).
+  Then sync the docs:
+  `git checkout $STUDIO_DOCS_REV -- <spec> <plan>`, and only when
+  `git diff --cached --quiet` fails, commit
+  `docs(<id>): plan at run docs <short sha>`. The ledger is never touched.
+- **New branch:**
+  `git worktree add --no-track -b <Branch> <STATE_ROOT>/.claude/worktrees/<Branch with / → -> origin/<Target>`,
+  then `EnterWorktree` with `path:`, then
+  `git checkout $STUDIO_DOCS_REV -- <spec> <plan> .studio/ledger/<id>.md`,
+  and commit `docs(<id>): approved plan`.
+- Then `studio-state set branch <Branch>` and
+  `studio-state ledger "base origin/<Target>"`. Every `git merge-base` in
+  §4a, §5 and §7 uses `origin/<Target>` after a fetch; the bare `<Target>`
+  is used only for `gh pr create --base`.
+- A `studio-test` call can wait for the gate lock behind a long merge
+  command, and the probe for a raised Bash timeout was inconclusive, so
+  run `studio-test` in the background and wait for its notification; never
+  block a foreground call on it.
+
 **Isolation.** First note the current branch (`git branch --show-current`)
 — the noted branch — along with the spec's and plan's noted hashes. Then:
 
@@ -228,6 +262,11 @@ orchestrator can judge the report:
 
 Findings are one line each, severity-tagged.
 
+A task whose heading block has `Review: final` gets no per-task review: its
+findings fold into §5. A task with `Review: task`, or with no `Review:` line,
+is reviewed as above; a per-task reviewer is dispatched with `model: "opus"`
+(the agent file keeps `model: inherit`).
+
 ## 4a. Fix rounds (the per-task loop and the final fix wave)
 
 This overrides `superpowers:subagent-driven-development`'s fix loop (rounds 1–3 resume the original implementer, a scoped re-review every round, five rounds): never resume or message an implementer that has handed back.
@@ -276,6 +315,9 @@ After the last task completes, and as its own dispatch — never folded into
 the last task's review. Under `--one`, see §8: a task unit never starts it.
 
 1. Run `studio-test` and `studio-lint` fresh; keep both outputs.
+   Under a lane, §5 step 1 is skipped (no fresh `studio-test` or
+   `studio-lint`): the implementers ran the tests per task, and the finish
+   gate covers the fix wave.
 2. Build the verify-prior-fixes list from the scopes reserved for fix
    commits. With `<merge-base>` = `git merge-base <base> HEAD`, run
    `git log --format='%h %s' <merge-base>..HEAD` and keep the lines that
@@ -333,8 +375,9 @@ Once isolated (§0), stop only for: an irreversible, destructive or
 security-sensitive operation; a plan too broken to follow; no Godot binary
 (`studio-test` or `studio-run` exit 2); the test framework not installed
 (`studio-test` exit 3). Pushing this branch and opening its PR are not
-ask-first side effects; merging is never done. Everything else is a
-ruling.
+ask-first side effects; no session merges anything in any run mode:
+nothing is merged into `main` (the default branch) by a session, and under
+a lane the runner lands the story. Everything else is a ruling.
 
 ## 7. Finish
 
@@ -453,6 +496,23 @@ it once §5 is done, with no question to the user:
 
    Under `--one`, see §8.
 
+**Under a lane**, the steps above change as follows; the run mode is the
+runner's (`STUDIO_RUN`'s header), and the base is `origin/<Target>`:
+
+- **Integration:** step 1 runs once, the story's one test run (`studio-test`
+  waits on the gate lock, §0 says how to run it); step 3 (PROGRESS) is
+  skipped; step 4 pushes `<Branch>` and opens no PR;
+  `studio-state ledger "shipped <Branch>"`.
+- **Direct:** step 1 is skipped (the runner's merge command is the gate);
+  step 3 is skipped; step 4 pushes, then does this: open a **draft** PR into the default branch
+  (`--base <Target>`); `studio-state ledger "shipped <url>"`.
+- Under a lane, step 5 still commits the ledger (`shipped …`) and pushes it
+  when step 4 pushed: the runner confirms a landing from the `shipped` line on origin/<Branch>. Then `studio-state set stage idle` and
+  `studio-state set task -` as written.
+- On a git write that fails with `could not lock` or `cannot lock ref`, use
+  §0's retry rule.
+- No session merges anything: the runner lands the story.
+
 ## 8. One unit (--one)
 
 `--one` is how `studio-overnight` drives this skill: one fresh headless
@@ -460,6 +520,18 @@ session per unit, with `OMEGA_AUTOPILOT=1` set, so `omega-mode show` lists
 `autopilot source=env` and its phase 2 rules hold. Under `--one` this skill
 runs exactly one unit, writes its state, commits, pushes, and ends the turn.
 
+- **Inputs:**
+  - the orchestrator reads only `studio-brief task <n>` (a task unit) or
+    `studio-brief final` (the final review), plus the files its implementer
+    or reviewer reports name;
+  - it never reads the plan or the spec whole, and
+    never runs SDD's pre-flight conflict scan
+    (the plan session ran it, and its rulings are in `## Decisions`);
+  - the task brief and the per-task reviewer brief (§2, §4) are built from
+    that output;
+  - for a single-plan plan with no `## Global Constraints` or a task with no
+    `Spec:`, `studio-brief` prints a one-line note and exits 0: use it all
+    the same.
 - **Which unit:** exactly the one §0's *Where to start* picks.
   - `task k/N` with k < N: one SDD task, `T<k+1>`.
   - `N/N` without a `final review done` line: §5 as a whole, the fix wave
