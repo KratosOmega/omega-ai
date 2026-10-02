@@ -1609,6 +1609,33 @@ test_lanes_detach_child_refusal_surfaces() {
   assert_contains "$TMP/detk.out" "lanes still run" "and shows the child's message"
   assert_not_contains "$TMP/detk.out" "^detached:" "and prints no success line"
 }
+test_lanes_detach_timeout_lock_held_points_at_status() {
+  lanes_fixture dtl integration A:-
+  printf 'hang\n' > "$SCEN/A"
+  export STUDIO_OVERNIGHT_DETACH_STATUS_CMD=false
+  st=0; ( cd "$P" && sh "$RUNNER" start --detach "$MFP" ) > "$TMP/dtl.out" 2>&1 || st=$?
+  unset STUDIO_OVERNIGHT_DETACH_STATUS_CMD
+  assert_eq 1 "$st" "a status timeout exits 1"
+  assert_contains "$TMP/dtl.out" "is live" "a lock-holding child is reported live"
+  assert_contains "$TMP/dtl.out" "studio-overnight stop" "and stop is named"
+  assert_not_contains "$TMP/dtl.out" "run the plain command" "no plain start is offered"
+  assert_eq 1 "$([ -f "$P/.studio/overnight.lock" ] && echo 1 || echo 0)" "the run still holds its lock"
+  # The hung stub would hold the run past stop: end it, then wait the run out.
+  ( cd "$P" && sh "$RUNNER" stop ) > /dev/null 2>&1; pkill -f "$TMP/fakebin/claude" 2>/dev/null
+  detach_stop
+}
+test_lanes_detach_timeout_no_lock_ends_child() {
+  lanes_fixture dtn integration A:-
+  export STUDIO_OVERNIGHT_DETACH_STATUS_CMD=false
+  export STUDIO_OVERNIGHT_DETACH_CHILD_CMD="sleep 301 & sleep 301"
+  st=0; ( cd "$P" && sh "$RUNNER" start --detach "$MFP" ) > "$TMP/dtn.out" 2>&1 || st=$?
+  unset STUDIO_OVERNIGHT_DETACH_STATUS_CMD STUDIO_OVERNIGHT_DETACH_CHILD_CMD
+  assert_eq 1 "$st" "a status timeout exits 1"
+  assert_contains "$TMP/dtn.out" "never took the lock" "the message says the child was ended"
+  assert_contains "$TMP/dtn.out" "start " "and the plain command is printed"
+  sleep 1
+  assert_eq 0 "$(pgrep -f 'sleep 301' | wc -l | tr -d ' ')" "no child survives"
+}
 test_lanes_help_modes() {
   sh "$RUNNER" --help > "$TMP/help"
   for t in "integration" "direct" "next" "gate lock" "max_lanes" "merge_command" "--detach" \
@@ -1643,4 +1670,5 @@ run_tests test_lanes_chain_rule test_lanes_manifest_refusals test_lanes_manifest
   test_lanes_status_per_story test_lanes_report_every_ending test_lanes_report_on_lane_crash \
   test_lanes_done_marker test_lanes_status_reaps_dead_runner test_lanes_reap_names_final_pr \
   test_lanes_detach_strips_env test_lanes_detach_refusal_in_foreground test_lanes_detach_child_refusal_surfaces \
+  test_lanes_detach_timeout_lock_held_points_at_status test_lanes_detach_timeout_no_lock_ends_child \
   test_lanes_help_modes test_lanes_no_orphans

@@ -209,6 +209,10 @@ Test hooks (tests only; never set them for a real run; --detach strips them):
                      seconds; a whole number, else start refuses
   STUDIO_OVERNIGHT_LABEL — test hook: forces every unit's label (the
                      unknown-label test); never set it for a real run
+  STUDIO_OVERNIGHT_DETACH_STATUS_CMD — test hook: shell text that replaces the
+                     --detach status check (read before the strip)
+  STUDIO_OVERNIGHT_DETACH_CHILD_CMD — test hook: shell text run in place of the
+                     detached child's start (read before the strip)
   STUDIO_OVERNIGHT_RACE_HOOK — test hook: shell text evaluated between reading
                      a stale lock's pid and reclaiming it (the reclaim-race test)
 EOF
@@ -519,6 +523,9 @@ story_units() {
 # only when `status` exits 0 for that child within 10 s.
 detach_start() {
   _dm="$1"
+  # Test hooks, read before the strip: a status check that never answers, and
+  # a stand-in child command (shell text) for the re-exec'd run.
+  _dhs="${STUDIO_OVERNIGHT_DETACH_STATUS_CMD:-}"; _dhc="${STUDIO_OVERNIGHT_DETACH_CHILD_CMD:-}"
   # The chat's variables go first, so the foreground preflight and the child
   # both see the clean environment (a stray STUDIO_STORY would aim state at a
   # story file). PATH and CLAUDE_CONFIG_DIR stay.
@@ -538,12 +545,16 @@ detach_start() {
   fi
   mkdir -p "$REPORTS" || { say "cannot create $REPORTS"; exit 2; }
   _dlog="$REPORTS/overnight-$_dslug-detached-$(date +%Y%m%d-%H%M%S).log"
-  nohup perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV' sh "$SELF_ABS" start "$_dm" </dev/null >"$_dlog" 2>&1 &
+  if [ -n "$_dhc" ]; then
+    nohup perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV' sh -c "$_dhc" </dev/null >"$_dlog" 2>&1 &
+  else
+    nohup perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV' sh "$SELF_ABS" start "$_dm" </dev/null >"$_dlog" 2>&1 &
+  fi
   _dpid=$!
   _di=0
   while [ "$_di" -lt 10 ]; do
     if kill -0 "$_dpid" 2>/dev/null; then
-      if sh "$SELF_ABS" status >/dev/null 2>&1 && [ "$(lock_pid)" = "$_dpid" ]; then
+      if { if [ -n "$_dhs" ]; then eval "$_dhs"; else sh "$SELF_ABS" status; fi; } >/dev/null 2>&1 && [ "$(lock_pid)" = "$_dpid" ]; then
         _drun="$(sed -n 's/^run=//p' "$LOCK" 2>/dev/null | head -n 1)"
         [ -z "$_drun" ] || ln -sf "$_dlog" "$_drun/runner.log" 2>/dev/null || true
         echo "detached: pid $_dpid, log $_dlog"
@@ -558,7 +569,18 @@ detach_start() {
     fi
     sleep 1; _di=$((_di + 1))
   done
-  say "the detached run is not answering status after 10 s (log $_dlog) — run the plain command"
+  if lock_live && [ "$(lock_pid)" = "$_dpid" ]; then
+    # The child holds the run lock: the run is live, only status was slow.
+    say "the detached run is live (pid $_dpid, log $_dlog) but did not answer status in 10 s — studio-overnight status, or studio-overnight stop"
+    return 1
+  fi
+  # No lock: end the child's process group (setsid made it the group leader).
+  kill -TERM -- "-$_dpid" 2>/dev/null || kill -TERM "$_dpid" 2>/dev/null || true
+  _di=0
+  while [ "$_di" -lt 3 ] && kill -0 "$_dpid" 2>/dev/null; do sleep 1; _di=$((_di + 1)); done
+  kill -KILL -- "-$_dpid" 2>/dev/null || kill -KILL "$_dpid" 2>/dev/null || true
+  wait "$_dpid" 2>/dev/null || true
+  say "the detached run never took the lock and was ended (log $_dlog) — run the plain command"
   echo "$_dcmd"
   return 1
 }
