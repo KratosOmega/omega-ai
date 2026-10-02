@@ -27,6 +27,7 @@ Check these first, in the checkout you are in:
   would carry a stale plan — commit or discard them first.
 - Read the plan once. Read the spec its header names; the spec is the
   authority the plan argues from.
+  Under `--one`, these two reads are `studio-brief task <n>` or `studio-brief final` only (§8): the plan and the spec are never read whole.
 - **Which run this is.** Before the next step writes `stage execute`, read
   `stage`, `task` and `branch` (`studio-state get <key>`):
   - `plan` — a new run. First run the **finished-checkout guard**
@@ -56,9 +57,11 @@ Check these first, in the checkout you are in:
 Under `--one`, see §8. It changes what every stop here does.
 
 **Under a lane** (`STUDIO_STORY` and `STUDIO_RUN` both set) this paragraph
-replaces the clean-tree check above, and a new run's isolation (b) with its
-ancestor check and (c); a resume still enters its checkout by (a). `<id>`
+replaces the clean-tree check above, the ancestor check, and a new run's
+isolation (b) and (c); a resume still enters its checkout by (a). `<id>`
 is `STUDIO_STORY`:
+
+- Under a lane the ancestor check never runs, a resume's included: the story branch never holds the `run/<slug>` docs commits, so its `git merge --ff-only` would fail every unit after the first. The docs sync below replaces it.
 
 - The clean-tree check is
   `git status --porcelain -- <spec> <plan> .studio/ledger/<id>.md .studio/config.json`:
@@ -84,10 +87,12 @@ is `STUDIO_STORY`:
   `studio-state ledger "base origin/<Target>"`. Every `git merge-base` in
   §4a, §5 and §7 uses `origin/<Target>` after a fetch; the bare `<Target>`
   is used only for `gh pr create --base`.
-- A `studio-test` call can wait for the gate lock behind a long merge
-  command, and the probe for a raised Bash timeout was inconclusive, so
+- A `studio-test` or `studio-run` call can wait for the gate lock behind a
+  long merge command, and the probe for a raised Bash timeout was
+  inconclusive, so
   run `studio-test` in the background and wait for its notification; never
-  block a foreground call on it.
+  block a foreground call on it. `studio-run` is run the same way, and §2
+  carries the rule into every subagent brief.
 
 **Isolation.** First note the current branch (`git branch --show-current`)
 — the noted branch — along with the spec's and plan's noted hashes. Then:
@@ -107,7 +112,8 @@ is `STUDIO_STORY`:
     `studio-state set branch -`, or abandons with `/game-dev:studio`.
 - **(b) A new run:** invoke `superpowers:using-git-worktrees`. Never
   implement on `main` without the user's explicit consent.
-- **The ancestor check** runs after every isolation, a resume's included. In
+- **The ancestor check** runs after every isolation, a resume's included
+  (except under a lane, above). In
   the worktree, confirm each noted commit is in `HEAD`:
   `git merge-base --is-ancestor <hash> HEAD` for the spec's hash and for the
   plan's hash. If either is not an ancestor, the worktree was cut from a
@@ -181,6 +187,7 @@ procedures, below).
 per-task cycle: fresh implementer per task, task review after each, ledger.
 Its fix loop, its final review and its last step are replaced by §4a, §5 and
 §7 below. The studio rules in §2–§7 layer on top of it.
+Under `--one`, SDD's setup never reads the plan: the one task's text comes from `studio-brief task <n>`, and no other task is extracted.
 Under `--one`, see §8.
 
 **`--inline`.** Only when the user passed it. Invoke
@@ -216,6 +223,11 @@ the spec sections the task cites, and the project `CLAUDE.md` architecture
 rules. The agent's own `## Skills you may call` section (in
 `agents/<role>.md`) names the skills it reads before writing code. A stuck
 implementer reads `superpowers:systematic-debugging`.
+
+Under a lane, every brief that has a subagent run `studio-test` — §3's
+implementer, §4a rule 2's fixer, §5 step 5's wave — also carries this line
+verbatim (§0, Under a lane): "run `studio-test` in the background and wait
+for its notification; never block a foreground call on it".
 
 ## 3. Verify rules (both modes)
 
@@ -289,7 +301,8 @@ This overrides `superpowers:subagent-driven-development`'s fix loop (rounds 1–
    - the task text and the spec sections it cites;
    - "fix these findings only; one commit, subject `fix(T<n>): <summary>`;
      run the task's tests — the `Verify: unit` test files the task names,
-     then `studio-test` — and paste the summary line before handing back".
+     then `studio-test` — and paste the summary line before handing back";
+   - under a lane, §2's background `studio-test` line;
 3. **Re-review** — one scoped dispatch of `game-dev:reviewer` over the fix
    commit's range (its review package), with the findings list — happens
    only when the round's findings included a Critical, or
@@ -451,7 +464,8 @@ it once §5 is done, with no question to the user:
      an unknown mode counts as autopilot), or when step 1 ended red.
    - No `origin` remote, `gh auth status` failing, a rejected push (never
      force-push) or a failed `gh pr create`: keep the body file, say which
-     failed, print the body path, and continue. Never merge.
+     failed, print the body path, and continue.
+     Never merge: no session merges into `main` (the default branch) in any run mode; the runner lands.
 5. **State.** `studio-state ledger "shipped <PR url, or the branch name when there is no PR>"`;
    commit the ledger
    (`git add .studio/ledger && git commit -m "chore(studio): <topic> finished"`)
@@ -499,10 +513,17 @@ it once §5 is done, with no question to the user:
 **Under a lane**, the steps above change as follows; the run mode is the
 runner's (`STUDIO_RUN`'s header), and the base is `origin/<Target>`:
 
-- **Integration:** step 1 runs once, the story's one test run (`studio-test`
-  waits on the gate lock, §0 says how to run it); step 3 (PROGRESS) is
-  skipped; step 4 pushes `<Branch>` and opens no PR;
-  `studio-state ledger "shipped <Branch>"`.
+- **Integration:** step 1 runs once, the story's one test run;
+  `studio-test` and `studio-run` each run in the background and are waited on by notification (§0: they wait on the gate lock).
+  Step 1's red-gate loop does not run under a lane:
+  the gate runs once, no `fix(gate)` round follows, and a red gate never ships.
+  On any non-zero exit the finish runs
+  `studio-state ledger "Stop: gate red — <failing command and line>"`,
+  commits it as §8's stops are committed, writes no `shipped` line, pushes
+  nothing further, and ends the turn; steps 2–6 do not run. The runner then
+  records the story stopped; only its repair unit repairs it.
+  Otherwise step 3 (PROGRESS) is skipped; step 4 pushes `<Branch>` and
+  opens no PR; `studio-state ledger "shipped <Branch>"`.
 - **Direct:** step 1 is skipped (the runner's merge command is the gate);
   step 3 is skipped; step 4 pushes, then does this: open a **draft** PR into the default branch
   (`--base <Target>`); `studio-state ledger "shipped <url>"`.
@@ -548,12 +569,14 @@ runs exactly one unit, writes its state, commits, pushes, and ends the turn.
     `git push -u origin <branch>`;
   - the final review: the `fix(final)` commits, the `Review: final` and
     `final review done` lines committed, then the push;
-  - the finish: §7 as written (`P<k> Play:` lines, the draft PR,
-    `shipped <url>`, `stage idle`, `task -`).
+  - the finish: §7 as written, its lane changes included (`P<k> Play:`
+    lines; outside a lane or under direct, the draft PR and `shipped <url>`;
+    under integration, no PR and `shipped <Branch>`; a red integration gate, `Stop:` and no `shipped` line;
+    `stage idle`, `task -`).
 
   A rejected push is a `Ruling:` line, not a stop.
 - **Every stop** (§0's preconditions and isolation stops, §6's hard-stop
-  list, §7 step 1's exit 2 and exit 3): run
+  list, §7 step 1's exit 2 and exit 3, a red gate under a lane): run
   `studio-state ledger "Stop: <reason>"`, one line, reason first. Where:
   - Once §0 step (c) has recorded `branch` — or a resume has entered the
     feature checkout its recorded `branch` names — in the feature checkout,

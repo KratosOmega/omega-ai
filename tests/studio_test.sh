@@ -477,6 +477,17 @@ test_execute_lanes() {
   assert_contains "$E" 'studio-brief final' "§8 final inputs"
   assert_contains "$E" 'never reads the plan or the spec whole' "§8 forbids whole reads"
   assert_contains "$E" "never runs SDD's pre-flight conflict scan" "§8 skips the conflict scan"
+  # T14 fix round
+  assert_contains "$E" 'Under a lane the ancestor check never runs, a resume.s included' "a lane resume skips the ancestor check (story branches lack the run docs commits)"
+  assert_contains "$E" 'Never merge: no session merges into `main` (the default branch) in any run mode; the runner lands' "§7 step 4's never-merge names main and the runner (AC22)"
+  assert_contains "$E" 'under integration, no PR and `shipped <Branch>`' "§8's finish unit agrees with the integration lane"
+  assert_contains "$E" 'Under `--one`, these two reads are `studio-brief task <n>` or `studio-brief final` only' "§0's plan and spec reads give way to studio-brief under --one"
+  assert_contains "$E" 'Under `--one`, SDD.s setup never reads the plan' "SDD's setup plan read gives way to studio-brief under --one"
+  assert_contains "$E" 'Under a lane, every brief that has a subagent run `studio-test`' "§2 carries the background studio-test rule into every brief"
+  assert_contains "$E" 'under a lane, §2.s background `studio-test` line;' "§4a's fixer brief carries the background rule"
+  assert_contains "$E" '`studio-test` and `studio-run` each run in the background' "§7's lane gate runs studio-test and studio-run in the background"
+  assert_contains "$E" 'the gate runs once, no `fix(gate)` round follows, and a red gate never ships' "a red lane gate is not retried and never ships"
+  assert_contains "$E" 'Stop: gate red — <failing command and line>' "a red lane gate ledgers a Stop: line"
 }
 
 run_tests test_plugin_manifests test_skill_frontmatter test_agent_frontmatter \
