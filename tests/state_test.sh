@@ -509,6 +509,67 @@ test_state_worktree_edges() {
   assert_eq "$P/.claude/worktrees/feat-s" "$(cat "$TMP/wt.out")" "stdout is the path, unquoted"
 }
 
+test_state_story_init_and_isolation() {
+  P="$TMP/story-iso"; mkdir -p "$P"
+  ( cd "$P" && git init -q -b main && git -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
+    sh "$STATE_BIN" init >/dev/null ) >/dev/null 2>&1
+  cp "$P/.studio/STATE.md" "$TMP/state-before.md"
+  ( cd "$P" && STUDIO_STORY=A sh "$STATE_BIN" init ) >/dev/null 2>&1
+  assert_file "$P/.studio/stories/A.md" "init under STUDIO_STORY creates the story file"
+  assert_eq 1 "$(grep -c '^\.studio/stories/$' "$P/.git/info/exclude")" "stories/ excluded once"
+  ( cd "$P" && STUDIO_STORY=A sh "$STATE_BIN" init ) >/dev/null 2>&1
+  assert_eq 1 "$(grep -c '^\.studio/stories/$' "$P/.git/info/exclude")" "a second init adds no second line"
+  ( cd "$P" && STUDIO_STORY=B sh "$STATE_BIN" init ) >/dev/null 2>&1
+  ( cd "$P" && STUDIO_STORY=A sh "$STATE_BIN" set stage plan
+              STUDIO_STORY=B sh "$STATE_BIN" set stage execute
+              STUDIO_STORY=A sh "$STATE_BIN" set spec docs/s.md
+              STUDIO_STORY=A sh "$STATE_BIN" ledger "plan approved docs/a.md"
+              STUDIO_STORY=B sh "$STATE_BIN" set spec docs/s.md
+              STUDIO_STORY=B sh "$STATE_BIN" ledger "plan approved docs/b.md" ) >/dev/null 2>&1
+  assert_eq plan "$(cd "$P" && STUDIO_STORY=A sh "$STATE_BIN" get stage)" "A keeps its stage"
+  assert_eq execute "$(cd "$P" && STUDIO_STORY=B sh "$STATE_BIN" get stage)" "B keeps its stage"
+  assert_contains "$P/.studio/ledger/A.md" "plan approved docs/a.md" "A's ledger is keyed by story id"
+  assert_not_contains "$P/.studio/ledger/A.md" "docs/b.md" "B's line never reaches A's ledger"
+  assert_missing "$P/.studio/ledger/s.md" "no spec-slug ledger under STUDIO_STORY"
+  assert_eq "" "$(diff "$TMP/state-before.md" "$P/.studio/STATE.md")" "STATE.md untouched by story verbs"
+  assert_status 1 "a missing story file is refused" -- sh -c "cd '$P' && STUDIO_STORY=C sh '$STATE_BIN' get stage"
+  ( cd "$P" && STUDIO_STORY=C sh "$STATE_BIN" get stage ) 2> "$TMP/err" || true
+  assert_contains "$TMP/err" "no story C" "the refusal names the story"
+  assert_status 1 "a bad id is refused" -- sh -c "cd '$P' && STUDIO_STORY='a/b' sh '$STATE_BIN' get stage"
+  assert_eq idle "$(cd "$P" && STUDIO_STORY= sh "$STATE_BIN" get stage)" "empty STUDIO_STORY is today's path"
+}
+
+test_state_story_rebuild() {
+  P="$TMP/story-rb"; mkdir -p "$P/docs"
+  ( cd "$P" && git init -q -b main && git -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
+    sh "$STATE_BIN" init
+    printf '# P\n\n### Task 1: a\n\n### Task 2: b\n\n### Task 3: c\n' > docs/p.md
+    export STUDIO_STORY=R; sh "$STATE_BIN" init
+    sh "$STATE_BIN" set plan docs/p.md; sh "$STATE_BIN" set spec docs/s.md
+    sh "$STATE_BIN" ledger "T1 complete"; sh "$STATE_BIN" ledger "T2 complete" ) >/dev/null 2>&1
+  ( cd "$P" && STUDIO_STORY=R sh "$STATE_BIN" check --rebuild ) >/dev/null 2>&1
+  assert_eq 2/3 "$(cd "$P" && STUDIO_STORY=R sh "$STATE_BIN" get task)" "from task -: 0/N, then the contiguous run"
+  ( cd "$P" && STUDIO_STORY=R sh "$STATE_BIN" set task - && STUDIO_STORY=R sh "$STATE_BIN" ledger "T4 complete" ) >/dev/null 2>&1
+  printf '\n### Task 4: d\n' >> "$P/docs/p.md"
+  ( cd "$P" && STUDIO_STORY=R sh "$STATE_BIN" ledger "T1 complete" ) >/dev/null 2>&1
+  st=0; ( cd "$P" && STUDIO_STORY=R sh "$STATE_BIN" check --rebuild ) > "$TMP/out" 2>&1 || st=$?
+  assert_eq 1 "$st" "a gap exits 1"
+  assert_contains "$TMP/out" "ledger gap: T3 missing" "the gap is named"
+  assert_eq 0/4 "$(cd "$P" && STUDIO_STORY=R sh "$STATE_BIN" get task)" "nothing past 0/N on a gap"
+}
+
+test_state_story_gap_from_k_of_n() {
+  P="$TMP/story-gap"; mkdir -p "$P/docs"
+  ( cd "$P" && git init -q -b main && git -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
+    printf '# P\n\n### Task 1: a\n\n### Task 2: b\n\n### Task 3: c\n' > docs/p.md
+    export STUDIO_STORY=G; sh "$STATE_BIN" init
+    sh "$STATE_BIN" set plan docs/p.md; sh "$STATE_BIN" set task 1/3
+    sh "$STATE_BIN" ledger "T1 complete"; sh "$STATE_BIN" ledger "T3 complete" ) >/dev/null 2>&1
+  st=0; ( cd "$P" && STUDIO_STORY=G sh "$STATE_BIN" check --rebuild ) > "$TMP/out" 2>&1 || st=$?
+  assert_eq 1 "$st" "D15: a gap from k/N exits 1"
+  assert_contains "$TMP/out" "ledger gap: T2 missing" "D15: the gap is named from k/N"
+}
+
 run_tests test_state_needs_init test_state_init test_state_get_set test_state_validation \
   test_state_ledger test_state_ledger_keeps_all_words test_state_ledger_folds_newlines \
   test_state_set_keeps_backslashes test_state_show test_state_resolves_to_main_checkout \
@@ -517,4 +578,5 @@ run_tests test_state_needs_init test_state_init test_state_get_set test_state_va
   test_state_set_hardening \
   test_state_feature_ledger test_state_ledger_per_branch test_state_check test_state_reset \
   test_state_stage_list test_state_legacy_file test_state_branch_key \
-  test_state_branch_insert_is_literal test_state_worktree test_state_worktree_edges
+  test_state_branch_insert_is_literal test_state_worktree test_state_worktree_edges \
+  test_state_story_init_and_isolation test_state_story_rebuild test_state_story_gap_from_k_of_n

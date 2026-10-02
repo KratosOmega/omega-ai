@@ -206,6 +206,8 @@ test_guard_state_blocks_direct_writes() {
   status=0
   printf '' | sh "$GUARD" >/dev/null 2>&1 || status=$?
   assert_eq "0" "$status" "guard exits 0 on empty input"
+  printf '{"tool_input":{"file_path":"/p/.studio/stories/KAN-1.md"}}' | sh "$GUARD" 2> "$TMP/err"; st=$?
+  assert_eq 2 "$st" "guard-state blocks a story state file"
 }
 
 # A wrong CLAUDE_PLUGIN_ROOT used to emit an empty context with exit 0, so the

@@ -45,6 +45,11 @@ fi
 [ -n "$STATE_ROOT" ] || STATE_ROOT="$(pwd -P)"
 [ -n "$WORK_ROOT" ] || WORK_ROOT="$(pwd -P)"
 STATE="$STATE_ROOT/.studio/STATE.md"
+STORY="${STUDIO_STORY:-}"
+if [ -n "$STORY" ]; then
+  printf '%s' "$STORY" | grep -Eq '^[A-Za-z0-9._-]+$' || { printf "studio-state: bad STUDIO_STORY '%s'\n" "$STORY" >&2; exit 1; }
+  STATE="$STATE_ROOT/.studio/stories/$STORY.md"
+fi
 CONFIG="$WORK_ROOT/.studio/config.json"
 LEDGER_DIR="$WORK_ROOT/.studio/ledger"
 KEYS="stage spec plan task branch milestone"
@@ -65,6 +70,10 @@ in_list() {
 }
 
 need_state() {
+  if [ -n "$STORY" ]; then
+    [ -f "$STATE" ] || fail "no story $STORY"
+    return 0
+  fi
   [ -f "$STATE" ] || fail "no $STATE here — run 'studio-state init' in the project root"
 }
 
@@ -127,6 +136,7 @@ feature_slug() {
 # ledger_file — where a ledger line goes: the feature ledger when a spec is
 # set, else STATE.md's own ledger section.
 ledger_file() {
+  if [ -n "$STORY" ]; then printf '%s\n' "$LEDGER_DIR/$STORY.md"; return 0; fi
   _slug="$(feature_slug)"
   if [ -n "$_slug" ]; then printf '%s\n' "$LEDGER_DIR/$_slug.md"; else printf '%s\n' "$STATE"; fi
 }
@@ -143,6 +153,37 @@ case "$cmd" in
     esac
     ;;
   init)
+    if [ -n "$STORY" ]; then
+      mkdir -p "$STATE_ROOT/.studio/stories"
+      if [ ! -f "$STATE" ]; then
+        cat > "$STATE" <<'EOF'
+# Studio State
+
+stage: idle
+spec: -
+plan: -
+task: -
+branch: -
+milestone: prototype
+
+## Ledger
+
+EOF
+      fi
+      _gc="$(git rev-parse --git-common-dir 2>/dev/null || true)"
+      if [ -n "$_gc" ]; then
+        case "$_gc" in /*) ;; *) _gc="$WORK_ROOT/$_gc" ;; esac
+        mkdir -p "$_gc/info"
+        if ! grep -qxF '.studio/stories/' "$_gc/info/exclude" 2>/dev/null; then
+          if [ -s "$_gc/info/exclude" ] && [ -n "$(tail -c 1 "$_gc/info/exclude")" ]; then
+            printf '\n' >> "$_gc/info/exclude"
+          fi
+          printf '.studio/stories/\n' >> "$_gc/info/exclude"
+        fi
+      fi
+      printf 'initialised %s\n' "$STATE"
+      exit 0
+    fi
     [ ! -f "$STATE" ] || fail "$STATE already exists"
     mkdir -p "$STATE_ROOT/.studio" "$LEDGER_DIR"
     cat > "$STATE" <<'EOF'
@@ -230,6 +271,36 @@ EOF
     [ $# -le 2 ] || usage
     rebuild=0
     case "${2:-}" in '') ;; --rebuild) rebuild=1 ;; *) usage ;; esac
+    if [ -n "$STORY" ] && [ "$rebuild" = "1" ]; then
+      _task="$(field task)"
+      case "$_task" in
+        ''|-)
+          _plan="$(field plan)"
+          case "$_plan" in ''|-) fail "check --rebuild needs a plan to count tasks" ;; esac
+          case "$_plan" in /*) _pf="$_plan" ;; *) _pf="$WORK_ROOT/$_plan" ;; esac
+          [ -f "$_pf" ] || fail "plan file missing: $_plan"
+          _N="$(grep -c '^### Task [0-9]' "$_pf" || true)"
+          set_field task "0/$_N" ;;
+        *) _N="${_task#*/}" ;;
+      esac
+      _lf="$(ledger_file)"
+      _k=0
+      _max=0
+      if [ -f "$_lf" ]; then
+        _nums="$(sed -n 's/^- [0-9-]* T\([0-9]*\) complete.*/\1/p' "$_lf" | sort -n -u)"
+        for _m in $_nums; do
+          if [ "$_m" -eq $((_k + 1)) ]; then _k="$_m"; fi
+          _max="$_m"
+        done
+      fi
+      if [ "$_max" -gt $((_k + 1)) ]; then
+        printf 'check: ledger gap: T%s missing\n' "$((_k + 1))"
+        exit 1
+      fi
+      set_field task "$_k/$_N"
+      printf 'check: task rebuilt to %s/%s from the ledger\n' "$_k" "$_N"
+      exit 0
+    fi
     problems=0
     for k in spec plan; do
       v="$(field "$k")"
