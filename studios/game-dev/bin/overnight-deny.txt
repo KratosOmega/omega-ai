@@ -28,3 +28,13 @@ Read(**/*.key)
 Read(~/.ssh/**)
 Read(~/.aws/**)
 Read(~/.config/gh/**)
+# {default_branch} is replaced by the repository's default branch (from
+# origin/HEAD; with no value the runner refuses to start). {merge_basename} is
+# replaced by the basename of merge_command's first word; a line using it is
+# dropped when no merge_command is configured.
+Bash(git push * {default_branch})
+Bash(git push * *:{default_branch})
+Bash(git push * *:refs/heads/{default_branch})
+Bash(git -C * push * *:{default_branch})
+Bash(gh api *pulls/*/merge*)
+Bash(*{merge_basename}*)
