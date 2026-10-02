@@ -421,6 +421,23 @@ test_no_last_playtest_callers() {
   assert_eq "" "$hits" "no studio or omega file names last_playtest"
 }
 
+test_execute_one_contract() {
+  S="$REPO_ROOT/studios/game-dev/skills/execute/SKILL.md"
+  assert_contains "$S" "^## 8. One unit (--one)$" "execute has the --one section"
+  assert_contains "$S" "exactly one unit" "--one runs exactly one unit"
+  assert_contains "$S" "no next implementer is dispatched" "--one cuts SDD's loop after one task"
+  assert_contains "$S" "overrides SDD's instruction to continue to the next task" "the cut overrides SDD"
+  assert_contains "$S" "git push -u origin <branch>" "a task unit pushes its branch"
+  assert_contains "$S" 'studio-state ledger "Stop: <reason>"' "every stop writes a Stop: line under --one"
+  assert_contains "$S" 'git commit -m "chore(studio): stop"' "the Stop: line is committed in a feature checkout"
+  assert_contains "$S" "not the default branch" "a Stop: before isolation is not committed onto the default branch (D9)"
+  assert_contains "$S" "A rejected push is a \`Ruling:\` line, not a stop" "a rejected push is a ruling"
+  assert_contains "$S" "never runs \`omega:handoff\`" "--one writes no handoff"
+  assert_contains "$S" "\`--one\` with \`--inline\` is refused" "--one is subagent-driven only"
+  assert_contains "$S" "Under \`--one\`, see §8" "the sections that stop or continue point at §8"
+  assert_eq 5 "$(grep -c 'Under `--one`, see §8' "$S")" "five pointers: §0, §1, §5 step 6, §7 step 6, §7 step 7"
+}
+
 run_tests test_plugin_manifests test_skill_frontmatter test_agent_frontmatter \
   test_external_references_declared test_required_plugins_enabled test_bin_syntax \
   test_role_agents_exist test_stage_skill_contracts test_plan_skill_contract \
@@ -428,4 +445,5 @@ run_tests test_plugin_manifests test_skill_frontmatter test_agent_frontmatter \
   test_studio_skill_contract test_game_dev_agent_roster test_stage_skills_dispatch_agents \
   test_stage_chain test_execute_contract test_agent_contracts test_feature_checkout_copies test_next_lines \
   test_review_contract test_on_demand_skills_keep_stage test_playtest_contract test_retro_contract \
-  test_no_ship_references test_superpowers_requires_referenced test_no_last_playtest_callers
+  test_no_ship_references test_superpowers_requires_referenced test_no_last_playtest_callers \
+  test_execute_one_contract
