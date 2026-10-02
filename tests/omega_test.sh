@@ -184,7 +184,7 @@ test_mode_env_autopilot() {
   out="$(env -u CLAUDE_CODE_SESSION_ID OMEGA_AUTOPILOT=1 CLAUDE_CONFIG_DIR="$TMP/cfg-env" sh "$MODE" brief)"
   printf '%s\n' "$out" > "$TMP/env-brief.txt"
   assert_contains "$TMP/env-brief.txt" "^Omega modes: autopilot source=env$" "brief heads with the env line"
-  assert_contains "$TMP/env-brief.txt" "autopilot (overnight runner): never AskUserQuestion — rule by the standards, log the ruling with its cost if wrong, continue; commit, push and open a draft PR, never merge; on a hard stop write Stop: <reason> to the ledger and end; no handoff — the runner starts the next session\." "brief carries the runner's rule text"
+  assert_contains "$TMP/env-brief.txt" "autopilot (overnight runner): never AskUserQuestion — rule by the standards, log the ruling with its cost if wrong, continue; commit, push and open a draft PR, no session merges anything in any run mode — nothing into main; the runner lands; on a hard stop write Stop: <reason> to the ledger and end; no handoff — the runner starts the next session\." "brief carries the runner's rule text"
   # A session file with reply: both lines, file first.
   CLAUDE_CONFIG_DIR="$TMP/cfg-env" sh "$MODE" --session envs set reply
   out="$(OMEGA_AUTOPILOT=1 CLAUDE_CONFIG_DIR="$TMP/cfg-env" sh "$MODE" --session envs show)"
