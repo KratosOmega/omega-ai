@@ -323,7 +323,9 @@ STUB
 # as ok, but the first view after it shows MERGED with no merge commit (the
 # oid arrives via pr-<n>.pending). nofetch: as ok, then origin's bare repo is
 # moved away, so the runner's next fetch fails. hang: a child sleep 300 and
-# a wait, pids in $CALLS/merge.pid and $CALLS/merge-sleep.pid.
+# a wait, pids in $CALLS/merge.pid and $CALLS/merge-sleep.pid. mergehang: as
+# ok, then as hang (the merge landed, the command never returned). termhang:
+# as hang, with TERM ignored by the program and its child.
 cat > "$FAKE/merge-stub" <<'STUB'
 #!/bin/sh
 echo "s merge $(date +%s)" >> "$CALLS/gate.iv"
@@ -331,7 +333,7 @@ k=$(( $(cat "$CALLS/merge-count" 2>/dev/null || echo 0) + 1 )); echo "$k" > "$CA
 out="$(printf '%s\n' ${MERGE_OUTCOMES:-ok} | sed -n "${k}p")"; [ -n "$out" ] || out=ok
 f="$GH/pr-$1"; rc=0
 case "$out" in
-  ok)
+  ok|mergehang)
     head="$(sed -n 's/^head=//p' "$f" | tail -n 1)"; base="$(sed -n 's/^base=//p' "$f" | tail -n 1)"
     url="$(git remote get-url origin)"; d="$(mktemp -d)"
     ( cd "$d" && git clone -q "$url" c && cd c && git checkout -q "$base" \
@@ -354,7 +356,10 @@ case "$out" in
     [ "$out" != nofetch ] || mv "$url" "$url.gone" ;;
   refuse) echo "merge refused: the gate is red"; rc=1 ;;
   hang) sleep 300 & echo "$!" > "$CALLS/merge-sleep.pid"; echo "$$" > "$CALLS/merge.pid"; wait ;;
+  termhang) trap '' TERM; sleep 300 & echo "$!" > "$CALLS/merge-sleep.pid"; echo "$$" > "$CALLS/merge.pid"
+    while kill -0 "$!" 2>/dev/null; do wait; done ;;
 esac
+[ "$out" != mergehang ] || { sleep 300 & echo "$!" > "$CALLS/merge-sleep.pid"; echo "$$" > "$CALLS/merge.pid"; wait; }
 echo "e merge $(date +%s)" >> "$CALLS/gate.iv"
 exit "$rc"
 STUB
@@ -1399,6 +1404,37 @@ test_lanes_direct_progress_landing() {
   assert_eq "" "$(prompt_calls '/omega:integration repair demo')" "and no final repair"
   assert_contains "$(last_lanes_dir)/report.md" "progress PR https://gh.test/pr/2 left open" "the report names it"
 }
+# Last fix: a merge command that merged the PR and then hung past the timeout
+# landed the story: the step-3 MERGED check runs after the timeout.
+test_lanes_direct_merge_timeout_after_merge_lands() {
+  LANES_CONFIG='{"merge_command": "scripts/merge.sh <pr>"}'; export LANES_CONFIG
+  lanes_fixture mtol direct A:-
+  printf 'repair\n' > "$SCEN/A.land"
+  MERGE_OUTCOMES=mergehang; STUDIO_OVERNIGHT_SESSION_SECONDS=6; export MERGE_OUTCOMES STUDIO_OVERNIGHT_SESSION_SECONDS
+  run_lanes start "$MFP"
+  unset MERGE_OUTCOMES STUDIO_OVERNIGHT_SESSION_SECONDS
+  _oid="$(sed -n 's/^oid=//p' "$GH/pr-1" | tail -n 1)"
+  assert_contains "$(last_lanes_dir)/stories/A" "^landed ${_oid:-none}$" "a merge that landed and then hung is landed with its merge commit"
+  assert_eq 0 "$(land_calls)" "no repair"
+  _mp="$(cat "$CALLS/merge.pid" 2>/dev/null)"; _sp="$(cat "$CALLS/merge-sleep.pid" 2>/dev/null)"
+  assert_status 1 "the hung merge program is ended" -- kill -0 "${_mp:-999999}"
+  assert_status 1 "and its child" -- kill -0 "${_sp:-999999}"
+}
+# Last fix: a kill grace below studio-gate's own 10 s KILL still ends a merge
+# group that ignores TERM: the watchdog KILLs the merge's group itself.
+test_lanes_direct_merge_timeout_term_ignored() {
+  LANES_CONFIG='{"merge_command": "scripts/merge.sh <pr>"}'; export LANES_CONFIG
+  lanes_fixture mtti direct A:-
+  MERGE_OUTCOMES=termhang; STUDIO_OVERNIGHT_SESSION_SECONDS=6; KILL_GRACE_SECONDS=2
+  export MERGE_OUTCOMES STUDIO_OVERNIGHT_SESSION_SECONDS KILL_GRACE_SECONDS
+  run_lanes start "$MFP"
+  unset MERGE_OUTCOMES STUDIO_OVERNIGHT_SESSION_SECONDS KILL_GRACE_SECONDS
+  assert_contains "$(last_lanes_dir)/stories/A" "^stopped landing failed (merge command timed out)$" "a TERM-ignoring hung merge is a failed landing"
+  _mp="$(cat "$CALLS/merge.pid" 2>/dev/null)"; _sp="$(cat "$CALLS/merge-sleep.pid" 2>/dev/null)"
+  _alive=0; kill -0 "${_mp:-999999}" 2>/dev/null && _alive=1; kill -0 "${_sp:-999999}" 2>/dev/null && _alive=1
+  assert_eq 0 "$_alive" "no process of the TERM-ignoring merge group survives"
+  kill -9 "${_mp:-999999}" "${_sp:-999999}" 2>/dev/null
+}
 # A final unit that leaves uncommitted work: discarded, never gated, red.
 test_lanes_final_dirty_unit_is_red() {
   lanes_fixture findirty integration A:-
@@ -1451,8 +1487,9 @@ test_lanes_final_conflict_then_red() {
 }
 # Final fix wave: a stop during the final gate (a Ctrl-C reaches studio-gate,
 # exit 130) records no gate result, so a resume runs the gate again instead
-# of opening a [red] PR that no complete gate produced. A gate killed by a
-# signal (rc >= 128) with no stop file is not recorded either.
+# of opening a [red] PR that no complete gate produced. studio-gate's own
+# signal exits (129/130/143) with no stop file are not recorded either; any
+# other exit (an engine crash's 139) is a red gate: recorded, repaired.
 test_lanes_final_gate_interrupted_not_recorded() {
   lanes_fixture fingint integration A:-
   use_gate "echo gate >> '$CALLS/final-gates'; if [ ! -f '$CALLS/gate-once' ]; then : > '$CALLS/gate-once'; : > '$P/.studio/overnight.stop'; exit 130; fi"
@@ -1467,13 +1504,22 @@ test_lanes_final_gate_interrupted_not_recorded() {
   assert_eq 2 "$(final_gates)" "the resume runs the gate again"
   assert_contains "$GH/calls" "^pr create --draft --base main --head integration/demo --title demo: the demo goal " "the resume's PR is green, not [red]"
   assert_contains "$P/.studio/runs/demo/final" " green$" "the final record says green"
-  # A gate killed by a signal, no stop file: red this run, nothing recorded.
+  # studio-gate ended by a signal (130), no stop file: nothing recorded.
   lanes_fixture fingsig integration A:-
-  use_gate "echo gate >> '$CALLS/final-gates'; exit 137"
+  use_gate "echo gate >> '$CALLS/final-gates'; exit 130"
   run_lanes start "$MFP"
   use_gate true
   assert_missing "$P/.studio/runs/demo/gate" "a gate ended by a signal records no result"
+  assert_eq "" "$(prompt_calls '/omega:integration repair demo')" "and starts no repair"
   assert_contains "$GH/calls" "^pr create --draft .*--title \[red\] " "the signalled gate's PR is [red]"
+  # An engine crash inside the gate (139): a red gate, recorded and repaired.
+  lanes_fixture fingsegv integration A:-
+  use_gate "echo gate >> '$CALLS/final-gates'; exit 139"
+  run_lanes start "$MFP"
+  use_gate true
+  assert_contains "$P/.studio/runs/demo/gate" "^[0-9a-f]\{40\} red$" "a crashed engine's gate is recorded red"
+  assert_eq 1 "$(prompt_calls '/omega:integration repair demo' | grep -c .)" "the one final-repair runs"
+  assert_contains "$GH/calls" "^pr create --draft .*--title \[red\] " "the crashed gate's PR is [red]"
 }
 # ---- T12: status, report.md, run endings ----
 
@@ -1737,6 +1783,7 @@ run_tests test_lanes_chain_rule test_lanes_manifest_refusals test_lanes_prefligh
   test_lanes_final_repair_turns_green test_lanes_final_conflict test_lanes_final_resume_edits_pr \
   test_lanes_final_skipped_on_stop_or_nothing_landed test_lanes_final_gate_default test_lanes_direct_progress_landing \
   test_lanes_final_dirty_unit_is_red test_lanes_final_budget test_lanes_final_conflict_then_red test_lanes_final_gate_interrupted_not_recorded \
+  test_lanes_direct_merge_timeout_after_merge_lands test_lanes_direct_merge_timeout_term_ignored \
   test_lanes_status_per_story test_lanes_report_every_ending test_lanes_report_on_lane_crash \
   test_lanes_done_marker test_lanes_status_reaps_dead_runner test_lanes_reap_names_final_pr \
   test_lanes_detach_strips_env test_lanes_detach_refusal_in_foreground test_lanes_detach_child_refusal_surfaces \

@@ -380,7 +380,9 @@ land_once() {
 # own process group) under session_minutes (STUDIO_OVERNIGHT_SESSION_SECONDS
 # overrides), run_unit's watchdog rule: at the deadline TERM the group (the
 # gate forwards it to the merge program's group, waits for it and releases
-# the gate lock), KILL after GRACE. Who ended it is decided once by an atomic
+# the gate lock), KILL after GRACE: first the group of each child of the
+# gate (the merge program's own, which a GRACE below studio-gate's 10 s
+# KILL would orphan), then the gate's. Who ended it is decided once by an atomic
 # mkdir of LDIR/ID-land.ended. Under a lane, LDIR/cpid and LDIR/wpid name it
 # for lanes_end_sessions. Returns 1 when the watchdog ended it (timed out).
 merge_wait() {
@@ -392,6 +394,7 @@ merge_wait() {
     mkdir "$_mw_claim" 2>/dev/null || [ ! -d "$_mw_claim" ] || exit 0
     kill -TERM -"$2" 2>/dev/null || { pkill -TERM -P "$2"; kill -TERM "$2"; }
     sleep "${GRACE:-30}" & _sp=$!; wait "$_sp"
+    for _k in $(pgrep -P "$2"); do kill -KILL -"$_k" 2>/dev/null; done
     kill -KILL -"$2" 2>/dev/null || { pkill -KILL -P "$2"; kill -KILL "$2"; }
   ) > /dev/null 2>&1 &
   _mw_w=$!
@@ -415,8 +418,9 @@ merge_wait() {
 # `studio-gate merge` from LAND_DIR when set (the direct progress landing's
 # worktree), else the story worktree (else START_DIR), stdin
 # /dev/null, output to LDIR/<id>-land.log (RUN_DIR outside a lane), under
-# session_minutes (merge_wait: a timeout ends it and returns 4, `merge
-# command timed out`, no repair); step 3,
+# session_minutes (merge_wait: a timeout ends it, then step 3 still runs:
+# a merge that landed before it hung is landed, anything else returns 4,
+# `merge command timed out`, no repair); step 3,
 # whatever its exit code, fetch (a failed fetch returns 4), then the PR is
 # MERGED and its merge commit is in origin/<default>: landed. A PR that is
 # MERGED never returns 3 (a repair on a landed story): its commit missing
@@ -451,15 +455,16 @@ land_once_direct() {
     exec sh "$SELF_DIR/studio-gate" merge -- "$START_DIR/$_ld_w" "$@" ) > "$_ld_log" 2>&1 < /dev/null &
   _ld_pid=$!
   set +m 2>/dev/null || true
-  merge_wait "$1" "$_ld_pid" || { LAND_WHY="merge command timed out"; return 4; }
+  _ld_to=""; merge_wait "$1" "$_ld_pid" || _ld_to="merge command timed out"
   _ld_try=0
   while :; do
-    git_retry -C "$START_DIR" fetch -q origin || { LAND_WHY="cannot fetch origin"; return 4; }
-    pr_view "$_ld_n" || { LAND_WHY="cannot read PR #$_ld_n after the merge command"; return 4; }
+    git_retry -C "$START_DIR" fetch -q origin || { LAND_WHY="${_ld_to:-cannot fetch origin}"; return 4; }
+    pr_view "$_ld_n" || { LAND_WHY="${_ld_to:-cannot read PR #$_ld_n after the merge command}"; return 4; }
     if [ "$PR_STATE" = MERGED ] && [ -n "$PR_OID" ] \
        && git -C "$START_DIR" merge-base --is-ancestor "$PR_OID" "$_ld_rd" 2>/dev/null; then
       LAND_SHA="$PR_OID"; return 0
     fi
+    [ -z "$_ld_to" ] || [ "$PR_STATE" = MERGED ] || { LAND_WHY="$_ld_to"; return 4; }
     [ "$PR_STATE" = MERGED ] || { LAND_REPAIR="red:$_ld_log"; return 3; }
     _ld_try=$((_ld_try + 1))
     [ "$_ld_try" -lt 2 ] || { LAND_WHY="PR #$_ld_n is MERGED but its merge commit is not in origin/$DEFAULT_BRANCH"; return 4; }
@@ -1170,6 +1175,9 @@ final_gate_cmds() {
   printf 'sh %s && { sh %s; _lint=$?; [ "$_lint" -eq 0 ] || [ "$_lint" -eq 3 ]; } && sh %s --seconds 10\n' \
     "$(sq "$SELF_DIR/studio-test")" "$(sq "$SELF_DIR/studio-lint")" "$(sq "$SELF_DIR/studio-run")"
 }
+# gate_signalled RC — RC is studio-gate's own exit on a signal (HUP 129,
+# INT 130, TERM 143): an interrupted gate, not a result.
+gate_signalled() { case "$1" in 129|130|143) return 0 ;; esac; return 1; }
 # final_gate LOG — the full gate in FINAL_W under the gate lock (studio-gate
 # final-gate, D17), stdin /dev/null, output to LOG. Its exit code.
 final_gate() {
@@ -1297,12 +1305,13 @@ final_integration() {
   if [ "$_fi_gs" = "$_fi_h" ] && [ -n "$_fi_gc" ]; then
     FINAL_GATE="$_fi_gc"; _fi_log="(recorded)"
   else
-    # An interrupted gate (a stop arrived, or a signal ended it: rc >= 128)
-    # is no result: nothing is recorded, so a resume runs it again.
+    # An interrupted gate (a stop arrived, or studio-gate's own signal exit
+    # 129/130/143) is no result: nothing is recorded, so a resume runs it
+    # again. Any other exit, an engine crash's 134/139 included, is red.
     _fi_log="$RUN_DIR/final-gate.log"; _fi_int=0
     final_gate "$_fi_log"; _fi_rc=$?
     if [ "$_fi_rc" = 0 ]; then FINAL_GATE=green
-    elif [ -e "$STOP_FILE" ] || [ "$_fi_rc" -ge 128 ]; then
+    elif [ -e "$STOP_FILE" ] || gate_signalled "$_fi_rc"; then
       FINAL_GATE=red; _fi_int=1; final_note "the full gate was interrupted (exit $_fi_rc): no result recorded"
     else
       FINAL_GATE=red
@@ -1311,7 +1320,7 @@ final_integration() {
         _fi_log="$RUN_DIR/final-gate-2.log"
         final_gate "$_fi_log"; _fi_rc=$?
         if [ "$_fi_rc" = 0 ]; then FINAL_GATE=green
-        elif [ -e "$STOP_FILE" ] || [ "$_fi_rc" -ge 128 ]; then
+        elif [ -e "$STOP_FILE" ] || gate_signalled "$_fi_rc"; then
           _fi_int=1; final_note "the full gate was interrupted (exit $_fi_rc): no result recorded"
         fi
       fi

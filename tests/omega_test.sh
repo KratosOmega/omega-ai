@@ -159,8 +159,9 @@ test_mode_brief() {
     "brief carries the local-merge rule"
   assert_contains "$TMP/brief.txt" "^  integration: story branches PR into integration/ui-rework; docs/integrations/ui-rework\.md is the set; finish only when every row is merged\.$" \
     "brief carries the integration rule with its slug"
-  assert_contains "$TMP/brief.txt" "^  autopilot: never AskUserQuestion — rule by the standards, log the ruling with its cost if wrong, continue; commit, push and open a PR; no session merges anything in any run mode — nothing into main, the default branch; the runner lands; end with handoff\.$" \
+  assert_contains "$TMP/brief.txt" "^  autopilot: never AskUserQuestion — rule by the standards, log the ruling with its cost if wrong, continue; commit, push and open a PR; no session merges anything in any run mode — nothing into main, the default branch; the user merges; end with handoff\.$" \
     "brief carries the autopilot rule"
+  assert_not_contains "$TMP/brief.txt" "the runner lands" "the session-mode brief names no runner (there is none)"
   assert_contains "$TMP/brief.txt" "^  delegate: the main session dispatches, reads reports and runs status commands; every edit, search and document goes to a subagent; never fix by hand\.$" \
     "brief carries the delegate rule"
   assert_contains "$TMP/brief.txt" "^  reply: explain and decide in one concrete scenario from the project's world, five lines at most; no paths, symbols, config keys or raw values in the prose; code, commands, exact errors, test results and warnings stay verbatim\.$" \
