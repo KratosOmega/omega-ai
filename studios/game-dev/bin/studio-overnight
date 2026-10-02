@@ -285,11 +285,13 @@ cmd_start() {
   n=0; noprog=0; suffix=""; STOP_REQ=0
   while :; do
     { [ -f "$STOP_FILE" ] || [ "$STOP_REQ" = 1 ]; } && finish_run "stopped by user"
-    _stage="$(state get stage)"
+    # First pass takes the before-snapshot; later passes reuse the previous after-snapshot.
+    if [ "$n" -eq 0 ]; then snapshot "$RUN_DIR/stops.before"; else cp "$RUN_DIR/stops.after" "$RUN_DIR/stops.before"; fi
+    _stage="$SIG_STAGE"
     case "$_stage" in plan|execute) ;; *) finish_run "stop: unexpected stage $_stage" ;; esac
     awk -v s="$(spent)" -v u="$SESSION_USD" -v r="$RUN_USD" 'BEGIN { exit !(s + u > r) }' \
       && finish_run "stop: run budget"
-    snapshot "$RUN_DIR/stops.before"; _before="$SIG"; _base="$(label_for)"
+    _before="$SIG"; _base="$(label_for)"
     n=$((n + 1)); run_unit "$n" "$_base$suffix"
     snapshot "$RUN_DIR/stops.after"
     _new="$(comm -13 "$RUN_DIR/stops.before" "$RUN_DIR/stops.after" | tail -n 1)"
