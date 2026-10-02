@@ -589,6 +589,151 @@ test_lanes_docs_revision() {
   assert_contains "$b_wt/.studio/ledger/B.md" "Ruling: kept on the branch" "an existing branch's ledger is never overwritten"
   assert_eq 1 "$(git -C "$P" log --format=%s refs/remotes/origin/B-b 2>/dev/null | grep -c '^docs(B): plan at run docs ')" "the sync commits once"
 }
+# ---- T9: waiting chains, skips, crashed lanes and stops ----
+
+# wait_for COND SECS — eval COND once a second until it holds, up to SECS.
+wait_for() {
+  _wf_i=0
+  while ! eval "$1" && [ "$_wf_i" -lt "$2" ]; do sleep 1; _wf_i=$((_wf_i + 1)); done
+}
+# pid_alive PID — the pid runs and is not a zombie.
+pid_alive() {
+  kill -0 "$1" 2>/dev/null || return 1
+  case "$(ps -o stat= -p "$1" 2>/dev/null)" in Z*|'') return 1 ;; esac
+}
+# wait_pid_or_fail PID SECS MSG — passes MSG when PID ends within SECS; else
+# KILLs it and fails MSG. Reaps PID (a child of this shell) into WP_STATUS.
+wait_pid_or_fail() {
+  _wp_i=0
+  while pid_alive "$1" && [ "$_wp_i" -lt "$2" ]; do sleep 1; _wp_i=$((_wp_i + 1)); done
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if pid_alive "$1"; then kill -KILL "$1" 2>/dev/null; _fail "$3 (still alive after $2 s)"
+  else _pass "$3"; fi
+  WP_STATUS=0; wait "$1" 2>/dev/null || WP_STATUS=$?
+}
+# first_t0 ID — the start epoch of story ID's first unit (empty when none).
+first_t0() {
+  _ft_n="$(story_calls "$1" | sort -n | head -n 1)"
+  [ -z "$_ft_n" ] || cat "$CALLS/$_ft_n.t0"
+}
+# dep_gap — seconds from the later of A's and B's landings to C's first unit.
+dep_gap() {
+  _dg_t0="$(first_t0 C)"
+  _dg_land="$(awk -F'\t' '$1=="A"||$1=="B"{print $4}' "$P/.studio/runs/demo/landed.tsv" 2>/dev/null | sort -n | tail -n 1)"
+  if [ -n "$_dg_t0" ] && [ -n "$_dg_land" ]; then echo $((_dg_t0 - _dg_land)); else echo 9999; fi
+}
+waiting_run() {
+  lanes_fixture wait integration A:- B:- C:A,B
+  printf 'sleep 2\n' > "$SCEN/A"
+  STUDIO_OVERNIGHT_POLL_SECONDS=1; export STUDIO_OVERNIGHT_POLL_SECONDS
+  run_lanes start "$MFP"
+  unset STUDIO_OVERNIGHT_POLL_SECONDS
+}
+test_lanes_waiting_chain_starts_after_deps() {
+  waiting_run
+  assert_eq 0 "$LS_STATUS" "all three land"
+  assert_contains "$(last_lanes_dir)/stories/C" "^landed " "the waiting story lands"
+  g="$(dep_gap)"
+  assert_eq 1 "$([ "$g" -ge 0 ] && echo 1 || echo 0)" "C starts no earlier than its last dependency's landing (${g}s)"
+  # Wall clock: a second sample only when the first is over; keep the shorter.
+  if [ "$g" -gt 5 ]; then waiting_run; g2="$(dep_gap)"; [ "$g2" -ge "$g" ] || g="$g2"; fi
+  assert_eq 1 "$([ "$g" -le 5 ] && echo 1 || echo 0)" "C starts within 5 s of its last dependency landing (min of two: ${g}s)"
+}
+test_lanes_skip_on_stopped_dep() {
+  lanes_fixture skipdep integration A:- A2:- B:A C:A,A2
+  printf 'stop nope\n' > "$SCEN/A"
+  STUDIO_OVERNIGHT_POLL_SECONDS=1; export STUDIO_OVERNIGHT_POLL_SECONDS
+  run_lanes start "$MFP"
+  unset STUDIO_OVERNIGHT_POLL_SECONDS
+  R="$(last_lanes_dir)"
+  assert_contains "$R/stories/A" "^stopped stop: nope$" "A stops with its reason"
+  assert_contains "$R/stories/B" "^skipped A$" "the rest of A's chain is skipped"
+  assert_contains "$R/stories/C" "^skipped A$" "a chain waiting on A is skipped, naming A"
+  assert_contains "$R/stories/A2" "^landed " "an unrelated chain lands"
+  assert_eq 0 "$(story_calls C | wc -l | tr -d ' ')" "a skipped story launches nothing"
+  assert_contains "$R/report.md" "^Ending: partial: 1 landed, 1 stopped, 2 skipped$" "every story has an ending"
+}
+test_lanes_lane_kill9() {
+  lanes_fixture kill9 integration A:- B:A C:- D:A
+  printf 'hang\n' > "$SCEN/A"
+  STUDIO_OVERNIGHT_POLL_SECONDS=1; KILL_GRACE_SECONDS=2
+  export STUDIO_OVERNIGHT_POLL_SECONDS KILL_GRACE_SECONDS
+  ( cd "$P" && exec sh "$RUNNER" start "$MFP" ) > "$TMP/k9.out" 2>&1 & RPID=$!
+  unset STUDIO_OVERNIGHT_POLL_SECONDS KILL_GRACE_SECONDS
+  # Chain 1 (A B) is claimed by whichever lane got there first: its lane
+  # number is in claims/1/lane, and that lane's live session in lanes/<k>/cpid.
+  wait_for "[ -n \"\$(story_calls A)\" ] && _k1=\"\$(cat \"\$(last_lanes_dir)\"/claims/1/lane 2>/dev/null)\" && [ -s \"\$(last_lanes_dir)/lanes/\$_k1/cpid\" ]" 20
+  R="$(last_lanes_dir)"; _k1="$(cat "$R"/claims/1/lane 2>/dev/null)"
+  lane1="$(cat "$R"/claims/1/pid 2>/dev/null)"; cpid1="$(cat "$R/lanes/${_k1:-0}/cpid" 2>/dev/null)"
+  # The lane's children other than its session (the unit watchdog) would
+  # outlive it as orphans: noted now, ended after the SIGKILL. The session is
+  # left for the runner's sweep to end.
+  _kids="$(pgrep -P "${lane1:-0}" 2>/dev/null | grep -vx "${cpid1:-none}")"
+  kill -9 "${lane1:-0}"
+  for _k in $_kids; do kill "$_k" 2>/dev/null; done
+  wait_pid_or_fail "$RPID" 60 "the runner does not hang on a dead lane"
+  assert_eq 1 "$WP_STATUS" "a crashed lane makes the run partial"
+  assert_contains "$R/stories/A" "^stopped: lane crashed (137)$" "the parent marks the crashed lane's story with its rc"
+  assert_contains "$R/stories/B" "^skipped A$" "the rest of the dead lane's chain is skipped, naming A"
+  assert_contains "$R/stories/D" "^skipped A$" "a chain waiting on the dead lane's story is skipped"
+  assert_contains "$R/stories/C" "^landed " "the other lane finished"
+  assert_contains "$R/report.md" "^Ending: partial: 1 landed, 1 stopped, 2 skipped$" "the report is written with every story ended"
+  assert_missing "$P/.studio/overnight.lock" "the run releases its lock"
+  assert_eq "" "$(pgrep -f "$TMP/fakebin/claude" 2>/dev/null)" "the dead lane's hung session is ended by the runner"
+  pkill -9 -f "$TMP/fakebin/claude" 2>/dev/null
+}
+test_lanes_sigint() {
+  LANES_CONFIG='{"overnight": {"max_lanes": 2}}'; export LANES_CONFIG
+  lanes_fixture sigint integration A:- B:- D:-
+  printf 'sleep 3\n' > "$SCEN/A"; printf 'sleep 3\n' > "$SCEN/B"
+  set -m 2>/dev/null   # job control, as overnight_test.sh's start_bg: SIGINT is not ignored
+  ( cd "$P" && exec sh "$RUNNER" start "$MFP" ) > "$TMP/si.out" 2>&1 &
+  RPID=$!
+  set +m 2>/dev/null
+  wait_for "[ -f '$CALLS/2.t0' ]" 20
+  kill -INT "$RPID"
+  wait_pid_or_fail "$RPID" 60 "the runner ends after SIGINT"
+  R="$(last_lanes_dir)"
+  assert_eq 1 "$WP_STATUS" "a stopped run is partial"
+  assert_eq 2 "$(calls)" "the two running units finish; nothing new starts"
+  assert_file "$CALLS/1.t1" "unit 1 ran to its end"
+  assert_file "$CALLS/2.t1" "unit 2 ran to its end"
+  for id in A B; do assert_contains "$R/stories/$id" "^stopped stopped by user$" "$id ends stopped by user"; done
+  assert_contains "$R/stories/D" "^skipped: run stopped$" "a chain no lane claimed ends skipped: run stopped"
+  assert_contains "$R/report.md" "^Ending: partial: 0 landed, 2 stopped, 1 skipped$" "the report is written"
+  assert_missing "$P/.studio/overnight.lock" "the run releases its lock"
+}
+test_lanes_runner_gone() {
+  lanes_fixture gone integration A:-
+  printf 'sleep 3\n' > "$SCEN/A"
+  ( cd "$P" && exec sh "$RUNNER" start "$MFP" ) > /dev/null 2>&1 & RPID=$!
+  wait_for "[ -f '$CALLS/1.t0' ]" 20
+  R="$(last_lanes_dir)"; lane1="$(cat "$R"/claims/1/pid 2>/dev/null)"
+  kill -9 "$RPID"; wait "$RPID" 2>/dev/null
+  wait_for "! kill -0 ${lane1:-0} 2>/dev/null" 20
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if kill -0 "${lane1:-0}" 2>/dev/null; then
+    pkill -P "$lane1"; kill -9 "$lane1"; _fail "the lane exits once the runner is gone"
+  else _pass "the lane exits once the runner is gone"; fi
+  assert_eq 1 "$(calls)" "a lane launches nothing once the runner pid is gone"
+  assert_contains "$R/stories/A" "^stopped stop: runner gone$" "the story names the runner's absence, not a user stop"
+}
+test_lanes_stop_file() {
+  lanes_fixture stopf integration A:- B:A C:A
+  printf 'sleep 2\n' > "$SCEN/A"
+  STUDIO_OVERNIGHT_POLL_SECONDS=1; export STUDIO_OVERNIGHT_POLL_SECONDS
+  ( cd "$P" && exec sh "$RUNNER" start "$MFP" ) > /dev/null 2>&1 & RPID=$!
+  unset STUDIO_OVERNIGHT_POLL_SECONDS
+  wait_for "[ -f '$CALLS/1.t0' ]" 20
+  ( cd "$P" && sh "$RUNNER" stop ) >/dev/null
+  wait_pid_or_fail "$RPID" 60 "the runner ends after stop"
+  R="$(last_lanes_dir)"
+  assert_eq 1 "$(calls)" "the running unit finishes; nothing new starts"
+  assert_contains "$R/stories/A" "^stopped stopped by user$" "A ends stopped by user"
+  assert_contains "$R/stories/B" "^skipped A$" "the rest of A's chain is skipped"
+  assert_contains "$R/stories/C" "^skipped: run stopped$" "a waiting chain ends skipped: run stopped"
+  assert_file "$R/report.md" "the report is written"
+}
 # Last: no process any test started is still alive.
 test_lanes_no_orphans() {
   _left="$(pgrep -f "$TMP" 2>/dev/null; pgrep -f "$RUNNER" 2>/dev/null)"
@@ -601,4 +746,5 @@ run_tests test_lanes_chain_rule test_lanes_manifest_refusals test_lanes_manifest
   test_lanes_next_all_planned_and_ambiguous test_lanes_next_plan_before_autopilot \
   test_lanes_two_independent_to_landed test_lanes_max_lanes_one_serializes test_lanes_models_and_env \
   test_lanes_story_stop_isolated test_lanes_budget test_lanes_budget_sums_all_lanes test_lanes_overhead \
-  test_lanes_docs_revision test_lanes_no_orphans
+  test_lanes_docs_revision test_lanes_waiting_chain_starts_after_deps test_lanes_skip_on_stopped_dep \
+  test_lanes_lane_kill9 test_lanes_sigint test_lanes_runner_gone test_lanes_stop_file test_lanes_no_orphans

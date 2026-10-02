@@ -279,19 +279,76 @@ spent() { spent_all; }
 lane_halt() {
   [ -f "$STOP_FILE" ] || ! kill -0 "$RUNNER_PID" 2>/dev/null || [ "${LANE_BUDGET:-0}" = 1 ]
 }
-lane_stopflag() { : > "$STOP_FILE"; }
-# lane_exit RC — the lane's EXIT trap: end a live session, and a story this
-# lane holds that has no ending is `stopped: lane crashed (<rc>)` (D2).
+# lane_halt_reason — why lane_halt holds, as a story_units ENDING: a stop
+# file's own text (the runner's exit path writes its reason there), else
+# `stopped by user` for a requested stop; `stop: runner gone` when the
+# runner's pid is gone; `stop: run budget` for the lane's budget.
+lane_halt_reason() {
+  if [ -f "$STOP_FILE" ]; then
+    _hr="$(head -n 1 "$STOP_FILE" 2>/dev/null)"; printf '%s\n' "${_hr:-stopped by user}"
+  elif ! kill -0 "$RUNNER_PID" 2>/dev/null; then echo "stop: runner gone"
+  elif [ "${LANE_BUDGET:-0}" = 1 ]; then echo "stop: run budget"
+  else echo "stopped by user"; fi
+}
+# lane_stopflag — a signal to a lane requests the run's stop; it never
+# truncates a stop file that already carries the runner's reason.
+lane_stopflag() { [ -e "$STOP_FILE" ] || : > "$STOP_FILE"; }
+# is_ending LINE — true for a story record that is an ending (D19).
+is_ending() { case "$1" in landed*|stopped*|skipped*) return 0 ;; esac; return 1; }
+# chain_skip_after ID TEXT — every story after ID in ID's chain that has no
+# ending yet is written TEXT.
+chain_skip_after() {
+  _ca_seen=0
+  for _ca_id in $(chain_members "$(chain_of "$1")"); do
+    if [ "$_ca_seen" = 1 ]; then
+      is_ending "$(story_get "$_ca_id")" || story_write "$_ca_id" "$2"
+    fi
+    [ "$_ca_id" != "$1" ] || _ca_seen=1
+  done
+}
+# lane_exit RC — the lane's EXIT trap: end a live session; a story this lane
+# holds that has no ending is `stopped: lane crashed (<rc>)` (D2), and the
+# rest of its chain `skipped <id>`.
 lane_exit() {
   trap '' INT TERM HUP
   end_session
-  if [ -n "${CUR_ID:-}" ]; then
-    case "$(story_get "$CUR_ID")" in
-      landed*|stopped*|skipped*) ;;
-      *) story_write "$CUR_ID" "stopped: lane crashed ($1)" ;;
-    esac
+  [ -z "${LDIR:-}" ] || rm -f "$LDIR/cpid"   # ended and reaped: never signal a reused pid
+  if [ -n "${CUR_ID:-}" ] && ! is_ending "$(story_get "$CUR_ID")"; then
+    story_write "$CUR_ID" "stopped: lane crashed ($1)"
+    chain_skip_after "$CUR_ID" "skipped $CUR_ID"
   fi
   exit "$1"
+}
+
+# pid_live PID — PID runs (a zombie counts as dead).
+pid_live() {
+  kill -0 "$1" 2>/dev/null || return 1
+  case "$(ps -o stat= -p "$1" 2>/dev/null)" in Z*|'') return 1 ;; esac
+}
+# dep_landed ID — ID has a line in RECORD/landed.tsv.
+dep_landed() { awk -F'\t' -v id="$1" '$1 == id { f = 1 } END { exit !f }' "$RECORD/landed.tsv" 2>/dev/null; }
+# wait_deps ID DEPS — the WAITING state of a chain's first story (spec 500-516):
+# stories/ID = waiting, then a poll every STUDIO_OVERNIGHT_POLL_SECONDS (D20,
+# default 5) s. Returns 0 when every dependency in DEPS (comma-separated) has
+# landed; 2 on lane_halt; 1 with BLOCKER=<dep> when a dependency ended
+# stopped or skipped, or its chain's claiming lane is dead without its landing.
+wait_deps() {
+  story_write "$1" waiting
+  while :; do
+    lane_halt && return 2
+    _wd_all=1
+    for _wd_d in $(printf '%s\n' "$2" | tr ',' ' '); do
+      dep_landed "$_wd_d" && continue
+      _wd_all=0
+      case "$(story_get "$_wd_d")" in stopped*|skipped*) BLOCKER="$_wd_d"; return 1 ;; esac
+      _wd_p="$(cat "$RUN_DIR/claims/$(chain_of "$_wd_d")/pid" 2>/dev/null)"
+      if [ -n "$_wd_p" ] && ! pid_live "$_wd_p" && ! dep_landed "$_wd_d"; then
+        BLOCKER="$_wd_d"; return 1
+      fi
+    done
+    [ "$_wd_all" = 0 ] || return 0
+    sleep "${STUDIO_OVERNIGHT_POLL_SECONDS:-5}"
+  done
 }
 
 # lane_main K — one lane, in a background subshell: claim chains in order
@@ -312,19 +369,28 @@ lane_main() {
   exit 0
 }
 
-# run_chain C — chain C's stories in order; a story after one that did not
-# land is skipped (T9 extends this to the whole chain and to waits).
+# run_chain C — chain C's stories in order. A waiting chain's first story
+# waits for its dependencies first (wait_deps): a blocked wait skips it
+# `skipped <dep>` and the rest `skipped <first id>`; a stop skips it and the
+# rest `skipped: run stopped` (D2). A story after one that did not land is
+# skipped `skipped <that id>`, and so is the rest of the chain (D19).
 run_chain() {
-  _rc_prev=""
+  _rc_skip=""; _rc_first=1
+  _rc_w="$(chain_waits "$1")"
   for _rc_id in $(chain_members "$1"); do
-    if [ -n "$_rc_prev" ]; then
-      case "$(story_get "$_rc_prev")" in
-        landed*) ;;
-        *) story_write "$_rc_id" "skipped $_rc_prev"; _rc_prev="$_rc_id"; continue ;;
+    if [ -n "$_rc_skip" ]; then story_write "$_rc_id" "$_rc_skip"; continue; fi
+    if [ "$_rc_first" = 1 ] && [ "$_rc_w" != - ]; then
+      CUR_ID="$_rc_id"   # a lane that dies while waiting still ends the story
+      wait_deps "$_rc_id" "$_rc_w"; _rc_wd=$?
+      CUR_ID=""
+      case "$_rc_wd" in
+        1) story_write "$_rc_id" "skipped $BLOCKER"; _rc_skip="skipped $_rc_id"; continue ;;
+        2) story_write "$_rc_id" "skipped: run stopped"; _rc_skip="skipped: run stopped"; continue ;;
       esac
     fi
+    _rc_first=0
     run_story "$_rc_id"
-    _rc_prev="$_rc_id"
+    case "$(story_get "$_rc_id")" in landed*) ;; *) _rc_skip="skipped $_rc_id" ;; esac
   done
 }
 
@@ -341,6 +407,10 @@ run_story() {
   # A story already shipped (stage idle, a shipped line) only lands.
   snapshot "$UNIT_DIR/stops.before"
   if [ "$SIG_STAGE" = idle ] && [ "$SIG_SHIPPED" -gt 0 ]; then ENDING=done; else story_units; fi
+  # story_units says `stopped by user` for any halt; name the real one. A
+  # halt also holds back the landing (spec 124-127).
+  [ "$ENDING" != "stopped by user" ] || ENDING="$(lane_halt_reason)"
+  [ "$ENDING" != done ] || ! lane_halt || ENDING="$(lane_halt_reason)"
   case "$ENDING" in
     done) story_write "$1" landing; land_story "$1" ;;
     *) story_write "$1" "stopped $ENDING"
@@ -357,20 +427,71 @@ lanes_wait() {
     kill -0 "$1" 2>/dev/null || break
   done
 }
-# lanes_end_sessions — TERM every lane's live session group, then KILL after
-# the grace (the runner's exit path: lanes then see the stop and end).
+# lanes_end_sessions [K…] — TERM the live session of lanes K… (every lane
+# when none is named): its process group, else the session's children and
+# pid. After up to GRACE s, KILL whatever of it is still alive, group or
+# not. Used by the runner's exit path (lanes then see the stop and end) and
+# by the sweep for a lane that died with its session live.
 lanes_end_sessions() {
-  _es_pids="$(cat "$RUN_DIR"/lanes/*/cpid 2>/dev/null)"
-  [ -n "$_es_pids" ] || return 0
-  for _p in $_es_pids; do kill -TERM -"$_p" 2>/dev/null || kill -TERM "$_p" 2>/dev/null; done
-  _g=0
-  while [ "$_g" -lt "${GRACE:-30}" ]; do
-    _alive=0
-    for _p in $_es_pids; do kill -0 -"$_p" 2>/dev/null && _alive=1; done
-    [ "$_alive" = 1 ] || break
-    sleep 1; _g=$((_g + 1))
+  _es_files=""
+  if [ "$#" -eq 0 ]; then _es_files="$(ls "$RUN_DIR"/lanes/*/cpid 2>/dev/null)"
+  else for _es_k in "$@"; do [ ! -f "$RUN_DIR/lanes/$_es_k/cpid" ] || _es_files="$_es_files $RUN_DIR/lanes/$_es_k/cpid"; done; fi
+  _es_pids=""
+  for _es_f in $_es_files; do _es_pids="$_es_pids $(cat "$_es_f" 2>/dev/null)"; done
+  for _es_p in $_es_pids; do
+    kill -TERM -"$_es_p" 2>/dev/null || { pkill -TERM -P "$_es_p"; kill -TERM "$_es_p"; } 2>/dev/null
   done
-  for _p in $_es_pids; do kill -KILL -"$_p" 2>/dev/null; done
+  _es_g=0
+  while [ -n "$_es_pids" ] && [ "$_es_g" -lt "${GRACE:-30}" ]; do
+    _es_alive=0
+    for _es_p in $_es_pids; do
+      { kill -0 -"$_es_p" 2>/dev/null || pid_live "$_es_p"; } && _es_alive=1
+    done
+    [ "$_es_alive" = 1 ] || break
+    sleep 1; _es_g=$((_es_g + 1))
+  done
+  for _es_p in $_es_pids; do
+    kill -KILL -"$_es_p" 2>/dev/null || { pkill -KILL -P "$_es_p"; kill -KILL "$_es_p"; } 2>/dev/null
+  done
+  [ -z "$_es_files" ] || rm -f $_es_files
+}
+
+# lanes_sweep — the parent's sweep once every lane has exited (D2): in a
+# claimed chain, the first story with no ending is `stopped: lane crashed
+# (<rc of its lane>)` (that lane's orphaned session ended first) and every
+# later one `skipped <that id>`; every story of an unclaimed chain is
+# `skipped: run stopped`. Lane rcs are LANE_RC_<k>, set by the wait loop.
+lanes_sweep() {
+  for _sw_c in $(cut -f1 "$CHAINS"); do
+    if [ -d "$RUN_DIR/claims/$_sw_c" ]; then
+      for _sw_id in $(chain_members "$_sw_c"); do
+        is_ending "$(story_get "$_sw_id")" && continue
+        _sw_k="$(cat "$RUN_DIR/claims/$_sw_c/lane" 2>/dev/null)"; _sw_rc=unknown
+        case "$_sw_k" in
+          ''|*[!0-9]*) ;;
+          *) eval "_sw_rc=\${LANE_RC_$_sw_k:-unknown}"; lanes_end_sessions "$_sw_k" ;;
+        esac
+        story_write "$_sw_id" "stopped: lane crashed ($_sw_rc)"
+        chain_skip_after "$_sw_id" "skipped $_sw_id"
+        break
+      done
+    else
+      for _sw_id in $(chain_members "$_sw_c"); do
+        is_ending "$(story_get "$_sw_id")" || story_write "$_sw_id" "skipped: run stopped"
+      done
+    fi
+  done
+}
+# lanes_wait_all — lanes_wait each of LANE_PIDS (lane k is the k-th), its rc
+# into LANE_RC_<k>; then LANE_PIDS is empty.
+lanes_wait_all() {
+  _wa_k=1
+  for _wa_p in $LANE_PIDS; do
+    lanes_wait "$_wa_p"
+    eval "[ -n \"\${LANE_RC_$_wa_k:-}\" ] || LANE_RC_$_wa_k=\$LW_RC"   # a re-wait (exit path) keeps the first rc
+    _wa_k=$((_wa_k + 1))
+  done
+  LANE_PIDS=""
 }
 
 # lanes_ending — done when every story landed, else partial with counts.
@@ -409,17 +530,21 @@ lanes_finish() {
 # lanes_on_exit RC — the one EXIT trap of manifest mode: removes the
 # preflight's scratch dir; once lanes run, an exit that never reached
 # lanes_finish stops the lanes, ends their sessions, waits for them, and
-# still writes the report and unlocks (a runner error, or SIGHUP).
+# still writes the report and unlocks (a runner error, or SIGHUP). The stop
+# file carries the reason, so each lane's story ends with it (not "by user"),
+# and the sweep gives every other story its ending.
 lanes_on_exit() {
   [ -z "${MF_TMP:-}" ] || rm -rf "$MF_TMP"
   [ "${LANES_LIVE:-0}" = 1 ] || return 0
   [ "$REPORTED" = 1 ] && return 0
   trap '' HUP INT TERM
-  : > "$STOP_FILE"
+  if [ "$HUP_REQ" = 1 ]; then _oe_why="stop: terminal closed (SIGHUP)"
+  else _oe_why="stop: runner error (exit $1)"; fi
+  printf '%s\n' "$_oe_why" > "$STOP_FILE"
   lanes_end_sessions
-  for _p in $LANE_PIDS; do lanes_wait "$_p"; done
-  if [ "$HUP_REQ" = 1 ]; then lanes_report "stop: terminal closed (SIGHUP)"
-  else lanes_report "stop: runner error (exit $1)"; fi
+  lanes_wait_all
+  lanes_sweep
+  lanes_report "$_oe_why"
   unlock
   exit 1
 }
@@ -436,7 +561,7 @@ lanes_run() {
   mkdir -p "$RECORD" && touch "$RECORD/landed.tsv" || { rm -f "$LOCK"; say "cannot create $RECORD"; exit 2; }
   for _id in $(cut -f1 "$MF_ROWS" | awk '!seen[$0]++'); do story_write "$_id" queued; done
   LANES_LIVE=1; LANE_PIDS=""
-  trap ': > "$STOP_FILE"' INT TERM
+  trap '[ -e "$STOP_FILE" ] || : > "$STOP_FILE"' INT TERM
   trap 'HUP_REQ=1; exit 129' HUP
   run_setup
   # The record is this machine's run state, like the lock: kept out of git.
@@ -451,9 +576,9 @@ lanes_run() {
     LANE_PIDS="$LANE_PIDS $!"
     _k=$((_k + 1))
   done
-  for _p in $LANE_PIDS; do lanes_wait "$_p"; done
-  LANE_PIDS=""
-  # T9: the parent's sweep. T11: the final step.
+  lanes_wait_all
+  lanes_sweep
+  # T11: the final step.
   lanes_finish "$(lanes_ending)"
 }
 
