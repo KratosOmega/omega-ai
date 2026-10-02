@@ -34,6 +34,11 @@ mf_header() {
   sed -n "s/^$1:[ 	]*//p" "$MF" | head -n 1 | sed -e 's/[ 	]#.*$//' -e 's/[ 	]*$//'
 }
 
+# mf_slug — the manifest's `# Run:` slug, a trailing comment stripped.
+mf_slug() {
+  sed -n 's/^# Run:[ 	]*//p' "$MF" | head -n 1 | sed -e 's/[ 	]#.*$//' -e 's/[ 	]*$//'
+}
+
 # mf_load MANIFEST — parse the manifest: sets MF, MF_SLUG, MF_MODE,
 # MF_TARGET, MF_DOCS, MF_GOAL and writes $MF_ROWS (set by the caller), one
 # TSV row per story: id branch ticket spec plan deps (deps comma-joined, no
@@ -42,7 +47,7 @@ mf_load() {
   MF="$1"
   case "$MF" in /*) ;; *) MF="$START_DIR/$MF" ;; esac
   [ -f "$MF" ] || { refuse "no manifest at $1"; return 1; }
-  MF_SLUG="$(sed -n 's/^# Run:[ 	]*//p' "$MF" | head -n 1 | sed -e 's/[ 	]#.*$//' -e 's/[ 	]*$//')"
+  MF_SLUG="$(mf_slug)"
   MF_MODE="$(mf_header Mode)"; MF_TARGET="$(mf_header Target)"
   MF_DOCS="$(mf_header Docs)"; MF_GOAL="$(mf_header Goal)"
   awk -F'|' '
@@ -707,6 +712,7 @@ lanes_end_sessions() {
 # (<rc of its lane>)` (that lane's orphaned session ended first) and every
 # later one `skipped <that id>`; every story of an unclaimed chain is
 # `skipped: run stopped`. Lane rcs are LANE_RC_<k>, set by the wait loop.
+# SWEEP_WHY, when set, replaces the crash text (lanes_reap: the runner died).
 lanes_sweep() {
   for _sw_c in $(cut -f1 "$CHAINS"); do
     if [ -d "$RUN_DIR/claims/$_sw_c" ]; then
@@ -725,7 +731,7 @@ lanes_sweep() {
           ''|*[!0-9]*) ;;
           *) eval "_sw_rc=\${LANE_RC_$_sw_k:-unknown}"; lanes_end_sessions "$_sw_k" ;;
         esac
-        story_write "$_sw_id" "stopped: lane crashed ($_sw_rc)"
+        story_write "$_sw_id" "${SWEEP_WHY:-stopped: lane crashed ($_sw_rc)}"
         chain_skip_after "$_sw_id" "skipped $_sw_id"
         break
       done
@@ -748,40 +754,276 @@ lanes_wait_all() {
   LANE_PIDS=""
 }
 
-# lanes_ending — done when every story landed, else partial with counts.
-lanes_ending() {
-  _n=0; _s=0; _k=0; _all=1
-  for _id in $(cut -f1 "$MF_ROWS" | awk '!seen[$0]++'); do
-    case "$(story_get "$_id")" in
-      landed*) _n=$((_n + 1)) ;;
-      stopped*) _s=$((_s + 1)); _all=0 ;;
-      skipped*) _k=$((_k + 1)); _all=0 ;;
-      *) _all=0 ;;
+# ---- Run endings, status and report.md (spec 283-292, 537-553; AC15-AC18) ----
+
+# lanes_counts — over the manifest's stories: LC_N landed, LC_S stopped,
+# LC_K skipped; LC_ALL is 1 when every story landed.
+lanes_counts() {
+  LC_N=0; LC_S=0; LC_K=0; LC_ALL=1
+  for _lc in $(cut -f1 "$MF_ROWS" | awk '!seen[$0]++'); do
+    case "$(story_get "$_lc")" in
+      landed*) LC_N=$((LC_N + 1)) ;;
+      stopped*) LC_S=$((LC_S + 1)); LC_ALL=0 ;;
+      skipped*) LC_K=$((LC_K + 1)); LC_ALL=0 ;;
+      *) LC_ALL=0 ;;
     esac
   done
-  if [ "$_all" = 1 ]; then echo done; else echo "partial: $_n landed, $_s stopped, $_k skipped"; fi
 }
-# lanes_report ENDING — a minimal report.md (T12 writes the full one).
+# final_ok — the final step ran and reached its goal: integration, the final
+# PR is open and green (a red gate or a red step is not); direct, the step
+# returned 0 (the progress PR landed, or there is no PROGRESS.md).
+final_ok() {
+  [ "${FINAL_RAN:-0}" = 1 ] || return 1
+  if [ "$MF_MODE" = direct ]; then [ "${FINAL_RC:-1}" = 0 ]
+  else [ -n "${FINAL_PR:-}" ] && [ "${FINAL_COLOR:-}" = green ]; fi
+}
+# lanes_ending — the run's ending: `done` when every story landed and the
+# final step reached its goal (final_ok); else `stopped by user` when a stop
+# was requested; else `partial: <n> landed, <m> stopped, <k> skipped`, with
+# `; final PR red`, `; no final PR` or `; progress PR not landed` when the
+# final step ran and fell short.
+lanes_ending() {
+  lanes_counts
+  if [ "$LC_ALL" = 1 ] && final_ok; then echo done; return 0; fi
+  if [ -e "$STOP_FILE" ]; then echo "stopped by user"; return 0; fi
+  _le="partial: $LC_N landed, $LC_S stopped, $LC_K skipped"
+  if [ "${FINAL_RAN:-0}" = 1 ] && ! final_ok; then
+    if [ "$MF_MODE" = direct ]; then _le="$_le; progress PR not landed"
+    elif [ -n "${FINAL_PR:-}" ]; then _le="$_le; final PR red"
+    else _le="$_le; no final PR"; fi
+  fi
+  printf '%s\n' "$_le"
+}
+
+# story_why RECORD — the `Not landed:` text of a story record that is not
+# `landed`: a skip names its blocking dependency (`skipped — waits on A`).
+story_why() {
+  case "$1" in
+    'skipped: '*) printf 'skipped — %s\n' "${1#skipped: }" ;;
+    'skipped '*) printf 'skipped — waits on %s\n' "${1#skipped }" ;;
+    stopped:*) printf '%s\n' "$1" ;;
+    'stopped '*) printf 'stopped — %s\n' "${1#stopped }" ;;
+    '') echo "no ending" ;;
+    *) printf 'no ending (%s)\n' "$1" ;;
+  esac
+}
+# story_ledger_lines ID — the `Ruling:` and `P<k> Play:` lines of ID's ledger:
+# from its story worktree, else its branch (local, then origin), else its
+# merge commit's second parent, else the landed commit itself.
+story_ledger_lines() {
+  _sl_b="$(row_field "$1" branch)"; _sl_f=".studio/ledger/$1.md"; _sl_sha=""
+  case "$(story_get "$1")" in "landed "*) _sl_sha="$(story_get "$1")"; _sl_sha="${_sl_sha#landed }" ;; esac
+  _sl_w="$(story_state "$1" worktree 2>/dev/null)"
+  { if [ -n "$_sl_w" ] && [ -f "$_sl_w/$_sl_f" ]; then cat "$_sl_w/$_sl_f"
+    else git -C "$START_DIR" show "refs/heads/$_sl_b:$_sl_f" \
+      || git -C "$START_DIR" show "refs/remotes/origin/$_sl_b:$_sl_f" \
+      || { [ -n "$_sl_sha" ] && { git -C "$START_DIR" show "$_sl_sha^2:$_sl_f" || git -C "$START_DIR" show "$_sl_sha:$_sl_f"; }; }
+    fi; } 2>/dev/null | grep -E '^- [0-9-]+ (([^ ]+ )?Ruling: |P[0-9]+ Play: )'
+}
+# story_units_table ID — ID's rows of every lane's units.tsv (the label is
+# `<id>-<unit label>`) as a markdown table; `(no units)` when none ran.
+story_units_table() {
+  cat "$RUN_DIR"/lanes/*/units.tsv 2>/dev/null | awk -F'\t' -v p="$1-" '
+    index($2, p) == 1 && substr($2, length(p) + 1) ~ /^(T[0-9]+|final-review|finish|repair)(-retry)?$/ {
+      if (!n++) print "| # | Unit | Exit | Cost | Minutes | Timed out | Outcome |\n|---|------|------|------|---------|-----------|---------|"
+      printf "| %s | %s | %s | %s | %s | %s | %s |\n", $1, $2, $3, $4, $5, $6, $7 }
+    END { if (!n) print "(no units)" }'
+}
+# final_why ENDING — why there is no final PR.
+final_why() {
+  if [ "${FINAL_RAN:-0}" = 1 ]; then
+    if [ "$MF_MODE" = direct ] && [ -z "${FINAL_COLOR:-}" ]; then echo "no PROGRESS.md"
+    else printf '%s\n' "${FINAL_NOTE:-the final step opened none}"; fi
+  elif [ "$LC_N" = 0 ]; then echo "no story landed"
+  elif [ "$1" = "stopped by user" ]; then echo "the run was stopped"
+  else printf 'the final step did not run: %s\n' "$1"; fi
+}
+# shell_word TEXT — TEXT as it is when it is a plain path, else single-quoted.
+shell_word() {
+  case "$1" in *[!A-Za-z0-9._/-]*|'') sq "$1" ;; *) printf '%s' "$1" ;; esac
+}
+# lanes_report ENDING — RUN_DIR/report.md, the morning report, on every
+# ending: the head (ending, mode, target, spend, times, story counts, the
+# final PR), direct mode's `## Landed`, a `## <id>` section per story in
+# manifest order (its ending, branch, landed sha or why not, units, rulings
+# and play list), integration mode's open bundle-2 PRs (named, never
+# closed), `## Resume` when not done, and `## Cleanup`: the one command that
+# deletes the run's remote branches. The run itself never deletes one.
 lanes_report() {
+  lanes_counts
+  _r_unk="$(cat "$RUN_DIR"/lanes/*/units.tsv "$RUN_DIR"/final/units.tsv 2>/dev/null \
+    | awk -F'\t' '$4 == "unknown" { n++ } END { print n + 0 }')"
+  _r_sp="$(spent_all)"; [ "$_r_unk" -eq 0 ] || _r_sp="$_r_sp (cost unknown for $_r_unk unit(s))"
+  _r_st=""
+  [ "$(sed -n 's/^run=//p' "$LOCK" 2>/dev/null | head -n 1)" != "$RUN_DIR" ] \
+    || _r_st="$(sed -n 's/^started=//p' "$LOCK" 2>/dev/null | head -n 1)"
+  _r_mf="$(cat "$RUN_DIR/manifest.path" 2>/dev/null)"; [ -n "$_r_mf" ] || _r_mf="docs/runs/$MF_SLUG.md"
+  _r_ids="$(cut -f1 "$MF_ROWS" | awk '!seen[$0]++')"
   {
-    printf '# Overnight run — %s\n\n' "$(basename "$RUN_DIR")"
+    printf '# Overnight run — %s\n\n' "$MF_SLUG"
     printf 'Ending: %s\n' "$1"
     printf 'Mode: %s\nTarget: %s\n' "$MF_MODE" "$MF_TARGET"
-    [ -z "${FINAL_PR:-}" ] || printf 'Final PR: %s (%s)\n' "$FINAL_PR" "${FINAL_COLOR:-red}"
+    printf 'Spent: $%s\n' "$_r_sp"
+    printf 'Started: %s · Ended: %s\n' "${_r_st:-unknown}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf 'Stories: %s landed, %s stopped, %s skipped\n' "$LC_N" "$LC_S" "$LC_K"
+    if [ -n "${FINAL_PR:-}" ]; then printf 'Final PR: %s (%s)\n' "$FINAL_PR" "${FINAL_COLOR:-red}"
+    else printf 'Final PR: none (%s)\n' "$(final_why "$1")"; fi
     [ -z "${FINAL_NOTE:-}" ] || printf 'Final note: %s\n' "$FINAL_NOTE"
-    printf 'Spent: $%s\n\n## Stories\n\n' "$(spent_all)"
-    for _id in $(cut -f1 "$MF_ROWS" | awk '!seen[$0]++'); do
-      printf -- '- %s: %s\n' "$_id" "$(story_get "$_id")"
+    printf 'Run: %s\n' "$RUN_DIR"
+    if [ "$MF_MODE" = direct ]; then
+      printf '\n## Landed\n\n'
+      _r_any=0
+      for _r_id in $_r_ids; do
+        case "$(story_get "$_r_id")" in "landed "*) _r_any=1; printf '%s %s\n' "$_r_id" "$(story_get "$_r_id" | cut -d' ' -f2)" ;; esac
+      done
+      [ "$_r_any" = 1 ] || echo "(none)"
+      if [ -n "${FINAL_PR:-}" ]; then
+        if [ "${FINAL_RC:-1}" = 0 ]; then printf 'Progress PR: %s (landed)\n' "$FINAL_PR"
+        else printf 'Progress PR: %s (left open)\n' "$FINAL_PR"; fi
+      else printf 'Progress PR: none (%s)\n' "$(final_why "$1")"; fi
+    fi
+    for _r_id in $_r_ids; do
+      _r_s="$(story_get "$_r_id")"
+      printf '\n## %s\n\n' "$_r_id"
+      printf 'Ending: %s\n' "${_r_s:-no ending}"
+      printf 'Branch: %s\n' "$(row_field "$_r_id" branch)"
+      case "$_r_s" in
+        "landed "*) printf 'Landed: %s\n' "${_r_s#landed }" ;;
+        *) printf 'Not landed: %s\n' "$(story_why "$_r_s")" ;;
+      esac
+      printf '\n'; story_units_table "$_r_id"
+      _r_l="$(story_ledger_lines "$_r_id")"
+      [ -z "$_r_l" ] || printf '\n%s\n' "$_r_l"
     done
+    if [ "$MF_MODE" != direct ]; then
+      printf '\n## Open bundle-2 PRs\n\n'
+      _r_any=0
+      for _r_id in $_r_ids; do
+        _r_b="$(row_field "$_r_id" branch)"
+        final_pr_open "$_r_b"
+        case $? in
+          0) _r_any=1; printf -- '- %s: %s (%s into %s) — left open; the run never closes it\n' "$_r_id" "$FP_URL" "$_r_b" "$DEFAULT_BRANCH" ;;
+          2) _r_any=1; printf -- '- %s: gh pr list failed for %s\n' "$_r_id" "$_r_b" ;;
+        esac
+      done
+      [ "$_r_any" = 1 ] || echo "(none)"
+    fi
+    if [ "$1" != done ]; then
+      printf '\n## Resume\n\ncd %s && %s start %s\n' "$(sq "$START_DIR")" "$(sq "$SELF_ABS")" "$(shell_word "$_r_mf")"
+    fi
+    _r_del="run/$MF_SLUG"
+    if [ "$MF_MODE" = direct ]; then
+      ! git -C "$START_DIR" rev-parse -q --verify "refs/remotes/origin/progress/$MF_SLUG" >/dev/null \
+        || _r_del="$_r_del progress/$MF_SLUG"
+    else
+      _r_del="$_r_del $MF_TARGET"
+    fi
+    for _r_id in $_r_ids; do
+      case "$(story_get "$_r_id")" in "landed "*) _r_del="$_r_del $(row_field "$_r_id" branch)" ;; esac
+    done
+    printf '\n## Cleanup\n\nRun this after the final PR is landed; the run itself never deletes a remote branch.\n\n'
+    printf 'cd %s && git push origin --delete %s\n' "$(sq "$START_DIR")" "$_r_del"
   } > "$RUN_DIR/report.md"
 }
-# lanes_finish ENDING — report, unlock, exit (0 only for done).
+# lanes_finish ENDING — report; RECORD/done on `done` (removed on any other
+# ending); unlock; exit 0 only for done.
 lanes_finish() {
   lanes_report "$1"
+  if [ "$1" = done ]; then : > "$RECORD/done"; else rm -f "$RECORD/done"; fi
   unlock
   REPORTED=1
   [ "$1" = done ] && exit 0
   exit 1
+}
+
+# lanes_load_run DIR — the variables of manifest run DIR, from its own copies
+# (manifest.md, rows.tsv, chains), for `status` and the stale-run reap.
+lanes_load_run() {
+  RUN_DIR="$1"; MF="$RUN_DIR/manifest.md"; MF_ROWS="$RUN_DIR/rows.tsv"; CHAINS="$RUN_DIR/chains"
+  MF_SLUG="$(mf_slug)"; MF_MODE="$(mf_header Mode)"; MF_TARGET="$(mf_header Target)"
+  MF_DOCS="$(mf_header Docs)"; MF_GOAL="$(mf_header Goal)"
+  RECORD="$STATE_ROOT/.studio/runs/$MF_SLUG"
+  if [ -z "${DEFAULT_BRANCH:-}" ]; then
+    DEFAULT_BRANCH="$(git -C "$START_DIR" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null)"
+    DEFAULT_BRANCH="${DEFAULT_BRANCH#origin/}"
+  fi
+  FINAL_PR=""; FINAL_COLOR=""; FINAL_NOTE=""; FINAL_RAN=0; FINAL_RC=1
+}
+# lanes_live_lanes — the pids of RUN_DIR's lanes that still run (a lane is a
+# subshell of studio-overnight: its args name it).
+lanes_live_lanes() {
+  for _ll in "$RUN_DIR"/lanes/*/pid; do
+    [ -f "$_ll" ] || continue
+    _ll_p="$(cat "$_ll" 2>/dev/null)"
+    [ -n "$_ll_p" ] && pid_live "$_ll_p" && ps -o args= -p "$_ll_p" 2>/dev/null | grep -q studio-overnight \
+      && printf '%s ' "$_ll_p"
+  done
+}
+# lanes_reap — RUN_DIR (loaded) is a run whose runner died without its
+# report (a SIGKILL; AC16): once none of its lanes runs, every story with no
+# ending gets one (lanes_sweep: a claimed chain's `stopped: runner gone`, an
+# unclaimed chain's `skipped: run stopped`, D2), then report.md. Returns 1,
+# writing nothing, while a lane still runs (LR_LIVE names them).
+lanes_reap() {
+  LR_LIVE="$(lanes_live_lanes)"
+  [ -z "$LR_LIVE" ] || return 1
+  SWEEP_WHY="stopped: runner gone"
+  lanes_sweep
+  SWEEP_WHY=""
+  lanes_report "stop: runner gone"
+}
+# lanes_reap_stale — before a start takes the lock: a stale lock (its
+# holder dead) naming a manifest run with no report.md gets lanes_reap, in a
+# subshell (it loads that run's own variables). Returns 1 after a refusal
+# while that run's lanes still run.
+lanes_reap_stale() {
+  [ -f "$LOCK" ] && ! lock_live || return 0
+  _rs_d="$(sed -n 's/^run=//p' "$LOCK" 2>/dev/null | head -n 1)"
+  [ -n "$_rs_d" ] && [ -f "$_rs_d/manifest.md" ] && [ ! -f "$_rs_d/report.md" ] || return 0
+  ( lanes_load_run "$_rs_d"
+    lanes_reap || { say "the last run's lanes still run (pids $LR_LIVE) — start again once they end"; exit 1; } )
+}
+# lanes_status_lines — one line per story in manifest order: `<id>  lane
+# <k|->  <state>  unit <label|->  task <k/N|->`. The lane is its chain's
+# claim; the state, the first word of stories/<id>; the unit, lanes/<k>/current
+# as written when it names this story and the story has no ending; the task,
+# the story's studio state. Then the gate lock's holder and the run's spend.
+lanes_status_lines() {
+  for _st_id in $(cut -f1 "$MF_ROWS" | awk '!seen[$0]++'); do
+    _st_k="$(cat "$RUN_DIR/claims/$(chain_of "$_st_id")/lane" 2>/dev/null)"; [ -n "$_st_k" ] || _st_k=-
+    _st_r="$(story_get "$_st_id")"; _st_s="${_st_r%% *}"; _st_s="${_st_s%:}"; [ -n "$_st_s" ] || _st_s=-
+    _st_u=-
+    if [ "$_st_k" != - ] && ! is_ending "$_st_r"; then
+      _st_c="$(cat "$RUN_DIR/lanes/$_st_k/current" 2>/dev/null)"
+      case "$_st_c" in "$_st_id "*) _st_u="$_st_c" ;; esac
+    fi
+    _st_t="$(story_state "$_st_id" get task 2>/dev/null)"; [ -n "$_st_t" ] || _st_t=-
+    printf '%s  lane %s  %s  unit %s  task %s\n' "$_st_id" "$_st_k" "$_st_s" "$_st_u" "$_st_t"
+  done
+  _st_g="$STATE_ROOT/.studio/gate.lock"; _st_gp="$(cat "$_st_g/pid" 2>/dev/null)"
+  if [ -n "$_st_gp" ] && pid_live "$_st_gp"; then
+    printf 'gate: %s (pid %s)\n' "$(cat "$_st_g/who" 2>/dev/null)" "$_st_gp"
+  else echo "gate: free"; fi
+  printf 'spent: $%s\n' "$(spent_all)"
+}
+# lanes_status DIR [live] — the `status` verb for manifest run DIR. Live:
+# the lines, `pid: <runner pid>` and the run dir; exit 0. Not live: a stale
+# run with no report is reaped first (lanes_reap); `no run — the last run:
+# DIR`, the lines, then the report's path (or the lanes still finishing).
+lanes_status() {
+  lanes_load_run "$1"
+  if [ "${2:-}" = live ]; then
+    lanes_status_lines
+    printf 'pid: %s\nrun: %s\n' "$(lock_pid)" "$RUN_DIR"
+    return 0
+  fi
+  LR_LIVE=""
+  [ -f "$RUN_DIR/report.md" ] || lanes_reap
+  printf 'no run — the last run: %s\n' "$RUN_DIR"
+  lanes_status_lines
+  if [ -n "$LR_LIVE" ]; then printf 'pid: none (the runner is gone; lanes still finishing: %s)\n' "$LR_LIVE"
+  else printf 'report: %s\n' "$RUN_DIR/report.md"; fi
+  return 1
 }
 # lanes_on_exit RC — the one EXIT trap of manifest mode: removes the
 # preflight's scratch dir; once lanes run, an exit that never reached
@@ -802,6 +1044,7 @@ lanes_on_exit() {
   lanes_wait_all
   lanes_sweep
   lanes_report "$_oe_why"
+  rm -f "$RECORD/done"
   unlock
   exit 1
 }
@@ -1109,10 +1352,12 @@ final_step() {
 
 # lanes_run — the run path, once the manifest preflight passed.
 lanes_run() {
+  lanes_reap_stale || exit 2
   acquire_run_lock
   mkdir -p "$RUN_DIR/claims" "$RUN_DIR/stories" "$RUN_DIR/lanes" \
     && cp "$MF" "$RUN_DIR/manifest.md" && cp "$MF_ROWS" "$RUN_DIR/rows.tsv" && cp "$CHAINS" "$RUN_DIR/chains" \
     || { rm -f "$LOCK"; say "cannot populate $RUN_DIR"; exit 2; }
+  printf '%s\n' "${MF#"$START_DIR"/}" > "$RUN_DIR/manifest.path"   # the report's resume command
   MF_ROWS="$RUN_DIR/rows.tsv"; CHAINS="$RUN_DIR/chains"
   rm -rf "$MF_TMP"; MF_TMP=""
   RECORD="$STATE_ROOT/.studio/runs/$MF_SLUG"
@@ -1140,7 +1385,8 @@ lanes_run() {
   lanes_wait_all
   lanes_sweep
   # The final step: only when no stop was requested and a story landed (AC9).
-  if [ ! -e "$STOP_FILE" ] && any_landed; then final_step; fi
+  FINAL_RAN=0; FINAL_RC=1
+  if [ ! -e "$STOP_FILE" ] && any_landed; then FINAL_RAN=1; final_step; FINAL_RC=$?; fi
   lanes_finish "$(lanes_ending)"
 }
 

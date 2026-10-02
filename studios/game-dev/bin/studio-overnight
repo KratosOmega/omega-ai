@@ -141,6 +141,10 @@ usage: $SELF_ABS start [--dry-run] [<manifest>] | status | stop | next [<manifes
                      plan, planned) and print the one next command; no argument
                      reads .studio/run. Reads files and ledger lines only.
   status             the live run: dir, unit, task k/N, spend, pid (exit 1: no run)
+                     A manifest run: one line per story (lane, state, unit,
+                     task k/N), the gate holder, spend, pid; with no live run,
+                     the last manifest run (a SIGKILLed one is swept and its
+                     report written first), exit 1.
   stop               end the run after the running unit (exit 1: no run)
 
 Exit: start 0 done, 1 any other ending, 2 refused.
@@ -168,7 +172,8 @@ Deny rules: $DENY_FILE
   one --disallowedTools rule per line.
 
 The morning report is written to .studio/reports/overnight-<ts>/report.md on
-every ending.
+every ending (manifest mode: overnight-<slug>-<ts>/report.md, a section per
+story, the resume command and the cleanup command).
 
 Test hooks (tests only; never set them for a real run):
   STUDIO_OVERNIGHT_SESSION_SECONDS — test hook: overrides session_minutes in
@@ -574,6 +579,25 @@ run_setup() {
 case "$1" in
   start)  shift; cmd_start "$@" ;;
   status)
+    # Manifest mode (T12): the run is the lock's run dir; with no live run,
+    # a stale lock's run dir, else the newest run dir. A manifest run (its
+    # dir holds manifest.md) prints per story (lanes_status, which also
+    # reaps a SIGKILLed run); any other run keeps bundle 2's lines.
+    _sd="$(sed -n 's/^run=//p' "$LOCK" 2>/dev/null | head -n 1)"
+    if lock_live && [ -f "$_sd/manifest.md" ]; then
+      . "$SELF_DIR/overnight-lanes.sh"
+      lanes_status "$_sd" live
+      exit $?
+    fi
+    if ! lock_live; then
+      { [ -n "$_sd" ] && [ -d "$_sd" ]; } || _sd="$(ls -dt "$REPORTS"/overnight-*/ 2>/dev/null | head -n 1)"
+      _sd="${_sd%/}"
+      if [ -n "$_sd" ] && [ -f "$_sd/manifest.md" ]; then
+        . "$SELF_DIR/overnight-lanes.sh"
+        lanes_status "$_sd"
+        exit $?
+      fi
+    fi
     if lock_live; then
       RUN_DIR="$(sed -n 's/^run=//p' "$LOCK" | head -n 1)"
       printf 'run: %s\nunit: %s\ntask: %s\nspent: $%s\npid: %s\n' "$RUN_DIR" \

@@ -81,6 +81,9 @@ export GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
 #                   cwd (a gate that tests for it turns green)
 #   dirtyfix        terminal (final unit): writes the file `fixed` in the cwd
 #                   and commits nothing (uncommitted work)
+#   breakrow        terminal (final unit): makes the run's final/units.tsv
+#                   a directory, so the runner's own row write fails (a
+#                   runner error, exit 3)
 #   ruling <text>   modifier: ledgers <text> in the story worktree and
 #                   commits it, before auto runs
 cat > "$FAKE/claude" <<'STUB'
@@ -210,6 +213,7 @@ for act in "$@"; do
     mergemain)        terminal=1; git merge -q --no-edit -X theirs origin/main >&2 ;;
     fixgate)          terminal=1; : > fixed; git add fixed && git commit -qm "fix: the gate" ;;
     dirtyfix)         terminal=1; : > fixed ;;
+    breakrow)         terminal=1; mkdir -p "$(dirname "$STUDIO_RUN")/final/units.tsv" ;;
     "ruling "*)       w="$(story_wt)"
                       ( cd "$w" && st ledger "${act#ruling }" && commit_ledger ruling ) ;;
     *)                echo "stub: unknown action '$act'" >&2 ;;
@@ -872,7 +876,9 @@ test_lanes_sigint() {
   assert_file "$CALLS/2.t1" "unit 2 ran to its end"
   for id in A B; do assert_contains "$R/stories/$id" "^stopped stopped by user$" "$id ends stopped by user"; done
   assert_contains "$R/stories/D" "^skipped: run stopped$" "a chain no lane claimed ends skipped: run stopped"
-  assert_contains "$R/report.md" "^Ending: partial: 0 landed, 2 stopped, 1 skipped$" "the report is written"
+  assert_contains "$R/report.md" "^Ending: stopped by user$" "a user stop is the run's ending (T12)"
+  assert_contains "$R/report.md" "^Stories: 0 landed, 2 stopped, 1 skipped$" "the report still counts the stories"
+  assert_contains "$R/report.md" "^Not landed: skipped — run stopped$" "the unclaimed story says why it did not land"
   assert_missing "$P/.studio/overnight.lock" "the run releases its lock"
 }
 test_lanes_runner_gone() {
@@ -905,6 +911,7 @@ test_lanes_stop_file() {
   assert_contains "$R/stories/B" "^skipped A$" "the rest of A's chain is skipped"
   assert_contains "$R/stories/C" "^skipped: run stopped$" "a waiting chain ends skipped: run stopped"
   assert_file "$R/report.md" "the report is written"
+  assert_contains "$R/report.md" "^Ending: stopped by user$" "a stop request ends the run stopped by user"
 }
 # ---- T10: landing ----
 
@@ -1330,6 +1337,11 @@ test_lanes_direct_progress_landing() {
   assert_eq "$P/.claude/worktrees/progress-demo" "$(cat "$CALLS/$_n.pwd" 2>/dev/null)" "the progress unit runs in its own worktree"
   assert_eq "" "$(cat "$CALLS/$_n.story" 2>/dev/null)" "with no STUDIO_STORY"
   assert_contains "$(last_lanes_dir)/report.md" "^Final PR: https://gh.test/pr/2 (green)$" "the report names the progress PR"
+  assert_contains "$(last_lanes_dir)/report.md" "^## Landed$" "direct: a Landed section"
+  assert_contains "$(last_lanes_dir)/report.md" "^A [0-9a-f]\{40\}$" "each landed story's merge commit"
+  assert_contains "$(last_lanes_dir)/report.md" "^Progress PR: https://gh.test/pr/2 (landed)$" "and the progress PR's state"
+  assert_contains "$(last_lanes_dir)/report.md" "git push origin --delete run/demo progress/demo A-b$" "direct cleanup names progress/<slug> (D12)"
+  assert_not_contains "$(last_lanes_dir)/report.md" "^## Resume$" "no resume when done"
   # A refused progress landing: the PR stays open, no repair, the report names it.
   LANES_CONFIG='{"merge_command": "scripts/merge.sh <pr>"}'; LANES_PROGRESS=1; export LANES_CONFIG LANES_PROGRESS
   lanes_fixture dprogr direct A:-
@@ -1392,6 +1404,140 @@ test_lanes_final_conflict_then_red() {
   assert_eq 1 "$(final_gates)" "one gate"
   assert_contains "$P/.studio/runs/demo/final" " red$" "the step ends red"
 }
+# ---- T12: status, report.md, run endings ----
+
+test_lanes_status_per_story() {
+  lanes_fixture stat integration A:- B:A C:-
+  printf 'sleep 4\n' > "$SCEN/A"
+  ( cd "$P" && exec sh "$RUNNER" start "$MFP" ) > /dev/null 2>&1 & RPID=$!
+  wait_for "[ -n \"\$(story_calls A)\" ]" 20; sleep 1
+  ( cd "$P" && sh "$RUNNER" status ) > "$TMP/st.out"; st=$?
+  wait_pid_or_fail "$RPID" 60 "the run ends"
+  assert_eq 0 "$st" "status exits 0 during a run"
+  assert_eq "A B C" "$(awk 'NR<=3{printf "%s%s", s, $1; s=" "}' "$TMP/st.out")" "stories in manifest order"
+  assert_contains "$TMP/st.out" "^A  lane [12]  running  unit A T1  task 0/1$" "A is running T1"
+  assert_contains "$TMP/st.out" "^B  lane [12]  queued  unit -  task 0/1$" "B waits in A's chain, on A's lane"
+  assert_contains "$TMP/st.out" "^C  lane [12]  " "C has its own lane"
+  assert_contains "$TMP/st.out" "^gate: " "the gate line"
+  assert_contains "$TMP/st.out" "^spent: \\$" "the spend line"
+  assert_contains "$TMP/st.out" "^pid: $RPID$" "the runner pid"
+}
+test_lanes_report_every_ending() {
+  lanes_fixture rep integration A:- B:A C:-
+  printf 'stop broke\n' > "$SCEN/A"
+  printf 'auto\nruling P1 Play: jump twice · a double jump · a single jump\n' > "$SCEN/C"
+  run_lanes start "$MFP"
+  R="$(last_lanes_dir)/report.md"
+  assert_eq 1 "$LS_STATUS" "a partial run exits 1"
+  assert_contains "$R" "^# Overnight run — demo$" "the head names the slug"
+  assert_contains "$R" "^Ending: partial: 1 landed, 1 stopped, 1 skipped$" "the partial ending counts each kind"
+  assert_contains "$R" "^Mode: integration$" "mode"
+  assert_contains "$R" "^Target: integration/demo$" "target"
+  assert_contains "$R" '^Spent: [$][0-9.]*$' "spend"
+  assert_contains "$R" "^Started: .* · Ended: " "start and end times"
+  assert_contains "$R" "^Final PR: https://gh.test/pr/1 (green)$" "the final PR"
+  assert_eq "A B C" "$(sed -n 's/^## \([ABC]\)$/\1/p' "$R" | tr '\n' ' ' | sed 's/ $//')" "a section per story, in manifest order"
+  assert_contains "$R" "^Not landed: stopped — stop: broke$" "a stopped story says why"
+  assert_contains "$R" "Not landed: skipped — waits on A" "a skipped story names its blocker"
+  assert_contains "$R" "^Branch: C-b$" "the story's branch"
+  assert_contains "$R" "^Landed: [0-9a-f]\{40\}$" "a landed story's merge commit"
+  assert_contains "$R" "^| 1 | C-T1 | 0 | 1 | " "the story's units table"
+  assert_contains "$R" "^- [0-9-]* P1 Play: jump twice" "the story's play-list lines"
+  assert_contains "$R" "^## Open bundle-2 PRs$" "open bundle-2 PRs section"
+  assert_contains "$R" "^## Resume$" "resume when not done"
+  assert_contains "$R" "^cd '$P' && '$RUNNER' start docs/runs/demo.md$" "the resume command names the manifest"
+  assert_contains "$R" "^## Cleanup$" "cleanup section"
+  assert_contains "$R" "^Run this after the final PR is landed; the run itself never deletes a remote branch\.$" "cleanup's warning line"
+  assert_contains "$R" "git push origin --delete run/demo integration/demo C-b$" "cleanup names run, integration and landed story branches"
+  assert_status 0 "the run deletes no remote branch (C-b is still on origin)" -- git -C "$P" ls-remote --exit-code origin refs/heads/C-b
+  # The runner itself fails (exit 3) in the final step: still a full report.
+  LANES_PROGRESS=1; export LANES_PROGRESS
+  lanes_fixture reperr integration A:-
+  printf 'breakrow\n' > "$SCEN/progress"
+  run_lanes start "$MFP"
+  R="$(last_lanes_dir)/report.md"
+  assert_eq 1 "$LS_STATUS" "a runner error exits 1"
+  assert_contains "$R" "^Ending: stop: runner error (exit 3)$" "the runner-error ending"
+  assert_contains "$R" "^## A$" "every story is named"
+  assert_contains "$R" "^Landed: [0-9a-f]\{40\}$" "with its outcome"
+  assert_contains "$R" "^## Resume$" "and the resume command"
+  assert_missing "$P/.studio/runs/demo/done" "no done marker"
+  assert_missing "$P/.studio/overnight.lock" "the run releases its lock"
+}
+test_lanes_report_on_lane_crash() {
+  lanes_fixture repcrash integration A:-
+  printf 'hang\n' > "$SCEN/A"
+  KILL_GRACE_SECONDS=2; export KILL_GRACE_SECONDS
+  ( cd "$P" && exec sh "$RUNNER" start "$MFP" ) > /dev/null 2>&1 & RPID=$!
+  unset KILL_GRACE_SECONDS
+  wait_for "[ -f '$CALLS/1.t0' ]" 20
+  kill -9 "$(cat "$P"/.studio/reports/overnight-demo-*/claims/1/pid)"; pkill -9 -f "$TMP/fakebin/claude" 2>/dev/null
+  wait_pid_or_fail "$RPID" 60 "the runner ends"
+  R="$(last_lanes_dir)/report.md"
+  assert_contains "$R" "^## A$" "the crashed story is named"
+  assert_contains "$R" "Not landed: stopped: lane crashed (" "the report names a lane crash"
+  assert_contains "$R" "^Final PR: none (no story landed)$" "no final PR, and why"
+  pkill -9 -f "$TMP/fakebin/claude" 2>/dev/null
+}
+test_lanes_done_marker() {
+  lanes_fixture donem integration A:-
+  run_lanes start "$MFP"
+  assert_eq 0 "$LS_STATUS" "done exits 0"
+  assert_file "$P/.studio/runs/demo/done" "done writes runs/<slug>/done"
+  assert_contains "$(last_lanes_dir)/report.md" "^Ending: done$" "the done ending"
+  assert_not_contains "$(last_lanes_dir)/report.md" "^## Resume$" "no resume when done"
+  # Every story landed but the final gate is red: not done (ruling 4).
+  lanes_fixture donered integration A:-
+  printf 'noop\n' > "$SCEN/final-repair"
+  use_gate "exit 1"
+  run_lanes start "$MFP"
+  use_gate true
+  assert_eq 1 "$LS_STATUS" "a red final step exits 1"
+  assert_contains "$(last_lanes_dir)/report.md" "^Ending: partial: 1 landed, 0 stopped, 0 skipped; final PR red$" "a red final PR is not done"
+  assert_contains "$(last_lanes_dir)/report.md" "^Final PR: https://gh.test/pr/1 (red)$" "the final PR is named red"
+  assert_missing "$P/.studio/runs/demo/done" "no done marker"
+}
+# AC16: a SIGKILLed runner. Its lane ends its story after the running unit;
+# `status` then sweeps every story with no ending and writes report.md.
+test_lanes_status_reaps_dead_runner() {
+  LANES_CONFIG='{"overnight": {"max_lanes": 1}}'; export LANES_CONFIG
+  lanes_fixture reap integration A:- B:A C:-
+  printf 'sleep 3\n' > "$SCEN/A"
+  ( cd "$P" && exec sh "$RUNNER" start "$MFP" ) > /dev/null 2>&1 & RPID=$!
+  wait_for "[ -f '$CALLS/1.t0' ]" 20
+  R="$(last_lanes_dir)"; lane1="$(cat "$R"/claims/1/pid 2>/dev/null)"
+  kill -9 "$RPID"; wait "$RPID" 2>/dev/null
+  wait_for "! kill -0 ${lane1:-0} 2>/dev/null" 30
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if kill -0 "${lane1:-0}" 2>/dev/null; then
+    pkill -9 -P "$lane1"; kill -9 "$lane1"; _fail "the lane exits once the runner is gone"
+  else _pass "the lane exits once the runner is gone"; fi
+  assert_missing "$R/report.md" "a SIGKILLed runner writes no report itself"
+  ( cd "$P" && sh "$RUNNER" status ) > "$TMP/st.out"; st=$?
+  assert_eq 1 "$st" "no live run: status exits 1"
+  assert_contains "$TMP/st.out" "^no run — the last run: $R$" "status names the ended run"
+  assert_contains "$TMP/st.out" "^A  lane 1  stopped  " "A ended"
+  assert_contains "$TMP/st.out" "^B  lane 1  skipped  " "B ended"
+  assert_contains "$TMP/st.out" "^C  lane -  skipped  " "the unclaimed story ended"
+  assert_contains "$R/stories/C" "^skipped: run stopped$" "the sweep ends the unclaimed chain (D2)"
+  assert_contains "$R/report.md" "^Ending: stop: runner gone$" "status writes the report"
+  for id in A B C; do assert_contains "$R/report.md" "^## $id$" "the report names $id"; done
+  assert_contains "$R/report.md" "^Not landed: stopped — stop: runner gone$" "A's outcome"
+  assert_contains "$R/report.md" "^Not landed: skipped — run stopped$" "C's outcome"
+  # A resume after a SIGKILLed runner: the stale run gets its report too.
+  lanes_fixture reap2 integration A:-
+  printf 'sleep 3\n' > "$SCEN/A"
+  ( cd "$P" && exec sh "$RUNNER" start "$MFP" ) > /dev/null 2>&1 & RPID=$!
+  wait_for "[ -f '$CALLS/1.t0' ]" 20
+  R="$(last_lanes_dir)"; lane1="$(cat "$R"/claims/1/pid 2>/dev/null)"
+  kill -9 "$RPID"; wait "$RPID" 2>/dev/null
+  wait_for "! kill -0 ${lane1:-0} 2>/dev/null" 30
+  kill -9 "${lane1:-0}" 2>/dev/null
+  sleep 1
+  run_lanes start "$MFP"
+  assert_contains "$R/report.md" "^Ending: stop: runner gone$" "start writes the stale run's report before it resumes"
+  assert_eq 0 "$LS_STATUS" "the resumed run lands A"
+}
 # Last: no process any test started is still alive.
 test_lanes_no_orphans() {
   _left="$(pgrep -f "$TMP" 2>/dev/null; pgrep -f "$RUNNER" 2>/dev/null)"
@@ -1414,4 +1560,6 @@ run_tests test_lanes_chain_rule test_lanes_manifest_refusals test_lanes_manifest
   test_lanes_final_repair_turns_green test_lanes_final_conflict test_lanes_final_resume_edits_pr \
   test_lanes_final_skipped_on_stop_or_nothing_landed test_lanes_final_gate_default test_lanes_direct_progress_landing \
   test_lanes_final_dirty_unit_is_red test_lanes_final_budget test_lanes_final_conflict_then_red \
+  test_lanes_status_per_story test_lanes_report_every_ending test_lanes_report_on_lane_crash \
+  test_lanes_done_marker test_lanes_status_reaps_dead_runner \
   test_lanes_no_orphans
