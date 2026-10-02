@@ -281,14 +281,14 @@ lane_halt() {
 }
 lane_stopflag() { : > "$STOP_FILE"; }
 # lane_exit RC — the lane's EXIT trap: end a live session, and a story this
-# lane holds that has no ending is `stopped lane crashed (<rc>)` (D2).
+# lane holds that has no ending is `stopped: lane crashed (<rc>)` (D2).
 lane_exit() {
   trap '' INT TERM HUP
   end_session
   if [ -n "${CUR_ID:-}" ]; then
     case "$(story_get "$CUR_ID")" in
       landed*|stopped*|skipped*) ;;
-      *) story_write "$CUR_ID" "stopped lane crashed ($1)" ;;
+      *) story_write "$CUR_ID" "stopped: lane crashed ($1)" ;;
     esac
   fi
   exit "$1"
