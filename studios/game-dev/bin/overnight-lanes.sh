@@ -311,15 +311,16 @@ pr_view() {
   [ -n "$PR_STATE" ]
 }
 
-# land_confirm ID — step 0, "already landed?", with LAND_SHA set. Direct:
-# the PR of ID's branch is MERGED; LAND_SHA is its merge commit. Integration
+# land_confirm ID [BRANCH] — step 0, "already landed?", with LAND_SHA set.
+# BRANCH defaults to ID's manifest row. Direct:
+# the PR of BRANCH is MERGED; LAND_SHA is its merge commit. Integration
 # (after the caller's fetch): origin/<Branch> exists, is an ancestor of
 # origin/<Target>, and its own ledger has a `shipped` line (so a branch with
 # no commits of its own never counts); LAND_SHA is the oldest merge on
 # `--ancestry-path origin/<Branch>..origin/<Target>`, else the branch head
 # (D4: a fast-forward). Reads only; returns 1 when not confirmed.
 land_confirm() {
-  _lc_b="$(row_field "$1" branch)"
+  _lc_b="${2:-$(row_field "$1" branch)}"
   if [ "$MF_MODE" = direct ]; then
     pr_view "$_lc_b" && [ "$PR_STATE" = MERGED ] && [ -n "$PR_OID" ] || return 1
     LAND_SHA="$PR_OID"; return 0
@@ -350,7 +351,7 @@ land_once() {
   _lo_rej=0
   while :; do
     git_retry -C "$START_DIR" fetch -q origin || { LAND_WHY="cannot fetch origin"; return 4; }
-    land_confirm "$1" && return 0
+    land_confirm "$1" "$_lo_b" && return 0
     git -C "$START_DIR" rev-parse -q --verify "$_lo_rb^{commit}" >/dev/null || { LAND_WHY="no origin/$_lo_b"; return 4; }
     _lo_tree="$(git -C "$START_DIR" merge-tree --write-tree "$_lo_rt" "$_lo_rb" 2>/dev/null)"; _lo_st=$?
     case "$_lo_st" in
@@ -375,9 +376,12 @@ land_once() {
 # number, its program from START_DIR (never the story's copy), run through
 # `studio-gate merge` from the story worktree (else START_DIR), stdin
 # /dev/null, output to LDIR/<id>-land.log (RUN_DIR outside a lane); step 3,
-# whatever its exit code, the PR is MERGED and its merge commit is in
-# origin/<default> after a fetch, else red:<log>. MERGE_COMMAND is split on
-# blanks (no quoting inside it).
+# whatever its exit code, fetch (a failed fetch returns 4), then the PR is
+# MERGED and its merge commit is in origin/<default>: landed. A PR that is
+# MERGED never returns 3 (a repair on a landed story): its commit missing
+# after a second fetch and view returns 4, as does a failed gh read; a PR
+# not MERGED is red:<log>. MERGE_COMMAND is split on blanks (no quoting
+# inside it).
 land_once_direct() {
   pr_view "$2" || { LAND_WHY="no PR for $2"; return 4; }
   if [ "$PR_STATE" = MERGED ]; then
@@ -402,12 +406,18 @@ land_once_direct() {
   ( cd "$(feature_dir)" || exit 2
     set -f; set -- $_ld_a; set +f
     exec sh "$SELF_DIR/studio-gate" merge -- "$START_DIR/$_ld_w" "$@" ) > "$_ld_log" 2>&1 < /dev/null
-  git_retry -C "$START_DIR" fetch -q origin
-  if pr_view "$_ld_n" && [ "$PR_STATE" = MERGED ] && [ -n "$PR_OID" ] \
-     && git -C "$START_DIR" merge-base --is-ancestor "$PR_OID" "$_ld_rd" 2>/dev/null; then
-    LAND_SHA="$PR_OID"; return 0
-  fi
-  LAND_REPAIR="red:$_ld_log"; return 3
+  _ld_try=0
+  while :; do
+    git_retry -C "$START_DIR" fetch -q origin || { LAND_WHY="cannot fetch origin"; return 4; }
+    pr_view "$_ld_n" || { LAND_WHY="cannot read PR #$_ld_n after the merge command"; return 4; }
+    if [ "$PR_STATE" = MERGED ] && [ -n "$PR_OID" ] \
+       && git -C "$START_DIR" merge-base --is-ancestor "$PR_OID" "$_ld_rd" 2>/dev/null; then
+      LAND_SHA="$PR_OID"; return 0
+    fi
+    [ "$PR_STATE" = MERGED ] || { LAND_REPAIR="red:$_ld_log"; return 3; }
+    _ld_try=$((_ld_try + 1))
+    [ "$_ld_try" -lt 2 ] || { LAND_WHY="PR #$_ld_n is MERGED but its merge commit is not in origin/$DEFAULT_BRANCH"; return 4; }
+  done
 }
 
 # land_repair ID — the one repair unit of a landing: stories/ID = repair,

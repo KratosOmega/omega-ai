@@ -217,6 +217,8 @@ printf '#!/bin/sh\nexec claude "$@"\n' > "$FAKE/claude-gd"
 #   prints https://gh.test/pr/<n>.
 # - pr view <n|head> --json …: {"state":…,"isDraft":…,"number":n,
 #   "mergeCommit":{"oid":…}} (mergeCommit null before a merge); no PR -> exit 1.
+#   A $GH/pr-<n>.pending file is appended to the PR file after the view (a
+#   GitHub read that lags the merge by one view).
 # - pr ready <n>: draft=0. pr edit <n> [--title T] [--body-file F]: records
 #   the title, and F's content in $GH/pr-<n>.body.
 # - pr list --head H --base B --state open --json number,url: [] or one object.
@@ -258,7 +260,8 @@ case "$1 ${2:-}" in
     _o="$(get oid "$_f")"; if [ -n "$_o" ]; then _mc="{\"oid\":\"$_o\"}"; else _mc=null; fi
     if [ "$(get draft "$_f")" = 1 ]; then _dr=true; else _dr=false; fi
     printf '{"state":"%s","isDraft":%s,"number":%s,"mergeCommit":%s}\n' \
-      "$(get state "$_f")" "$_dr" "${_f##*/pr-}" "$_mc" ;;
+      "$(get state "$_f")" "$_dr" "${_f##*/pr-}" "$_mc"
+    if [ -f "$_f.pending" ]; then cat "$_f.pending" >> "$_f"; rm -f "$_f.pending"; fi ;;
   "pr ready")
     _f="$(pr_file "${3:-}")" || exit 1
     echo draft=0 >> "$_f" ;;
@@ -293,7 +296,11 @@ STUB
 # ok; a counter file $CALLS/merge-count). ok: a temp clone of origin merges
 # origin/<head> into <base> with --no-ff, pushes, and writes state=MERGED and
 # oid=<merge sha> to the PR file; MERGE_DELETES_BRANCH=1 also deletes
-# origin/<head>. refuse: exit 1, no merge.
+# origin/<head>. refuse: exit 1, no merge. ghonly: as ok, but the merge is
+# never pushed (GitHub says MERGED; the commit is nowhere on origin). lagoid:
+# as ok, but the first view after it shows MERGED with no merge commit (the
+# oid arrives via pr-<n>.pending). nofetch: as ok, then origin's bare repo is
+# moved away, so the runner's next fetch fails.
 cat > "$FAKE/merge-stub" <<'STUB'
 #!/bin/sh
 echo "s merge $(date +%s)" >> "$CALLS/gate.iv"
@@ -309,6 +316,19 @@ case "$out" in
       && printf 'state=MERGED\noid=%s\n' "$(git rev-parse HEAD)" >> "$f" \
       && { [ "${MERGE_DELETES_BRANCH:-0}" != 1 ] || git push -q origin --delete "$head"; } ) || rc=1
     rm -rf "$d" ;;
+  ghonly|lagoid|nofetch)
+    head="$(sed -n 's/^head=//p' "$f" | tail -n 1)"; base="$(sed -n 's/^base=//p' "$f" | tail -n 1)"
+    url="$(git remote get-url origin)"; d="$(mktemp -d)"
+    ( cd "$d" && git clone -q "$url" c && cd c && git checkout -q "$base" \
+      && git merge -q --no-ff --no-edit "origin/$head" \
+      && { [ "$out" = ghonly ] || git push -q origin "$base"; } \
+      && if [ "$out" = lagoid ]; then
+           printf 'state=MERGED\noid=\n' >> "$f" && printf 'oid=%s\n' "$(git rev-parse HEAD)" > "$f.pending"
+         else
+           printf 'state=MERGED\noid=%s\n' "$(git rev-parse HEAD)" >> "$f"
+         fi ) || rc=1
+    rm -rf "$d"
+    [ "$out" != nofetch ] || mv "$url" "$url.gone" ;;
   refuse) echo "merge refused: the gate is red"; rc=1 ;;
 esac
 echo "e merge $(date +%s)" >> "$CALLS/gate.iv"
@@ -961,6 +981,58 @@ test_lanes_direct_refused_then_repaired() {
   assert_eq 2 "$(grep -c '^s merge' "$CALLS/gate.iv" 2>/dev/null)" "the merge command ran twice"
   assert_eq 1 "$(grep -c '^pr ready ' "$GH/calls")" "a PR already ready is not made ready again"
 }
+# A merge command whose PR GitHub reports MERGED never starts a repair: a
+# merge commit missing from origin, or a failed fetch, stops the landing
+# (return 4); a merge commit that arrives on the second view lands.
+test_lanes_direct_merged_never_repairs() {
+  LANES_CONFIG='{"merge_command": "scripts/merge.sh <pr>"}'; export LANES_CONFIG
+  lanes_fixture mnr direct A:-
+  printf 'repair\n' > "$SCEN/A.land"
+  MERGE_OUTCOMES=ghonly; export MERGE_OUTCOMES
+  run_lanes start "$MFP"
+  unset MERGE_OUTCOMES
+  assert_eq 0 "$(land_calls)" "MERGED with its commit absent from origin: no repair"
+  assert_contains "$(last_lanes_dir)/stories/A" "^stopped landing failed (PR #1 is MERGED but its merge commit is not in origin/main)$" "the landing stops (return 4)"
+  assert_eq 1 "$(grep -c '^s merge' "$CALLS/gate.iv" 2>/dev/null)" "the merge command ran once"
+  LANES_CONFIG='{"merge_command": "scripts/merge.sh <pr>"}'; export LANES_CONFIG
+  lanes_fixture mnrf direct A:-
+  printf 'repair\n' > "$SCEN/A.land"
+  MERGE_OUTCOMES=nofetch; export MERGE_OUTCOMES
+  run_lanes start "$MFP"
+  unset MERGE_OUTCOMES
+  mv "$TMP/mnrf.git.gone" "$TMP/mnrf.git" 2>/dev/null
+  assert_eq 0 "$(land_calls)" "a failed fetch after the merge command: no repair"
+  assert_contains "$(last_lanes_dir)/stories/A" "^stopped landing failed (cannot fetch origin)$" "the landing stops (return 4)"
+  LANES_CONFIG='{"merge_command": "scripts/merge.sh <pr>"}'; export LANES_CONFIG
+  lanes_fixture mnrl direct A:-
+  printf 'repair\n' > "$SCEN/A.land"
+  MERGE_OUTCOMES=lagoid; export MERGE_OUTCOMES
+  run_lanes start "$MFP"
+  unset MERGE_OUTCOMES
+  assert_eq 0 "$(land_calls)" "a merge commit lagging one view: no repair"
+  _oid="$(sed -n 's/^oid=//p' "$GH/pr-1" | tail -n 1)"
+  assert_contains "$(last_lanes_dir)/stories/A" "^landed ${_oid:-none}$" "the second view lands it"
+  assert_eq 1 "$(grep -c '^s merge' "$CALLS/gate.iv" 2>/dev/null)" "the merge command ran once"
+}
+# land_once ID BRANCH (Task 11's progress landing: a branch with no manifest
+# row) runs step 0 against BRANCH: already landed -> recorded, no new merge.
+test_lanes_land_once_explicit_branch() {
+  lanes_fixture lob integration A:-
+  _xb="$TMP/xb-lob"
+  ( cd "$P" && git worktree add -q --no-track -b prog-x "$_xb" origin/integration/demo \
+    && cd "$_xb" && mkdir -p .studio/ledger && printf -- '- 2026-10-01 shipped prog-x\n' > .studio/ledger/P1.md \
+    && git add -A && git commit -qm p1-shipped && git push -q origin prog-x \
+    && git push -q origin prog-x:integration/demo \
+    && cd "$P" && git worktree remove --force "$_xb" && git branch -q -D prog-x ) >/dev/null 2>&1
+  git -C "$P" fetch -q origin
+  _t0="$(git -C "$P" rev-parse origin/integration/demo)"
+  printf 'A\tA-b\tA\t\t\t\n' > "$TMP/lob.rows"
+  _out="$( SELF_DIR="$BIN"; START_DIR="$P"; MF_MODE=integration; MF_TARGET=integration/demo; MF_ROWS="$TMP/lob.rows"
+           . "$BIN/overnight-lanes.sh"; land_once P1 prog-x; echo "$? $LAND_SHA" )"
+  git -C "$P" fetch -q origin
+  assert_eq "0 $_t0" "$_out" "step 0 confirms the named branch: landed, LAND_SHA its head (a fast-forward)"
+  assert_eq "$_t0" "$(git -C "$P" rev-parse origin/integration/demo)" "no merge is pushed"
+}
 test_lanes_land_idempotent() {
   LANES_CONFIG='{"merge_command": "scripts/merge.sh <pr>"}'; export LANES_CONFIG
   lanes_fixture idem direct A:-
@@ -1069,6 +1141,7 @@ run_tests test_lanes_chain_rule test_lanes_manifest_refusals test_lanes_manifest
   test_lanes_docs_revision test_lanes_waiting_chain_starts_after_deps test_lanes_skip_on_stopped_dep \
   test_lanes_lane_kill9 test_lanes_end_sessions_spaced_path test_lanes_sigint test_lanes_runner_gone test_lanes_stop_file \
   test_lanes_land_clean_integration test_lanes_land_clean_direct test_lanes_land_conflict_one_repair \
-  test_lanes_land_second_conflict_stops test_lanes_land_repair_no_progress test_lanes_direct_refused_then_repaired test_lanes_land_idempotent \
+  test_lanes_land_second_conflict_stops test_lanes_land_repair_no_progress test_lanes_direct_refused_then_repaired test_lanes_direct_merged_never_repairs \
+  test_lanes_land_once_explicit_branch test_lanes_land_idempotent \
   test_lanes_land_crash_after_push test_lanes_land_lock_reclaim test_lanes_land_shipped_resume \
   test_lanes_gate_never_overlaps test_lanes_no_orphans
