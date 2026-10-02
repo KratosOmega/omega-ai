@@ -1,4 +1,5 @@
 #!/bin/sh
 # studio-run [--scene RES_PATH] [--seconds N] [--windowed] — boot the project
-# through the engine adapter and scan its log for script errors.
-exec sh "$(dirname "$0")/studio-dispatch" run "$@"
+# through the engine adapter and scan its log for script errors, one run at a
+# time per project (studio-gate).
+exec sh "$(dirname "$0")/studio-gate" studio-run -- sh "$(dirname "$0")/studio-dispatch" run "$@"

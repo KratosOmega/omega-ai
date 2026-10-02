@@ -1,3 +1,4 @@
 #!/bin/sh
-# studio-test [PATH] — run the project's test suite through the engine adapter.
-exec sh "$(dirname "$0")/studio-dispatch" test "$@"
+# studio-test [PATH] — run the project's test suite through the engine adapter,
+# one run at a time per project (studio-gate).
+exec sh "$(dirname "$0")/studio-gate" studio-test -- sh "$(dirname "$0")/studio-dispatch" test "$@"

@@ -1,0 +1,119 @@
+#!/bin/sh
+# studio-gate <who> -- <cmd> [args...] — run <cmd> holding the project's one
+# gate lock, so at most one test or gate run happens at a time.
+#
+# Lock: STATE_ROOT/.studio/gate.lock/ (mkdir), holding `pid` (this script's
+# $$) and `who`. The command runs as a child with STUDIO_GATE_HELD=<this pid>
+# in its environment only; a nested studio-gate that sees STUDIO_GATE_HELD
+# naming the live holder execs the command without locking. A lock whose pid
+# is dead is reclaimed by an atomic mv.
+# Exit: the command's status · 2 usage · 128+n when TERM/INT/HUP ended it.
+# With no .studio/ project there is nothing to protect: the command just runs.
+
+SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+if [ "$#" -lt 3 ] || [ "$2" != "--" ]; then
+  printf 'usage: studio-gate <who> -- <cmd> [args...]\n' >&2
+  exit 2
+fi
+WHO="$1"
+shift 2
+
+ROOT="$(sh "$SELF_DIR/studio-state" root 2>/dev/null)" || ROOT=""
+if [ -z "$ROOT" ] || [ ! -d "$ROOT/.studio" ]; then
+  exec "$@"
+fi
+LOCK="$ROOT/.studio/gate.lock"
+
+alive() { [ -n "$1" ] && kill -0 "$1" 2>/dev/null; }
+lock_pid() { cat "$LOCK/pid" 2>/dev/null; }
+
+# Re-entry: the caller already holds the lock through us.
+if [ -n "${STUDIO_GATE_HELD:-}" ] && [ "$(lock_pid)" = "$STUDIO_GATE_HELD" ] && alive "$STUDIO_GATE_HELD"; then
+  exec "$@"
+fi
+
+OWNED=0
+CHILD=""
+SIGSTATUS=""
+
+release() {
+  if [ "$OWNED" = 1 ] && [ "$(lock_pid)" = "$$" ]; then
+    rm -rf "$LOCK"
+  fi
+  OWNED=0
+}
+
+# Before the child exists a signal just ends us (the EXIT trap releases). Once
+# it runs, forward the signal and keep the lock until the child is gone.
+on_signal() {
+  SIGSTATUS="$1"
+  if [ -n "$CHILD" ]; then
+    kill -TERM "$CHILD" 2>/dev/null
+  else
+    exit "$1"
+  fi
+}
+trap release EXIT
+trap 'on_signal 130' INT
+trap 'on_signal 143' TERM
+trap 'on_signal 129' HUP
+
+# Reclaim a lock whose holder pid is $1 (dead). The mv is atomic, so one
+# reclaimer wins; a loser's mv fails and it waits like everyone else. If the
+# dir we moved is not the dead holder's (someone re-took the lock between our
+# read and our mv), put it back.
+reclaim() {
+  _stale="$LOCK.stale.$$"
+  if mv "$LOCK" "$_stale" 2>/dev/null; then
+    if [ "$(cat "$_stale/pid" 2>/dev/null)" = "$1" ]; then
+      rm -rf "$_stale"
+    elif [ ! -e "$LOCK" ]; then
+      mv "$_stale" "$LOCK" 2>/dev/null || rm -rf "$_stale"
+    else
+      rm -rf "$_stale"
+    fi
+  fi
+}
+
+waited=0
+nopid=0
+while :; do
+  if mkdir "$LOCK" 2>/dev/null; then
+    OWNED=1
+    printf '%s\n' "$$" > "$LOCK/pid"
+    printf '%s\n' "$WHO" > "$LOCK/who"
+    break
+  fi
+  holder="$(lock_pid)"
+  if [ -z "$holder" ]; then
+    # Between the holder's mkdir and its pid write; a crash there leaves a
+    # pidless dir, so give it a few polls and then reclaim.
+    nopid=$((nopid + 1))
+    if [ "$nopid" -gt 5 ]; then reclaim ""; nopid=0; fi
+  else
+    nopid=0
+    if ! alive "$holder"; then
+      reclaim "$holder"
+      continue
+    fi
+  fi
+  if [ $((waited % 60)) -eq 0 ]; then
+    printf 'gate: waiting for %s (pid %s)\n' "$(cat "$LOCK/who" 2>/dev/null)" "$holder" >&2
+  fi
+  waited=$((waited + 1))
+  sleep 1
+done
+
+STUDIO_GATE_HELD="$$" "$@" &
+CHILD=$!
+rc=0
+while :; do
+  wait "$CHILD"
+  rc=$?
+  alive "$CHILD" || break
+done
+CHILD=""
+release
+if [ -n "$SIGSTATUS" ]; then exit "$SIGSTATUS"; fi
+exit "$rc"

@@ -355,7 +355,83 @@ test_lint_with_no_scripts_is_clean() {
   assert_contains "$TMP/out" "no .gd files" "and says so"
 }
 
-run_tests test_dispatch_rejects_unknown_engine test_dispatch_needs_a_studio_root \
+# ---- studio-gate: one test or gate run at a time per project ----
+GATE="$BIN/studio-gate"
+gate_proj() { GP="$TMP/gate-$1"; mkdir -p "$GP"; ( cd "$GP" && git init -q -b main && git -c user.name=t -c user.email=t@t commit -q --allow-empty -m i && sh "$BIN/studio-state" init ) >/dev/null 2>&1; }
+
+test_gate_no_overlap() {
+  gate_proj overlap
+  rm -f "$TMP/iv"
+  for i in 1 2 3; do
+    ( cd "$GP" && sh "$GATE" t$i -- sh -c "echo s \$(date +%s) >> '$TMP/iv'; sleep 2; echo e \$(date +%s) >> '$TMP/iv'" ) 2>/dev/null &
+  done
+  wait
+  # Intervals in order s e s e s e: no s follows an s.
+  assert_eq "s e s e s e" "$(awk '{printf "%s%s", sep, $1; sep=" "}' "$TMP/iv")" "three holders never overlap"
+  assert_missing "$GP/.studio/gate.lock" "the lock is released after the last holder"
+}
+test_gate_status_and_held() {
+  gate_proj held
+  st=0; ( cd "$GP" && sh "$GATE" x -- sh -c 'exit 7' ) 2>/dev/null || st=$?
+  assert_eq 7 "$st" "the child's exit status is passed through"
+  ( cd "$GP" && sh "$GATE" outer -- sh -c "sh '$GATE' inner -- sh -c 'echo \$STUDIO_GATE_HELD'" ) > "$TMP/nest" 2>&1
+  assert_eq 1 "$(grep -c '^[0-9][0-9]*$' "$TMP/nest")" "a holder's child runs without re-taking the lock"
+  assert_not_contains "$TMP/nest" "gate: waiting" "the nested call never waits"
+  assert_status 2 "no -- is usage" -- sh "$GATE" who
+  assert_status 2 "no command is usage" -- sh "$GATE" who --
+}
+test_gate_stale_reclaim_race() {
+  gate_proj stale
+  rm -f "$TMP/sr"
+  mkdir -p "$GP/.studio/gate.lock"; echo 999999 > "$GP/.studio/gate.lock/pid"; echo dead > "$GP/.studio/gate.lock/who"
+  ( cd "$GP" && sh "$GATE" a -- sh -c "echo s >> '$TMP/sr'; sleep 1; echo e >> '$TMP/sr'" ) 2>/dev/null &
+  ( cd "$GP" && sh "$GATE" b -- sh -c "echo s >> '$TMP/sr'; sleep 1; echo e >> '$TMP/sr'" ) 2>/dev/null &
+  wait
+  assert_eq "s e s e" "$(tr '\n' ' ' < "$TMP/sr" | sed 's/ $//')" "a dead holder is reclaimed once; the two do not overlap"
+}
+test_gate_waiting_message() {
+  gate_proj msg
+  ( cd "$GP" && sh "$GATE" first -- sleep 3 ) 2>/dev/null &
+  sleep 1
+  ( cd "$GP" && sh "$GATE" second -- true ) 2> "$TMP/gm"
+  wait
+  assert_contains "$TMP/gm" "^gate: waiting for first" "a waiter names the holder"
+}
+test_gate_records_pid_and_who() {
+  gate_proj files
+  ( cd "$GP" && sh "$GATE" me -- sh -c "cp .studio/gate.lock/who '$TMP/gwho'; cp .studio/gate.lock/pid '$TMP/gpid'; echo \$STUDIO_GATE_HELD > '$TMP/ghold'" ) 2>/dev/null
+  assert_eq me "$(cat "$TMP/gwho")" "the lock names its holder"
+  assert_eq "$(cat "$TMP/gpid")" "$(cat "$TMP/ghold")" "STUDIO_GATE_HELD is the lock's pid"
+  assert_eq "" "${STUDIO_GATE_HELD:-}" "the hold is not exported to the caller"
+}
+test_gate_without_a_project_just_runs() {
+  mkdir -p "$TMP/gate-bare"
+  st=0; ( cd "$TMP/gate-bare" && sh "$GATE" w -- sh -c 'exit 5' ) 2>/dev/null || st=$?
+  assert_eq 5 "$st" "outside a .studio project the command just runs"
+}
+test_gate_signal_waits_for_child_then_releases() {
+  gate_proj sig
+  rm -f "$TMP/gsigpid"
+  ( cd "$GP" && sh "$GATE" sig -- sh -c "echo \$\$ > '$TMP/gsigpid'; exec sleep 30" ) >/dev/null 2>&1 &
+  _i=0; while [ ! -s "$TMP/gsigpid" ] && [ "$_i" -lt 50 ]; do sleep 0.2; _i=$((_i + 1)); done
+  _gp="$(cat "$GP/.studio/gate.lock/pid")"
+  _cp="$(cat "$TMP/gsigpid")"
+  kill -TERM "$_gp"
+  wait
+  _alive=no; kill -0 "$_cp" 2>/dev/null && _alive=yes
+  [ "$_alive" = yes ] && kill -KILL "$_cp" 2>/dev/null
+  assert_eq no "$_alive" "TERM to studio-gate reaches the child"
+  assert_missing "$GP/.studio/gate.lock" "the lock is gone once the child is"
+}
+test_gate_wraps_test_and_run() {
+  assert_contains "$BIN/studio-test" 'studio-gate" studio-test --' "studio-test goes through studio-gate"
+  assert_contains "$BIN/studio-run" 'studio-gate" studio-run --' "studio-run goes through studio-gate"
+}
+
+run_tests test_gate_no_overlap test_gate_status_and_held test_gate_stale_reclaim_race \
+  test_gate_waiting_message test_gate_records_pid_and_who test_gate_without_a_project_just_runs \
+  test_gate_signal_waits_for_child_then_releases test_gate_wraps_test_and_run \
+  test_dispatch_rejects_unknown_engine test_dispatch_needs_a_studio_root \
   test_resolve_honours_godot_path test_resolve_ignores_a_non_executable_godot_path \
   test_resolve_finds_an_app_bundle test_resolve_finds_godot_on_path test_guide_has_an_install_line \
   test_test_needs_a_project test_test_falls_back_to_studio_json test_test_exits_3_without_gut \
