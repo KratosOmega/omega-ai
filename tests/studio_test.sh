@@ -501,6 +501,8 @@ test_execute_land_and_progress() {
   assert_contains "$E" 'fix(land): <summary>' "the repair commit"
   assert_contains "$E" 'Repair: <summary>' "the ledger line the runner reads"
   assert_contains "$E" 'never runs the merge command' "the repair never lands"
+  assert_contains "$E" 'Commit the Stop line; do not push it' "a failed repair commits its Stop line and pushes nothing"
+  assert_contains "$E" 'it runs up to three times' "the repair overrides the lane single-run gate"
   assert_contains "$E" '^## 10. Run progress (--progress)' "§10 exists"
   assert_contains "$E" 'docs(progress): <slug>' "one progress commit per run"
   assert_contains "$E" 'bypasses §0' "§10 bypasses §0's gate and isolation"

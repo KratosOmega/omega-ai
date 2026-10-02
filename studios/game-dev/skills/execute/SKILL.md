@@ -630,13 +630,16 @@ a `Stop:` line (§8's stop rule).
   `STUDIO_REPAIR=red:<log path>` means the merge command refused: read the
   landing log at that path. Dispatch one fresh fixer (§5 step 5's owning
   role) with the conflict, or with the failing output from the log.
-- **Gate:** the story's gate, §7 step 1, up to three runs, through
-  `studio-test` (which holds the gate lock).
+- **Gate:** the story's gate, §7 step 1, through `studio-test` (which holds the gate lock).
+  This unit overrides §7's lane rule that the gate runs once: it runs up to three times.
+  The same fixer (or a fresh one given the failing output) fixes between runs.
+  Exit codes keep §7's lane meaning: `studio-lint` exit 3 is not red;
+  `studio-test` or `studio-run` exit 2 and `studio-test` exit 3 are hard stops that end the unit at once with `studio-state ledger "Stop: <the printed message>"`, committed and not pushed.
 - **Commit and record:** commit `fix(land): <summary>`, push the story
   branch, then `studio-state ledger "Repair: <summary>"`, committed and
   pushed. The runner reads that `Repair:` line to retry the landing once.
-- **Red after three runs:** `studio-state ledger "Stop: land repair red — <failing line>"`,
-  committed and pushed, and end the turn.
+- **Red after three runs:** `studio-state ledger "Stop: land repair red — <failing line>"`.
+  Commit the Stop line; do not push it: a red merge head never reaches origin/<Branch>, which keeps its `shipped` line. The runner reads the ledger from the feature checkout. End the turn.
 - A git write whose stderr says `could not lock` or `cannot lock ref` is retried, as §0 and §7 do.
 - **Never lands:** no session merges into `main` (the default branch) in any
   run mode; the runner lands. This unit never merges into the target, never
