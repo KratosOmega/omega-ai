@@ -14,6 +14,43 @@ approval page in `artifacts/`.
 
 ## Log
 
+### 2026-10-02 — Overnight lanes (issue #19)
+
+- `studio-overnight start` runs a manifest of stories as parallel
+  dependency-chain lanes; a dependent never starts before its dependency
+  has landed.
+- The runner lands stories itself, serialized: integration mode ends in one
+  draft PR integration → main (nothing merged into main, one full gate);
+  direct mode merges each story through the project's merge command.
+- `studio-gate` takes a machine-wide gate lock so lanes never run two
+  engine gates at once; `studio-brief` and `studio-state` (`STUDIO_STORY`)
+  give each lane's sessions their own story state.
+- `studio-overnight next` is the planning loop for stories with no plan;
+  `start --detach` outlives the chat, and `status` and `report.md` are
+  per story.
+- Skill contracts rewritten: execute, plan, brainstorm, autopilot and
+  integration. Autopilot in a studio never runs stories in its own session
+  and never starts a keep-awake.
+- Live probes: D1a detach PASS (log unbroken after the window closed; env
+  scrub widened to every `CLAUDE_*` and `AI_AGENT`, `CLAUDE_CONFIG_DIR`
+  kept). D1b inconclusive (harness blocks a bare `sleep`), so background
+  `studio-test` is the default. D1c a `set -m` subshell gets its own group.
+  D1d phoenix `merge.sh` never reads a TTY and fails fast.
+- Review rulings: the merge command runs under `session_minutes`, and a
+  timeout stops the story unless its PR already merged (the first ruling
+  had no timeout); D3 kept over spec 788-790 (an existing story branch's
+  spec and plan are synced from the run's Docs revision, not a stop); one
+  final repair unit at most; a red lane gate never ships and a lane story
+  is not retried by fix rounds.
+- Gate: `sh tests/run_all.sh` green (2,615 assertions, 0 failed).
+- 56 deferred minor review findings are listed in the PR for a follow-up
+  issue.
+- Play before merging: 4 items pending (P1 integration live run; P2 direct
+  live run; P3 the morning report; P4 detach survives the chat).
+- Branch `worktree-issue-19-autopilot-integration`. Spec
+  `specs/2026-10-01-overnight-lanes.md`, plan
+  `plans/2026-10-01-overnight-lanes.md`.
+
 ### 2026-10-01 — Overnight runner (issue #17)
 
 - `studio-overnight start` runs an approved plan from a plain terminal:
