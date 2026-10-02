@@ -106,7 +106,9 @@ it first with `omega-mode clear autopilot`.
    read or write secrets), and that the permission mode must allow the
    run's tools unattended — a permission prompt is a question nobody
    answers. Nothing keeps the machine awake and nothing re-prompts an idle
-   session.
+   session. Arm (`omega-mode set autopilot`) from a fresh session and do not
+   `/clear` after arming — a `/clear` runs session-end's `clear --all` and
+   disarms the run.
 
 ## Phase 2 — unattended
 

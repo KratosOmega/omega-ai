@@ -443,6 +443,7 @@ test_router_overnight_lock() {
   assert_contains "$S" ".studio/overnight.lock" "the router checks the runner's lock"
   assert_contains "$S" "Overnight run in progress (pid <pid>) — studio-overnight status" "the router names status when a run is live"
   assert_contains "$S" "routes nothing else" "a live run blocks routing"
+  assert_contains "$S" "\`studio-overnight status\`; exit 0 is the liveness test" "the router tests liveness with status exit 0"
 }
 
 run_tests test_plugin_manifests test_skill_frontmatter test_agent_frontmatter \
