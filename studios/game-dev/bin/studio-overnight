@@ -164,6 +164,81 @@ preflight() {
   [ "$FAILED" -eq 0 ] || exit 2
 }
 
+# ledger_of DIR — the feature ledger's lines as `studio-state show` prints
+# them from DIR (the runner never derives the ledger's file name).
+ledger_of() {
+  ( cd "$1" && sh "$STATE_BIN" show 2>/dev/null ) | sed -n '/^## Feature ledger: /,$p' | sed 1d
+}
+feature_dir() {
+  _w="$(cd "$START_DIR" && sh "$STATE_BIN" worktree 2>/dev/null)"
+  if [ -n "$_w" ] && [ -d "$_w" ]; then printf '%s\n' "$_w"; else printf '%s\n' "$START_DIR"; fi
+}
+# snapshot STOPS_FILE — the progress signature, and the de-duplicated set of
+# Stop: lines from the feature and start checkouts.
+snapshot() {
+  FEATURE_DIR="$(feature_dir)"
+  _l="$(ledger_of "$FEATURE_DIR")"
+  SIG_STAGE="$(state get stage)"; SIG_TASK="$(state get task)"
+  SIG_FRD="$(printf '%s\n' "$_l" | grep -c '^- [0-9-]* final review done$')"
+  SIG_SHIPPED="$(printf '%s\n' "$_l" | grep -c '^- [0-9-]* shipped ')"
+  SIG="stage=$SIG_STAGE;task=$SIG_TASK;frd=$SIG_FRD;shipped=$SIG_SHIPPED"
+  { printf '%s\n' "$_l"; ledger_of "$START_DIR"; } | grep '^- [0-9-]* Stop: ' | sort -u > "$1"
+}
+# label_for — the unit's name from the SIG_* values (D8); names files only.
+label_for() {
+  case "$SIG_STAGE:$SIG_TASK" in
+    plan:*|*:-|*:|*:0/*) echo T1; return ;;
+  esac
+  _k="${SIG_TASK%/*}"; _n="${SIG_TASK#*/}"
+  if [ "$_k" -lt "$_n" ]; then echo "T$((_k + 1))"
+  elif [ "$SIG_FRD" -eq 0 ]; then echo final-review
+  else echo finish; fi
+}
+# cost_of FILE — total_cost_usd of the last result event; empty when none.
+cost_of() {
+  grep '"type"[[:space:]]*:[[:space:]]*"result"' "$1" 2>/dev/null | tail -n 1 \
+    | sed -n 's/.*"total_cost_usd"[[:space:]]*:[[:space:]]*\([0-9.eE+-]*\).*/\1/p'
+}
+spent() { awk -F'\t' '$4 != "unknown" { s += $4 } END { printf "%.2f\n", s + 0 }' "$RUN_DIR/units.tsv" 2>/dev/null || echo 0.00; }
+
+start_session() {
+  set -m 2>/dev/null || true   # own process group: a terminal Ctrl-C reaches only the runner (D6)
+  ( cd "$START_DIR" && OMEGA_AUTOPILOT=1 exec claude-gd -p "$@" ) \
+    > "$RUN_DIR/$UNIT_STEM.jsonl" 2> "$RUN_DIR/$UNIT_STEM.err" < /dev/null &
+  CPID=$!
+  set +m 2>/dev/null || true
+}
+# run_unit N LABEL — one session, waited for; sets UNIT_* (D7's wait loop).
+run_unit() {
+  UNIT_STEM="$1-$2"; printf '%s\n' "$2" > "$RUN_DIR/current"
+  _t0="$(date +%s)"
+  with_launch_args start_session
+  _st=0
+  while :; do
+    wait "$CPID"; _st=$?
+    kill -0 "$CPID" 2>/dev/null || break
+  done
+  UNIT_EXIT="$_st"; UNIT_TIMED_OUT=0
+  UNIT_MIN="$(awk -v s="$(( $(date +%s) - _t0 ))" 'BEGIN { printf "%.1f", s / 60 }')"
+  UNIT_COST="$(cost_of "$RUN_DIR/$UNIT_STEM.jsonl")"; [ -n "$UNIT_COST" ] || UNIT_COST=unknown
+}
+row() {  # row N LABEL OUTCOME
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$UNIT_EXIT" "$UNIT_COST" "$UNIT_MIN" "$UNIT_TIMED_OUT" "$3" \
+    >> "$RUN_DIR/units.tsv" || { say "cannot write $RUN_DIR/units.tsv"; exit 3; }
+}
+# write_report REASON — stub; Task 4 writes the morning report here.
+write_report() {
+  printf 'Ending: %s\n' "$1" > "$RUN_DIR/report.md"
+}
+unlock() { rm -f "$LOCK" "$STOP_FILE"; }
+# finish_run REASON — report, unlock, exit (0 only for done).
+finish_run() {
+  write_report "$1"
+  unlock
+  [ "$1" = done ] && exit 0
+  exit 1
+}
+
 cmd_start() {
   _dry=0
   case "${1:-}" in
@@ -207,9 +282,24 @@ cmd_start() {
     grep -qxF "$_e" "$_excl" 2>/dev/null || printf '%s\n' "$_e" >> "$_excl"
   done
   rm -f "$STOP_FILE"
-  # The unit loop arrives in Task 2.
-  printf '# Overnight run\n\nEnding: stop: not implemented\n' > "$RUN_DIR/report.md"
-  exit 1
+  n=0; noprog=0; suffix=""; STOP_REQ=0
+  while :; do
+    { [ -f "$STOP_FILE" ] || [ "$STOP_REQ" = 1 ]; } && finish_run "stopped by user"
+    _stage="$(state get stage)"
+    case "$_stage" in plan|execute) ;; *) finish_run "stop: unexpected stage $_stage" ;; esac
+    awk -v s="$(spent)" -v u="$SESSION_USD" -v r="$RUN_USD" 'BEGIN { exit !(s + u > r) }' \
+      && finish_run "stop: run budget"
+    snapshot "$RUN_DIR/stops.before"; _before="$SIG"; _base="$(label_for)"
+    n=$((n + 1)); run_unit "$n" "$_base$suffix"
+    snapshot "$RUN_DIR/stops.after"
+    _new="$(comm -13 "$RUN_DIR/stops.before" "$RUN_DIR/stops.after" | tail -n 1)"
+    if [ -n "$_new" ]; then row "$n" "$_base$suffix" stop; finish_run "stop: ${_new#*Stop: }"; fi
+    if [ "$SIG_STAGE" = idle ] && [ "$SIG_SHIPPED" -gt 0 ]; then row "$n" "$_base$suffix" done; finish_run done; fi
+    if [ "$SIG" != "$_before" ]; then row "$n" "$_base$suffix" progress; noprog=0; suffix=""; continue; fi
+    row "$n" "$_base$suffix" noprog; noprog=$((noprog + 1))
+    if [ "$noprog" -le "$RETRIES" ]; then suffix="-retry"; continue; fi
+    finish_run "no progress on $_base"
+  done
 }
 
 case "$1" in

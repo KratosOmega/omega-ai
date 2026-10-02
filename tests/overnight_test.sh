@@ -185,7 +185,12 @@ test_overnight_deny_file_required() {
 test_overnight_lock() {
   fixture lock; live_dummy
   printf 'pid=%s\nrun=x\nstarted=y\n' "$DUMMY" > "$P/.studio/overnight.lock"
-  refuse_case "live lock" "pid $DUMMY"
+  run_start
+  assert_eq 2 "$RS_STATUS" "live lock: exit 2"
+  assert_contains "$RS_ERR" "pid $DUMMY" "live lock: names the live pid"
+  assert_eq 1 "$(grep -c . "$RS_ERR")" "live lock: one line"
+  assert_eq 0 "$(calls)" "live lock: no session"
+  assert_contains "$P/.studio/overnight.lock" "^pid=$DUMMY\$" "live lock: the lock still holds the live pid"
   kill "$DUMMY" 2>/dev/null; wait "$DUMMY" 2>/dev/null
   # A stale lock: the pid is dead. The run proceeds with a warning
   # (one no-progress-free session: it ships).
@@ -229,7 +234,114 @@ test_overnight_first_use_ignores() {
   assert_eq "" "$(cd "$P" && git status --porcelain -- .gitignore .studio/reports)" "no tracked file changes"
 }
 
+# done_scenario — the four units of a two-task plan.
+done_scenario() {
+  scenario "stage execute; task 1/2; ledger T1 complete a..b; cost 2" \
+           "task 2/2; ledger T2 complete b..c; ledger T2 Ruling: kept x — y — z; cost 2.25" \
+           "ledger final review done; cost 3" \
+           "ledger P1 Play: jump on the box; ledger shipped https://github.com/o/r/pull/9; stage idle; task -; cost 1"
+}
+
+test_overnight_sequence_to_done() {
+  fixture done; done_scenario; run_start
+  d="$(last_run_dir)"
+  assert_eq 0 "$RS_STATUS" "a shipped run exits 0"
+  assert_eq 4 "$(calls)" "four sessions: two tasks, final review, finish"
+  for f in 1-T1 2-T2 3-final-review 4-finish; do assert_file "$d/$f.jsonl" "session log $f.jsonl"; assert_file "$d/$f.err" "stderr $f.err"; done
+  assert_eq "8.25" "$(awk -F'\t' '{ s += $4 } END { print s }' "$d/units.tsv")" "spend sums each session's total_cost_usd"
+  assert_eq "done" "$(awk -F'\t' 'END { print $7 }' "$d/units.tsv")" "the last unit's outcome is done"
+}
+
+test_overnight_launch_argv() {
+  fixture argv; done_scenario; run_start
+  a="$CALLS/1.argv"
+  deny="$REPO_ROOT/studios/game-dev/bin/overnight-deny.txt"
+  # claude-gd passes its argv through, so the stub sees -p, then the prompt.
+  assert_eq "-p" "$(sed -n 1p "$a")" "the session runs headless (-p)"
+  assert_eq "/game-dev:execute --one" "$(sed -n 2p "$a")" "the prompt is the first argument after -p (D1)"
+  for f in "--output-format" "stream-json" "--verbose" "--permission-mode" "auto" "--permission-prompts" "none" "--max-budget-usd" "25"; do
+    assert_contains "$a" "^$f\$" "argv has $f as its own element"
+  done
+  assert_contains "$a" "^Bash(git push --force:\*)\$" "a deny rule with spaces is one element"
+  R="$(grep -v '^#' "$deny" | grep -c .)"
+  assert_eq "$(printf -- '--disallowedTools\n'; grep -v '^#' "$deny" | grep .)" \
+    "$(tail -n "$((R + 1))" "$a")" "--disallowedTools is the last option, followed by every rule in file order"
+  assert_eq "1" "$(cat "$CALLS/1.env")" "OMEGA_AUTOPILOT=1 reaches the session"
+  assert_eq "$P" "$(cat "$CALLS/1.pwd")" "every session starts in START_DIR"
+}
+
+test_overnight_retry_then_no_progress() {
+  fixture retry; scenario "cost 1" "cost 1"; run_start
+  d="$(last_run_dir)"
+  assert_eq 1 "$RS_STATUS" "no progress exits 1"
+  assert_eq 2 "$(calls)" "one retry, then stop"
+  assert_file "$d/2-T1-retry.jsonl" "the retry is labelled T1-retry"
+  assert_contains "$d/report.md" "no progress on T1" "the ending names the unit"
+}
+
+test_overnight_progress_resets_retry() {
+  fixture reset; scenario "cost 1" "stage execute; task 1/2" "cost 1" "cost 1"; run_start
+  assert_eq 4 "$(calls)" "progress resets the retry count"
+  assert_contains "$(last_run_dir)/report.md" "no progress on T2" "the stuck unit is T2"
+}
+
+test_overnight_retries_zero() {
+  fixture r0 '{ "overnight": { "retries": 0 } }'; scenario "cost 1"; run_start
+  assert_eq 1 "$(calls)" "retries 0 stops after the first no-progress session"
+}
+
+test_overnight_stop_line() {
+  fixture stopl; scenario "stage execute; ledger Stop: no Godot binary (studio-test exit 2)"; run_start
+  assert_eq 1 "$RS_STATUS" "a Stop: line exits 1"
+  assert_eq 1 "$(calls)" "a Stop: line is never retried"
+  assert_contains "$(last_run_dir)/report.md" "stop: no Godot binary (studio-test exit 2)" "the reason is printed verbatim"
+}
+
+test_overnight_copied_stop_not_new() {
+  fixture copied
+  ( cd "$P" && sh "$STATE_BIN" ledger "Stop: an old reason" && git add -A && git -c user.name=t -c user.email=t@t commit -qm old ) >/dev/null
+  scenario "stage execute; branch feat; task 1/2; wtledger T1 complete a..b" \
+           "wtledger Stop: fresh reason"
+  run_start
+  assert_eq 2 "$(calls)" "a Stop: line the new worktree copied is not new"
+  assert_contains "$(last_run_dir)/report.md" "stop: fresh reason" "a Stop: line written in the feature worktree stops the run"
+}
+
+test_overnight_run_budget() {
+  fixture budget '{ "overnight": { "session_usd": 2, "run_usd": 5 } }'
+  scenario "stage execute; task 1/3; cost 2" "task 2/3; cost 2" "task 3/3; cost 2"; run_start
+  assert_eq 2 "$(calls)" "the run stops before a launch that could pass run_usd"
+  assert_contains "$(last_run_dir)/report.md" "stop: run budget" "budget is the ending"
+}
+
+test_overnight_cost_unknown() {
+  fixture nocost; scenario "stage execute; task 1/1; nocost" "ledger final review done" \
+    "ledger shipped https://x/pull/2; stage idle; task -"
+  run_start
+  assert_eq "unknown" "$(awk -F'\t' 'NR == 1 { print $4 }' "$(last_run_dir)/units.tsv")" "a session with no result event costs unknown"
+}
+
+test_overnight_unexpected_stage() {
+  fixture stage; scenario "stage idle"; run_start
+  assert_contains "$(last_run_dir)/report.md" "stop: unexpected stage idle" "idle without shipped stops"
+}
+
+test_overnight_overhead() {
+  fixture over; done_scenario; run_start
+  g1=$(( $(cat "$CALLS/2.t0") - $(cat "$CALLS/1.t1") ))
+  g2=$(( $(cat "$CALLS/3.t0") - $(cat "$CALLS/2.t1") ))
+  g=$g1; [ "$g2" -lt "$g" ] && g=$g2
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if [ "$g" -le 5 ]; then _pass "runner overhead between units <= 5 s (min of two: ${g}s)"; else _fail "runner overhead ${g}s > 5 s"; fi
+}
+
 run_tests test_overnight_help test_overnight_dry_run \
   test_overnight_preflight_refusals test_overnight_preflight_all_failures \
   test_overnight_config_refusals test_overnight_deny_file_required \
-  test_overnight_start_args test_overnight_reclaim_race
+  test_overnight_lock test_overnight_first_use_ignores \
+  test_overnight_start_args test_overnight_reclaim_race \
+  test_overnight_sequence_to_done test_overnight_launch_argv \
+  test_overnight_retry_then_no_progress test_overnight_progress_resets_retry \
+  test_overnight_retries_zero test_overnight_stop_line test_overnight_copied_stop_not_new \
+  test_overnight_run_budget test_overnight_cost_unknown test_overnight_unexpected_stage \
+  test_overnight_overhead
