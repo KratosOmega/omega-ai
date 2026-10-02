@@ -488,6 +488,8 @@ test_execute_lanes() {
   assert_contains "$E" '`studio-test` and `studio-run` each run in the background' "§7's lane gate runs studio-test and studio-run in the background"
   assert_contains "$E" 'the gate runs once, no `fix(gate)` round follows, and a red gate never ships' "a red lane gate is not retried and never ships"
   assert_contains "$E" 'Stop: gate red — <failing command and line>' "a red lane gate ledgers a Stop: line"
+  assert_contains "$E" '`studio-lint` exit 3 (gdtoolkit not installed) is noted in the gate line, not red, and the story goes on.' "a lane gate keeps lint exit 3 non-red"
+  assert_contains "$E" '`studio-state ledger "Stop: <the printed message>"` (not `gate red`)' "a lane engine stop is not gate red"
 }
 
 run_tests test_plugin_manifests test_skill_frontmatter test_agent_frontmatter \

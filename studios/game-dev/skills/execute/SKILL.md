@@ -517,9 +517,12 @@ runner's (`STUDIO_RUN`'s header), and the base is `origin/<Target>`:
   `studio-test` and `studio-run` each run in the background and are waited on by notification (§0: they wait on the gate lock).
   Step 1's red-gate loop does not run under a lane:
   the gate runs once, no `fix(gate)` round follows, and a red gate never ships.
-  On any non-zero exit the finish runs
-  `studio-state ledger "Stop: gate red — <failing command and line>"`,
-  commits it as §8's stops are committed, writes no `shipped` line, pushes
+  Exit codes keep step 1's meaning: `studio-lint` exit 3 (gdtoolkit not installed) is noted in the gate line, not red, and the story goes on.
+  `studio-test` or `studio-run` exit 2 and `studio-test` exit 3 are step 1's hard stops: the finish runs
+  `studio-state ledger "Stop: <the printed message>"` (not `gate red`), and ends as below.
+  Any other non-zero exit is a red gate: the finish runs
+  `studio-state ledger "Stop: gate red — <failing command and line>"`.
+  Either stop is committed as §8's stops are committed, writes no `shipped` line, pushes
   nothing further, and ends the turn; steps 2–6 do not run. The runner then
   records the story stopped; only its repair unit repairs it.
   Otherwise step 3 (PROGRESS) is skipped; step 4 pushes `<Branch>` and
