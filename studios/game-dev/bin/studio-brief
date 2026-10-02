@@ -1,0 +1,213 @@
+#!/bin/sh
+# studio-brief — print exactly one unit's inputs, so an orchestrator never
+# reads the plan or spec whole. Read-only. `plan` and `spec` come from the
+# sibling studio-state (so STUDIO_STORY selects the story's file). Each part
+# is headed by one line `==> <file>:L<a>-<b>` followed by those lines verbatim.
+#
+#   studio-brief task <n>   the plan's ## Global Constraints and ## Decisions,
+#                           the `### Task <n>:` block, and every range on that
+#                           block's `Spec:` line (`<path>:L<a>-<b>` or
+#                           `<path>§<heading line as written>`, separated by
+#                           ", ")
+#   studio-brief final      the spec's ## Acceptance criteria (only the story's
+#                           items when the spec has ## Stories), the story's
+#                           ## Stories row, the story ledger's `Ruling: ` and
+#                           `minor (deferred)` lines, and the line
+#                           `diff: git diff origin/<Target>...HEAD` (Target from
+#                           $STUDIO_RUN's `Target:` header, else origin/HEAD).
+#                           No plan text. The story id is $STUDIO_STORY.
+#
+# A plan without ## Global Constraints or ## Decisions, or a task without a
+# Spec: line, prints a one-line note in its place and still exits 0.
+# Exit: 0 ok · 1 a task, cited range, heading or story that cannot be
+# resolved, or a range past the end of its file · 2 bad usage
+set -u
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+STATE_BIN="$HERE/studio-state"
+
+usage() {
+  printf 'usage: studio-brief task <n> | final\n' >&2
+  exit 2
+}
+fail() { printf 'studio-brief: %s\n' "$*" >&2; exit 1; }
+
+# section FILE KEY EXACT — "a b" (first, last line) of the block whose heading
+# line starts with KEY (equals KEY when EXACT is 1) and which ends before the
+# next heading of the same or higher level; empty when absent. Lines inside
+# ``` fences are never headings.
+section() {
+  awk -v key="$2" -v ex="$3" '
+    function lvl(s) { match(s, /^#+/); return RLENGTH }
+    /^```/ { fence = !fence; next }
+    fence { next }
+    !a && /^#+ / && (ex ? $0 == key : index($0, key) == 1) { a = NR; L = lvl($0); next }
+    a && /^#+ / && lvl($0) <= L { print a, NR - 1; found = 1; exit }
+    END { if (a && !found) print a, NR }
+  ' "$1"
+}
+
+# emit FILE A B — the part header, then the lines.
+emit() { printf '==> %s:L%s-%s\n' "$1" "$2" "$3"; sed -n "$2,$3p" "$1"; }
+
+# state_get KEY — one studio-state field, with '-' (unset) read as empty.
+state_get() {
+  _v="$(sh "$STATE_BIN" get "$1" 2>/dev/null)" || fail "studio-state get $1 failed"
+  [ "$_v" = "-" ] && _v=""
+  printf '%s\n' "$_v"
+}
+
+WORK="$(sh "$STATE_BIN" root --work 2>/dev/null)" && cd "$WORK" 2>/dev/null
+
+[ $# -ge 1 ] || usage
+verb="$1"
+
+# emit_section FILE KEY EXACT NAME — emit a section or exit 1 naming it.
+emit_section() {
+  _r="$(section "$1" "$2" "$3")"
+  [ -n "$_r" ] || fail "$4 not found in $1"
+  # shellcheck disable=SC2086
+  emit "$1" $_r
+}
+
+case "$verb" in
+task)
+  [ $# -eq 2 ] || usage
+  case "$2" in ''|*[!0-9]*) usage ;; esac
+  n="$2"
+  plan="$(state_get plan)"
+  [ -n "$plan" ] || fail "no plan set"
+  [ -f "$plan" ] || fail "plan $plan not found"
+  for part in "Global Constraints" "Decisions"; do
+    r="$(section "$plan" "## $part" 1)"
+    if [ -n "$r" ]; then
+      # shellcheck disable=SC2086
+      emit "$plan" $r
+    else
+      printf '(plan has no ## %s)\n' "$part"
+    fi
+  done
+  tr="$(section "$plan" "### Task $n:" 0)"
+  [ -n "$tr" ] || fail "### Task $n not found in $plan"
+  set -- $tr
+  ta="$1"; tb="$2"
+  emit "$plan" "$ta" "$tb"
+  specline="$(sed -n "${ta},${tb}p" "$plan" | sed -n 's/^Spec: //p' | head -n 1)"
+  if [ -z "$specline" ]; then
+    printf '(task %s has no Spec: line)\n' "$n"
+    exit 0
+  fi
+  # Items are separated by ", " (a heading containing ", " cannot be cited).
+  items="$(printf '%s\n' "$specline" | sed 's/, /\
+/g')"
+  oldifs="$IFS"; IFS='
+'
+  for item in $items; do
+    IFS="$oldifs"
+    case "$item" in
+      *§*)
+        f="${item%%§*}"; h="${item#*§}"
+        [ -f "$f" ] || fail "spec $f not found (Spec: item '$item')"
+        emit_section "$f" "$h" 1 "heading '$h'"
+        ;;
+      *:L[0-9]*-[0-9]*)
+        f="${item%:L*}"; rng="${item##*:L}"
+        a="${rng%-*}"; b="${rng#*-}"
+        case "$a$b" in *[!0-9]*) fail "bad range in Spec: item '$item'" ;; esac
+        [ -f "$f" ] || fail "spec $f not found (Spec: item '$item')"
+        total="$(wc -l < "$f" | tr -d ' ')"
+        # a final line without a newline still counts
+        [ -n "$(tail -c1 "$f")" ] && total=$((total + 1))
+        { [ "$a" -ge 1 ] && [ "$a" -le "$b" ] && [ "$b" -le "$total" ]; } \
+          || fail "range $item is past the end of $f ($total lines)"
+        emit "$f" "$a" "$b"
+        ;;
+      *) fail "cannot parse Spec: item '$item'" ;;
+    esac
+    IFS='
+'
+  done
+  IFS="$oldifs"
+  ;;
+final)
+  [ $# -eq 1 ] || usage
+  spec="$(state_get spec)"
+  [ -n "$spec" ] || fail "no spec set"
+  [ -f "$spec" ] || fail "spec $spec not found"
+  story="${STUDIO_STORY:-}"
+  st="$(section "$spec" "## Stories" 0)"
+  ac="$(section "$spec" "## Acceptance criteria" 0)"
+  [ -n "$ac" ] || fail "## Acceptance criteria not found in $spec"
+  set -- $ac
+  aa="$1"; ab="$2"
+  row=""
+  if [ -n "$st" ]; then
+    [ -n "$story" ] || fail "STUDIO_STORY not set"
+    set -- $st
+    sa="$1"; sb="$2"
+    # row line number and the Acceptance criteria cell, by the header's column
+    rowinfo="$(awk -v a="$sa" -v b="$sb" -v id="$story" '
+      function trim(s) { gsub(/^[ \t]+|[ \t]+$/, "", s); return s }
+      NR < a || NR > b { next }
+      /^\|/ {
+        n = split($0, c, "|")
+        if (!col) { for (i = 1; i <= n; i++) if (trim(c[i]) == "Acceptance criteria") { col = i; break } }
+        if (trim(c[2]) == id && col) { print NR "|" trim(c[col]); exit }
+      }
+    ' "$spec")"
+    [ -n "$rowinfo" ] || fail "story $story has no row (or no Acceptance criteria column) in $spec's ## Stories"
+    rown="${rowinfo%%|*}"; cell="${rowinfo#*|}"
+    # Expand "1, 3-5" to the item numbers.
+    nums=""
+    for tok in $(printf '%s' "$cell" | tr ',' ' '); do
+      case "$tok" in
+        [0-9]*-[0-9]*)
+          i="${tok%-*}"; e="${tok#*-}"
+          while [ "$i" -le "$e" ]; do nums="$nums $i"; i=$((i + 1)); done ;;
+        [0-9]*) nums="$nums $tok" ;;
+        *) fail "cannot parse Acceptance criteria cell '$cell'" ;;
+      esac
+    done
+    [ -n "$nums" ] || fail "story $story lists no acceptance criteria"
+    # Item N spans from its `N. ` line to the line before the next item.
+    starts="$(awk -v a="$aa" -v b="$ab" '
+      /^```/ { fence = !fence }
+      NR > a && NR <= b && !fence && /^[0-9]+\. / { split($0, p, "."); print p[1], NR }
+    ' "$spec")"
+    for num in $nums; do
+      sl="$(printf '%s\n' "$starts" | awk -v n="$num" '$1 == n { print $2; exit }')"
+      [ -n "$sl" ] || fail "acceptance criterion $num not found in $spec"
+      nx="$(printf '%s\n' "$starts" | awk -v s="$sl" '$2 > s { print $2; exit }')"
+      if [ -n "$nx" ]; then el=$((nx - 1)); else el="$ab"; fi
+      emit "$spec" "$sl" "$el"
+    done
+    emit "$spec" "$rown" "$rown"
+  else
+    emit "$spec" "$aa" "$ab"
+  fi
+  # the story's ledger
+  if [ -n "$story" ]; then
+    ledger="$WORK/.studio/ledger/$story.md"
+  else
+    slug="$(basename "$spec" | sed -e 's/\.md$//' -e 's/^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}-//')"
+    ledger="$WORK/.studio/ledger/$slug.md"
+  fi
+  if [ -f "$ledger" ]; then
+    printf '==> %s\n' "$ledger"
+    grep -E 'Ruling: |minor \(deferred\)' "$ledger" || true
+  else
+    printf '(no ledger at %s)\n' "$ledger"
+  fi
+  # the diff command
+  target=""
+  if [ -n "${STUDIO_RUN:-}" ] && [ -f "$STUDIO_RUN" ]; then
+    target="$(sed -n 's/^Target:[ 	]*//p' "$STUDIO_RUN" | head -n 1 | sed -e 's/[ 	]#.*$//' -e 's/[ 	]*$//')"
+  fi
+  if [ -z "$target" ]; then
+    target="$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||')"
+  fi
+  [ -n "$target" ] || fail "no Target: in \$STUDIO_RUN and no origin/HEAD"
+  printf 'diff: git diff origin/%s...HEAD\n' "$target"
+  ;;
+*) usage ;;
+esac
