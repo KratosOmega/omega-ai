@@ -435,7 +435,13 @@ test_execute_one_contract() {
   assert_contains "$S" "never runs \`omega:handoff\`" "--one writes no handoff"
   assert_contains "$S" "\`--one\` with \`--inline\` is refused" "--one is subagent-driven only"
   assert_contains "$S" "Under \`--one\`, see §8" "the sections that stop or continue point at §8"
-  assert_eq 5 "$(grep -c 'Under `--one`, see §8' "$S")" "five pointers: §0, §1, §5 step 6, §7 step 6, §7 step 7"
+  assert_eq 6 "$(grep -c 'Under `--one`, see §8' "$S")" "six pointers: §0, §1, §5 opening, §5 step 6, §7 step 6, §7 step 7"
+  assert_eq 1 "$(sed -n '/^## 1\. Mode$/,/^\*\*`--inline`\.\*\*/p' "$S" | grep -c 'Under `--one`, see §8')" "§1's pointer sits on the SDD-loop paragraph"
+  assert_eq 1 "$(sed -n '/^## 5\. Final review$/,/^1\. Run/p' "$S" | grep -c 'Under `--one`, see §8')" "§5 opens with a pointer, so a task unit cannot slide into §5"
+  assert_contains "$S" "through step 6; §7 is not started" "the final-review unit does not start §7"
+  assert_contains "$S" "first \`worktree\` line of \`git worktree list --porcelain\`" "a stop before (c) is written in the main checkout"
+  assert_contains "$S" "on the default branch leaves the line uncommitted" "the D9 rule is worded by branch"
+  assert_not_contains "$S" "before isolation leaves" "no 'before isolation' wording for the uncommitted stop"
 }
 
 test_router_overnight_lock() {

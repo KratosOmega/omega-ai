@@ -147,6 +147,7 @@ procedures, below).
 per-task cycle: fresh implementer per task, task review after each, ledger.
 Its fix loop, its final review and its last step are replaced by §4a, §5 and
 §7 below. The studio rules in §2–§7 layer on top of it.
+Under `--one`, see §8.
 
 **`--inline`.** Only when the user passed it. Invoke
 `superpowers:executing-plans` instead and implement tasks in this session in
@@ -156,7 +157,6 @@ may call` section (`studios/game-dev/agents/<role>.md`). §3, §5, §6 and §7
 apply in inline mode too, and so do §4a's re-review and no-third-pass rules
 (3 and 4); §2's dispatch and §4 do not, and you make each fix yourself where
 §4a and §5 dispatch a fresh agent.
-Under `--one`, see §8.
 
 ## 2. Who implements (subagent-driven mode)
 
@@ -273,7 +273,7 @@ This overrides `superpowers:subagent-driven-development`'s fix loop (rounds 1–
 ## 5. Final review
 
 After the last task completes, and as its own dispatch — never folded into
-the last task's review:
+the last task's review. Under `--one`, see §8: a task unit never starts it.
 
 1. Run `studio-test` and `studio-lint` fresh; keep both outputs.
 2. Build the verify-prior-fixes list from the scopes reserved for fix
@@ -463,7 +463,7 @@ runs exactly one unit, writes its state, commits, pushes, and ends the turn.
 - **Which unit:** exactly the one §0's *Where to start* picks.
   - `task k/N` with k < N: one SDD task, `T<k+1>`.
   - `N/N` without a `final review done` line: §5 as a whole, the fix wave
-    included, through step 6.
+    included, through step 6; §7 is not started — it is the next unit.
   - `N/N` with that line: §7 steps 1–6.
   - Never more than one.
 - **Cutting SDD's loop:** invoke SDD as §1 says. Once the task is complete
@@ -482,12 +482,18 @@ runs exactly one unit, writes its state, commits, pushes, and ends the turn.
   A rejected push is a `Ruling:` line, not a stop.
 - **Every stop** (§0's preconditions and isolation stops, §6's hard-stop
   list, §7 step 1's exit 2 and exit 3): run
-  `studio-state ledger "Stop: <reason>"`, one line, reason first. Then, only
+  `studio-state ledger "Stop: <reason>"`, one line, reason first. Where:
+  once §0 step (c) has recorded `branch`, in the feature checkout. A stop
+  before step (c) has run — the ancestor check's failed fast-forward inside
+  the worktree a new run just created included — writes its `Stop:` line in
+  the main checkout, where the runner reads it: `cd` to the path on the
+  first `worktree` line of `git worktree list --porcelain`, then run
+  `studio-state ledger` there. Then, only
   when `git branch --show-current` is not the default branch, commit it:
   `git add .studio/ledger && git commit -m "chore(studio): stop"`. A stop
-  before isolation leaves the line uncommitted in the main checkout: a hard
-  stop needs a human, and the runner reads the file either way. Then end
-  the turn.
+  on the default branch leaves the line uncommitted in the main checkout: a
+  hard stop needs a human, and the runner reads the file either way. Then
+  end the turn.
 - **§7 step 6, headless:** `ExitWorktree` `action: "keep"` runs as written.
   The "started in the feature worktree" note and the `Next:` line are
   skipped, because no human reads this session.
