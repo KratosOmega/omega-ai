@@ -4,6 +4,7 @@
 # feature ships or a stop rule fires. Reads studio state, never writes it.
 #
 #   studio-overnight start [--dry-run]   preflight, then run (dry run: print the launch line)
+#   studio-overnight start [--dry-run] <manifest>   manifest mode (overnight-lanes.sh)
 #   studio-overnight status              the live run: dir, unit, task, spend, pid
 #   studio-overnight stop                end the run after the running unit
 #
@@ -104,8 +105,10 @@ $_rules
 EOF
   "$_fn" "$@"
 }
+# print_launch ARGS — the launch line; LAUNCH_ENV (manifest mode: a story's
+# env words) replaces the default OMEGA_AUTOPILOT=1.
 print_launch() {
-  printf 'cd %s && OMEGA_AUTOPILOT=1 claude-gd -p' "$(sq "$START_DIR")"
+  printf 'cd %s && %s claude-gd -p' "$(sq "$START_DIR")" "${LAUNCH_ENV:-OMEGA_AUTOPILOT=1}"
   for _a in "$@"; do printf ' %s' "$(sq "$_a")"; done
   printf '\n'
 }
@@ -125,11 +128,15 @@ take_lock() {
 
 usage() {
   cat <<EOF
-usage: $SELF_ABS start [--dry-run] | status | stop
+usage: $SELF_ABS start [--dry-run] [<manifest>] | status | stop
 
   start [--dry-run]  preflight, then run the approved plan one unit per fresh
                      claude-gd session until it ships or a stop rule fires.
                      --dry-run runs the preflight and prints the launch line.
+  start [--dry-run] <manifest>
+                     manifest mode (docs/runs/<slug>.md): preflight every
+                     story; --dry-run prints the chains, each chain's first
+                     launch line and the deny rule count.
   status             the live run: dir, unit, task k/N, spend, pid (exit 1: no run)
   stop               end the run after the running unit (exit 1: no run)
 
@@ -182,12 +189,21 @@ LOCK="$STATE_ROOT/.studio/overnight.lock"
 STOP_FILE="$STATE_ROOT/.studio/overnight.stop"
 REPORTS="$STATE_ROOT/.studio/reports"
 
+# preflight [manifest] — bundle 2's checks. With `manifest`, the single-plan
+# checks (spec, plan, ledger, stage on STATE.md) are skipped and a failure
+# does not exit: overnight-lanes.sh adds its checks, then exits on any.
 preflight() {
   FAILED=0
+  _pf_mf="${1:-}"
   _stage="$(state get stage 2>/dev/null)" || {
     refuse "no studio state here (run from the project checkout)"
     exit 2
   }
+  if [ -n "$_pf_mf" ]; then
+    if [ -n "$(git -C "$START_DIR" status --porcelain -- .studio/config.json 2>/dev/null)" ]; then
+      refuse "uncommitted .studio/config.json — commit it first"
+    fi
+  else
   plan="$(state get plan 2>/dev/null)"
   spec="$(state get spec 2>/dev/null)"
   case "$spec:$plan" in
@@ -205,10 +221,11 @@ preflight() {
   if [ -n "$(git -C "$START_DIR" status --porcelain -- .studio/ledger .studio/config.json 2>/dev/null)" ]; then
     refuse "uncommitted ledger change — read the Stop: line, resolve it, commit"
   fi
+  fi
   case "${STUDIO_OVERNIGHT_SESSION_SECONDS:-0}" in
     *[!0-9]*) refuse "STUDIO_OVERNIGHT_SESSION_SECONDS must be a whole number of seconds, got ${STUDIO_OVERNIGHT_SESSION_SECONDS}" ;;
   esac
-  case "$_stage" in
+  [ -n "$_pf_mf" ] || case "$_stage" in
     plan|execute) ;;
     *) refuse "stage $_stage: nothing approved to run" ;;
   esac
@@ -250,7 +267,7 @@ preflight() {
   if lock_live; then
     refuse "a run is live (pid $(lock_pid)) — studio-overnight status"
   fi
-  [ "$FAILED" -eq 0 ] || exit 2
+  [ -n "$_pf_mf" ] || [ "$FAILED" -eq 0 ] || exit 2
 }
 
 # ledger_of DIR — the feature ledger's lines as `studio-state show` prints
@@ -447,6 +464,21 @@ story_units() {
 }
 
 cmd_start() {
+  # Manifest mode: the first non-flag argument names the manifest (D18).
+  _mf=""
+  for _a in "$@"; do
+    case "$_a" in
+      --dry-run) ;;
+      -*) usage >&2; exit 2 ;;
+      *) [ -z "$_mf" ] || { usage >&2; exit 2; }; _mf="$_a" ;;
+    esac
+  done
+  if [ -n "$_mf" ]; then
+    preflight manifest
+    . "$SELF_DIR/overnight-lanes.sh"
+    lanes_start "$@"
+    exit $?
+  fi
   _dry=0
   case "${1:-}" in
     '') ;;
