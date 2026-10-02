@@ -492,6 +492,25 @@ test_execute_lanes() {
   assert_contains "$E" '`studio-state ledger "Stop: <the printed message>"` (not `gate red`)' "a lane engine stop is not gate red"
 }
 
+test_execute_land_and_progress() {
+  E="$REPO_ROOT/studios/game-dev/skills/execute/SKILL.md"
+  assert_contains "$E" '^## 9. Landing repair (--land)' "§9 exists"
+  assert_contains "$E" 'git merge --no-edit origin/<Target>' "the repair merges the target"
+  assert_contains "$E" 'never rebase' "and never rebases"
+  assert_contains "$E" 'STUDIO_REPAIR=red:<log path>' "a red merge command's log is read"
+  assert_contains "$E" 'fix(land): <summary>' "the repair commit"
+  assert_contains "$E" 'Repair: <summary>' "the ledger line the runner reads"
+  assert_contains "$E" 'never runs the merge command' "the repair never lands"
+  assert_contains "$E" '^## 10. Run progress (--progress)' "§10 exists"
+  assert_contains "$E" 'docs(progress): <slug>' "one progress commit per run"
+  assert_contains "$E" 'bypasses §0' "§10 bypasses §0's gate and isolation"
+  assert_contains "$E" 'STUDIO_RUN names a readable manifest' "§10 states its preconditions"
+  assert_contains "$E" 'is retried, as §0 and §7 do.' "§9 carries the git-lock retry rule"
+  assert_contains "$E" 'no session merges into `main` (the default branch) in any' "never-merge names main"
+  assert_contains "$E" '^- `--land`' "§1 lists --land"
+  assert_contains "$E" '^- `--progress`' "§1 lists --progress"
+}
+
 run_tests test_plugin_manifests test_skill_frontmatter test_agent_frontmatter \
   test_external_references_declared test_required_plugins_enabled test_bin_syntax \
   test_role_agents_exist test_stage_skill_contracts test_plan_skill_contract \
@@ -500,4 +519,4 @@ run_tests test_plugin_manifests test_skill_frontmatter test_agent_frontmatter \
   test_stage_chain test_execute_contract test_agent_contracts test_feature_checkout_copies test_next_lines \
   test_review_contract test_on_demand_skills_keep_stage test_playtest_contract test_retro_contract \
   test_no_ship_references test_superpowers_requires_referenced test_no_last_playtest_callers \
-  test_execute_one_contract test_router_overnight_lock test_execute_lanes
+  test_execute_one_contract test_router_overnight_lock test_execute_lanes test_execute_land_and_progress

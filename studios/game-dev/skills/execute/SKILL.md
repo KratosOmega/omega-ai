@@ -199,6 +199,12 @@ apply in inline mode too, and so do §4a's re-review and no-third-pass rules
 (3 and 4); §2's dispatch and §4 do not, and you make each fix yourself where
 §4a and §5 dispatch a fresh agent.
 
+Two more modes are units only the overnight runner launches (the headless
+rules of §8 apply to both):
+
+- `--land`: the landing repair unit (§9), launched when a landing conflicts or the merge command refuses.
+- `--progress`: the run's PROGRESS entry unit (§10), launched once per run.
+
 ## 2. Who implements (subagent-driven mode)
 
 Dispatch the agent named by the task's `Role:` line with the Agent tool
@@ -605,3 +611,55 @@ runs exactly one unit, writes its state, commits, pushes, and ends the turn.
   `report.md` is the morning report.
 - `--one` with `--inline` is refused with a `Stop:` line (subagent-driven
   only).
+
+## 9. Landing repair (--land)
+
+The runner launches this unit when a landing conflicts or the merge command
+refuses: prompt `/game-dev:execute --land`, in the story's worktree, with
+`STUDIO_STORY`, `STUDIO_RUN`, `OMEGA_AUTOPILOT=1` and `STUDIO_REPAIR` set.
+It bypasses §0's stage gate: these preconditions replace it, and any miss is
+a `Stop:` line (§8's stop rule).
+
+- **Preconditions:** `stage idle`, a `shipped` line in the ledger, and
+  `STUDIO_REPAIR` set.
+- **Enter the feature checkout** through `studio-state worktree`.
+- **Merge the target:** `git fetch origin`, then
+  `git merge --no-edit origin/<Target>`. Merge, never rebase: the branch is
+  already pushed and force-push is denied.
+- **Resolve:** `STUDIO_REPAIR=conflict` means that merge conflicts.
+  `STUDIO_REPAIR=red:<log path>` means the merge command refused: read the
+  landing log at that path. Dispatch one fresh fixer (§5 step 5's owning
+  role) with the conflict, or with the failing output from the log.
+- **Gate:** the story's gate, §7 step 1, up to three runs, through
+  `studio-test` (which holds the gate lock).
+- **Commit and record:** commit `fix(land): <summary>`, push the story
+  branch, then `studio-state ledger "Repair: <summary>"`, committed and
+  pushed. The runner reads that `Repair:` line to retry the landing once.
+- **Red after three runs:** `studio-state ledger "Stop: land repair red — <failing line>"`,
+  committed and pushed, and end the turn.
+- A git write whose stderr says `could not lock` or `cannot lock ref` is retried, as §0 and §7 do.
+- **Never lands:** no session merges into `main` (the default branch) in any
+  run mode; the runner lands. This unit never merges into the target, never
+  pushes the target or `main`, and never runs the merge command.
+- One unit: end the turn.
+
+## 10. Run progress (--progress)
+
+The runner launches this unit once per run, after the stories: prompt
+`/game-dev:execute --progress`, `OMEGA_AUTOPILOT=1`, cwd the run's progress
+worktree (integration: the integration worktree; direct: `progress/<slug>`),
+`STUDIO_RUN` set and no `STUDIO_STORY`. It bypasses §0's stage gate and
+isolation: the state is idle after the stories' `reset --keep-ledger`, and
+there is no plan to read.
+
+- **Preconditions:** cwd is a git worktree, `STUDIO_RUN names a readable manifest`,
+  and `docs/game-dev/PROGRESS.md` exists. Otherwise `Stop: <reason>` and end the turn.
+- **One `game-dev:producer` dispatch**, briefed with the manifest at
+  `$STUDIO_RUN` and, for each landed story (`landed.tsv` in
+  `<STATE_ROOT>/.studio/runs/<slug>/`), its spec's `## Purpose` and its story
+  ledger, read with `git show <landed sha>:.studio/ledger/<id>.md`.
+- **One PROGRESS entry for the run**, committed as `docs(progress): <slug>`.
+  A unit that makes no commit is red.
+- **It does not push** and no session merges into `main` (the default
+  branch) in any run mode: the runner pushes and lands the entry.
+- One unit: end the turn.
