@@ -14,6 +14,32 @@ approval page in `artifacts/`.
 
 ## Log
 
+### 2026-10-01 — Overnight runner (issue #17)
+
+- `studio-overnight start` runs an approved plan from a plain terminal:
+  one fresh `claude -p` session per unit (each task, final review, finish),
+  ends in a draft PR, and writes `units.tsv` and a morning `report.md`
+  (how the run ended, cost, rulings to check, play list, PR, resume).
+- Autopilot prints the runner command instead of driving the session;
+  `omega-caffeine` and the `CronCreate` heartbeat are retired.
+- Live probe on 2.1.287 (D1-D6): slash commands expand under `-p`;
+  `EnterWorktree` works; deny rules hold, including mid-command wildcards
+  (`git push * --force*`); `total_cost_usd` is present; a unit starts at
+  about 39k context; Ctrl-C aborted a backgrounded session, so the launch
+  uses `set -m`.
+- D7: the spec's wait loop was wrong (a second `wait` on a reaped child
+  returns 127), so the status is read inside the loop.
+- Review fixes: a watchdog teardown race marked every unit `timed_out`; a
+  `mkdir` claim on `.ended` fixes it. Beyond the spec, SIGHUP ends the live
+  session group before unlocking. A stop before isolation writes its
+  `Stop:` line in the launch checkout and is never committed.
+- Gate: `sh tests/run_all.sh` green (1,803+ assertions, 0 failed).
+- Play before merging: 2 items pending (P1 live two-task run to a draft
+  PR; P2 the morning report answers everything without opening a log).
+- Branch `worktree-issue-17-overnight-runner`. Spec
+  `specs/2026-10-01-overnight-runner.md`, plan
+  `plans/2026-10-01-overnight-runner.md`.
+
 ### 2026-10-01 — Slim pipeline (issue #9)
 
 - The stage chain is `idle → brainstorm → plan → execute → idle`, with a

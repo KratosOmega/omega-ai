@@ -28,7 +28,6 @@ set -u
 
 ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 MODE="$ROOT/bin/omega-mode"
-CAFFEINE="$ROOT/bin/omega-caffeine"
 
 input="$(cat 2>/dev/null || true)"
 sid="$(printf '%s' "$input" | tr '\n' ' ' \
@@ -107,11 +106,8 @@ if [ -n "$skill" ]; then
     autopilot)
       # `off` only: a bare /omega:autopilot arms nothing. The skill sets the
       # mode after its pre-flight, so open questions never run unattended.
-      # The keep-awake process is stopped first: its pid lives on the line
-      # that clear removes, so the skill's own stop would find nothing.
       case "$args" in
         off)
-          sh "$CAFFEINE" --session "$sid" stop >/dev/null 2>&1 || true
           sh "$MODE" --session "$sid" clear autopilot >/dev/null ;;
       esac ;;
     integration)

@@ -109,7 +109,7 @@ test_bin_syntax() {
   for f in "$REPO_ROOT"/studios/*/bin/* "$REPO_ROOT"/studios/*/engines/*/*.sh "$REPO_ROOT"/studios/*/hooks/*.sh \
            "$REPO_ROOT"/shared/omega/bin/* "$REPO_ROOT"/shared/omega/hooks/*.sh; do
     [ -f "$f" ] || continue
-    case "$(basename "$f")" in .gitkeep) continue ;; esac
+    case "$(basename "$f")" in .gitkeep|*.txt) continue ;; esac
     rel="${f#"$REPO_ROOT"/}"
     assert_status 0 "$rel parses as POSIX sh" -- sh -n "$f"
     TESTS_RUN=$((TESTS_RUN + 1))
@@ -421,6 +421,37 @@ test_no_last_playtest_callers() {
   assert_eq "" "$hits" "no studio or omega file names last_playtest"
 }
 
+test_execute_one_contract() {
+  S="$REPO_ROOT/studios/game-dev/skills/execute/SKILL.md"
+  assert_contains "$S" "^## 8. One unit (--one)$" "execute has the --one section"
+  assert_contains "$S" "exactly one unit" "--one runs exactly one unit"
+  assert_contains "$S" "no next implementer is dispatched" "--one cuts SDD's loop after one task"
+  assert_contains "$S" "overrides SDD's instruction to continue to the next task" "the cut overrides SDD"
+  assert_contains "$S" "^    .git push -u origin <branch>.;$" "§8 task unit ends with the push (not §7 step 4)"
+  assert_contains "$S" 'studio-state ledger "Stop: <reason>"' "every stop writes a Stop: line under --one"
+  assert_contains "$S" 'git commit -m "chore(studio): stop"' "the Stop: line is committed in a feature checkout"
+  assert_contains "$S" "A rejected push is a \`Ruling:\` line, not a stop" "a rejected push is a ruling"
+  assert_contains "$S" "never runs \`omega:handoff\`" "--one writes no handoff"
+  assert_contains "$S" "\`--one\` with \`--inline\` is refused" "--one is subagent-driven only"
+  assert_contains "$S" "Under \`--one\`, see §8" "the sections that stop or continue point at §8"
+  assert_eq 6 "$(grep -c 'Under `--one`, see §8' "$S")" "six pointers: §0, §1, §5 opening, §5 step 6, §7 step 6, §7 step 7"
+  assert_eq 1 "$(sed -n '/^## 1\. Mode$/,/^\*\*`--inline`\.\*\*/p' "$S" | grep -c 'Under `--one`, see §8')" "§1's pointer sits on the SDD-loop paragraph"
+  assert_eq 1 "$(sed -n '/^## 5\. Final review$/,/^1\. Run/p' "$S" | grep -c 'Under `--one`, see §8')" "§5 opens with a pointer, so a task unit cannot slide into §5"
+  assert_contains "$S" "through step 6; §7 is not started" "the final-review unit does not start §7"
+  assert_contains "$S" "writes its \`Stop:\` line in the checkout this session was launched in" "a stop before (c) is written in the launch checkout the runner reads"
+  assert_contains "$S" "That line is never committed, whatever branch is checked out" "a stop before (c) is never committed (D9)"
+  assert_not_contains "$S" "the main checkout, where the runner reads it" "a stop before (c) is not routed to the main checkout"
+  assert_not_contains "$S" "before isolation leaves" "no 'before isolation' wording for the uncommitted stop"
+}
+
+test_router_overnight_lock() {
+  S="$REPO_ROOT/studios/game-dev/skills/studio/SKILL.md"
+  assert_contains "$S" ".studio/overnight.lock" "the router checks the runner's lock"
+  assert_contains "$S" "Overnight run in progress (pid <pid>) — studio-overnight status" "the router names status when a run is live"
+  assert_contains "$S" "routes nothing else" "a live run blocks routing"
+  assert_contains "$S" "\`studio-overnight status\`; exit 0 is the liveness test" "the router tests liveness with status exit 0"
+}
+
 run_tests test_plugin_manifests test_skill_frontmatter test_agent_frontmatter \
   test_external_references_declared test_required_plugins_enabled test_bin_syntax \
   test_role_agents_exist test_stage_skill_contracts test_plan_skill_contract \
@@ -428,4 +459,5 @@ run_tests test_plugin_manifests test_skill_frontmatter test_agent_frontmatter \
   test_studio_skill_contract test_game_dev_agent_roster test_stage_skills_dispatch_agents \
   test_stage_chain test_execute_contract test_agent_contracts test_feature_checkout_copies test_next_lines \
   test_review_contract test_on_demand_skills_keep_stage test_playtest_contract test_retro_contract \
-  test_no_ship_references test_superpowers_requires_referenced test_no_last_playtest_callers
+  test_no_ship_references test_superpowers_requires_referenced test_no_last_playtest_callers \
+  test_execute_one_contract test_router_overnight_lock

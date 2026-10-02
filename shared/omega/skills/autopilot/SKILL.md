@@ -7,10 +7,10 @@ description: Use when a long run must proceed with nobody at the keyboard — an
 
 **Announce at start:** "Using omega:autopilot — pre-flight first."
 
-`off`: `omega-caffeine stop`, `CronDelete` the heartbeat (`CronList` finds
-it), `omega-mode clear autopilot`, then stop. `omega-mode` and
-`omega-caffeine` are on `PATH` inside a studio; the session-start line
-names their paths otherwise.
+`off`: `omega-mode clear autopilot`; then, when `studio-overnight status`
+exits 0 (a run is live), `studio-overnight stop`; then stop. `omega-mode`
+and `studio-overnight` are on `PATH` inside a studio; the session-start
+line names `omega-mode`'s path otherwise.
 
 > This mode changes how work is scheduled, saved, merged or stopped. It never
 > removes a gate: approvals, reviewers, tests, `Verify:` rules and the
@@ -20,15 +20,20 @@ names their paths otherwise.
 > scheduling, merge mechanics or when to stop, this mode wins; when they
 > disagree about a gate, the invoking skill wins.
 
-Two phases. Phase 1 is interactive and ends by setting the mode. Phase 2
-is what the mode means while it is set.
+Two phases. Phase 1 is interactive and ends, in a studio, by printing the
+`studio-overnight` command that runs the plan in fresh headless sessions;
+outside a studio, by setting the mode. Phase 2 is what the mode means while
+it is set.
 
 ## Phase 1 — pre-flight, interactive
 
-Phase 1 runs with no `autopilot` mode: `omega-mode show` must not list
-it; when it does (a previous run's leftover), disarm first — the
-**Disarm** bullet of phase 2: `omega-caffeine stop`, `CronDelete` any
-heartbeat, then `omega-mode clear autopilot`.
+Phase 1 runs with no session-file `autopilot` mode. An attended phase 1
+session never has `OMEGA_AUTOPILOT=1`, so an `autopilot` line in
+`omega-mode show` without `source=env` is a previous run's leftover: clear
+it first with `omega-mode clear autopilot`. When `OMEGA_AUTOPILOT=1` is set
+(`omega-mode show` lists `autopilot source=env`), the runner started this
+session and nobody can answer a sweep: phase 1 does not run — stop and say
+so; phase 2 governs the session.
 
 1. **Design and plan as the studio does — unless that is done.** When the
    spec and the plan are already approved and committed — the studio
@@ -40,9 +45,6 @@ heartbeat, then `omega-mode clear autopilot`.
    studio; `superpowers:brainstorming` then `superpowers:writing-plans`
    when installed and no studio is present; otherwise a spec and a plan
    written by hand and approved by the user. Their approval gates stand.
-   Arm from a fresh session: run `/clear` first. `/clear` ends a session,
-   and its SessionEnd hook clears every omega mode that session set — a
-   `/clear` after arming disarms the run.
 2. **Question sweep.** Read the approved spec and plan. List every decision
    the implementation could still meet: naming, error handling, test depth,
    tie-breaks between two acceptable patterns, what to do when a tool is
@@ -53,10 +55,11 @@ heartbeat, then `omega-mode clear autopilot`.
    per `AskUserQuestion`, until none is left. Write each answer into the
    plan under a `## Decisions` section (add it after Global Constraints
    when absent), so phase 2 reads the plan, not memory.
-3. **Commit and push** the spec, the plan and the ledger:
+3. **Commit** the spec, the plan and the ledger:
    `git add <spec> <plan> <ledger paths>`,
-   `git commit -m "docs: approve <topic> for autopilot"`,
-   `git push -u origin <branch>`.
+   `git commit -m "docs: approve <topic> for autopilot"`. In a studio,
+   commit only: the run's first task unit pushes the feature branch.
+   Outside a studio, also push: `git push -u origin <branch>`.
 4. **Update the story**, when a tracker is detectable from the branch name:
    - `KAN-<n>` → Jira, through the Atlassian MCP when its tools are in the
      tool list: a comment with the dependency list and links to the spec
@@ -68,11 +71,13 @@ heartbeat, then `omega-mode clear autopilot`.
    - No tracker: the same text goes into the plan header, and the
      readiness checklist says so.
 5. **Readiness checklist.** Print it; every line must pass:
-   - on the feature branch, in a worktree — `git branch --show-current`,
-     and `git rev-parse --show-toplevel` is not the main checkout;
-   - the plan is approved and committed — `git log -1 --format=%h -- <plan>`
-     prints a hash and `git status --porcelain -- <spec> <plan>` prints
-     nothing;
+   - in a studio: `studio-overnight start --dry-run` exits 0 (the runner's own preflight: plan approved and committed, `## Decisions`, stage, `claude-gd`, `gh`, deny list, config, no live run);
+   - outside a studio: the feature branch is checked out in a worktree —
+     `git branch --show-current`, and `git rev-parse --show-toplevel` is
+     not the main checkout;
+   - outside a studio: the plan is approved and committed —
+     `git log -1 --format=%h -- <plan>` prints a hash and
+     `git status --porcelain -- <spec> <plan>` prints nothing;
    - the baseline test run is green — the project's test command, `exit 0`;
    - `gh auth status` succeeds;
    - the engine or runtime binary the plan needs resolves — `studio-test`
@@ -81,38 +86,38 @@ heartbeat, then `omega-mode clear autopilot`.
      every item of the sweep.
 
    A failed line stops here; fix it and print the checklist again.
-6. **Arm.** In this order, once every checklist line passes:
-   1. `omega-mode set autopilot`.
-   2. `omega-caffeine start` — report its line. `running <pid>` means the
-      machine stays awake for twelve hours; `unsupported` is a warning,
-      not a stop: the machine may sleep, and the run resumes from the
-      last push.
-   3. `CronCreate` the heartbeat: cron `17,47 * * * *`, recurring, prompt
-      verbatim:
-      `Autopilot heartbeat. Run omega-mode show. If it does not list autopilot: CronDelete this job and stop. Otherwise re-invoke the run's execution skill on the next unfinished task per omega:autopilot phase 2; ask nothing.`
-      It fires only while the session is idle — a turn that ended early
-      gets its nudge within half an hour, a running turn costs nothing —
-      and expires after seven days. The nudge re-invokes the execution
-      skill; it never has the fresh turn do a task by hand, as the
-      precedence block says.
-   4. Tell the user to start the run — `/game-dev:execute`, or the plan's
-      execution skill — saying in the same message what the run may do
-      (commit; push after every task; open a draft PR; write the handoff)
-      and may not do (merge; force-push; delete a remote branch;
-      destructive or security-sensitive operations; read or write
-      secrets), that the permission mode must allow the run's tools
-      unattended — a permission prompt is a question nobody answers — and
-      that if the run is not started by then, the
-      heartbeat starts it at the next :17 or :47 — switch the permission
-      mode before that.
+6. **Hand off**, once every checklist line passes.
 
-   A resumed session that finds `autopilot` already set (a crash, not a
-   leftover — the handoff file names the run) repeats steps 2–3; the
-   heartbeat is session-only and does not survive a restart.
+   **In a studio**, set no mode — the runner sets `OMEGA_AUTOPILOT=1` for
+   each session it starts. Print, in one message:
+   - the command, with absolute paths: the runner's path is
+     `command -v studio-overnight` from this session (it is on `PATH` only
+     inside a `claude-gd` session) and the checkout is
+     `studio-state root --work`, printed as `cd '<dir>' && '<abs>' start`;
+   - what the run may do: commit, push the feature branch, open a draft PR;
+   - what it may not do: merge, force-push, delete a remote branch,
+     destructive or security-sensitive operations, read or write secrets;
+   - how to watch and end it: `studio-overnight status` and
+     `studio-overnight stop`;
+   - that the morning `report.md` lands in `.studio/reports/overnight-<ts>/`;
+   - that this session can now close.
+
+   **Outside a studio**, `omega-mode set autopilot`, then tell the user to
+   start the run in this session — the plan's execution skill — saying in
+   the same message what the run may do (commit; push after every task;
+   open a draft PR; write the handoff) and may not do (merge; force-push;
+   delete a remote branch; destructive or security-sensitive operations;
+   read or write secrets), and that the permission mode must allow the
+   run's tools unattended — a permission prompt is a question nobody
+   answers. Nothing keeps the machine awake and nothing re-prompts an idle
+   session. Arm (`omega-mode set autopilot`) from a fresh session and do not
+   `/clear` after arming — a `/clear` runs session-end's `clear --all` and
+   disarms the run.
 
 ## Phase 2 — unattended
 
-While `omega-mode show` lists `autopilot`:
+While `omega-mode show` lists `autopilot` — from the session file, or as
+`autopilot source=env` in a session the runner started:
 
 - **No questions.** `AskUserQuestion` is never called. An open decision is
   settled by, in this order: the studio's `CLAUDE.md`; the shared
@@ -136,18 +141,21 @@ While `omega-mode show` lists `autopilot`:
   secrets.
 - **Hard stops:** the invoking skill's own — a destructive or
   security-sensitive operation the plan requires, or a plan too broken to
-  follow. On one, run `omega:handoff` without its question (the current
-  task finishes), disarm, then stop.
-- **Completion:** run `omega:handoff`. Its file carries the morning report
-  after *Where*: every ruling in order with its cost if wrong, the
-  unverified items, the PR link, the resume prompt. Then disarm.
-- **Disarm**, after the handoff on either ending, in this order:
-  `omega-caffeine stop`; `CronDelete` the heartbeat;
-  `omega-mode clear autopilot`. Clearing the mode is what lets a heartbeat
-  that was not deleted end itself: its next firing finds no `autopilot`
-  line and stops.
-
-The run always ends with `omega:handoff`, then the disarm.
+  follow.
+  - Under `source=env`: `studio-state ledger "Stop: <reason>"`, then end
+    the session. No handoff, no disarm — the runner reads the line and
+    reports.
+  - Session mode: run `omega:handoff` without its question (the current
+    task finishes), disarm, then stop.
+- **Completion:**
+  - Under `source=env`: the invoking skill's unit ends the session (one
+    unit per session under `--one`); the runner starts the next session or
+    writes the report.
+  - Session mode: run `omega:handoff`. Its file carries the morning report
+    after *Where*: every ruling in order with its cost if wrong, the
+    unverified items, the PR link, the resume prompt. Then disarm.
+- **Disarm**, session mode only, after the handoff on either ending:
+  `omega-mode clear autopilot`.
 
 ## What this changes, and what it never changes
 
@@ -166,5 +174,5 @@ gates, the reviewer per task, the tests.
 | "I'll explain the cost in the next paragraph" | The cost if wrong goes on the Ruling line itself, or a plain grep for it fails. |
 | "A file's already committed this way, drop the question" | Only the plan's `## Decisions` section retires a swept item — a commit or a ledger entry from a prior run does not. |
 | "The plan is unclear, I'll stop and ask" | Unclear is a ruling; *broken* is a hard stop. Decide which, log it. |
-| The hook block already says `autopilot` while questions are still open | Disarm (stop, `CronDelete`, clear); the mode is set only when the checklist passes. |
-| "The run is done, the heartbeat can stay" | A live heartbeat with no run spends a turn every 30 minutes until the session ends. Disarm. |
+| The hook block already says `autopilot` while questions are still open | Clear it (`omega-mode clear autopilot`); the mode is set only when the checklist passes. |
+| "I'll start the next task while I'm here" | Under `--one`: one unit, then end. The runner starts the next session. |

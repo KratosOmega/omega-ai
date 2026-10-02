@@ -142,7 +142,7 @@ test_install_copy_mode() {
     "copy-mode shim points the studio root at the snapshot"
   assert_contains "$TMP/cp/.omega-ai-manifest" "$TMP/cp/studio" "manifest records the snapshot"
   assert_file "$TMP/cp/global/.claude-plugin/plugin.json" "copy mode snapshots the global plugin under the target"
-  for tool in omega-mode omega-caffeine; do
+  for tool in omega-mode; do
     assert_file "$TMP/cp/global/bin/$tool" "the global snapshot carries $tool"
     TESTS_RUN=$((TESTS_RUN + 1))
     if [ -x "$TMP/cp/global/bin/$tool" ]; then

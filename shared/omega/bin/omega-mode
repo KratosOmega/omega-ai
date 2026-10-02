@@ -13,6 +13,10 @@
 # the Bash tool's environment; the hooks pass the id they read from stdin).
 # An empty file is deleted, never left behind.
 #
+# OMEGA_AUTOPILOT=1 (set by the overnight runner): show and brief need no
+# session id and list "autopilot source=env" after the file's lines, unless
+# the file has its own autopilot line. set, clear and path are unchanged.
+#
 # Exit codes: 0 ok (show, brief and clear exit 0 even with no file); 1 for
 # a usage error, no session id, or an invalid session id, mode name or pair.
 #
@@ -53,22 +57,27 @@ done
 VERB="$1"; shift
 case "$VERB" in set|clear|show|path|brief) ;; *) usage ;; esac
 
-[ -n "$SESSION" ] || die "no session id: set CLAUDE_CODE_SESSION_ID or pass --session <id>"
-case "$SESSION" in
-  .|..|*[!A-Za-z0-9._-]*) die "invalid session id: $SESSION" ;;
-esac
+if [ -z "$SESSION" ] && { [ "$VERB" = show ] || [ "$VERB" = brief ]; } && [ "${OMEGA_AUTOPILOT:-}" = 1 ]; then
+  # The overnight runner: no session file, the environment alone speaks.
+  FILE=
+else
+  [ -n "$SESSION" ] || die "no session id: set CLAUDE_CODE_SESSION_ID or pass --session <id>"
+  case "$SESSION" in
+    .|..|*[!A-Za-z0-9._-]*) die "invalid session id: $SESSION" ;;
+  esac
 
-# The "/.claude" fallback below is absolute on its own, so checking $DIR
-# for a leading "/" (next) cannot tell an unset HOME apart from one set
-# normally; catch both unset here first, before HOME's absence is silently
-# read as "/.claude".
-[ -n "${CLAUDE_CONFIG_DIR:-}" ] || [ -n "${HOME:-}" ] || die "no config dir: set CLAUDE_CONFIG_DIR or HOME"
-DIR="${CLAUDE_CONFIG_DIR:-${HOME:-}/.claude}/omega/modes"
-case "$DIR" in
-  /*) ;;
-  *) die "no config dir: set CLAUDE_CONFIG_DIR or HOME" ;;
-esac
-FILE="$DIR/$SESSION"
+  # The "/.claude" fallback below is absolute on its own, so checking $DIR
+  # for a leading "/" (next) cannot tell an unset HOME apart from one set
+  # normally; catch both unset here first, before HOME's absence is silently
+  # read as "/.claude".
+  [ -n "${CLAUDE_CONFIG_DIR:-}" ] || [ -n "${HOME:-}" ] || die "no config dir: set CLAUDE_CONFIG_DIR or HOME"
+  DIR="${CLAUDE_CONFIG_DIR:-${HOME:-}/.claude}/omega/modes"
+  case "$DIR" in
+    /*) ;;
+    *) die "no config dir: set CLAUDE_CONFIG_DIR or HOME" ;;
+  esac
+  FILE="$DIR/$SESSION"
+fi
 
 # valid_mode NAME — lowercase letters, digits and dashes; starts with a
 # letter; no trailing dash.
@@ -143,16 +152,22 @@ mode_clear() {
   fi
 }
 
+# env_line — "autopilot source=env" when OMEGA_AUTOPILOT=1 and the session
+# file has no autopilot line of its own; nothing otherwise.
+env_line() { [ "${OMEGA_AUTOPILOT:-}" = 1 ] || return 0; [ -n "$FILE" ] && [ -f "$FILE" ] && awk '$1 == "autopilot" { f = 1 } END { exit !f }' "$FILE" && return 0; echo "autopilot source=env"; }
+
 mode_show() {
-  [ -f "$FILE" ] && cat "$FILE"
+  [ -n "$FILE" ] && [ -f "$FILE" ] && awk '{ print }' "$FILE"   # awk ends a newline-less last line
+  env_line
   return 0
 }
 
 # The rule lines are the summary of the precedence contract every mode skill
 # carries; they are fixed text so the hooks never invent them.
 mode_brief() {
-  [ -s "$FILE" ] || return 0
-  _heads="$(awk 'BEGIN { ORS = "" } NR > 1 { printf " · " } { printf "%s", $0 }' "$FILE")"
+  _in="$({ [ -n "$FILE" ] && [ -f "$FILE" ] && awk '{ print }' "$FILE"; env_line; })"
+  [ -n "$_in" ] || return 0
+  _heads="$(printf '%s\n' "$_in" | awk 'BEGIN { ORS = "" } NR > 1 { printf " · " } { printf "%s", $0 }')"
   printf 'Omega modes: %s\n' "$_heads"
   while IFS= read -r _l; do
     _m="${_l%% *}"
@@ -173,13 +188,19 @@ mode_brief() {
         [ -n "$_slug" ] || _slug="<slug>"
         printf '  integration: story branches PR into integration/%s; docs/integrations/%s.md is the set; finish only when every row is merged.\n' "$_slug" "$_slug" ;;
       autopilot)
-        printf '  autopilot: never AskUserQuestion — rule by the standards, log the ruling with its cost if wrong, continue; commit, push and open a PR, never merge; end with handoff.\n' ;;
+        if [ "$_rest" = "source=env" ] && [ "${OMEGA_AUTOPILOT:-}" = 1 ]; then
+          printf '  autopilot (overnight runner): never AskUserQuestion — rule by the standards, log the ruling with its cost if wrong, continue; commit, push and open a draft PR, never merge; on a hard stop write Stop: <reason> to the ledger and end; no handoff — the runner starts the next session.\n'
+        else
+          printf '  autopilot: never AskUserQuestion — rule by the standards, log the ruling with its cost if wrong, continue; commit, push and open a PR, never merge; end with handoff.\n'
+        fi ;;
       delegate)
         printf '  delegate: the main session dispatches, reads reports and runs status commands; every edit, search and document goes to a subagent; never fix by hand.\n' ;;
       reply)
         printf "  reply: explain and decide in one concrete scenario from the project's world, five lines at most; no paths, symbols, config keys or raw values in the prose; code, commands, exact errors, test results and warnings stay verbatim.\n" ;;
     esac
-  done < "$FILE"
+  done <<EOF
+$_in
+EOF
 }
 
 case "$VERB" in

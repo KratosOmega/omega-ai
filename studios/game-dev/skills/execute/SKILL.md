@@ -6,7 +6,8 @@ description: Use when an approved plan exists — dispatches a fresh role agent 
 # Execute
 
 **Announce at start:** "Using game-dev:execute in subagent-driven mode." (or
-"… in inline mode" when `--inline` was given).
+"… in inline mode" when `--inline` was given, "… one unit (--one)" when
+`--one` was given).
 
 ## 0. Preconditions and isolation
 
@@ -51,6 +52,8 @@ Check these first, in the checkout you are in:
   means tasks 1–3 are complete; start at 4. `studio-state` keeps the
   pointer in the project's main checkout, so every call below works the
   same from inside a worktree.
+
+Under `--one`, see §8. It changes what every stop here does.
 
 **Isolation.** First note the current branch (`git branch --show-current`)
 — the noted branch — along with the spec's and plan's noted hashes. Then:
@@ -144,6 +147,7 @@ procedures, below).
 per-task cycle: fresh implementer per task, task review after each, ledger.
 Its fix loop, its final review and its last step are replaced by §4a, §5 and
 §7 below. The studio rules in §2–§7 layer on top of it.
+Under `--one`, see §8.
 
 **`--inline`.** Only when the user passed it. Invoke
 `superpowers:executing-plans` instead and implement tasks in this session in
@@ -269,7 +273,7 @@ This overrides `superpowers:subagent-driven-development`'s fix loop (rounds 1–
 ## 5. Final review
 
 After the last task completes, and as its own dispatch — never folded into
-the last task's review:
+the last task's review. Under `--one`, see §8: a task unit never starts it.
 
 1. Run `studio-test` and `studio-lint` fresh; keep both outputs.
 2. Build the verify-prior-fixes list from the scopes reserved for fix
@@ -311,6 +315,7 @@ the last task's review:
    `git add .studio/ledger && git commit -m "chore(studio): ledger"`. The
    finish then starts from a clean ledger, so a re-run after a stop in §7
    passes §0's clean-tree check and resumes at §7 (§0, Where to start).
+   Under `--one`, see §8.
 
 ## 6. State (both modes)
 
@@ -434,6 +439,7 @@ it once §5 is done, with no question to the user:
    `/clear` resets to it), and `superpowers:using-git-worktrees` skips
    creation inside a linked worktree, so the next feature would be specced,
    planned and built on this branch and pushed into this PR.
+   Under `--one`, see §8.
 7. **Report**, in this order: the PR link (or the saved body path and the
    reason; on the default branch, that the work is committed locally); the
    play list, under `Play before merging`; the rulings, each with its cost
@@ -444,3 +450,60 @@ it once §5 is done, with no question to the user:
    ```
    Next: play the list; merge when it passes; report failures with /game-dev:playtest <what failed>; /clear before the next feature.
    ```
+
+   Under `--one`, see §8.
+
+## 8. One unit (--one)
+
+`--one` is how `studio-overnight` drives this skill: one fresh headless
+session per unit, with `OMEGA_AUTOPILOT=1` set, so `omega-mode show` lists
+`autopilot source=env` and its phase 2 rules hold. Under `--one` this skill
+runs exactly one unit, writes its state, commits, pushes, and ends the turn.
+
+- **Which unit:** exactly the one §0's *Where to start* picks.
+  - `task k/N` with k < N: one SDD task, `T<k+1>`.
+  - `N/N` without a `final review done` line: §5 as a whole, the fix wave
+    included, through step 6; §7 is not started — it is the next unit.
+  - `N/N` with that line: §7 steps 1–6.
+  - Never more than one.
+- **Cutting SDD's loop:** invoke SDD as §1 says. Once the task is complete
+  (§4a rule 6) and §6's writes are done (`set task n/N`, the `T<n> complete`
+  line, the ledger committed), no next implementer is dispatched, and when
+  n = N §5 is not started.
+  This overrides SDD's instruction to continue to the next task.
+- **What each unit writes:**
+  - a task: the task's commits, `task n/N`, the `T<n>` ledger lines, then
+    `git push -u origin <branch>`;
+  - the final review: the `fix(final)` commits, the `Review: final` and
+    `final review done` lines committed, then the push;
+  - the finish: §7 as written (`P<k> Play:` lines, the draft PR,
+    `shipped <url>`, `stage idle`, `task -`).
+
+  A rejected push is a `Ruling:` line, not a stop.
+- **Every stop** (§0's preconditions and isolation stops, §6's hard-stop
+  list, §7 step 1's exit 2 and exit 3): run
+  `studio-state ledger "Stop: <reason>"`, one line, reason first. Where:
+  - Once §0 step (c) has recorded `branch` — or a resume has entered the
+    feature checkout its recorded `branch` names — in the feature checkout,
+    then commit it there:
+    `git add .studio/ledger && git commit -m "chore(studio): stop"`.
+  - Any stop before that — §0's preconditions, §0 (a)'s stops, and a stop
+    before step (c) has recorded `branch`, the ancestor check's failed
+    fast-forward inside the worktree a new run just created included —
+    writes its `Stop:` line in the checkout this session was launched in
+    (its starting working directory: the runner's start directory, which
+    the runner always reads). If the session has already entered a new
+    worktree, return there first (`ExitWorktree` `action: "keep"`, or `cd`
+    to that directory), then run `studio-state ledger` there.
+    That line is never committed, whatever branch is checked out: a hard
+    stop needs a human, and the runner's preflight refuses a dirty ledger
+    on the re-run.
+
+  Then end the turn.
+- **§7 step 6, headless:** `ExitWorktree` `action: "keep"` runs as written.
+  The "started in the feature worktree" note and the `Next:` line are
+  skipped, because no human reads this session.
+- **No handoff:** `--one` never runs `omega:handoff`. The runner's
+  `report.md` is the morning report.
+- `--one` with `--inline` is refused with a `Stop:` line (subagent-driven
+  only).
