@@ -291,7 +291,12 @@ This overrides `superpowers:subagent-driven-development`'s fix loop (rounds 1–
 
 1. **Minor findings** never start a round. Record them as SDD records them
    (`Task <N>: minor (deferred): <one-liner>` in its progress ledger); they
-   all go to the one final fix wave after the final review (§5).
+   all go to the one final fix wave after the final review (§5). Also
+   ledger each one to the story's ledger,
+   `studio-state ledger "T<n> minor (deferred): <one-liner>"`.
+   `studio-brief final` reads only the story ledger (the feature ledger
+   outside a lane), never SDD's progress ledger, so under a lane (and any `--one` run) the final-review unit
+   sees a deferred minor only through this line.
 2. **A round** — for the Critical and Important findings of one review pass
    — is one dispatch of a **fresh** agent of the task's `Role:` (§2's
    dispatch rule, the C# exception included). Its brief carries:
@@ -326,7 +331,8 @@ This overrides `superpowers:subagent-driven-development`'s fix loop (rounds 1–
    `T<n> Review: <one line>` (§6).
 6. A task is complete — `set task n/N`, `T<n> complete` — when its review is
    clean, its last round was accepted under rule 3, or what remains is
-   parked under rule 4.
+   parked under rule 4. A `Review: final` task is complete once its implementer's tests pass
+   (the summary line it pasted); it gets no review here, and its findings fold into the final review (§5).
 
 ## 5. Final review
 
@@ -361,7 +367,10 @@ the last task's review. Under `--one`, see §8: a task unit never starts it.
      a finding of the original severity;
    - SDD's deferred-minor and parked lines — triage which must be fixed
      before merge;
-   - the `studio-test` and `studio-lint` output from step 1;
+   - the `studio-test` and `studio-lint` output from step 1. Under a lane, in place of that output, the brief says
+     "step 1 skipped under a lane: no fresh test run; each task's tests
+     ran in its implementer, and the finish gate runs the full gate after
+     the fix wave" — nothing is run to produce it;
    - "review only — do not fix".
 4. Ledger:
    `studio-state ledger "Review: final — <Findings line>; unmet: <list or none>"`.

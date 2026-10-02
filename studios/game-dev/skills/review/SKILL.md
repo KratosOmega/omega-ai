@@ -186,4 +186,4 @@ The user may defer any finding. A deferred finding is written to the plan's
   command, and never fix in the main session.
 - Findings are not negotiable by rewording: a finding is closed by a commit
   or by the user deferring it, not by explaining it away.
-- Never merge, and never change `stage`.
+- Never merge: no session merges anything in any run mode, nothing into `main` (the default branch); the runner lands. Never change `stage`.

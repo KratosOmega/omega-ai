@@ -534,6 +534,22 @@ test_plan_brainstorm_lanes() {
   assert_contains "$BR" 'studio-overnight next' "brainstorm prints next's command"
 }
 
+# Final fix wave: the review skill's merge rule names main and the runner
+# (AC22); deferred minors reach the story ledger studio-brief reads; a
+# `Review: final` task can complete; §5's brief under a lane runs no tests.
+test_final_wave_contracts() {
+  R="$REPO_ROOT/studios/game-dev/skills/review/SKILL.md"
+  E="$REPO_ROOT/studios/game-dev/skills/execute/SKILL.md"
+  assert_contains "$R" 'Never merge: no session merges anything in any run mode, nothing into `main` (the default branch); the runner lands' "review's never-merge names main and the runner (AC22)"
+  assert_not_contains "$R" '^- Never merge, and never change' "review drops the bare never-merge"
+  assert_contains "$E" 'studio-state ledger "T<n> minor (deferred): <one-liner>"' "§4a rule 1 ledgers each deferred minor to the story ledger"
+  assert_contains "$E" '`studio-brief final` reads only the story ledger (the feature ledger' "§4a rule 1 says why: studio-brief final reads the story ledger"
+  assert_contains "$E" 'A `Review: final` task is complete once its implementer.s tests pass' "§4a rule 6 completes a Review: final task"
+  assert_contains "$E" 'its findings fold into the final review (§5)' "a Review: final task's findings fold into §5"
+  assert_contains "$E" 'Under a lane, in place of that output, the brief says' "§5's brief replaces the step-1 output under a lane"
+  assert_contains "$E" 'nothing is run to produce it' "§5's lane brief runs no tests"
+}
+
 run_tests test_plugin_manifests test_skill_frontmatter test_agent_frontmatter \
   test_external_references_declared test_required_plugins_enabled test_bin_syntax \
   test_role_agents_exist test_stage_skill_contracts test_plan_skill_contract \
@@ -542,5 +558,5 @@ run_tests test_plugin_manifests test_skill_frontmatter test_agent_frontmatter \
   test_stage_chain test_execute_contract test_agent_contracts test_feature_checkout_copies test_next_lines \
   test_review_contract test_on_demand_skills_keep_stage test_playtest_contract test_retro_contract \
   test_no_ship_references test_superpowers_requires_referenced test_no_last_playtest_callers \
-  test_execute_one_contract test_router_overnight_lock test_execute_lanes test_execute_land_and_progress \
+  test_execute_one_contract test_router_overnight_lock test_execute_lanes test_execute_land_and_progress test_final_wave_contracts \
   test_plan_brainstorm_lanes

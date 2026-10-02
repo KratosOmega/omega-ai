@@ -69,6 +69,8 @@ test_autopilot_contract() {
   assert_contains "$S" 'git switch run/<slug>. when it already exists' "an existing run branch is switched to"
   # Task 17 fix round 3: the story file (STATE_ROOT, shared) carries N, so a worktree rebuild needs no plan.
   assert_contains "$S" 'plan=.); .set task 0/<N>.' "every story is seeded with task 0/N in the phase-1 checkout"
+  assert_contains "$S" "awk '/^## Backlog/ { exit } /^### Task \\[0-9\\]/ { n++ } END { print n + 0 }' <plan>" "N counts only the tasks above ## Backlog"
+  assert_not_contains "$S" "grep -c '^### Task" "N is never a bare grep -c (it would count backlog tasks)"
   assert_contains "$S" 'takes .N. from the story file and never needs the plan' "a worktree rebuild reads N, not the plan file"
   assert_contains "$S" 'Write it only after the switch to .run/<slug>.' "max_lanes is written after the run branch switch"
   assert_contains "$S" 'Then, on .run/<slug>., write the lane count' "the run-branch step writes the lane count"
