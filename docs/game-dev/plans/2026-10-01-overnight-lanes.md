@@ -265,7 +265,19 @@ as D1a-D1d.
   - (d) phoenix `merge.sh`'s behaviour is read from its source and from a
     non-merging invocation. A merging run happens only in the live run (play
     list) or on a throwaway PR the user approves.
-  - D1a: pending the human close (T1 step 2).
+  - D1a detach: PASS. Run: the user typed `! env CLAUDECODE=1 CLAUDE_CODE_X=1
+    OMEGA_X=1 STUDIO_X=1 sh probe-detach.sh` in a separate `claude-gd`
+    session, then `/clear`, and closed the window. Seen: `probe.log` grew
+    unbroken every 10 s from 00:05:06 to 00:07:56 and ended `done` (19 lines)
+    after the close; the child (pid 50838) had pgid 50838 (its own group,
+    reparented to launchd); `probe.env` held none of the four prefixes. macOS
+    `ps -o sess` prints 0 for every process, so pgid == pid is the evidence.
+    Also seen: `AI_AGENT`, `CLAUDE_PID` and `CLAUDE_EFFORT` reached the child,
+    because they match none of the four prefixes. Path: T13 offers `--detach`,
+    and autopilot offers "autopilot starts it". T13 also strips every
+    `CLAUDE_*` variable and `AI_AGENT`, and keeps `CLAUDE_CONFIG_DIR` as a
+    named exception, because `CLAUDE_EFFORT` would set every runner session's
+    effort.
   - D1b: probed 2026-10-01 with `BASH_DEFAULT_TIMEOUT_MS=900000
     BASH_MAX_TIMEOUT_MS=900000 claude-gd -p "Run exactly this Bash command
     with no timeout argument and report its output: sleep 660; echo slept"
