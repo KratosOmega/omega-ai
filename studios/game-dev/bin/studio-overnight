@@ -213,12 +213,25 @@ run_unit() {
   UNIT_STEM="$1-$2"; printf '%s\n' "$2" > "$RUN_DIR/current"
   _t0="$(date +%s)"
   with_launch_args start_session
+  _secs="${STUDIO_OVERNIGHT_SESSION_SECONDS:-$((SESSION_MINUTES * 60))}"
+  rm -f "$RUN_DIR/$UNIT_STEM.timed_out"
+  # Watchdog: TERM the session's process group (D6), KILL after the grace;
+  # pkill -P is the fallback when there is no group.
+  ( sleep "$_secs"; : > "$RUN_DIR/$UNIT_STEM.timed_out"
+    kill -TERM -"$CPID" 2>/dev/null || { pkill -TERM -P "$CPID"; kill -TERM "$CPID"; }
+    sleep "$GRACE"
+    kill -KILL -"$CPID" 2>/dev/null || { pkill -KILL -P "$CPID"; kill -KILL "$CPID"; }
+  ) > /dev/null 2>&1 &
+  WPID=$!
   _st=0
   while :; do
     wait "$CPID"; _st=$?
     kill -0 "$CPID" 2>/dev/null || break
   done
+  pkill -P "$WPID" 2>/dev/null; kill "$WPID" 2>/dev/null
+  wait "$WPID" 2>/dev/null
   UNIT_EXIT="$_st"; UNIT_TIMED_OUT=0
+  [ ! -e "$RUN_DIR/$UNIT_STEM.timed_out" ] || UNIT_TIMED_OUT=1
   UNIT_MIN="$(awk -v s="$(( $(date +%s) - _t0 ))" 'BEGIN { printf "%.1f", s / 60 }')"
   UNIT_COST="$(cost_of "$RUN_DIR/$UNIT_STEM.jsonl")"; [ -n "$UNIT_COST" ] || UNIT_COST=unknown
 }
@@ -230,7 +243,10 @@ row() {  # row N LABEL OUTCOME
 write_report() {
   printf 'Ending: %s\n' "$1" > "$RUN_DIR/report.md"
 }
-unlock() { rm -f "$LOCK" "$STOP_FILE"; }
+unlock() {
+  [ -z "${INHIB_PID:-}" ] || kill "$INHIB_PID" 2>/dev/null
+  rm -f "$LOCK" "$STOP_FILE"
+}
 # finish_run REASON — report, unlock, exit (0 only for done).
 finish_run() {
   write_report "$1"
@@ -272,9 +288,23 @@ cmd_start() {
   fi
   mkdir -p "$RUN_DIR" "$(dirname "$LOCK")"
   take_lock "$RUN_DIR" || { say "lock taken by another start"; exit 2; }
-  trap 'rm -f "$LOCK"' EXIT
-  trap 'exit 130' INT
-  trap 'exit 143' TERM
+  trap 'unlock' EXIT
+  STOP_REQ=0
+  trap 'STOP_REQ=1' INT TERM
+  INHIB_PID=""
+  case "$(uname -s)" in
+    Darwin)
+      if command -v caffeinate >/dev/null 2>&1; then
+        caffeinate -i -w $$ >/dev/null 2>&1 &
+        INHIB_PID=$!
+      fi ;;
+    Linux)
+      if command -v systemd-inhibit >/dev/null 2>&1; then
+        systemd-inhibit --what=idle:sleep --why=studio-overnight sh -c "while kill -0 $$ 2>/dev/null; do sleep 60; done" >/dev/null 2>&1 &
+        INHIB_PID=$!
+      fi ;;
+  esac
+  [ -n "$INHIB_PID" ] || say "no sleep inhibitor (caffeinate or systemd-inhibit) — the machine may sleep; the run resumes with studio-overnight start"
   [ -f "$REPORTS/.gitignore" ] || printf '*\n' > "$REPORTS/.gitignore"
   _excl="$(git -C "$START_DIR" rev-parse --path-format=absolute --git-common-dir)/info/exclude"
   mkdir -p "$(dirname "$_excl")"
@@ -282,7 +312,7 @@ cmd_start() {
     grep -qxF "$_e" "$_excl" 2>/dev/null || printf '%s\n' "$_e" >> "$_excl"
   done
   rm -f "$STOP_FILE"
-  n=0; noprog=0; suffix=""; STOP_REQ=0
+  n=0; noprog=0; suffix=""
   while :; do
     { [ -f "$STOP_FILE" ] || [ "$STOP_REQ" = 1 ]; } && finish_run "stopped by user"
     # First pass takes the before-snapshot; later passes reuse the previous after-snapshot.
@@ -307,6 +337,12 @@ cmd_start() {
 case "$1" in
   start)  shift; cmd_start "$@" ;;
   status) echo "no run"; exit 1 ;;
-  stop)   echo "no run"; exit 1 ;;
+  stop)
+    if lock_live; then
+      : > "$STOP_FILE"
+      echo "stop requested: the run ends after its running unit (pid $(lock_pid))"
+      exit 0
+    fi
+    echo "no run"; exit 1 ;;
   *)      usage >&2; exit 2 ;;
 esac

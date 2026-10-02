@@ -335,7 +335,94 @@ test_overnight_overhead() {
   if [ "$g" -le 5 ]; then _pass "runner overhead between units <= 5 s (min of two: ${g}s)"; else _fail "runner overhead ${g}s > 5 s"; fi
 }
 
-run_tests test_overnight_help test_overnight_dry_run \
+# start_bg [ARGS] — the runner in the background with job control on, so it
+# is not started with SIGINT ignored (POSIX ignores it for async lists in a
+# non-interactive shell, and an ignored-on-entry signal cannot be trapped).
+start_bg() {
+  set -m 2>/dev/null
+  ( cd "$P" && exec sh "$RUNNER" start "$@" ) > "$TMP/bg.out" 2> "$TMP/bg.err" &
+  RPID=$!
+  set +m 2>/dev/null
+}
+# wait_for FILE — up to 10 s.
+wait_for() { _i=0; while [ ! -e "$1" ] && [ "$_i" -lt 50 ]; do sleep 0.2; _i=$((_i + 1)); done; }
+bg_status() { BG_STATUS=0; wait "$RPID" || BG_STATUS=$?; }
+
+test_overnight_timeout() {
+  fixture tmo; scenario "stage execute; sleep 30" "cost 1"
+  STUDIO_OVERNIGHT_SESSION_SECONDS=1; export STUDIO_OVERNIGHT_SESSION_SECONDS
+  run_start; unset STUDIO_OVERNIGHT_SESSION_SECONDS
+  assert_eq 1 "$(awk -F'\t' 'NR == 1 { print $6 }' "$(last_run_dir)/units.tsv")" "a session past its time is marked timed_out"
+  assert_eq progress "$(awk -F'\t' 'NR == 1 { print $7 }' "$(last_run_dir)/units.tsv")" "a timed-out session that moved the signature counts as progress"
+}
+
+test_overnight_kill_after_grace() {
+  fixture grace '{ "overnight": { "kill_grace_seconds": 5 } }'
+  scenario "ignoreterm; hang" "ignoreterm; hang"
+  STUDIO_OVERNIGHT_SESSION_SECONDS=1; export STUDIO_OVERNIGHT_SESSION_SECONDS
+  run_start; unset STUDIO_OVERNIGHT_SESSION_SECONDS
+  assert_eq 2 "$(calls)" "a session that ignores TERM is killed after the grace, and counted"
+  assert_contains "$(last_run_dir)/report.md" "no progress on T1" "two killed sessions with no progress stop the run"
+}
+
+test_overnight_stop_file() {
+  fixture stopf; scenario "stage execute; sleep 2; task 1/3" "task 2/3" "task 3/3"
+  start_bg; wait_for "$CALLS/1.t0"
+  out="$(cd "$P" && sh "$RUNNER" stop)"; st=$?
+  assert_eq 0 "$st" "stop exits 0 while a run is live"
+  bg_status
+  assert_eq 1 "$(calls)" "the running unit finishes and no other starts"
+  assert_contains "$(last_run_dir)/report.md" "stopped by user" "the ending says so"
+  assert_missing "$P/.studio/overnight.stop" "the stop file is removed at the end"
+}
+
+test_overnight_sigterm() {
+  fixture term; scenario "stage execute; sleep 2; task 1/3; exit 7" "task 2/3"
+  start_bg; wait_for "$CALLS/1.t0"; kill -TERM "$RPID"; bg_status
+  assert_eq 1 "$(calls)" "SIGTERM to the runner: the running unit finishes, then the run stops"
+  assert_eq 7 "$(awk -F'\t' 'NR == 1 { print $3 }' "$(last_run_dir)/units.tsv")" "the session's exit code survives the interrupted wait"
+  assert_eq 1 "$BG_STATUS" "a user stop exits 1"
+}
+
+test_overnight_sigint() {
+  fixture int; scenario "stage execute; sleep 2; task 1/3" "task 2/3"
+  start_bg; wait_for "$CALLS/1.t0"; kill -INT "$RPID"; bg_status
+  assert_eq 1 "$(calls)" "SIGINT to the runner: the running unit finishes, then the run stops"
+  assert_contains "$(last_run_dir)/report.md" "stopped by user" "SIGINT is a user stop"
+}
+
+test_overnight_stop_no_run() {
+  fixture norun
+  assert_status 1 "stop with no run exits 1" -- sh -c "cd '$P' && sh '$RUNNER' stop"
+}
+
+test_overnight_inhibitor() {
+  [ "$(uname -s)" = Darwin ] || { printf '  skip caffeinate case (not Darwin)\n'; return 0; }
+  fixture caf; done_scenario; run_start
+  pid="$(sed -n 's/^pid=//p' "$CALLS/1.lock")"
+  assert_eq "-i -w $pid" "$(cat "$CALLS/caffeinate.args")" "caffeinate -i -w <runner pid> is held for the run"
+}
+
+test_overnight_no_inhibitor() {
+  # A PATH holding only what the runner needs, and no caffeinate or
+  # systemd-inhibit.
+  fixture nocaf; done_scenario
+  mkdir -p "$TMP/minbin"
+  for u in sh git sed awk grep sort comm date ps pkill kill sleep cat mkdir rm touch \
+           head tail tr dirname basename readlink wc uname mktemp cp mv chmod env printf; do
+    p="$(command -v "$u" 2>/dev/null)" && case "$p" in /*) ln -sf "$p" "$TMP/minbin/$u" ;; esac
+  done
+  for f in claude claude-gd gh; do ln -sf "$FAKE/$f" "$TMP/minbin/$f"; done
+  RS_STATUS=0
+  ( cd "$P" && PATH="$TMP/minbin" sh "$RUNNER" start ) > "$TMP/rs.out" 2> "$TMP/rs.err" || RS_STATUS=$?
+  assert_eq 0 "$RS_STATUS" "the run continues without a sleep inhibitor"
+  assert_contains "$TMP/rs.err" "no sleep inhibitor" "one warning names the missing inhibitor"
+}
+
+run_tests test_overnight_timeout test_overnight_kill_after_grace \
+  test_overnight_stop_file test_overnight_sigterm test_overnight_sigint \
+  test_overnight_stop_no_run test_overnight_inhibitor test_overnight_no_inhibitor \
+  test_overnight_help test_overnight_dry_run \
   test_overnight_preflight_refusals test_overnight_preflight_all_failures \
   test_overnight_config_refusals test_overnight_deny_file_required \
   test_overnight_lock test_overnight_first_use_ignores \
