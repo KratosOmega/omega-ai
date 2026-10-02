@@ -25,6 +25,7 @@ if [ "${1:-}" = "--version" ]; then
 fi
 n=$(( $(cat "$CALLS/count" 2>/dev/null || echo 0) + 1 ))
 echo "$n" > "$CALLS/count"
+echo "$$" > "$CALLS/$n.pid"
 date +%s > "$CALLS/$n.t0"
 for a in "$@"; do printf '%s\n' "$a"; done > "$CALLS/$n.argv"
 pwd -P > "$CALLS/$n.pwd"
@@ -394,6 +395,20 @@ test_overnight_sigint() {
   assert_contains "$(last_run_dir)/report.md" "stopped by user" "SIGINT is a user stop"
 }
 
+test_overnight_sighup() {
+  fixture hup '{ "overnight": { "kill_grace_seconds": 5 } }'
+  scenario "stage execute; sleep 30" "task 1/2"
+  start_bg; wait_for "$CALLS/1.t0"
+  spid="$(cat "$CALLS/1.pid")"
+  kill -HUP "$RPID"; bg_status
+  assert_eq 1 "$BG_STATUS" "a closed terminal exits 1"
+  assert_contains "$(last_run_dir)/report.md" "^Ending: stop: terminal closed (SIGHUP)$" "the ending names the closed terminal"
+  assert_missing "$P/.studio/overnight.lock" "the lock is gone"
+  assert_eq dead "$(kill -0 "$spid" 2>/dev/null && echo live || echo dead)" "the running session was ended before unlock"
+  assert_eq "" "$(pgrep -g "$spid" 2>/dev/null)" "nothing in the session's process group survives"
+  assert_eq 1 "$(calls)" "no further unit starts"
+}
+
 test_overnight_stop_no_run() {
   fixture norun
   assert_status 1 "stop with no run exits 1" -- sh -c "cd '$P' && sh '$RUNNER' stop"
@@ -486,7 +501,7 @@ test_overnight_status() {
 run_tests test_overnight_report_done test_overnight_report_not_done \
   test_overnight_report_runner_error test_overnight_crash_resume test_overnight_status \
   test_overnight_timeout test_overnight_kill_after_grace \
-  test_overnight_stop_file test_overnight_sigterm test_overnight_sigint \
+  test_overnight_stop_file test_overnight_sigterm test_overnight_sigint test_overnight_sighup \
   test_overnight_stop_no_run test_overnight_inhibitor test_overnight_no_inhibitor \
   test_overnight_help test_overnight_dry_run \
   test_overnight_preflight_refusals test_overnight_preflight_all_failures \

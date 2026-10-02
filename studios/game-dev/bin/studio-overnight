@@ -235,6 +235,7 @@ run_unit() {
     wait "$CPID"; _st=$?
     kill -0 "$CPID" 2>/dev/null || break
   done
+  CPID=""
   UNIT_EXIT="$_st"; UNIT_TIMED_OUT=0
   mkdir "$_claim" 2>/dev/null || UNIT_TIMED_OUT=1
   kill "$WPID" 2>/dev/null; wait "$WPID" 2>/dev/null
@@ -287,12 +288,34 @@ finish_run() {
   [ "$1" = done ] && exit 0
   exit 1
 }
+# end_session — TERM the live session's group, poll up to GRACE seconds,
+# then KILL it, so no session outlives the lock (pkill -P/kill when there is
+# no group, as the watchdog does). The watchdog goes first: it must not act.
+end_session() {
+  [ -z "${WPID:-}" ] || { kill "$WPID" 2>/dev/null; wait "$WPID" 2>/dev/null; }
+  { [ -n "${CPID:-}" ] && kill -0 "$CPID" 2>/dev/null; } || return 0
+  kill -TERM -"$CPID" 2>/dev/null || { pkill -TERM -P "$CPID"; kill -TERM "$CPID"; } 2>/dev/null
+  _g=0
+  while { kill -0 -"$CPID" 2>/dev/null || kill -0 "$CPID" 2>/dev/null; } && [ "$_g" -lt "${GRACE:-30}" ]; do
+    sleep 1; _g=$((_g + 1))
+  done
+  kill -KILL -"$CPID" 2>/dev/null || { pkill -KILL -P "$CPID"; kill -KILL "$CPID"; } 2>/dev/null
+  wait "$CPID" 2>/dev/null
+}
 # on_exit CODE — the EXIT trap (D18): an ending that never reached
-# finish_run is a runner error; it still gets a report and unlocks.
+# finish_run is a runner error, or a closed terminal (HUP_REQ). Any live
+# session is ended first; then it still gets a report and unlocks.
 REPORTED=0
+HUP_REQ=0
 on_exit() {
   [ "$REPORTED" = 1 ] && return 0
-  write_report "stop: runner error (exit $1)"
+  trap '' HUP INT TERM
+  end_session
+  if [ "$HUP_REQ" = 1 ]; then
+    write_report "stop: terminal closed (SIGHUP)"
+  else
+    write_report "stop: runner error (exit $1)"
+  fi
   unlock
   exit 1
 }
@@ -333,6 +356,7 @@ cmd_start() {
   trap 'on_exit $?' EXIT
   STOP_REQ=0
   trap 'STOP_REQ=1' INT TERM
+  trap 'HUP_REQ=1; exit 129' HUP
   INHIB_PID=""
   case "$(uname -s)" in
     Darwin)
