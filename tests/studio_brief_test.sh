@@ -125,7 +125,11 @@ test_brief_refusals() {
   sed -i.bak 's/^Spec: docs\/spec.md:L3-4, /Spec: docs\/spec.md:L3-9999, /' "$P/docs/plan.md"
   assert_status 1 "a range past the end exits 1" -- sh -c "cd '$P' && STUDIO_STORY=S1 sh '$BRIEF' task 3"
   mv "$P/docs/plan.md.bak" "$P/docs/plan.md"
+  # the root STATE.md has no spec (only S1's does); set it so final reaches the Stories check
+  ( cd "$P" && sh "$STATE_BIN" set spec docs/spec.md ) >/dev/null 2>&1
   assert_status 1 "final with a Stories table needs STUDIO_STORY" -- sh -c "cd '$P' && STUDIO_STORY= sh '$BRIEF' final"
+  ( cd "$P" && STUDIO_STORY= sh "$BRIEF" final ) > /dev/null 2> "$TMP/nostory.err"
+  assert_contains "$TMP/nostory.err" "STUDIO_STORY not set" "the refusal names STUDIO_STORY, not a missing spec"
   assert_status 2 "no verb is usage" -- sh "$BRIEF"
   assert_status 2 "an unknown verb is usage" -- sh "$BRIEF" bogus
 }
