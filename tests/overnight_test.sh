@@ -250,6 +250,7 @@ test_overnight_sequence_to_done() {
   for f in 1-T1 2-T2 3-final-review 4-finish; do assert_file "$d/$f.jsonl" "session log $f.jsonl"; assert_file "$d/$f.err" "stderr $f.err"; done
   assert_eq "8.25" "$(awk -F'\t' '{ s += $4 } END { print s }' "$d/units.tsv")" "spend sums each session's total_cost_usd"
   assert_eq "done" "$(awk -F'\t' 'END { print $7 }' "$d/units.tsv")" "the last unit's outcome is done"
+  assert_eq "0 0 0 0" "$(awk -F'\t' '{ printf "%s%s", (NR > 1 ? " " : ""), $6 }' "$d/units.tsv")" "a session that ends on time is never marked timed_out"
 }
 
 test_overnight_launch_argv() {
@@ -353,6 +354,8 @@ test_overnight_timeout() {
   STUDIO_OVERNIGHT_SESSION_SECONDS=1; export STUDIO_OVERNIGHT_SESSION_SECONDS
   run_start; unset STUDIO_OVERNIGHT_SESSION_SECONDS
   assert_eq 1 "$(awk -F'\t' 'NR == 1 { print $6 }' "$(last_run_dir)/units.tsv")" "a session past its time is marked timed_out"
+  assert_missing "$CALLS/1.t1" "the watchdog cut the session short during its sleep 30"
+  assert_eq short "$(awk -F'\t' 'NR == 1 { print ($5 < 0.5 ? "short" : $5) }' "$(last_run_dir)/units.tsv")" "the timed-out session took well under 30 s"
   assert_eq progress "$(awk -F'\t' 'NR == 1 { print $7 }' "$(last_run_dir)/units.tsv")" "a timed-out session that moved the signature counts as progress"
 }
 

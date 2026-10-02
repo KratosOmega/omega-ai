@@ -214,12 +214,19 @@ run_unit() {
   _t0="$(date +%s)"
   with_launch_args start_session
   _secs="${STUDIO_OVERNIGHT_SESSION_SECONDS:-$((SESSION_MINUTES * 60))}"
-  rm -f "$RUN_DIR/$UNIT_STEM.timed_out"
+  _claim="$RUN_DIR/$UNIT_STEM.ended"; rmdir "$_claim" 2>/dev/null
   # Watchdog: TERM the session's process group (D6), KILL after the grace;
-  # pkill -P is the fallback when there is no group.
-  ( sleep "$_secs"; : > "$RUN_DIR/$UNIT_STEM.timed_out"
+  # pkill -P is the fallback when there is no group. Who ended the unit is
+  # decided once, by an atomic mkdir of $_claim: the watchdog takes it at the
+  # deadline, the runner as soon as its wait returns. The loser does nothing,
+  # so a session that ended on time is never marked or signalled. Each sleep
+  # runs in the background and is waited on, so the teardown TERM interrupts
+  # it at once and the trap reaps it (no orphaned sleep).
+  ( _sp=; trap 'kill $_sp 2>/dev/null; exit 0' TERM
+    sleep "$_secs" & _sp=$!; wait "$_sp"
+    mkdir "$_claim" 2>/dev/null || exit 0
     kill -TERM -"$CPID" 2>/dev/null || { pkill -TERM -P "$CPID"; kill -TERM "$CPID"; }
-    sleep "$GRACE"
+    sleep "$GRACE" & _sp=$!; wait "$_sp"
     kill -KILL -"$CPID" 2>/dev/null || { pkill -KILL -P "$CPID"; kill -KILL "$CPID"; }
   ) > /dev/null 2>&1 &
   WPID=$!
@@ -228,10 +235,10 @@ run_unit() {
     wait "$CPID"; _st=$?
     kill -0 "$CPID" 2>/dev/null || break
   done
-  pkill -P "$WPID" 2>/dev/null; kill "$WPID" 2>/dev/null
-  wait "$WPID" 2>/dev/null
   UNIT_EXIT="$_st"; UNIT_TIMED_OUT=0
-  [ ! -e "$RUN_DIR/$UNIT_STEM.timed_out" ] || UNIT_TIMED_OUT=1
+  mkdir "$_claim" 2>/dev/null || UNIT_TIMED_OUT=1
+  kill "$WPID" 2>/dev/null; wait "$WPID" 2>/dev/null
+  rmdir "$_claim" 2>/dev/null
   UNIT_MIN="$(awk -v s="$(( $(date +%s) - _t0 ))" 'BEGIN { printf "%.1f", s / 60 }')"
   UNIT_COST="$(cost_of "$RUN_DIR/$UNIT_STEM.jsonl")"; [ -n "$UNIT_COST" ] || UNIT_COST=unknown
 }
