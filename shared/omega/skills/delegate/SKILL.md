@@ -32,7 +32,7 @@ The main session **may**:
 - Dispatch subagents with `Agent`, continue them with `SendMessage`, stop
   them with `TaskStop`, and read what they return.
 - Run a status command — `git`, `gh`, the project's test or local-CI
-  command, `doctor.sh`, `omega-mode`, `omega-caffeine`, `studio-state`.
+  command, `doctor.sh`, `omega-mode`, `studio-state`.
   Long output goes to `<scratchpad>/delegate/<label>.log`; read only its
   tally or status line and the exit code.
 - Read a file a subagent produced for the user's approval — the spec, the

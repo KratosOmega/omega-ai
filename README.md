@@ -240,14 +240,15 @@ studios/<name>/
 ├── requires.txt                 plugins, skills, agents the studio depends on
 ├── skills/ agents/ hooks/       plugin content, loaded live via --plugin-dir
 ├── bin/                         toolkit, linked into the config root and put on PATH
+│   ├── studio-overnight         overnight runner: one fresh session per unit to a draft PR
+│   └── overnight-deny.txt       the runner's deny list (data)
 └── CLAUDE.md settings.json memory/   installed into the config root
 
 shared/omega/                    the omega global plugin, loaded by every shim
 ├── .claude-plugin/plugin.json   name "omega" → the /omega: namespace
 ├── skills/                      handoff, parallel, local-merge, integration, autopilot, delegate, reply
 ├── hooks/                       SessionStart, UserPromptSubmit, SessionEnd: the mode line; PreToolUse: the delegate guard
-├── bin/omega-mode               the mode file's one writer; on PATH inside every studio
-└── bin/omega-caffeine           autopilot's keep-awake process (caffeinate / systemd-inhibit)
+└── bin/omega-mode               the mode file's one writer; on PATH inside every studio
 
 .claude-plugin/marketplace.json  publishes omega for plain claude (claude plugin marketplace add <repo>)
 ```

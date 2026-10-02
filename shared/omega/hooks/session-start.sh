@@ -1,8 +1,8 @@
 #!/bin/sh
 # SessionStart hook for the omega global plugin (startup, resume, clear,
-# compact). Prints one line naming the six skills and the absolute paths
-# of omega-mode and omega-caffeine — plain claude has no PATH entry for
-# them — and, when the session has modes set, the "Omega modes:" block from
+# compact). Prints one line naming the six skills and the absolute path
+# of omega-mode — plain claude has no PATH entry for
+# it — and, when the session has modes set, the "Omega modes:" block from
 # omega-mode brief. Also prunes mode files older than seven days, never the
 # current session's — a resumed or compacted session older than seven days
 # must still find its modes — as a crashed session never ran SessionEnd.
@@ -13,7 +13,6 @@ set -u
 
 ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 MODE="$ROOT/bin/omega-mode"
-CAFFEINE="$ROOT/bin/omega-caffeine"
 DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/omega/modes"
 
 # The session id comes from the hook's JSON; the environment is the fallback.
@@ -33,7 +32,7 @@ if [ -d "$DIR" ]; then
   fi
 fi
 
-text="Omega global skills: /omega:handoff, /omega:parallel [N|off], /omega:local-merge [off], /omega:integration <start|add|status|finish>, /omega:autopilot [off], /omega:delegate [off], /omega:reply [off]. Mode tool: $MODE (set | clear | show | path | brief). Keep-awake: $CAFFEINE (start | stop | status)."
+text="Omega global skills: /omega:handoff, /omega:parallel [N|off], /omega:local-merge [off], /omega:integration <start|add|status|finish>, /omega:autopilot [off], /omega:delegate [off], /omega:reply [off]. Mode tool: $MODE (set | clear | show | path | brief)."
 if [ -n "$sid" ]; then
   block="$(sh "$MODE" --session "$sid" brief 2>/dev/null || true)"
   if [ -n "$block" ]; then
