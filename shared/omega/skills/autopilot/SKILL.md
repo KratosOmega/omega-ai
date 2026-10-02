@@ -64,10 +64,11 @@ session (it is on `PATH` only inside a `claude-gd` session).
        An `integration slug=<slug>` line in `omega-mode show` pre-selects integration with that slug.
      - **how many lanes** — lanes are parallel dependency chains, while tests still run one at a time. The answer is `.studio/config.json`'s `overnight.max_lanes` (`0` = one lane per chain).
         It must be an integer from 0 to 8 (the runner's range); refuse any other answer and ask again.
-        Merge it into the existing file, so every other key is kept (`merge_command` included): `python3 -c 'import json,sys; p=".studio/config.json"; c=json.load(open(p)); c.setdefault("overnight", {})["max_lanes"]=int(sys.argv[1]); open(p,"w").write(json.dumps(c, indent=2)+"\n")' <n>`; with no `.studio/config.json`, write `{"overnight": {"max_lanes": <n>}}`.
+        Write it only after the switch to `run/<slug>` below (a tracked `config.json` that differs from `origin/<default>` would block `git switch -c`): merge it into the existing file, so every other key is kept (`merge_command` included): `python3 -c 'import json,sys; p=".studio/config.json"; c=json.load(open(p)); c.setdefault("overnight", {})["max_lanes"]=int(sys.argv[1]); open(p,"w").write(json.dumps(c, indent=2)+"\n")' <n>`; with no `.studio/config.json`, write `{"overnight": {"max_lanes": <n>}}`.
    - Then ask the story list: each story's id, branch, ticket (`-` when none) and the earlier rows it depends on. A story whose branch already exists (local or `origin/<Branch>`) is half-done.
    - **The run branch (before any planning stage).** The checkout must be on `<default>` or already on `run/<slug>`; otherwise stop with "switch this checkout to `<default>` first".
      From `<default>`: `git fetch origin`, then `git switch -c run/<slug> origin/<default>` (`git switch run/<slug>` when it already exists locally), so every brainstorm and plan commit lands on `run/<slug>` and the user's `main` never diverges.
+     Then, on `run/<slug>`, write the lane count into `.studio/config.json` as above.
    - Write the run manifest `docs/runs/<slug>.md` (Spec and Plan are `-` while planning; `Docs:` is written in step 3):
 
      ```
@@ -96,14 +97,14 @@ session (it is on `PATH` only inside a `claude-gd` session).
 
    The question sweep for manifest stories belongs to `/game-dev:plan` (it writes `## Decisions` and ledgers `Decisions swept <id>`); this skill does not repeat it.
 3. **Seed every story** once every row is `planned`, in manifest order. Every `studio-state` call below runs with `STUDIO_STORY=<id>`.
-   - Each story, not-started and half-done alike, in this checkout (on `run/<slug>`), never in a story worktree: `studio-state init`; `set spec <spec>`; `set plan <plan>` (from `next`'s `spec=` and `plan=`); then the spec-slug ledger's `spec approved <spec>`, `plan approved <plan>` and `Decisions swept <id>` lines are re-ledgered through `studio-state ledger "<text after the date>"`, so each carries today's date.
+   - Each story, not-started and half-done alike, in this checkout (on `run/<slug>`), never in a story worktree: `studio-state init`; `set spec <spec>`; `set plan <plan>` (from `next`'s `spec=` and `plan=`); `set task 0/<N>` (`N` = `grep -c '^### Task [0-9]' <plan>`, run here where the plan exists — a story worktree's `check --rebuild` then takes `N` from the story file and never needs the plan); then the spec-slug ledger's `spec approved <spec>`, `plan approved <plan>` and `Decisions swept <id>` lines are re-ledgered through `studio-state ledger "<text after the date>"`, so each carries today's date.
      They land in this checkout's `.studio/ledger/<id>.md` — the file the runner's preflight reads, and the one it requires clean — and are committed on `run/<slug>` below.
-   - **Not started** (no branch): in this checkout, `set stage plan`, `set task 0/N` (`N` = the plan's task count), `set branch -`.
+   - **Not started** (no branch): in this checkout, `set stage plan`, `set branch -`.
    - **Half-done** (an existing branch, `T<n> complete` lines, possibly `final review done`, `shipped`, or already merged):
      1. Create the story's worktree at the path execute §0 uses, `<STATE_ROOT>/.claude/worktrees/<Branch with / → ->`: `git worktree add --no-track <path> <Branch>` (only on origin: `git worktree add --no-track -b <Branch> <path> origin/<Branch>`); an existing worktree of that branch is used as it is.
         When another checkout holds `<Branch>`, stop with "switch that checkout off <Branch> first".
      2. When the branch has `.studio/ledger/<spec slug>.md` and no `.studio/ledger/<id>.md`: `git mv` it to `.studio/ledger/<id>.md` and commit `chore(studio): ledger keyed by story`.
-     3. In that worktree, only: `set branch <Branch>`, `set stage execute`, `studio-state check --rebuild` (the "each story" lines already ran in this checkout) — it sets `task 0/N`, then the longest contiguous run of `T<n> complete` lines.
+     3. In that worktree, only: `set branch <Branch>`, `set stage execute`, `studio-state check --rebuild` (the "each story" lines already ran in this checkout) — it keeps `N` from the seeded `task 0/<N>` and sets the longest contiguous run of `T<n> complete` lines.
         A gap exits 1: stop and name the missing task (*Does not fit*).
         `N/N` with `final review done` resumes at the finish; a `shipped` line: `set stage idle` (it waits to land); a merged PR or a head already in `origin/<Target>` is landed — the runner records it at start.
         An open bundle-2 PR into `main` in an integration run is named in `report.md`, never closed.

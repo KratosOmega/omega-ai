@@ -67,6 +67,11 @@ test_autopilot_contract() {
   assert_contains "$S" 'git add docs/runs/<slug>.md .studio/config.json' "config.json is committed on run/<slug> (I3)"
   assert_contains "$S" 'When .next. exits non-zero' "a failing next stops the loop"
   assert_contains "$S" 'git switch run/<slug>. when it already exists' "an existing run branch is switched to"
+  # Task 17 fix round 3: the story file (STATE_ROOT, shared) carries N, so a worktree rebuild needs no plan.
+  assert_contains "$S" 'plan=.); .set task 0/<N>.' "every story is seeded with task 0/N in the phase-1 checkout"
+  assert_contains "$S" 'takes .N. from the story file and never needs the plan' "a worktree rebuild reads N, not the plan file"
+  assert_contains "$S" 'Write it only after the switch to .run/<slug>.' "max_lanes is written after the run branch switch"
+  assert_contains "$S" 'Then, on .run/<slug>., write the lane count' "the run-branch step writes the lane count"
   assert_contains "$S" 'start --detach' "autopilot can start the run detached"
   assert_contains "$S" "start <manifest>" "the printed command names the manifest"
   assert_contains "$S" 'never retries in this session' "a refused detach prints the command"
