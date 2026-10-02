@@ -74,14 +74,16 @@ deny_rules() {
     printf '%s\n' "$_r" | sed "s|{default_branch}|$_db|g; s|{merge_basename}|$_mb|g"
   done < "$DENY_FILE"
 }
-# model_for LABEL — the model for a unit kind (D23); a -retry keeps its kind's.
+# model_for LABEL — sets UNIT_MODEL for a unit kind (D23); a -retry keeps its
+# kind's. It runs in the current shell: an unknown label's exit 3 ends the
+# runner (a runner error), not a command-substitution subshell.
 model_for() {
   case "${1%-retry}" in
-    T*) printf '%s\n' "$MODEL_TASK" ;;
-    final-review) printf '%s\n' "$MODEL_FINAL" ;;
-    finish) printf '%s\n' "$MODEL_FINISH" ;;
-    repair|final-repair) printf '%s\n' "$MODEL_REPAIR" ;;
-    progress) printf '%s\n' "$MODEL_PROGRESS" ;;
+    T*) UNIT_MODEL="$MODEL_TASK" ;;
+    final-review) UNIT_MODEL="$MODEL_FINAL" ;;
+    finish) UNIT_MODEL="$MODEL_FINISH" ;;
+    repair|final-repair) UNIT_MODEL="$MODEL_REPAIR" ;;
+    progress) UNIT_MODEL="$MODEL_PROGRESS" ;;
     *) say "no model for unit $1"; exit 3 ;;
   esac
 }
@@ -161,6 +163,8 @@ every ending.
 Test hooks (tests only; never set them for a real run):
   STUDIO_OVERNIGHT_SESSION_SECONDS — test hook: overrides session_minutes in
                      seconds; a whole number, else start refuses
+  STUDIO_OVERNIGHT_LABEL — test hook: forces every unit's label (the
+                     unknown-label test); never set it for a real run
   STUDIO_OVERNIGHT_RACE_HOOK — test hook: shell text evaluated between reading
                      a stale lock's pid and reclaiming it (the reclaim-race test)
 EOF
@@ -301,7 +305,7 @@ start_session() {
 # $UNIT_DIR/current reads "ID LABEL". The model comes from the bare LABEL.
 run_unit() {
   UNIT_STEM="$UNIT_PREFIX$1-${CUR_ID:+$CUR_ID-}$2"; printf '%s\n' "${CUR_ID:+$CUR_ID }$2" > "$UNIT_DIR/current"
-  UNIT_MODEL="$(model_for "$2")"
+  model_for "$2"
   _t0="$(date +%s)"
   with_launch_args start_session
   _secs="${STUDIO_OVERNIGHT_SESSION_SECONDS:-$((SESSION_MINUTES * 60))}"
@@ -429,7 +433,7 @@ story_units() {
        && awk -v s="$(spent_all)" -v u="$SESSION_USD" -v r="$RUN_USD" 'BEGIN { exit !(s + u > r) }'; then
       ENDING="stop: run budget"; return 0
     fi
-    _before="$SIG"; _base="$(label_for)"
+    _before="$SIG"; _base="${STUDIO_OVERNIGHT_LABEL:-$(label_for)}"
     n=$((n + 1)); run_unit "$n" "$_base$suffix"
     snapshot "$RUN_DIR/stops.after"
     _new="$(comm -13 "$RUN_DIR/stops.before" "$RUN_DIR/stops.after" | tail -n 1)"

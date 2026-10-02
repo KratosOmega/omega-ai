@@ -374,6 +374,16 @@ test_overnight_unexpected_stage() {
   assert_contains "$(last_run_dir)/report.md" "stop: unexpected stage idle" "idle without shipped stops"
 }
 
+test_overnight_unknown_label_stops() {
+  fixture badlabel; scenario "stage execute; task 1/1"
+  STUDIO_OVERNIGHT_LABEL=bogus; export STUDIO_OVERNIGHT_LABEL
+  run_start
+  unset STUDIO_OVERNIGHT_LABEL
+  assert_eq 1 "$RS_STATUS" "an unknown unit label is a runner error"
+  assert_contains "$(last_run_dir)/report.md" "^Ending: stop: runner error (exit 3)$" "the report names the runner error"
+  assert_missing "$CALLS/1.argv" "no claude session launches with an empty --model"
+}
+
 test_overnight_overhead() {
   fixture over; done_scenario; run_start
   g1=$(( $(cat "$CALLS/2.t0") - $(cat "$CALLS/1.t1") ))
@@ -647,7 +657,7 @@ run_tests test_overnight_report_done test_overnight_report_not_done \
   test_overnight_retry_then_no_progress test_overnight_progress_resets_retry \
   test_overnight_retries_zero test_overnight_stop_line test_overnight_copied_stop_not_new \
   test_overnight_run_budget test_overnight_cost_unknown test_overnight_unexpected_stage \
-  test_overnight_overhead \
+  test_overnight_overhead test_overnight_unknown_label_stops \
   test_overnight_models_by_unit test_overnight_config_refusals_v2 \
   test_overnight_default_branch_required test_overnight_deny_merge_basename \
   test_overnight_run_usd_default_uncapped
