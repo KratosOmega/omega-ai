@@ -99,13 +99,13 @@ is `STUDIO_STORY`:
   `mob-composer-parity`, 2026-10-02). The raised cap is settled:
   `tests/probes/bash_timeout_probe.sh` (2026-10-02) showed a `-p` session's
   foreground call running 12 minutes and returning when
-  `BASH_MAX_TIMEOUT_MS` is raised, and cut off at 600 s when it is not. A
-  call that outlives its `timeout` is moved to the background (its result
-  says so): that is a timed-out gate — run
+  `BASH_MAX_TIMEOUT_MS` is raised, and moved to the background at 600 s when
+  it is not. A call that outlives its `timeout` is moved to the background
+  (its result says so): that is a timed-out gate — run
   `studio-state ledger "Stop: gate timed out — <command> ran past <n> min"`
-  and end the turn. When the session cap ends the unit first, the runner
-  records it `timed out`; either way it ends any gate the unit leaves
-  behind. §2 carries this rule into every subagent brief.
+  and end the turn. Usually the session cap ends the unit first (the
+  `timeout` is the whole session's minutes): the runner records it
+  `timed out`. Either way the runner ends any gate the unit leaves behind. §2 carries this rule into every subagent brief.
 
 **Isolation.** First note the current branch (`git branch --show-current`)
 — the noted branch — along with the spec's and plan's noted hashes. Then:

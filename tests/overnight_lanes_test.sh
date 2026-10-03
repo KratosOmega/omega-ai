@@ -1747,7 +1747,7 @@ test_lanes_detach_timeout_lock_held_points_at_status() {
   unset STUDIO_OVERNIGHT_DETACH_STATUS_CMD
   assert_eq 1 "$st" "a status timeout exits 1"
   assert_contains "$TMP/dtl.out" "is live" "a lock-holding child is reported live"
-  assert_contains "$TMP/dtl.out" "studio-overnight stop" "and stop is named"
+  assert_contains "$TMP/dtl.out" "/studio-overnight' stop" "and stop is named, by its absolute path"
   assert_not_contains "$TMP/dtl.out" "run the plain command" "no plain start is offered"
   assert_eq 1 "$([ -f "$P/.studio/overnight.lock" ] && echo 1 || echo 0)" "the run still holds its lock"
   # The hung stub would hold the run past stop: end it, then wait the run out.
@@ -1852,7 +1852,8 @@ test_lanes_status_anywhere() {
   ( cd "$TMP/any1-link" && exec sh "$RUNNER" start "$MFP" ) > /dev/null 2>&1 & R1=$!
   wait_for "[ -f '$CALLS/1.t0' ]" 30; sleep 1
   status_from "$ELSEWHERE"
-  assert_eq 0 "$ST_RC" "one live run: exit 0"
+  assert_eq 3 "$ST_RC" "one live run elsewhere: exit 3 (0 is kept for this project's run)"
+  assert_eq 1 "$(ls "$REG" | grep -c '^overnight-demo-[0-9-]*-[0-9]*$')" "the entry is named <run dir>-<runner pid>"
   assert_contains "$TMP/st.out" "^== overnight-demo-[0-9-]* — $P1$" "it names the run and its project (the real path)"
   assert_contains "$TMP/st.out" "^A  lane 1  running  unit A T1  task 0/1$" "the project's own status follows"
   assert_contains "$TMP/st.out" "^    1-A-T1 · [0-9]*s · ui-designer · \"T1 loader fold options\" · Bash: npx vitest" "the running unit's last activity in one line"
@@ -1867,7 +1868,7 @@ test_lanes_status_anywhere() {
   ( cd "$P2" && exec sh "$RUNNER" start "$MFP" ) > /dev/null 2>&1 & R2=$!
   wait_for "[ -f '$CALLS/1.t0' ]" 30
   status_from "$ELSEWHERE"
-  assert_eq 0 "$ST_RC" "two live runs: exit 0"
+  assert_eq 3 "$ST_RC" "two live runs elsewhere: exit 3"
   assert_eq 2 "$(grep -c '^== overnight-demo-' "$TMP/st.out")" "both runs are listed"
   assert_contains "$TMP/st.out" " — $P2$" "the second project is named"
   # A project with no run of its own names the live ones elsewhere.
@@ -1884,6 +1885,13 @@ test_lanes_status_anywhere() {
   assert_contains "$TMP/st.out" "^ended (done) — report: .*/report.md$" "an ended run in one line"
   assert_eq 0 "$(ls "$REG" | grep -c '^overnight-')" "no live entries remain"
   assert_contains "$REG/last" "^ended=" "the newest ended run is kept as last"
+  # A registered project that lost its .studio/ is named, never re-entered:
+  # the nested status must not fall back to the registry and recurse.
+  mkdir -p "$TMP/nostudio"; printf 'root=%s\npid=1\n' "$TMP/nostudio" > "$REG/last"
+  ( cd "$ELSEWHERE" && exec sh "$RUNNER" status ) > "$TMP/st.out" 2>&1 & _sp=$!
+  wait_pid_or_fail "$_sp" 10 "a registered root with no .studio/ answers at once"
+  assert_contains "$TMP/st.out" "^(the project has no .studio/ any more)$" "and says so"
+  assert_eq 1 "$(grep -c '^no live run' "$TMP/st.out")" "once, with no recursion"
 }
 # An ended partial run: the story that stopped, the report and the resume.
 test_lanes_status_ended_partial() {

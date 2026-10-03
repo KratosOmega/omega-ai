@@ -11,8 +11,9 @@
 #   studio-overnight watch [<seconds>]   status, refreshed until Ctrl-C
 #   studio-overnight stop                end the run after the running unit
 #
-# Exit: start 0 done · 1 any other ending · 2 refused. status 0 live · 1 no
-# run. watch 0. stop 0 stop requested · 1 no run.
+# Exit: start 0 done · 1 any other ending · 2 refused. status 0 this
+# project's run is live · 1 no run · 3 (outside a project) live elsewhere.
+# watch 0. stop 0 stop requested · 1 no run.
 # Self-contained on purpose (copy mode); calls its sibling studio-state.
 set -u
 
@@ -169,6 +170,8 @@ usage: $SELF_ABS start [--dry-run | --detach] [<manifest>] | status [--follow] |
                      registry ~/.claude-gamedev/runs (one entry per live run;
                      "last" is the newest ended one) and shows every live run,
                      else the last ended one, else where it looked.
+                     Exit 0 this project's run is live, 1 no run, 3 (outside
+                     a project) a run is live elsewhere.
   watch [<seconds>]  status every <seconds> (default 5) until Ctrl-C; the same
                      as status --follow. Exit 0.
   stop               end the run after the running unit (exit 1: no run)
@@ -467,7 +470,8 @@ gate_line() {
 # heartbeat_start — while the unit's session (CPID) runs: every
 # STUDIO_OVERNIGHT_HEARTBEAT_SECONDS (default 60) one line on the runner's
 # stderr (unit_now_line), so a quiet terminal never looks frozen. It polls
-# every few seconds and ends on its own once the session is gone; HBPID.
+# every few seconds and ends on its own once the session is gone; HBPID
+# (under a lane also LDIR/hbpid, for lanes_end_sessions when the lane dies).
 heartbeat_start() {
   _hb_every="${STUDIO_OVERNIGHT_HEARTBEAT_SECONDS:-60}"
   _hb_tick=5; [ "$_hb_every" -ge 5 ] 2>/dev/null || _hb_tick=1
@@ -482,10 +486,12 @@ heartbeat_start() {
       say "${CUR_ID:+$CUR_ID }$(unit_now_line "$UNIT_DIR")"
     done ) &
   HBPID=$!
+  [ -z "${LDIR:-}" ] || printf '%s\n' "$HBPID" > "$LDIR/hbpid"
 }
 heartbeat_stop() {
   [ -z "${HBPID:-}" ] || { kill "$HBPID" 2>/dev/null; wait "$HBPID" 2>/dev/null; }
   HBPID=""
+  [ -z "${LDIR:-}" ] || rm -f "$LDIR/hbpid"
 }
 
 # ---- Gates a unit left behind ----
@@ -533,7 +539,7 @@ unit_reap() {
 }
 
 # ---- The user-level run registry: status from any directory ----
-# REGISTRY holds one file per live run (named after its run dir: root=,
+# REGISTRY holds one file per live run (<run dir name>-<pid>: root=,
 # start=, run=, pid=, started= lines), written when the run takes its lock
 # and moved to REGISTRY/last (with ended=) when it unlocks. Paths are
 # STATE_ROOT as studio-state prints it, so a project reached through a
@@ -552,7 +558,7 @@ reg_write() {
   for _rw in "$REGISTRY"/overnight-*; do
     [ -f "$_rw" ] && [ "$(reg_get root "$_rw")" = "$STATE_ROOT" ] && rm -f "$_rw"
   done
-  REG_ENTRY="$REGISTRY/$(basename "$RUN_DIR")"
+  REG_ENTRY="$REGISTRY/$(basename "$RUN_DIR")-$$"
   printf 'root=%s\nstart=%s\nrun=%s\npid=%s\nstarted=%s\n' "$STATE_ROOT" "$START_DIR" "$RUN_DIR" "$$" \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$REG_ENTRY" 2>/dev/null || REG_ENTRY=""
 }
@@ -979,28 +985,42 @@ project_status() {
     ended_line "$_sd/report.md"
     return 1
   fi
+  if [ -n "$_sd" ] && [ -d "$_sd" ]; then
+    printf 'no run — the last run: %s has no report (its runner died before writing one; units.tsv and the unit logs are there)\n' "$_sd"
+    return 1
+  fi
   printf 'no run in %s — no live run lock (%s) and no run under %s\n' "$STATE_ROOT" "$LOCK" "$REPORTS"
   return 1
+}
+# reg_show ROOT — a registered project's own status, run in ROOT. The nested
+# call never reads the registry again (STUDIO_OVERNIGHT_IN_REGISTRY): a root
+# that no longer resolves to its .studio/ must not recurse.
+reg_show() {
+  if [ -d "$1/.studio" ]; then
+    ( cd "$1" && STUDIO_OVERNIGHT_IN_REGISTRY=1 sh "$SELF_ABS" status )
+  elif [ -d "$1" ]; then echo "(the project has no .studio/ any more)"
+  else echo "(the project directory is gone)"; fi
 }
 # registry_status — status outside a project, from REGISTRY: every live
 # run's own status (run in its project), headed `== <run> — <project>`;
 # with none, the newest ended run (REGISTRY/last, or an entry whose runner
-# died); else where it looked. Returns 0 when a run is live, else 1.
+# died); else where it looked. Returns 3 when a run is live elsewhere (0 is
+# kept for "this project's run is live", the skills' liveness test), else 1.
 registry_status() {
   _rs_n=0
   for _rs_f in "$REGISTRY"/overnight-*; do
     [ -f "$_rs_f" ] && reg_live "$_rs_f" || continue
     _rs_n=$((_rs_n + 1)); [ "$_rs_n" = 1 ] || echo
     _rs_root="$(reg_get root "$_rs_f")"
-    printf '== %s — %s\n' "${_rs_f##*/}" "$_rs_root"
-    if [ -d "$_rs_root" ]; then ( cd "$_rs_root" && sh "$SELF_ABS" status ); else echo "(the project directory is gone)"; fi
+    printf '== %s — %s\n' "$(reg_get run "$_rs_f" | sed 's|.*/||')" "$_rs_root"
+    reg_show "$_rs_root"
   done
-  [ "$_rs_n" -eq 0 ] || return 0
+  [ "$_rs_n" -eq 0 ] || return 3
   _rs_last="$(ls -t "$REGISTRY"/last "$REGISTRY"/overnight-* 2>/dev/null | head -n 1)"
   if [ -n "$_rs_last" ]; then
     _rs_root="$(reg_get root "$_rs_last")"
     printf 'no live run (registry %s) — the last run was in %s\n' "$REGISTRY" "$_rs_root"
-    if [ -d "$_rs_root" ]; then ( cd "$_rs_root" && sh "$SELF_ABS" status ); else echo "(the project directory is gone)"; fi
+    reg_show "$_rs_root"
     return 1
   fi
   printf 'no run — nothing registered in %s, and %s is not a studio project (no .studio/)\n' "$REGISTRY" "$(pwd)"
@@ -1008,11 +1028,12 @@ registry_status() {
 }
 # cmd_status — inside a project, its run (project_status); a project with
 # no live run also names the live runs of other projects. Outside one, the
-# registry (registry_status). Exit 0 live, 1 not.
+# registry (registry_status). Exit 0 this project's run is live, 1 none,
+# 3 (outside a project) a run is live elsewhere.
 cmd_status() {
   if [ -n "$STATE_ROOT" ] && [ -d "$STATE_ROOT/.studio" ]; then
     project_status; _cs=$?
-    if [ "$_cs" -ne 0 ]; then
+    if [ "$_cs" -ne 0 ] && [ -z "${STUDIO_OVERNIGHT_IN_REGISTRY:-}" ]; then
       for _cs_f in "$REGISTRY"/overnight-*; do
         [ -f "$_cs_f" ] && reg_live "$_cs_f" || continue
         [ "$(reg_get root "$_cs_f")" != "$STATE_ROOT" ] || continue
@@ -1020,6 +1041,10 @@ cmd_status() {
       done
     fi
     return "$_cs"
+  fi
+  if [ -n "${STUDIO_OVERNIGHT_IN_REGISTRY:-}" ]; then
+    printf 'no run in %s — not a studio project (no .studio/)\n' "$(pwd)"
+    return 1
   fi
   registry_status
 }

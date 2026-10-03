@@ -422,6 +422,7 @@ test_gate_signal_waits_for_child_then_releases() {
   [ "$_alive" = yes ] && kill -KILL "$_cp" 2>/dev/null
   assert_eq no "$_alive" "TERM to studio-gate reaches the child"
   assert_missing "$GP/.studio/gate.lock" "the lock is gone once the child is"
+  assert_contains "$GP/.studio/gate.times" '^[0-9][0-9]* sig [0-9][0-9]* 143$' "a signalled run is logged too, with 128+n"
 }
 # Three contenders on a dead holder's lock. Each cmd marks "s <pid>" and
 # "e <pid>"; an s while another cmd is open means two ran at once. A slow `mv`
@@ -476,6 +477,7 @@ test_gate_unit_registration_and_times() {
   ( cd "$GP" && STUDIO_UNIT_TAG="run-1-3-finish" sh "$GATE" studio-test -- sh -c "
       cp .studio/gate.lock/unit '$TMP/gunit'; cp .studio/gate.lock/since '$TMP/gsince'
       ls .studio/gate.units/run-1-3-finish > '$TMP/greg'
+      i=0; while [ ! -s .studio/gate.units/run-1-3-finish/* ] && [ \$i -lt 50 ]; do sleep 0.1; i=\$((i + 1)); done
       cat .studio/gate.units/run-1-3-finish/* > '$TMP/gchild'; echo \$\$ > '$TMP/gself'" ) 2>/dev/null
   assert_eq run-1-3-finish "$(cat "$TMP/gunit")" "the lock names the unit"
   assert_contains "$TMP/gsince" '^[0-9][0-9]*$' "the lock records when it was taken"

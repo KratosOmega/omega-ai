@@ -18,8 +18,8 @@
 # holding, so a gate a session left in the background can never hold the
 # lock into the next unit.
 #
-# Gate times: every command that ran to its own exit appends
-# `<epoch> <who> <seconds> <rc>` to STATE_ROOT/.studio/gate.times (the
+# Gate times: every command that ran appends `<epoch> <who> <seconds> <rc>`
+# (rc 128+n when a signal ended it) to STATE_ROOT/.studio/gate.times (the
 # newest 50 lines are kept); studio-overnight's preflight checks the slowest
 # recent studio-test against session_minutes.
 # Exit: the command's status · 2 usage · 128+n when TERM/INT/HUP ended it.
@@ -44,10 +44,11 @@ MUTEX="$LOCK.mutex"
 # The gate's files (.studio/gate.lock, .mutex, .times, .units) are runtime
 # state: keep them out of git through the repository's info/exclude, which
 # every worktree shares.
-_excl="$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)/info/exclude"
-case "$_excl" in
-  /*) if ! grep -qxF '.studio/gate.*' "$_excl" 2>/dev/null; then
-        mkdir -p "${_excl%/*}" 2>/dev/null && printf '%s\n' '.studio/gate.*' >> "$_excl" 2>/dev/null
+_gcd="$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || _gcd=""
+case "$_gcd" in
+  /?*) _excl="$_gcd/info/exclude"
+      if ! grep -qxF '.studio/gate.*' "$_excl" 2>/dev/null; then
+        mkdir -p "$_gcd/info" 2>/dev/null && printf '%s\n' '.studio/gate.*' >> "$_excl" 2>/dev/null
       fi ;;
 esac
 
@@ -213,13 +214,14 @@ if [ -n "$TARGETS" ]; then
 fi
 RUNNING=0
 CHILD=""
-if [ -z "$SIGSTATUS" ]; then
-  _times="$ROOT/.studio/gate.times"
-  { [ -f "$_times" ] && tail -n 49 "$_times"
-    printf '%s %s %s %s\n' "$(date +%s)" "$WHO" "$(( $(date +%s) - T0 ))" "$rc"
-  } > "$_times.$$" 2>/dev/null && mv -f "$_times.$$" "$_times" 2>/dev/null
-  rm -f "$_times.$$"
-fi
+# A signalled run (a reaper, a session cap) is logged too, with 128+n: its
+# seconds are a lower bound, and the overruns are what the preflight's
+# session_minutes check most needs to see.
+_times="$ROOT/.studio/gate.times"
+{ [ -f "$_times" ] && tail -n 49 "$_times"
+  printf '%s %s %s %s\n' "$(date +%s)" "$WHO" "$(( $(date +%s) - T0 ))" "${SIGSTATUS:-$rc}"
+} > "$_times.$$" 2>/dev/null && mv -f "$_times.$$" "$_times" 2>/dev/null
+rm -f "$_times.$$"
 release
 if [ -n "$SIGSTATUS" ]; then exit "$SIGSTATUS"; fi
 exit "$rc"

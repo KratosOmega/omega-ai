@@ -718,8 +718,10 @@ lanes_wait() {
 # lanes_end_sessions [K…] — TERM the live session of lanes K… (every lane
 # when none is named): its process group, else the session's children and
 # pid. After up to GRACE s, KILL whatever of it is still alive, group or
-# not. The lane's unit watchdog (lanes/K/wpid) is ended first, so a dead
-# lane's watchdog never outlives it to signal a reused pgid at its deadline.
+# not. The lane's unit watchdog (lanes/K/wpid) and heartbeat (lanes/K/hbpid)
+# are ended first, so a dead lane's watchdog never outlives it to signal a
+# reused pgid at its deadline. The gates each lane's session left behind are
+# reaped in parallel, so the teardown waits one grace, not one per lane.
 # Used by the runner's exit path (lanes then see the stop and end) and by
 # the sweep for a lane that died with its session live. Paths are quoted
 # throughout (a project path may hold a space); lane names are numbers.
@@ -734,6 +736,11 @@ lanes_end_sessions() {
       _es_w="$(cat "$_es_d/wpid" 2>/dev/null)"
       [ -z "$_es_w" ] || kill "$_es_w" 2>/dev/null   # its TERM trap ends its sleep
       rm -f "$_es_d/wpid"
+    fi
+    if [ -f "$_es_d/hbpid" ]; then
+      _es_h="$(cat "$_es_d/hbpid" 2>/dev/null)"
+      [ -z "$_es_h" ] || kill "$_es_h" 2>/dev/null   # its TERM trap ends its sleep
+      rm -f "$_es_d/hbpid"
     fi
     [ ! -f "$_es_d/cpid" ] || _es_pids="$_es_pids $(cat "$_es_d/cpid" 2>/dev/null)"
   done
@@ -752,13 +759,19 @@ lanes_end_sessions() {
   for _es_p in $_es_pids; do
     kill -KILL -"$_es_p" 2>/dev/null || { pkill -KILL -P "$_es_p"; kill -KILL "$_es_p"; } 2>/dev/null
   done
+  _es_r=""
   for _es_k in "$@"; do
     rm -f "$RUN_DIR/lanes/$_es_k/cpid" "$RUN_DIR/lanes/$_es_k/unit.now"
     # The gates the ended session left behind (run_unit never got to reap them).
     _es_t="$(cat "$RUN_DIR/lanes/$_es_k/utag" 2>/dev/null)"
-    [ -z "$_es_t" ] || unit_reap "$_es_t"
+    if [ -n "$_es_t" ]; then unit_reap "$_es_t" & _es_r="$_es_r $!"; fi
     rm -f "$RUN_DIR/lanes/$_es_k/utag"
   done
+  if [ -n "$_es_r" ]; then
+    wait $_es_r 2>/dev/null
+    rmdir "${STATE_ROOT:-}/.studio/gate.units" 2>/dev/null
+  fi
+  return 0
 }
 
 # lanes_sweep — the parent's sweep once every lane has exited (D2): in a

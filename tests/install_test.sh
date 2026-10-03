@@ -199,8 +199,26 @@ test_install_command_shims() {
   assert_file "$TMP/bin-cmd2/studio-overnight" "and writes the new one"
   sh "$REPO_ROOT/install.sh" general --target "$TMP/cmd-gen" --shim-dir "$TMP/bin-cmd-gen" --no-mcp >/dev/null 2>&1
   assert_missing "$TMP/bin-cmd-gen/studio-overnight" "a studio with no commands writes no command shim"
+  # A stale manifest naming a user file that mentions the root: never deleted.
+  printf 'alias x='"'"'CLAUDE_CONFIG_DIR="%s" claude'"'"'\n' "$TMP/cmd" > "$TMP/bin-cmd2/user-rc"
+  printf '%s\n' "$TMP/bin-cmd2/user-rc" >> "$TMP/cmd/.omega-ai-manifest"
   sh "$REPO_ROOT/uninstall.sh" game-dev --target "$TMP/cmd" >/dev/null 2>&1
   assert_missing "$TMP/bin-cmd2/studio-overnight" "uninstall removes the command shim"
+  assert_file "$TMP/bin-cmd2/user-rc" "a listed file without the generated header is never removed"
+  # A hand-made link at the command's name is replaced, never written through.
+  mkdir -p "$TMP/bin-cmd3"; printf 'victim\n' > "$TMP/cmd-victim"
+  ln -s "$TMP/cmd-victim" "$TMP/bin-cmd3/studio-overnight"
+  sh "$REPO_ROOT/install.sh" game-dev --target "$TMP/cmd" --shim-dir "$TMP/bin-cmd3" --no-mcp >/dev/null 2>&1
+  assert_eq victim "$(cat "$TMP/cmd-victim")" "the link's target is untouched"
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if [ -L "$TMP/bin-cmd3/studio-overnight" ]; then _fail "the link is replaced by the shim"; else _pass "the link is replaced by the shim"; fi
+  # A file of the user's own at that name is kept, with a warning.
+  rm -f "$TMP/bin-cmd3/studio-overnight"; printf '#!/bin/sh\necho mine\n' > "$TMP/bin-cmd3/studio-overnight"
+  sh "$REPO_ROOT/install.sh" game-dev --target "$TMP/cmd" --shim-dir "$TMP/bin-cmd3" --no-mcp > "$TMP/cmd3.out" 2>&1
+  assert_contains "$TMP/bin-cmd3/studio-overnight" "^echo mine$" "a user's own file at the name is kept"
+  assert_contains "$TMP/cmd3.out" "was not written by install.sh; keeping it" "with a warning"
+  sh "$REPO_ROOT/uninstall.sh" game-dev --target "$TMP/cmd" >/dev/null 2>&1
+  assert_file "$TMP/bin-cmd3/studio-overnight" "and uninstall leaves it"
 }
 
 # A reinstall with a different --shim-dir must remove the shim the previous
