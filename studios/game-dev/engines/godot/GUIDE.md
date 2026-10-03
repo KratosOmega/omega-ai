@@ -25,7 +25,7 @@ the shell that launches `claude-gd` to pin a build.
 | `test.sh [PATH]` | `godot --headless --path <project> -s addons/gut/gut_cmdln.gd [-gconfig=res://<config>] <selection> -gexit -gjunit_xml_file=res://.studio/reports/test-<stamp>.xml`. `<config>` is `.gutconfig.json` at the root, else `tests/.gutconfig.json`. `<selection>`: none with a config that names `dirs`, else `-gdir=res://tests -ginclude_subdirs`; for a file, `-gdir= -gtest=res://<file>` (the empty `-gdir=` stops GUT from also running the config's dirs) |
 | `slowest.sh [N]` | `studio-test --slowest [N]`: reads the newest `.studio/reports/test-*.xml` |
 | `run.sh [--scene S] [--seconds N] [--windowed]` | `godot --headless --path <project> [S]` in the background for N seconds, then `TERM`; log scanned for `SCRIPT ERROR`, `ERROR:`, `Parser Error` |
-| `import.sh` (sourced) | Before `test.sh` and `run.sh`: `godot --headless --path <project> --import` when `.godot/` is absent, a product or its `.md5` is missing, or the class cache is; exit 1 when the import cannot finish |
+| `import.sh` (sourced) | Before `test.sh` and `run.sh`: `godot --headless --path <project> --import` when `.godot/` is absent, a product or its `.md5` is missing (a `.import` under a `.gdignore` dir or a nested project is skipped; an asset with no `.import` is not seen), or the class cache is. Exit 1 when the import exits non-zero; products still missing after an import that exited 0 are a warning. `run.sh` logs the import to `import-<stamp>.log` |
 | `lint.sh [PATH]` | `gdlint` then `gdformat --check` over every `.gd` outside `addons/` |
 
 ## Roles → godot-prompter skills

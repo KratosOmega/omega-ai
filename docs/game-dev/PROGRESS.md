@@ -26,8 +26,9 @@ approval page in `artifacts/`.
   cut off, and the old check (import only when `.godot/` is absent) ran the
   suite on the half-built cache. `studio-test` and `studio-run` now check every
   import product and its `.md5` sidecar, which Godot writes only after a file's
-  import finishes. They re-import, or stop with the missing files named. A
-  crash is reported with the script it was running.
+  import finishes. They re-import, and stop only when the import itself fails;
+  products still missing after an import that succeeded are a warning. A crash
+  is reported with the script it was running, or as one at shutdown.
 - `studio-test --slowest [N]` reports where the suite's time goes.
 - Sharding is deferred: 4 shards were 2.9× faster with no swap, but phoenix has
   an order-dependent test and a flaky one that only fail sharded. Tiers are

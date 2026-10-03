@@ -12,7 +12,7 @@ marked as taken from an earlier report.
 | 1 | `studio-test --shards N` | **DEFER** | 4 shards 2.9× faster with no swap, but shard-only failures in 2 of 4 runs |
 | 2 | Fast/full tiers | **DROP** | fast tier = **51%** of full wall (rule: ≤ 15%) |
 | 3 | `studio-test --slowest [N]` | **BUILD — done** | 1.3 s over a 19,504-test report |
-| 4 | Import-cache readiness | **BUILD — done** | a half-built cache crashed the suite at 472 s; now re-imported or stopped in ~2 s |
+| 4 | Import-cache readiness | **BUILD — done** | a half-built cache crashed the suite at 472 s; now found by a 2–3 s check and re-imported (24–130 s) |
 
 The branch `worktree-issue-22-studio-test-speed` carries the three BUILD items and the config fix.
 
@@ -56,13 +56,15 @@ costs 3–4 s on this machine.
 4. **After the fix, the current suite runs in 847 s wall (710 s test time).** In that run
    `test_player_menu.gd` takes 22.4 s for 108 tests; on Oct 2 it took 441 s.
 
-**Fix** (commit 72f6ccb): `test.sh` passes the project's config. It looks for
-`.gutconfig.json` at the root, then under `tests/`.
+**Fix** (commit "fix(studio-test): run the suite with the project's own GUT config"): `test.sh`
+passes the project's config. It looks for `.gutconfig.json` at the root, then under `tests/`.
 
 - With no PATH, the config's `dirs` are the suite.
 - A file target passes `-gdir= -gtest=<file>`, because GUT runs the config's dirs as well as
   any `-gtest`.
 - A directory target replaces the dirs.
+- A run that finds no tests (a mistyped PATH, a config with `"dirs": []`) exits 1, and a
+  report renamed by the config's `junit_xml_timestamp` is still found.
 
 Each shape was verified on phoenix with GUT's `-gpo`.
 
@@ -153,7 +155,8 @@ gate. It prints:
 - the share of the time in the top N files;
 - the share of the time in tests of 0.5 s or more.
 
-It takes 1.3 s on a 19,504-test report. Commit 0b6f381.
+It takes 1.3 s on a 19,504-test report. Commit "feat(studio-test): --slowest [N] reports where
+the suite's time goes".
 
 On the fixed suite, the top 12 files are 21% of the time. Tests of 0.5 s or more are 237 of
 19,504, but 46% of the time.
@@ -180,17 +183,26 @@ The 21:31 run is the gate's `studio-test 472 1`: 21:31:14 + 472 s = 21:39:06, th
 - A killed import leaves `.godot/` with 4,739 products missing. The old `test.sh` then ran the
   suite on it.
 
-**Fixed** (commits f22dfc8 and f3abf49). Before the engine runs, `studio-test` and
-`studio-run` check every `*.import` product and its `.md5` sidecar, plus the class cache.
+**Fixed** (commits "fix(godot): import an incomplete cache, stop clearly when the import cannot
+finish" and "fix(godot): a product without its .md5 is unfinished; name a crash and its script",
+then the final review's fixes). Before the engine runs, `studio-test` and `studio-run` check
+every `*.import` product and its `.md5` sidecar, plus the class cache.
 
 - Godot 4.6's `_reimport_file` writes the `.md5` after the importer finishes and after the
   `.import` file. `_test_for_reimport` re-imports any file without one. So a product with no
   `.md5` was cut short, and re-running the import resumes rather than restarts.
-- If the cache is incomplete, the import runs. If it still cannot finish, the run stops with the
-  missing products named, rather than running into a crash.
-- The check takes 2–3 s on phoenix and finds 0 missing on two complete caches.
-- A crash is now reported as `Godot crashed (signal 11) while running <script>`, including a
-  crash at shutdown after a passing report.
+- A `.import` under a directory Godot does not scan (`.gdignore`, a nested `project.godot`) is
+  skipped. An asset added without its `.import` file is not seen; the check covers a branch
+  that adds assets with their `.import` files.
+- If the cache is incomplete, the import runs. If the import exits non-zero, the run stops. If
+  it exits 0 but products are still missing, the run prints a warning naming them and goes on:
+  Godot writes no product for a source it failed on, so what is missing then is mostly what it
+  will never produce, and stopping would fail every run.
+- The check takes 2–3 s on phoenix and finds 0 missing on two complete caches. A re-import takes
+  24 s (no-op) to 130 s (from nothing).
+- A crash is now reported as `Godot crashed (signal 11) while running <script>`. A crash after
+  GUT's Run Summary is reported as `Godot crashed (signal 11) at shutdown, after the run`, not
+  pinned on a script the summary lists.
 
 "Prebuild the cache earlier" is **DROPPED**. It would move the same 130 s, and the gate now
 handles a partial cache itself.
