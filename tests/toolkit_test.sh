@@ -422,6 +422,7 @@ test_gate_signal_waits_for_child_then_releases() {
   [ "$_alive" = yes ] && kill -KILL "$_cp" 2>/dev/null
   assert_eq no "$_alive" "TERM to studio-gate reaches the child"
   assert_missing "$GP/.studio/gate.lock" "the lock is gone once the child is"
+  assert_contains "$GP/.studio/gate.times" '^[0-9][0-9]* sig [0-9][0-9]* 143$' "a signalled run is logged too, with 128+n"
 }
 # Three contenders on a dead holder's lock. Each cmd marks "s <pid>" and
 # "e <pid>"; an s while another cmd is open means two ran at once. A slow `mv`
@@ -467,6 +468,30 @@ test_gate_signal_reaches_the_grandchild() {
   assert_eq no "$_early" "the lock is not released while the grandchild lives"
   assert_missing "$GP/.studio/gate.lock" "the lock is released afterwards"
 }
+# Under an overnight unit (STUDIO_UNIT_TAG), the gate registers itself and
+# its command's pid for the runner's reaper, records the unit and start time
+# in the lock, and logs the run's seconds to gate.times; the registration is
+# gone once the command ends.
+test_gate_unit_registration_and_times() {
+  gate_proj unit
+  ( cd "$GP" && STUDIO_UNIT_TAG="run-1-3-finish" sh "$GATE" studio-test -- sh -c "
+      cp .studio/gate.lock/unit '$TMP/gunit'; cp .studio/gate.lock/since '$TMP/gsince'
+      ls .studio/gate.units/run-1-3-finish > '$TMP/greg'
+      i=0; while [ ! -s .studio/gate.units/run-1-3-finish/* ] && [ \$i -lt 50 ]; do sleep 0.1; i=\$((i + 1)); done
+      cat .studio/gate.units/run-1-3-finish/* > '$TMP/gchild'; echo \$\$ > '$TMP/gself'" ) 2>/dev/null
+  assert_eq run-1-3-finish "$(cat "$TMP/gunit")" "the lock names the unit"
+  assert_contains "$TMP/gsince" '^[0-9][0-9]*$' "the lock records when it was taken"
+  assert_eq 1 "$(wc -l < "$TMP/greg" | tr -d ' ')" "the gate registers one entry under the unit's tag"
+  assert_eq "$(cat "$TMP/gself")" "$(cat "$TMP/gchild")" "the entry holds the command's pid"
+  assert_missing "$GP/.studio/gate.units/run-1-3-finish" "the entry is removed when the gate ends"
+  assert_contains "$GP/.studio/gate.times" '^[0-9][0-9]* studio-test [0-9][0-9]* 0$' "gate.times gains the run's seconds and status"
+  assert_eq "" "$(git -C "$GP" status --porcelain --untracked-files=all | grep 'gate\.')" "the gate's files stay out of git"
+  ( cd "$GP" && STUDIO_UNIT_TAG="../x" sh "$GATE" w -- true ) 2>/dev/null
+  assert_missing "$GP/.studio/x" "an unsafe tag is ignored, never a path"
+  for _i in $(seq 1 55); do echo "1 w 1 0"; done > "$GP/.studio/gate.times"
+  ( cd "$GP" && sh "$GATE" w -- true ) 2>/dev/null
+  assert_eq 50 "$(wc -l < "$GP/.studio/gate.times" | tr -d ' ')" "gate.times keeps the newest 50 lines"
+}
 test_gate_wraps_test_and_run() {
   assert_contains "$BIN/studio-test" 'studio-gate" studio-test --' "studio-test goes through studio-gate"
   assert_contains "$BIN/studio-run" 'studio-gate" studio-run --' "studio-run goes through studio-gate"
@@ -475,7 +500,7 @@ test_gate_wraps_test_and_run() {
 run_tests test_gate_no_overlap test_gate_status_and_held test_gate_stale_reclaim_race \
   test_gate_waiting_message test_gate_records_pid_and_who test_gate_without_a_project_just_runs \
   test_gate_signal_waits_for_child_then_releases test_gate_three_reclaimers_never_overlap \
-  test_gate_signal_reaches_the_grandchild test_gate_wraps_test_and_run \
+  test_gate_signal_reaches_the_grandchild test_gate_unit_registration_and_times test_gate_wraps_test_and_run \
   test_dispatch_rejects_unknown_engine test_dispatch_needs_a_studio_root \
   test_resolve_honours_godot_path test_resolve_ignores_a_non_executable_godot_path \
   test_resolve_finds_an_app_bundle test_resolve_finds_godot_on_path test_guide_has_an_install_line \

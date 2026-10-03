@@ -3,6 +3,7 @@
   "description": "Game development studio — Godot 4.x 2D first, engine-agnostic core",
   "target": "~/.claude-gamedev",
   "shim": "claude-gd",
+  "commands": "studio-overnight",
   "engine": "godot4",
   "dimension": "2d",
   "language": "gdscript",
