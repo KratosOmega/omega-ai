@@ -14,6 +14,27 @@ approval page in `artifacts/`.
 
 ## Log
 
+### 2026-10-02 — Overnight foreground gate and status anywhere
+
+- The finish unit never ran its tests: under a lane, the execute skill told
+  the session to run `studio-test` in the background and wait for the
+  notice, and a headless `-p` session ends when its turn ends, so the notice
+  never came and the job was orphaned holding the gate lock. Sessions now
+  run `studio-test` and `studio-run` in the foreground with
+  `timeout = $BASH_MAX_TIMEOUT_MS`; `tests/probes/bash_timeout_probe.sh`
+  showed a `-p` foreground call honours a raised cap past 10 minutes.
+- `studio-gate` registers each gate under its unit's tag
+  (`.studio/gate.units/`), and the runner ends any gate a unit leaves
+  behind. A watchdog-ended unit with no progress is recorded `timed out`.
+  `.studio/gate.times` logs gate durations; preflight warns when the
+  slowest recent `studio-test` would not fit `session_minutes`.
+- `studio-overnight status` works from any directory through a user-level
+  run registry (`~/.claude-gamedev/runs/`), shows each running unit's last
+  tool call or subagent and the gate holder, and reads an ended run as one
+  line with its report and resume command. `watch` repeats it; a foreground
+  `start` prints a heartbeat. The installer puts `studio-overnight` on
+  `PATH` (studio.json `commands`).
+
 ### 2026-10-02 — Overnight lanes (issue #19)
 
 - `studio-overnight start` runs a manifest of stories as parallel

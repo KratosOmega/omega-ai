@@ -463,7 +463,7 @@ test_execute_lanes() {
   assert_contains "$E" 'The ledger is never touched' "an existing branch's ledger is never touched"
   assert_contains "$E" 'studio-state ledger "base origin/<Target>"' "the base is recorded as the remote target"
   assert_contains "$E" 'retry a git write whose stderr says `could not lock` or `cannot lock ref`' "git lock retry rule"
-  assert_contains "$E" 'run `studio-test` in the background and wait for its notification' "D1 fallback: studio-test runs in the background under a lane"
+  assert_contains "$E" 'Run `studio-test` and `studio-run`' "§0 names both gate commands under a lane"
   assert_contains "$E" '`Review: final` gets no per-task review' "§4 honours Review: final"
   assert_contains "$E" 'a per-task reviewer is dispatched with `model: "opus"`' "the per-task reviewer runs on Opus"
   assert_contains "$E" 'Under a lane, §5 step 1 is skipped' "the final review runs no tests under a lane"
@@ -483,13 +483,38 @@ test_execute_lanes() {
   assert_contains "$E" 'under integration, no PR and `shipped <Branch>`' "§8's finish unit agrees with the integration lane"
   assert_contains "$E" 'Under `--one`, these two reads are `studio-brief task <n>` or `studio-brief final` only' "§0's plan and spec reads give way to studio-brief under --one"
   assert_contains "$E" 'Under `--one`, SDD.s setup never reads the plan' "SDD's setup plan read gives way to studio-brief under --one"
-  assert_contains "$E" 'Under a lane, every brief that has a subagent run `studio-test`' "§2 carries the background studio-test rule into every brief"
-  assert_contains "$E" 'under a lane, §2.s background `studio-test` line;' "§4a's fixer brief carries the background rule"
-  assert_contains "$E" '`studio-test` and `studio-run` each run in the background' "§7's lane gate runs studio-test and studio-run in the background"
+  assert_contains "$E" 'Under a lane, every brief that has a subagent run `studio-test`' "§2 carries the foreground studio-test rule into every brief"
+  assert_contains "$E" 'under a lane, §2.s foreground `studio-test` line;' "§4a's fixer brief carries the foreground rule"
+  assert_contains "$E" '`studio-test` and `studio-run` each run as a foreground Bash call with `timeout` set to `$BASH_MAX_TIMEOUT_MS`' "§7's lane gate runs studio-test and studio-run in the foreground"
   assert_contains "$E" 'the gate runs once, no `fix(gate)` round follows, and a red gate never ships' "a red lane gate is not retried and never ships"
   assert_contains "$E" 'Stop: gate red — <failing command and line>' "a red lane gate ledgers a Stop: line"
   assert_contains "$E" '`studio-lint` exit 3 (gdtoolkit not installed) is noted in the gate line, not red, and the story goes on.' "a lane gate keeps lint exit 3 non-red"
   assert_contains "$E" '`studio-state ledger "Stop: <the printed message>"` (not `gate red`)' "a lane engine stop is not gate red"
+}
+
+# The finish unit's gate (phoenix mob-composer-parity, 2026-10-02): a
+# headless -p session that ends its turn to wait on a background studio-test
+# ends the session, so the gate must run in the foreground. This fails if any
+# lane rule tells a session to background-and-wait on studio-test/studio-run.
+test_execute_lane_gate_foreground() {
+  E="$REPO_ROOT/studios/game-dev/skills/execute/SKILL.md"
+  for t in 'in the background and wait' 'wait for its notification' 'waited on by notification' \
+    'never block a foreground call' 'the probe for a raised Bash timeout was' 'inconclusive'; do
+    assert_not_contains "$E" "$t" "no background-and-wait gate rule ($t)"
+  done
+  # Every line naming studio-test or studio-run together with the background
+  # forbids it (never …) or names the timeout case (moved to the background).
+  _bg="$(grep -nE 'studio-(test|run).*background|background.*studio-(test|run)' "$E" \
+    | grep -vE 'never|moved to the background')"
+  assert_eq "" "$_bg" "no line pairs studio-test/studio-run with the background except to forbid it"
+  assert_contains "$E" '\*\*The gate runs in the foreground.\*\* Run `studio-test` and `studio-run`' "§0 states the foreground rule"
+  assert_contains "$E" 'as foreground Bash calls with `timeout` set to `$BASH_MAX_TIMEOUT_MS`' "the timeout is the runner's raised cap"
+  assert_contains "$E" 'no `&` inside the command, no Monitor or notification' "no shell & and no notification wait"
+  assert_contains "$E" '`tests/probes/bash_timeout_probe.sh` (2026-10-02)' "the probe result replaces the hedge"
+  assert_contains "$E" 'Stop: gate timed out — <command> ran past <n> min' "a timed-out gate is a stated stop"
+  assert_file "$REPO_ROOT/tests/probes/bash_timeout_probe.sh" "the probe is in the repo"
+  # The brief line §2 carries verbatim.
+  assert_eq 1 "$(tr '\n' ' ' < "$E" | grep -c 'never in the background (no `run_in_background`, no `&`), and never end a turn to wait for one')" "§2's verbatim brief line"
 }
 
 test_execute_land_and_progress() {
@@ -558,5 +583,5 @@ run_tests test_plugin_manifests test_skill_frontmatter test_agent_frontmatter \
   test_stage_chain test_execute_contract test_agent_contracts test_feature_checkout_copies test_next_lines \
   test_review_contract test_on_demand_skills_keep_stage test_playtest_contract test_retro_contract \
   test_no_ship_references test_superpowers_requires_referenced test_no_last_playtest_callers \
-  test_execute_one_contract test_router_overnight_lock test_execute_lanes test_execute_land_and_progress test_final_wave_contracts \
+  test_execute_one_contract test_router_overnight_lock test_execute_lanes test_execute_lane_gate_foreground test_execute_land_and_progress test_final_wave_contracts \
   test_plan_brainstorm_lanes

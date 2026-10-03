@@ -22,6 +22,8 @@ RUNNER="$BIN/studio-overnight"
 STATE_BIN="$BIN/studio-state"
 TMP="$(cd "$(mktemp -d)" && pwd -P)"
 trap 'rm -rf "$TMP"' EXIT
+# The runner's user-level registry lives under $HOME: never the real one.
+HOME="$TMP/home"; export HOME; mkdir -p "$HOME"
 FAKE="$TMP/fakebin"
 mkdir -p "$FAKE"
 GIT_AUTHOR_NAME=t; GIT_AUTHOR_EMAIL=t@t; GIT_COMMITTER_NAME=t; GIT_COMMITTER_EMAIL=t@t
@@ -62,6 +64,10 @@ export GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
 #   sleep <s>       sleep s seconds
 #   gate <s>        studio-gate studio-test around a sleep of s seconds,
 #                   logging `s|e <story> <epoch>` lines to $CALLS/gate.iv
+#   bggate <s>      studio-gate studio-test around a sleep of s seconds,
+#                   started in the background in its own session and left
+#                   running (the sleep's pid in $CALLS/bggate.pid)
+#   emit <file>     the file's lines on stdout (the unit's stream-json)
 #   stop <reason>   terminal: ledgers `Stop: <reason>` (uncommitted) in the
 #                   story worktree, or in the cwd when there is none
 #   noop            terminal: does nothing (no progress)
@@ -198,6 +204,14 @@ for act in "$@"; do
     "gate "*)         s="${act#gate }"
                       sh "$(dirname "$STUB_STATE_BIN")/studio-gate" studio-test -- sh -c \
                         "echo s $id \$(date +%s) >> '$CALLS/gate.iv'; sleep $s; echo e $id \$(date +%s) >> '$CALLS/gate.iv'" ;;
+    "bggate "*)       s="${act#bggate }"
+                      # What the 2026-10-02 finish did: a gate started in the
+                      # background, in its own session (as the Bash tool's
+                      # shells are), left running when the session ends.
+                      perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV' sh "$(dirname "$STUB_STATE_BIN")/studio-gate" studio-test -- \
+                        sh -c "echo \$\$ > '$CALLS/bggate.pid'; sleep $s" < /dev/null > /dev/null 2>&1 &
+                      while [ ! -s "$CALLS/bggate.pid" ]; do sleep 0.1; done ;;
+    "emit "*)         cat "${act#emit }" ;;
     "stop "*)         terminal=1; w="$(story_wt)"
                       ( [ -z "$w" ] || cd "$w"; st ledger "Stop: ${act#stop }" ) ;;
     noop)             terminal=1 ;;
@@ -1531,7 +1545,7 @@ test_lanes_status_per_story() {
   ( cd "$P" && sh "$RUNNER" status ) > "$TMP/st.out"; st=$?
   wait_pid_or_fail "$RPID" 60 "the run ends"
   assert_eq 0 "$st" "status exits 0 during a run"
-  assert_eq "A B C" "$(awk 'NR<=3{printf "%s%s", s, $1; s=" "}' "$TMP/st.out")" "stories in manifest order"
+  assert_eq "A B C" "$(awk '!/^ / { if (++r > 3) exit; printf "%s%s", s, $1; s=" " }' "$TMP/st.out")" "stories in manifest order"
   assert_contains "$TMP/st.out" "^A  lane [12]  running  unit A T1  task 0/1$" "A is running T1"
   assert_contains "$TMP/st.out" "^B  lane [12]  queued  unit -  task 0/1$" "B waits in A's chain, on A's lane"
   assert_contains "$TMP/st.out" "^C  lane [12]  " "C has its own lane"
@@ -1761,6 +1775,151 @@ test_lanes_help_modes() {
   assert_contains "$REPO_ROOT/README.md" "studio-overnight start <manifest>" "README documents manifest runs"
   assert_contains "$REPO_ROOT/README.md" "studio-overnight next" "README documents next"
 }
+# ---- The finish gate under a lane, and status from anywhere (2026-10-02) ----
+
+ACT="$REPO_ROOT/tests/fixtures/overnight-activity.jsonl"
+REG="$HOME/.claude-gamedev/runs"
+ELSEWHERE="$TMP/elsewhere"; mkdir -p "$ELSEWHERE"
+# status_from DIR — `studio-overnight status` run in DIR: ST_RC, output in $TMP/st.out.
+status_from() { ST_RC=0; ( cd "$1" && sh "$RUNNER" status ) > "$TMP/st.out" 2>&1 || ST_RC=$?; }
+
+# A unit that leaves a gate running in the background (the 2026-10-02 finish):
+# the runner ends it when the unit ends, so the retry never waits behind it
+# and no gate outlives its unit.
+test_lanes_left_gate_reaped() {
+  lanes_fixture orphan integration A:-
+  printf 'bggate 100; noop\ngate 1\n' > "$SCEN/A"
+  _t0="$(date +%s)"
+  run_lanes start "$MFP"
+  _secs=$(( $(date +%s) - _t0 ))
+  _gp="$(cat "$CALLS/bggate.pid" 2>/dev/null)"
+  assert_eq 0 "$LS_STATUS" "A lands after its left-behind gate is ended"
+  assert_status 1 "the left-behind gate's command is gone" -- kill -0 "${_gp:-999999}"
+  assert_eq "" "$(pgrep -f 'studio-gate studio-test' 2>/dev/null | while read -r p; do ps -o args= -p "$p" | grep -F "$CALLS" ; done)" "no studio-gate of this run survives"
+  assert_missing "$P/.studio/gate.lock" "the gate lock is free after the run"
+  assert_missing "$P/.studio/gate.units" "every unit's gate registry is cleared"
+  assert_contains "$LS_ERR" "left a gate running after it ended (pid [0-9]*) — ended it" "the runner says it ended the gate"
+  assert_eq 1 "$(grep -c '^s A ' "$CALLS/gate.iv" 2>/dev/null)" "the retry's own gate ran"
+  assert_eq yes "$([ "$_secs" -lt 60 ] && echo yes || echo "no ($_secs s)")" "the retry never waited behind the 100 s gate"
+  assert_contains "$(last_lanes_dir)/lanes/1/units.tsv" "	A-T1	0	[^	]*	[^	]*	0	noprog$" "the unit that left the gate made no progress"
+  assert_contains "$CALLS/1.fullenv" "^STUDIO_UNIT_TAG=overnight-demo-[0-9-]*-1-1-A-T1$" "each session carries its unit tag"
+}
+# A unit the session cap ends with no progress is `timed out`, not noprog,
+# and the story's ending says so.
+test_lanes_timed_out_outcome() {
+  LANES_CONFIG='{"overnight": {"kill_grace_seconds": 5}}'; export LANES_CONFIG
+  lanes_fixture tmo integration A:-
+  printf 'hang\nhang\n' > "$SCEN/A"
+  STUDIO_OVERNIGHT_SESSION_SECONDS=2; export STUDIO_OVERNIGHT_SESSION_SECONDS
+  run_lanes start "$MFP"; unset STUDIO_OVERNIGHT_SESSION_SECONDS
+  R="$(last_lanes_dir)"
+  assert_eq "timed out|timed out" "$(cut -f7 "$R/lanes/1/units.tsv" | paste -sd'|' -)" "both capped units are timed out"
+  assert_contains "$R/stories/A" "^stopped timed out on T1 (session_minutes 90)$" "the ending names the timeout"
+  assert_contains "$R/report.md" "^Not landed: stopped — timed out on T1 " "and so does the report"
+}
+# The runner's terminal: a line per unit start and end, and a heartbeat with
+# the unit's last activity while it runs.
+test_lanes_heartbeat() {
+  lanes_fixture hb integration A:-
+  printf 'emit %s; sleep 4\n' "$ACT" > "$SCEN/A"
+  STUDIO_OVERNIGHT_HEARTBEAT_SECONDS=1; export STUDIO_OVERNIGHT_HEARTBEAT_SECONDS
+  run_lanes start "$MFP"; unset STUDIO_OVERNIGHT_HEARTBEAT_SECONDS
+  assert_contains "$LS_ERR" "^studio-overnight: run .*overnight-demo-.* started (pid [0-9]*) — watch: '.*studio-overnight' watch" "the start line names watch by its absolute path"
+  assert_contains "$LS_ERR" "^studio-overnight: A T1 · started (lane 1)$" "a unit's start"
+  assert_contains "$LS_ERR" "^studio-overnight: A 1-A-T1 · [0-9]*s · ui-designer · \"T1 loader fold options\" · Bash: npx vitest run \"src/loader/fold.test.ts\"$" "a heartbeat with the last activity"
+  assert_contains "$LS_ERR" "^studio-overnight: A T1 · ended: progress · exit 0 · [0-9.]* min$" "a unit's end"
+}
+test_lanes_activity_verb() {
+  assert_eq 'ui-designer · "T1 loader fold options" · Bash: npx vitest run "src/loader/fold.test.ts"' \
+    "$(sh "$RUNNER" activity "$ACT")" "the running subagent, then its last tool call"
+  { cat "$ACT"; printf '%s\n' '{"type":"user","message":{"content":[{"tool_use_id":"toolu_A1","type":"tool_result","content":"done"}]}}'; } > "$TMP/act2.jsonl"
+  assert_eq 'Bash: npx vitest run "src/loader/fold.test.ts"' "$(sh "$RUNNER" activity "$TMP/act2.jsonl")" "a finished subagent is not named"
+  printf '{"type":"system","subtype":"init"}\n' > "$TMP/act3.jsonl"
+  assert_eq starting "$(sh "$RUNNER" activity "$TMP/act3.jsonl")" "no tool call yet"
+}
+# Status from outside any project, with zero, one and two live runs, then
+# after they ended; and from the project through a symlinked spelling of its
+# path (GameDev -> GameDev.nosync).
+test_lanes_status_anywhere() {
+  rm -rf "$REG"
+  status_from "$ELSEWHERE"
+  assert_eq 1 "$ST_RC" "zero runs: exit 1"
+  assert_contains "$TMP/st.out" "^no run — nothing registered in $REG, and $ELSEWHERE is not a studio project" "zero runs: it says where it looked"
+  # One live run, started through a symlinked path.
+  lanes_fixture any1 integration A:-
+  P1="$P"; ln -s "$P1" "$TMP/any1-link"
+  printf 'emit %s; sleep 8\n' "$ACT" > "$SCEN/A"
+  ( cd "$TMP/any1-link" && exec sh "$RUNNER" start "$MFP" ) > /dev/null 2>&1 & R1=$!
+  wait_for "[ -f '$CALLS/1.t0' ]" 30; sleep 1
+  status_from "$ELSEWHERE"
+  assert_eq 0 "$ST_RC" "one live run: exit 0"
+  assert_contains "$TMP/st.out" "^== overnight-demo-[0-9-]* — $P1$" "it names the run and its project (the real path)"
+  assert_contains "$TMP/st.out" "^A  lane 1  running  unit A T1  task 0/1$" "the project's own status follows"
+  assert_contains "$TMP/st.out" "^    1-A-T1 · [0-9]*s · ui-designer · \"T1 loader fold options\" · Bash: npx vitest" "the running unit's last activity in one line"
+  assert_contains "$TMP/st.out" "^gate: free$" "the gate lock"
+  status_from "$TMP/any1-link"
+  assert_eq 0 "$ST_RC" "from the symlinked spelling of the project: live"
+  status_from "$P1"
+  assert_eq 0 "$ST_RC" "from the real path: live"
+  # Two live runs.
+  lanes_fixture any2 integration B:-
+  P2="$P"; printf 'sleep 6\n' > "$SCEN/B"
+  ( cd "$P2" && exec sh "$RUNNER" start "$MFP" ) > /dev/null 2>&1 & R2=$!
+  wait_for "[ -f '$CALLS/1.t0' ]" 30
+  status_from "$ELSEWHERE"
+  assert_eq 0 "$ST_RC" "two live runs: exit 0"
+  assert_eq 2 "$(grep -c '^== overnight-demo-' "$TMP/st.out")" "both runs are listed"
+  assert_contains "$TMP/st.out" " — $P2$" "the second project is named"
+  # A project with no run of its own names the live ones elsewhere.
+  lanes_fixture any3 integration C:-
+  status_from "$P"
+  assert_eq 1 "$ST_RC" "a project with no run: exit 1"
+  assert_contains "$TMP/st.out" "^no run in $P — " "it says where it looked"
+  assert_contains "$TMP/st.out" "^live elsewhere: $P1 (pid $R1)" "and names the live run elsewhere"
+  wait_pid_or_fail "$R1" 90 "run 1 ends"; wait_pid_or_fail "$R2" 90 "run 2 ends"
+  # After they ended: the last one, read clearly.
+  status_from "$ELSEWHERE"
+  assert_eq 1 "$ST_RC" "ended runs: exit 1"
+  assert_contains "$TMP/st.out" "^no live run (registry $REG) — the last run was in " "it names the last run's project"
+  assert_contains "$TMP/st.out" "^ended (done) — report: .*/report.md$" "an ended run in one line"
+  assert_eq 0 "$(ls "$REG" | grep -c '^overnight-')" "no live entries remain"
+  assert_contains "$REG/last" "^ended=" "the newest ended run is kept as last"
+}
+# An ended partial run: the story that stopped, the report and the resume.
+test_lanes_status_ended_partial() {
+  lanes_fixture endp integration S1:- S2:S1
+  printf 'noop\nnoop\n' > "$SCEN/S1"
+  run_lanes start "$MFP"
+  status_from "$P"
+  assert_eq 1 "$ST_RC" "an ended run: exit 1"
+  assert_contains "$TMP/st.out" "^ended (partial) — S1 stopped: no progress on T1 — report: $(last_lanes_dir)/report.md — resume: cd '$P' && '.*studio-overnight' start docs/runs/demo.md$" "ended (partial) — who stopped and why — report — resume"
+  status_from "$ELSEWHERE"
+  assert_contains "$TMP/st.out" "^ended (partial) — S1 stopped: no progress on T1 — " "the same line from anywhere"
+}
+test_lanes_watch() {
+  STUDIO_OVERNIGHT_WATCH_COUNT=2; export STUDIO_OVERNIGHT_WATCH_COUNT
+  st=0; ( cd "$ELSEWHERE" && sh "$RUNNER" watch 1 ) > "$TMP/w.out" 2>&1 || st=$?
+  st2=0; ( cd "$ELSEWHERE" && sh "$RUNNER" status --follow 1 ) > "$TMP/w2.out" 2>&1 || st2=$?
+  unset STUDIO_OVERNIGHT_WATCH_COUNT
+  assert_eq "0 0" "$st $st2" "watch and status --follow exit 0"
+  assert_eq 2 "$(grep -c '^studio-overnight watch · [0-9:]* · every 1s · Ctrl-C to quit$' "$TMP/w.out")" "two refreshes"
+  assert_eq 2 "$(grep -c '^studio-overnight watch · ' "$TMP/w2.out")" "status --follow is watch"
+  assert_not_contains "$TMP/w.out" '"type"' "no raw JSON"
+  assert_status 2 "a bad interval is usage" -- sh "$RUNNER" watch x
+}
+# The preflight warns when the slowest recent studio-test leaves a finish
+# unit too little room under session_minutes.
+test_lanes_gate_room_warning() {
+  lanes_fixture room integration A:-
+  printf '%s studio-test 600 0\n%s studio-test 5400 0\n%s merge 9000 0\n' 1 2 3 > "$P/.studio/gate.times"
+  run_lanes start --dry-run "$MFP"
+  assert_eq 0 "$LS_STATUS" "a warning, not a refusal"
+  assert_contains "$LS_ERR" "warning: the slowest of the last 10 studio-test runs took 90 min.*set overnight.session_minutes to at least 118" "the warning names the gate time and the minimum"
+  printf '1 studio-test 600 0\n' > "$P/.studio/gate.times"
+  run_lanes start --dry-run "$MFP"
+  assert_not_contains "$LS_ERR" "warning: the slowest" "a 10-minute gate fits 90 minutes"
+}
+
 # Last: no process any test started is still alive.
 test_lanes_no_orphans() {
   _left="$(pgrep -f "$TMP" 2>/dev/null; pgrep -f "$RUNNER" 2>/dev/null)"
@@ -1788,4 +1947,6 @@ run_tests test_lanes_chain_rule test_lanes_manifest_refusals test_lanes_prefligh
   test_lanes_done_marker test_lanes_status_reaps_dead_runner test_lanes_reap_names_final_pr \
   test_lanes_detach_strips_env test_lanes_detach_refusal_in_foreground test_lanes_detach_child_refusal_surfaces \
   test_lanes_detach_timeout_lock_held_points_at_status test_lanes_detach_timeout_no_lock_ends_child \
-  test_lanes_help_modes test_lanes_no_orphans
+  test_lanes_help_modes test_lanes_left_gate_reaped test_lanes_timed_out_outcome test_lanes_heartbeat \
+  test_lanes_activity_verb test_lanes_status_anywhere test_lanes_status_ended_partial test_lanes_watch \
+  test_lanes_gate_room_warning test_lanes_no_orphans

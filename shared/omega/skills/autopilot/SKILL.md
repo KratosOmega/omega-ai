@@ -129,7 +129,7 @@ session (it is on `PATH` only inside a `claude-gd` session).
    Either way, say in the same message:
    - what the run may merge in the chosen mode — integration: the runner merges stories into `integration/<slug>`, nothing is merged into `main`, and the morning brings one draft PR integration → `main`; direct: the runner merges each story into `main` only through `merge_command`, each dependent after its dependency;
    - what it may not do: no session merges anything; no force-push; no remote branch deleted; no destructive or security-sensitive operation; no reading or writing of secrets;
-   - how to watch and end it: `studio-overnight status` and `studio-overnight stop`;
+   - how to watch and end it: `studio-overnight status` (from any directory) or `studio-overnight watch`, and `studio-overnight stop` (from the project);
    - that the morning `report.md` lands in `.studio/reports/overnight-<slug>-<ts>/`;
    - that this chat can now close, and to keep the laptop on power with the lid open.
 

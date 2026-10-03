@@ -177,6 +177,32 @@ test_install_copy_mode() {
   assert_missing "$TMP/cp/global" "uninstall removes the global plugin snapshot"
 }
 
+# studio.json "commands" puts each named studio command on PATH beside the
+# launch shim (game-dev: studio-overnight), so `studio-overnight status` works
+# from any directory; a reinstall and an uninstall remove it with the rest.
+test_install_command_shims() {
+  sh "$REPO_ROOT/install.sh" game-dev --target "$TMP/cmd" --shim-dir "$TMP/bin-cmd1" --no-mcp >/dev/null 2>&1
+  assert_file "$TMP/bin-cmd1/studio-overnight" "the install writes a studio-overnight shim beside claude-gd"
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if [ -x "$TMP/bin-cmd1/studio-overnight" ]; then _pass "the command shim is executable"; else _fail "the command shim is executable"; fi
+  assert_contains "$TMP/bin-cmd1/studio-overnight" "exec sh \"$TMP/cmd/bin/studio-overnight\"" "the shim runs the installed command"
+  assert_contains "$TMP/bin-cmd1/studio-overnight" "PATH=\"$TMP/bin-cmd1:$TMP/cmd/bin:" "with the launch shim and the studio bin on PATH"
+  assert_contains "$TMP/cmd/.omega-ai-manifest" "^$TMP/bin-cmd1/studio-overnight\$" "the manifest records the command shim"
+  mkdir -p "$TMP/cmd-away" "$TMP/cmd-home"
+  ( cd "$TMP/cmd-away" && HOME="$TMP/cmd-home" "$TMP/bin-cmd1/studio-overnight" status ) > "$TMP/cmd.out" 2>&1
+  assert_contains "$TMP/cmd.out" "^no run — nothing registered in $TMP/cmd-home/.claude-gamedev/runs" \
+    "the shim runs status from outside any project, naming where it looked"
+  assert_missing "$TMP/bin-cmd1/claude-gen" "a studio declares only its own commands"
+  sh "$REPO_ROOT/install.sh" game-dev --target "$TMP/cmd" --shim-dir "$TMP/bin-cmd2" --no-mcp > "$TMP/cmd2.out" 2>&1
+  assert_missing "$TMP/bin-cmd1/studio-overnight" "a reinstall in another shim dir removes the old command shim"
+  assert_not_contains "$TMP/cmd2.out" "skipping manifest entry outside" "without an out-of-scope warning"
+  assert_file "$TMP/bin-cmd2/studio-overnight" "and writes the new one"
+  sh "$REPO_ROOT/install.sh" general --target "$TMP/cmd-gen" --shim-dir "$TMP/bin-cmd-gen" --no-mcp >/dev/null 2>&1
+  assert_missing "$TMP/bin-cmd-gen/studio-overnight" "a studio with no commands writes no command shim"
+  sh "$REPO_ROOT/uninstall.sh" game-dev --target "$TMP/cmd" >/dev/null 2>&1
+  assert_missing "$TMP/bin-cmd2/studio-overnight" "uninstall removes the command shim"
+}
+
 # A reinstall with a different --shim-dir must remove the shim the previous
 # manifest recorded, not skip it as out of scope: the installer used to pass
 # the new shim path to manifest_remove, orphaning the old one.
@@ -1176,7 +1202,7 @@ run_tests test_studio_contract test_install_unknown_studio test_install_guard \
   test_install_refuses_traversal_shim_dir test_install_refuses_symlinked_target \
   test_install_dry_run test_install_content \
   test_install_precedence test_install_copy_mode test_install_reinstall_cleans_stale_entries \
-  test_install_reinstall_new_shim_dir_removes_old_shim \
+  test_install_reinstall_new_shim_dir_removes_old_shim test_install_command_shims \
   test_install_accepts_no_mcp test_install_registers_mcp test_install_skips_mcp_without_node_18 \
   test_install_skips_mcp_without_engine test_install_no_mcp_flag_skips_registration \
   test_install_general_has_no_mcp test_reinstall_reregisters_mcp_once test_uninstall_removes_mcp \

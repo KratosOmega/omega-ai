@@ -64,8 +64,12 @@ assert_not_contains() {
   fi
 }
 
+# run_tests NAME… — each test in order; TESTS_ONLY="a b" runs only those named.
 run_tests() {
   for _t in "$@"; do
+    if [ -n "${TESTS_ONLY:-}" ]; then
+      case " $TESTS_ONLY " in *" $_t "*) ;; *) continue ;; esac
+    fi
     printf '%s\n' "$_t"
     "$_t"
   done

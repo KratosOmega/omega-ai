@@ -11,6 +11,8 @@ RUNNER="$REPO_ROOT/studios/game-dev/bin/studio-overnight"
 STATE_BIN="$REPO_ROOT/studios/game-dev/bin/studio-state"
 TMP="$(cd "$(mktemp -d)" && pwd -P)"
 trap 'rm -rf "$TMP"' EXIT
+# The runner's user-level registry lives under $HOME: never the real one.
+HOME="$TMP/home"; export HOME; mkdir -p "$HOME"
 FAKE="$TMP/fakebin"
 mkdir -p "$FAKE"
 
@@ -440,7 +442,8 @@ test_overnight_kill_after_grace() {
   STUDIO_OVERNIGHT_SESSION_SECONDS=1; export STUDIO_OVERNIGHT_SESSION_SECONDS
   run_start; unset STUDIO_OVERNIGHT_SESSION_SECONDS
   assert_eq 2 "$(calls)" "a session that ignores TERM is killed after the grace, and counted"
-  assert_contains "$(last_run_dir)/report.md" "no progress on T1" "two killed sessions with no progress stop the run"
+  assert_contains "$(last_run_dir)/report.md" "^Ending: timed out on T1 (session_minutes " "two killed sessions with no progress stop the run, named as timed out"
+  assert_eq "timed out" "$(awk -F'\t' 'NR == 1 { print $7 }' "$(last_run_dir)/units.tsv")" "a unit the watchdog ended with no progress is recorded timed out, not noprog"
 }
 
 test_overnight_stop_file() {
@@ -613,9 +616,13 @@ test_overnight_status() {
   assert_contains "$TMP/st.out" "^task: 1/2$" "status: task k/N"
   assert_contains "$TMP/st.out" "^spent: \\\$1.50$" "status: spend so far"
   assert_contains "$TMP/st.out" "^pid: $RPID$" "status: the lock pid"
+  assert_contains "$TMP/st.out" "^now: 2-T2 · [0-9]*[sm] · " "status: the running unit's elapsed time and activity"
+  assert_contains "$TMP/st.out" "^gate: free$" "status: the gate lock"
   ( cd "$P" && sh "$RUNNER" stop ) >/dev/null; bg_status
   assert_status 1 "status with no run exits 1" -- sh -c "cd '$P' && sh '$RUNNER' status"
-  assert_eq "no run" "$(cd "$P" && sh "$RUNNER" status 2>&1)" "status prints no run"
+  ( cd "$P" && sh "$RUNNER" status ) > "$TMP/st.out" 2>&1
+  assert_contains "$TMP/st.out" "^no run — the last run: $P/.studio/reports/overnight-" "status with no run names the last run"
+  assert_contains "$TMP/st.out" "^ended (stopped by user) — report: $P/.studio/reports/overnight-.*/report.md — resume: " "and how it ended, its report and how to resume"
 }
 
 test_overnight_models_by_unit() {

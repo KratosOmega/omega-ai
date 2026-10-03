@@ -87,12 +87,25 @@ is `STUDIO_STORY`:
   `studio-state ledger "base origin/<Target>"`. Every `git merge-base` in
   §4a, §5 and §7 uses `origin/<Target>` after a fetch; the bare `<Target>`
   is used only for `gh pr create --base`.
-- A `studio-test` or `studio-run` call can wait for the gate lock behind a
-  long merge command, and the probe for a raised Bash timeout was
-  inconclusive, so
-  run `studio-test` in the background and wait for its notification; never
-  block a foreground call on it. `studio-run` is run the same way, and §2
-  carries the rule into every subagent brief.
+- **The gate runs in the foreground.** Run `studio-test` and `studio-run`
+  as foreground Bash calls with `timeout` set to `$BASH_MAX_TIMEOUT_MS` (the
+  runner exports it, `session_minutes` × 60000). A call that waits for the
+  gate lock behind another lane's test or a merge command just blocks until
+  it gets the lock. Never run either in the background: no
+  `run_in_background`, no `&` inside the command, no Monitor or notification
+  wait. This is a headless one-shot `-p` session: a turn that ends to wait
+  for a notification ends the session, the notification never arrives, the
+  gate is orphaned and the unit makes no progress (phoenix
+  `mob-composer-parity`, 2026-10-02). The raised cap is settled:
+  `tests/probes/bash_timeout_probe.sh` (2026-10-02) showed a `-p` session's
+  foreground call running 12 minutes and returning when
+  `BASH_MAX_TIMEOUT_MS` is raised, and cut off at 600 s when it is not. A
+  call that outlives its `timeout` is moved to the background (its result
+  says so): that is a timed-out gate — run
+  `studio-state ledger "Stop: gate timed out — <command> ran past <n> min"`
+  and end the turn. When the session cap ends the unit first, the runner
+  records it `timed out`; either way it ends any gate the unit leaves
+  behind. §2 carries this rule into every subagent brief.
 
 **Isolation.** First note the current branch (`git branch --show-current`)
 — the noted branch — along with the spec's and plan's noted hashes. Then:
@@ -232,8 +245,10 @@ implementer reads `superpowers:systematic-debugging`.
 
 Under a lane, every brief that has a subagent run `studio-test` — §3's
 implementer, §4a rule 2's fixer, §5 step 5's wave — also carries this line
-verbatim (§0, Under a lane): "run `studio-test` in the background and wait
-for its notification; never block a foreground call on it".
+verbatim (§0, The gate runs in the foreground): "run `studio-test` and
+`studio-run` as foreground Bash calls with `timeout` set to
+`$BASH_MAX_TIMEOUT_MS`; never in the background (no `run_in_background`, no
+`&`), and never end a turn to wait for one".
 
 ## 3. Verify rules (both modes)
 
@@ -313,7 +328,7 @@ This overrides `superpowers:subagent-driven-development`'s fix loop (rounds 1–
    - "fix these findings only; one commit, subject `fix(T<n>): <summary>`;
      run the task's tests — the `Verify: unit` test files the task names,
      then `studio-test` — and paste the summary line before handing back";
-   - under a lane, §2's background `studio-test` line;
+   - under a lane, §2's foreground `studio-test` line;
 3. **Re-review** — one scoped dispatch of `game-dev:reviewer` over the fix
    commit's range (its review package), with the findings list — happens
    only when the round's findings included a Critical, or
@@ -529,7 +544,9 @@ it once §5 is done, with no question to the user:
 runner's (`STUDIO_RUN`'s header), and the base is `origin/<Target>`:
 
 - **Integration:** step 1 runs once, the story's one test run;
-  `studio-test` and `studio-run` each run in the background and are waited on by notification (§0: they wait on the gate lock).
+  `studio-test` and `studio-run` each run as a foreground Bash call with `timeout` set to `$BASH_MAX_TIMEOUT_MS`, never in the background (§0, The gate runs in the foreground: a call waits on the gate lock by blocking).
+  A gate call that outlives its `timeout` and is moved to the background is a timed-out gate: the finish runs
+  `studio-state ledger "Stop: gate timed out — <command> ran past <n> min"`, a hard stop like those below.
   Step 1's red-gate loop does not run under a lane:
   the gate runs once, no `fix(gate)` round follows, and a red gate never ships.
   Exit codes keep step 1's meaning: `studio-lint` exit 3 (gdtoolkit not installed) is noted in the gate line, not red, and the story goes on.
@@ -537,7 +554,7 @@ runner's (`STUDIO_RUN`'s header), and the base is `origin/<Target>`:
   `studio-state ledger "Stop: <the printed message>"` (not `gate red`), and ends as below.
   Any other non-zero exit is a red gate: the finish runs
   `studio-state ledger "Stop: gate red — <failing command and line>"`.
-  Either stop is committed as §8's stops are committed, writes no `shipped` line, pushes
+  Each stop is committed as §8's stops are committed, writes no `shipped` line, pushes
   nothing further, and ends the turn; steps 2–6 do not run. The runner then
   records the story stopped; only its repair unit repairs it.
   Otherwise step 3 (PROGRESS) is skipped; step 4 pushes `<Branch>` and

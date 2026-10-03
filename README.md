@@ -96,7 +96,7 @@ The shim puts `studios/game-dev/bin/` on `PATH`. From a Godot project root:
 | `studio-run [--scene S] [--seconds N] [--windowed]` | Boots the project for N seconds and scans the log for script errors | 0 clean · 1 errors · 2 no Godot |
 | `studio-lint [PATH]` | `gdlint` and `gdformat --check` when gdtoolkit is installed | 0 clean · 1 findings · 3 not installed |
 | `studio-state …` | Reads and writes `.studio/STATE.md` | 0 · 1 |
-| `studio-overnight start [<manifest>] \| status \| stop \| next` | Runs approved plans unattended, one fresh headless session per unit; see below | start: 0 done · 1 other ending · 2 refused |
+| `studio-overnight start [<manifest>] \| status \| watch \| stop \| next` | Runs approved plans unattended, one fresh headless session per unit; see below | start: 0 done · 1 other ending · 2 refused |
 
 The verbs never name Godot; `studios/game-dev/engines/godot/` does. Godot is
 found through `GODOT_PATH`, then `/Applications/Godot*.app`, then `godot` on
@@ -124,6 +124,21 @@ stories as parallel lanes of dependency chains:
 - One gate lock per project (`.studio/gate.lock`): `studio-test`, `studio-run`,
   the merge command and the final gate take it, so only one test or gate run
   happens at a time across all lanes.
+- Sessions run `studio-test` and `studio-run` as foreground Bash calls with the
+  runner's raised timeout (`session_minutes`): a headless `-p` session that
+  ends its turn to wait on a background job ends there, and the job is
+  orphaned. When a unit ends, the runner ends any gate it left running
+  (`.studio/gate.units/`). A unit the watchdog ends with no progress is
+  recorded `timed out`, not `no progress`. Every gate run logs its seconds to
+  `.studio/gate.times`; preflight warns when the slowest recent `studio-test`
+  leaves too little room under `session_minutes`.
+- `studio-overnight status` works from any directory: inside a project it shows
+  that project's run (each running unit's elapsed time and last tool call or
+  subagent, and the gate holder); elsewhere it lists the live runs registered
+  in `~/.claude-gamedev/runs/`, or the last one that ended, with its report and
+  resume command. `watch [SECONDS]` (or `status --follow`) repeats it; a
+  foreground `start` prints a heartbeat line about once a minute. The installer
+  puts `studio-overnight` on `PATH` beside `claude-gd`.
 - `report.md` in the run's reports directory is written on every ending; its
   `## Cleanup` section holds the one command that deletes the run's remote
   branches, to run after the final PR lands.

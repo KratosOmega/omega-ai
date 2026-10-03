@@ -7,7 +7,21 @@
 # with STUDIO_GATE_HELD=<this pid> in its environment only; a nested
 # studio-gate that sees STUDIO_GATE_HELD naming the live holder execs the
 # command without locking. A lock whose pid is dead (or that has no pid) is
-# reclaimed under the reclaim mutex below.
+# reclaimed under the reclaim mutex below. The lock dir also holds `unit`
+# (STUDIO_UNIT_TAG, empty outside an overnight unit) and `since` (epoch s).
+#
+# Overnight units: with STUDIO_UNIT_TAG set (the runner exports it into
+# each unit's session), this script registers itself as
+# STATE_ROOT/.studio/gate.units/<tag>/<its pid>, holding its child's pid once
+# the command runs, and removes the entry on exit. When the unit ends, the
+# runner ends every gate still registered under the unit's tag, waiting or
+# holding, so a gate a session left in the background can never hold the
+# lock into the next unit.
+#
+# Gate times: every command that ran to its own exit appends
+# `<epoch> <who> <seconds> <rc>` to STATE_ROOT/.studio/gate.times (the
+# newest 50 lines are kept); studio-overnight's preflight checks the slowest
+# recent studio-test against session_minutes.
 # Exit: the command's status · 2 usage · 128+n when TERM/INT/HUP ended it.
 # With no .studio/ project there is nothing to protect: the command just runs.
 
@@ -26,6 +40,16 @@ if [ -z "$ROOT" ] || [ ! -d "$ROOT/.studio" ]; then
 fi
 LOCK="$ROOT/.studio/gate.lock"
 MUTEX="$LOCK.mutex"
+
+# The gate's files (.studio/gate.lock, .mutex, .times, .units) are runtime
+# state: keep them out of git through the repository's info/exclude, which
+# every worktree shares.
+_excl="$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)/info/exclude"
+case "$_excl" in
+  /*) if ! grep -qxF '.studio/gate.*' "$_excl" 2>/dev/null; then
+        mkdir -p "${_excl%/*}" 2>/dev/null && printf '%s\n' '.studio/gate.*' >> "$_excl" 2>/dev/null
+      fi ;;
+esac
 
 alive() { [ -n "$1" ] && kill -0 "$1" 2>/dev/null; }
 lock_pid() { cat "$LOCK/pid" 2>/dev/null; }
@@ -83,6 +107,8 @@ try_take() {
     OWNED=1
     printf '%s\n' "$$" > "$LOCK/pid"
     printf '%s\n' "$WHO" > "$LOCK/who"
+    printf '%s\n' "$TAG" > "$LOCK/unit"
+    date +%s > "$LOCK/since"
     _took=0
   fi
   mutex_drop
@@ -95,7 +121,24 @@ release() {
     mv "$LOCK" "$LOCK.gone.$$" 2>/dev/null && rm -rf "$LOCK.gone.$$"
   fi
   OWNED=0
+  if [ -n "$REG" ]; then rm -f "$REG/$$"; rmdir "$REG" 2>/dev/null; fi
 }
+
+# The unit tag: only [A-Za-z0-9._-], so it is one safe path component.
+TAG="${STUDIO_UNIT_TAG:-}"
+case "$TAG" in *[!A-Za-z0-9._-]*|.|..) TAG="" ;; esac
+# Another gate's release or the runner may rmdir an emptied directory between
+# the mkdir and the write, so a failed registration is retried.
+REG=""
+if [ -n "$TAG" ]; then
+  for _i in 1 2 3; do
+    if mkdir -p "$ROOT/.studio/gate.units/$TAG" 2>/dev/null \
+      && : 2>/dev/null > "$ROOT/.studio/gate.units/$TAG/$$"; then
+      REG="$ROOT/.studio/gate.units/$TAG"
+      break
+    fi
+  done
+fi
 
 # What a forwarded signal goes to: the child's process group ("-<pgid>") when
 # it leads one, else (dash with no tty refuses `set -m`) the child and its
@@ -147,9 +190,11 @@ done
 # dispositions are not the ignored SIGINT of a plain background job.
 RUNNING=1
 { set -m; } 2>/dev/null
+T0="$(date +%s)"
 STUDIO_GATE_HELD="$$" "$@" &
 CHILD=$!
 set +m
+[ -z "$REG" ] || printf '%s\n' "$CHILD" > "$REG/$$"
 rc=0
 while :; do
   wait "$CHILD"
@@ -168,6 +213,13 @@ if [ -n "$TARGETS" ]; then
 fi
 RUNNING=0
 CHILD=""
+if [ -z "$SIGSTATUS" ]; then
+  _times="$ROOT/.studio/gate.times"
+  { [ -f "$_times" ] && tail -n 49 "$_times"
+    printf '%s %s %s %s\n' "$(date +%s)" "$WHO" "$(( $(date +%s) - T0 ))" "$rc"
+  } > "$_times.$$" 2>/dev/null && mv -f "$_times.$$" "$_times" 2>/dev/null
+  rm -f "$_times.$$"
+fi
 release
 if [ -n "$SIGSTATUS" ]; then exit "$SIGSTATUS"; fi
 exit "$rc"

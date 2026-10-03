@@ -268,6 +268,11 @@ shim_owned() {
 # repository while canon_path still judges it in scope. The installer never
 # records a trailing slash.
 #
+# A studio command shim (studio.json "commands") lives beside the launch
+# shim, outside TARGET: an entry outside TARGET is still removed when it is a
+# plain file (not a link) that launches TARGET (shim_owned), which only a shim
+# this install wrote does.
+#
 # Under DRY_RUN=1 every removal is printed, not performed.
 manifest_remove() {
   _m="$1"; _scope_root="$2"; _shim="$3"
@@ -287,6 +292,7 @@ manifest_remove() {
       "${_scope_canon%/}"/*) _in_scope=1 ;;
     esac
     if [ -n "$_shim_canon" ] && [ "$_entry_canon" = "$_shim_canon" ]; then _in_scope=1; fi
+    if [ "$_in_scope" != "1" ] && [ ! -L "$_entry" ] && shim_owned "$_entry" "$_scope_root"; then _in_scope=1; fi
     if [ "$_in_scope" != "1" ]; then
       warn "skipping manifest entry outside $_scope_root: $_entry"
       continue

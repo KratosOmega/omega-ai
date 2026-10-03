@@ -15,6 +15,7 @@ test_autopilot_contract() {
   assert_contains "$S" "studio-overnight start --dry-run" "the readiness checklist runs the runner's preflight"
   assert_contains "$S" "studio-overnight start" "phase 1 ends by printing the runner command"
   assert_contains "$S" "studio-overnight status" "the user is told how to watch the run"
+  assert_contains "$S" '`studio-overnight status` (from any directory) or `studio-overnight watch`' "the user is told status works anywhere and watch repeats it"
   assert_contains "$S" "studio-overnight stop" "off stops a live run"
   assert_contains "$S" "source=env" "phase 2 applies under the runner's environment"
   assert_contains "$S" 'Stop: <reason>' "a hard stop under the runner writes a Stop: line"

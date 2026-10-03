@@ -476,8 +476,9 @@ land_once_direct() {
 # STUDIO_REPAIR=$LAND_REPAIR added to the story's env words. Returns 0 when
 # the story ledger (feature checkout) gained a `Repair:` line — retry; else
 # writes the ending (`stopped stop: <reason>` for a new Stop: line, `stopped
-# repair made no progress` for neither, the halt reason when the lane must
-# stop) and returns 1. Called after studio-gate has exited, so the repair's
+# repair made no progress` for neither — `stopped repair timed out (…)` when
+# the session cap ended it — the halt reason when the lane must stop) and
+# returns 1. Called after studio-gate has exited, so the repair's
 # own gate takes the gate lock itself (D17).
 land_repair() {
   if lane_halt; then story_write "$1" "stopped $(lane_halt_reason)"; return 1; fi
@@ -499,7 +500,9 @@ land_repair() {
     if lane_halt; then story_write "$1" "stopped $(lane_halt_reason)"; return 1; fi
     story_write "$1" landing; return 0
   fi
-  row "$n" repair noprog; story_write "$1" "stopped repair made no progress"; return 1
+  if [ "$(unit_outcome)" = noprog ]; then row "$n" repair noprog; story_write "$1" "stopped repair made no progress"
+  else row "$n" repair "timed out"; story_write "$1" "stopped repair timed out (session_minutes $SESSION_MINUTES)"; fi
+  return 1
 }
 
 # land_story ID — land shipped story ID: take the land lock (polled every
@@ -749,7 +752,13 @@ lanes_end_sessions() {
   for _es_p in $_es_pids; do
     kill -KILL -"$_es_p" 2>/dev/null || { pkill -KILL -P "$_es_p"; kill -KILL "$_es_p"; } 2>/dev/null
   done
-  for _es_k in "$@"; do rm -f "$RUN_DIR/lanes/$_es_k/cpid"; done
+  for _es_k in "$@"; do
+    rm -f "$RUN_DIR/lanes/$_es_k/cpid" "$RUN_DIR/lanes/$_es_k/unit.now"
+    # The gates the ended session left behind (run_unit never got to reap them).
+    _es_t="$(cat "$RUN_DIR/lanes/$_es_k/utag" 2>/dev/null)"
+    [ -z "$_es_t" ] || unit_reap "$_es_t"
+    rm -f "$RUN_DIR/lanes/$_es_k/utag"
+  done
 }
 
 # lanes_sweep — the parent's sweep once every lane has exited (D2): in a
@@ -1042,7 +1051,9 @@ lanes_reap_stale() {
 # <k|->  <state>  unit <label|->  task <k/N|->`. The lane is its chain's
 # claim; the state, the first word of stories/<id>; the unit, lanes/<k>/current
 # as written when it names this story and the story has no ending; the task,
-# the story's studio state. Then the gate lock's holder and the run's spend.
+# the story's studio state. A story whose unit is running gets a second line,
+# indented: `    <unit> · <elapsed> · <last activity>` (unit_now_line); a
+# final-step unit, `final: …`. Then the gate lock (gate_line) and the spend.
 lanes_status_lines() {
   for _st_id in $(cut -f1 "$MF_ROWS" | awk '!seen[$0]++'); do
     _st_k="$(cat "$RUN_DIR/claims/$(chain_of "$_st_id")/lane" 2>/dev/null)"; [ -n "$_st_k" ] || _st_k=-
@@ -1054,17 +1065,20 @@ lanes_status_lines() {
     fi
     _st_t="$(story_state "$_st_id" get task 2>/dev/null)"; [ -n "$_st_t" ] || _st_t=-
     printf '%s  lane %s  %s  unit %s  task %s\n' "$_st_id" "$_st_k" "$_st_s" "$_st_u" "$_st_t"
+    if [ "$_st_u" != - ]; then
+      _st_n="$(unit_now_line "$RUN_DIR/lanes/$_st_k")"
+      [ -z "$_st_n" ] || printf '    %s\n' "$_st_n"
+    fi
   done
-  _st_g="$STATE_ROOT/.studio/gate.lock"; _st_gp="$(cat "$_st_g/pid" 2>/dev/null)"
-  if [ -n "$_st_gp" ] && pid_live "$_st_gp"; then
-    printf 'gate: %s (pid %s)\n' "$(cat "$_st_g/who" 2>/dev/null)" "$_st_gp"
-  else echo "gate: free"; fi
+  _st_n="$(unit_now_line "$RUN_DIR/final")"; [ -z "$_st_n" ] || printf 'final: %s\n' "$_st_n"
+  gate_line "$RUN_DIR"
   printf 'spent: $%s\n' "$(spent_all)"
 }
 # lanes_status DIR [live] — the `status` verb for manifest run DIR. Live:
 # the lines, `pid: <runner pid>` and the run dir; exit 0. Not live: a stale
 # run with no report is reaped first (lanes_reap); `no run — the last run:
-# DIR`, the lines, then the report's path (or the lanes still finishing).
+# DIR`, its ended_line, the lines, then the report's path (or the lanes
+# still finishing).
 lanes_status() {
   lanes_load_run "$1"
   if [ "${2:-}" = live ]; then
@@ -1075,6 +1089,7 @@ lanes_status() {
   LR_LIVE=""
   [ -f "$RUN_DIR/report.md" ] || lanes_reap
   printf 'no run — the last run: %s\n' "$RUN_DIR"
+  [ ! -f "$RUN_DIR/report.md" ] || ended_line "$RUN_DIR/report.md"
   lanes_status_lines
   if [ -n "$LR_LIVE" ]; then printf 'pid: none (the runner is gone; lanes still finishing: %s)\n' "$LR_LIVE"
   else printf 'report: %s\n' "$RUN_DIR/report.md"; fi
@@ -1135,7 +1150,8 @@ final_stopped() {
 # (UNIT_CWD) and its files under RUN_DIR/final (UNIT_DIR). Env words:
 # OMEGA_AUTOPILOT, STUDIO_RUN, STUDIO_DOCS_REV and the Bash timeouts, plus
 # ENV_WORDS (KEY='value', sq-quoted); never STUDIO_STORY. Its row in
-# final/units.tsv is `progress` when FINAL_W's HEAD moved, else `noprog`.
+# final/units.tsv is `progress` when FINAL_W's HEAD moved, else `noprog`
+# (`timed out` when the session cap ended it).
 # Returns 1, launching nothing, when a stop was requested or the run budget
 # (story_units' rule: spent_all + SESSION_USD > RUN_USD) refuses it, with a
 # note. Returns 2 when the unit left FINAL_W dirty: the uncommitted work is
@@ -1156,7 +1172,7 @@ final_unit() {
   FINAL_N=$((${FINAL_N:-0} + 1)); run_unit "$FINAL_N" "$1"
   PROMPT="$_fu_p"; UNIT_CWD=""; LAUNCH_ENV=""
   if [ "$(git -C "$FINAL_W" rev-parse HEAD 2>/dev/null)" != "$_fu_h0" ]; then row "$FINAL_N" "$1" progress
-  else row "$FINAL_N" "$1" noprog; fi
+  else row "$FINAL_N" "$1" "$(unit_outcome)"; fi
   if [ -n "$(git -C "$FINAL_W" status --porcelain 2>&1)" ]; then
     FINAL_COLOR=red; final_note "the $1 unit left uncommitted changes (discarded)"
     git -C "$FINAL_W" merge --abort >/dev/null 2>&1
