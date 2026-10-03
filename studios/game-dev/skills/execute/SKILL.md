@@ -106,6 +106,18 @@ is `STUDIO_STORY`:
   and end the turn. Usually the session cap ends the unit first (the
   `timeout` is the whole session's minutes): the runner records it
   `timed out`. Either way the runner ends any gate the unit leaves behind. §2 carries this rule into every subagent brief.
+- **Subagents run in the foreground too.** Dispatch every subagent (the
+  implementer, the reviewer, a fixer) with `run_in_background: false` and
+  take its report in the same turn; for parallel work, put several
+  foreground dispatches in one message. Never end a turn "waiting for the
+  report": the session ends with the turn, print mode kills the subagent
+  600 s later along with any gate it was running, and the unit ends with no
+  progress (phoenix `mob-composer-parity` units 4 and 6, 2026-10-03: the
+  rule above was kept and the dispatch was not). Under `OMEGA_AUTOPILOT=1`
+  the studio's `autopilot-guard.sh` hook denies a background Agent, a
+  background Bash call and Monitor; a denied call is re-issued in the
+  foreground, not worked around. The runner records a unit that died this
+  way `orphaned`.
 
 **Isolation.** First note the current branch (`git branch --show-current`)
 — the noted branch — along with the spec's and plan's noted hashes. Then:

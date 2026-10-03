@@ -55,6 +55,7 @@ for act in "$@"; do
     "sleep "*)    sleep "${act#sleep }" ;;
     ignoreterm)   trap '' TERM ;;
     hang)         while :; do sleep 1; done ;;
+    orphan)       printf '%s\n' 'Background tasks still running after 600s; terminating. Set CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 to wait indefinitely.' >&2 ;;
     rotsv)        r="$(sed -n 's/^run=//p' "$root/.studio/overnight.lock")"
                   touch "$r/units.tsv"; chmod 444 "$r/units.tsv" ;;
     rmrundir)     r="$(sed -n 's/^run=//p' "$root/.studio/overnight.lock")"; rm -rf "$r" ;;
@@ -333,6 +334,23 @@ test_overnight_retry_then_no_progress() {
   assert_file "$d/2-T1-retry.jsonl" "the retry is labelled T1-retry"
   assert_contains "$d/report.md" "no progress on T1" "the ending names the unit"
   assert_eq "noprog noprog" "$(awk -F'\t' '{ printf "%s%s", (NR > 1 ? " " : ""), $7 }' "$d/units.tsv")" "each no-progress unit's row says noprog"
+}
+
+# A session that ended its turn with background work running: print mode
+# kills that work 600 s later and says so on stderr (phoenix
+# mob-composer-parity, 2026-10-03). The unit is named `orphaned`, not
+# `noprog`; it still spends a retry, and the ending keeps its prefix.
+test_overnight_orphaned_unit() {
+  fixture orph; scenario "cost 1; orphan" "cost 1"; run_start
+  d="$(last_run_dir)"
+  assert_eq 2 "$(calls)" "an orphaned unit spends the retry like any no-progress unit"
+  assert_eq "orphaned noprog" "$(awk -F'\t' '{ printf "%s%s", (NR > 1 ? " " : ""), $7 }' "$d/units.tsv")" \
+    "the orphaned unit's row says orphaned, the plain one noprog"
+  assert_contains "$d/report.md" "^Ending: no progress on T1$" "the last unit was plain no progress"
+  fixture orph2; scenario "cost 1" "cost 1; orphan"; run_start
+  assert_contains "$(last_run_dir)/report.md" \
+    "^Ending: no progress on T1 (orphaned: the session ended its turn with background work running)$" \
+    "an orphaned last unit names the cause in the ending"
 }
 
 # D8: stage execute with task -, or 0/N, is still the first task.
@@ -679,7 +697,7 @@ run_tests test_overnight_report_done test_overnight_report_not_done \
   test_overnight_lock test_overnight_first_use_ignores \
   test_overnight_start_args test_overnight_reclaim_race \
   test_overnight_sequence_to_done test_overnight_launch_argv test_overnight_ignores_inherited_lane_vars \
-  test_overnight_retry_then_no_progress test_overnight_progress_resets_retry \
+  test_overnight_retry_then_no_progress test_overnight_orphaned_unit test_overnight_progress_resets_retry \
   test_overnight_retries_zero test_overnight_stop_line test_overnight_copied_stop_not_new \
   test_overnight_run_budget test_overnight_cost_unknown test_overnight_unexpected_stage \
   test_overnight_overhead test_overnight_unknown_label_stops \
