@@ -37,11 +37,13 @@ export GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
 #   .env (OMEGA_AUTOPILOT, STUDIO_RUN, STUDIO_DOCS_REV, STUDIO_REPAIR,
 #   STUDIO_GATE_HELD as KEY=value lines), .t0 and .t1 (epoch seconds).
 # - Scenario: line m of $SCEN/<id> (unit prompts), $SCEN/<id>.land
-#   (`--land`), $SCEN/progress (`--progress`) or $SCEN/final-repair
+#   (`--land`), $SCEN/<id>.gate (`--gate-repair`), $SCEN/progress
+#   (`--progress`) or $SCEN/final-repair
 #   (`/omega:integration repair`). A missing file or line means `auto`.
 # - A line is a `;`-separated list of actions, run in order. `auto` runs
 #   last unless the line names a terminal action (stop, noop, hang, exit,
-#   repair, fakerepair, progress); naming `auto` itself changes nothing.
+#   repair, fakerepair, gaterepair, progress); naming `auto` itself changes
+#   nothing.
 # - Actions:
 #   auto            one well-behaved unit, as execute §0/§8 would: §0 adds
 #                   the story worktree $TMP_WT/<Branch> (--no-track; from
@@ -78,6 +80,10 @@ export GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
 #                   target`, commit, push
 #   fakerepair      terminal: ledgers `Repair: merged target` and commits it
 #                   in the story worktree; no merge, no push
+#   gaterepair      terminal (`--gate-repair`): in the story worktree, ledger
+#                   `Repair: gate — fixed`, commit, push
+#   gatelog         modifier: writes a studio-test log, .studio/reports/
+#                   test-<stamp>.log, in the story worktree
 #   progress        terminal (`--progress`): appends a line to
 #                   docs/game-dev/PROGRESS.md in the cwd and commits
 #                   "docs(progress): demo"
@@ -100,6 +106,7 @@ if [ "${1:-}" = "--version" ]; then
 fi
 id="${STUDIO_STORY:-}"; prompt="${2:-}"
 case "$prompt" in
+  *--gate-repair*) kind="$id.gate" ;;
   *--land*) kind="$id.land" ;;
   *--progress*) kind=progress ;;
   *'/omega:integration repair'*) kind=final-repair ;;
@@ -222,6 +229,10 @@ for act in "$@"; do
                         && st ledger "Repair: merged target" && commit_ledger repair && sg push -q origin "$BRANCH" ) ;;
     fakerepair)       terminal=1; w="$(story_wt)"
                       ( cd "$w" && st ledger "Repair: merged target" && commit_ledger repair ) ;;
+    gaterepair)       terminal=1; w="$(story_wt)"
+                      ( cd "$w" && st ledger "Repair: gate — fixed" && commit_ledger gate-repair && sg push -q origin "$BRANCH" ) ;;
+    gatelog)          w="$(story_wt)"
+                      mkdir -p "$w/.studio/reports" && echo "FAIL test_no_line_is_absurdly_long" > "$w/.studio/reports/test-$(date +%Y%m%d-%H%M%S).log" ;;
     progress)         terminal=1
                       printf -- '- %s: demo progress\n' "$(date +%Y-%m-%d)" >> docs/game-dev/PROGRESS.md
                       git add docs/game-dev/PROGRESS.md && git commit -qm "docs(progress): demo" ;;
@@ -1223,6 +1234,112 @@ test_lanes_gate_never_overlaps() {
   assert_eq 12 "$(grep -c '^s ' "$CALLS/gate.iv" 2>/dev/null)" "nine unit tests and three merge commands in one gate.iv"
   assert_eq "" "$(awk '$1=="s"{if(open)print "overlap at " $3; open=1} $1=="e"{open=0}' "$CALLS/gate.iv")" "unit tests and merge commands never overlap"
 }
+# ---- Gate repair: a red finish gate gets a repair unit and a fresh finish ----
+
+# gate_calls — how many sessions ran an `execute --gate-repair` unit.
+gate_calls() { grep -l -- '--gate-repair' "$CALLS"/*.argv 2>/dev/null | wc -l | tr -d ' '; }
+# gate_call — the call number of the first gate-repair unit.
+gate_call() { grep -l -- '--gate-repair' "$CALLS"/*.argv 2>/dev/null | sed 's#.*/\([0-9]*\)\.argv#\1#' | sort -n | head -n 1; }
+# story_rows ID — `<n> <label> <outcome>` of ID's units.tsv rows, comma-joined.
+story_rows() { cat "$(last_lanes_dir)"/lanes/*/units.tsv 2>/dev/null | awk -F'\t' -v p="$1-" 'index($2, p) == 1 { printf "%s %s %s,", $1, $2, $7 }'; }
+
+test_lanes_gate_repair_then_lands() {
+  lanes_fixture gaterep integration A:- B:A
+  printf 'auto\nauto\ngatelog; stop gate red — studio-test: 1 failed\n' > "$SCEN/A"
+  printf 'gaterepair\n' > "$SCEN/A.gate"
+  run_lanes start "$MFP"
+  assert_eq 0 "$LS_STATUS" "the repaired story lands, and so does its dependent"
+  assert_contains "$(last_lanes_dir)/stories/A" "^landed [0-9a-f]\{40\}$" "A lands after its gate repair"
+  assert_contains "$(last_lanes_dir)/stories/B" "^landed " "the dependent story runs and lands"
+  assert_eq 1 "$(gate_calls)" "exactly one gate-repair unit"
+  n="$(gate_call)"; [ -n "$n" ] || n=0
+  assert_eq A "$(cat "$CALLS/$n.story" 2>/dev/null)" "the repair is the red story's"
+  assert_eq "/game-dev:execute --gate-repair" "$(cat "$CALLS/$n.prompt" 2>/dev/null)" "the gate-repair prompt"
+  assert_eq opus "$(sed -n 4p "$CALLS/$n.argv" 2>/dev/null)" "the gate repair runs on model_repair"
+  assert_contains "$CALLS/$n.env" "^STUDIO_REPAIR=gate:/.*/A-b/\.studio/reports/test-[0-9-]*\.log$" "the repair reads the red gate's log"
+  assert_eq "1 A-T1 progress,2 A-final-review progress,3 A-finish stop,4 A-gate-repair progress,5 A-finish done," \
+    "$(story_rows A)" "a fresh finish follows the repair; unit numbers run on"
+  assert_contains "$(last_lanes_dir)/report.md" "^| 4 | A-gate-repair | " "the report lists the gate-repair unit"
+}
+test_lanes_gate_repair_cap() {
+  LANES_CONFIG='{"overnight": {"gate_repairs": 1}}'; export LANES_CONFIG
+  lanes_fixture gatecap integration A:- B:A
+  printf 'auto\nauto\nstop gate red — studio-test: 1 failed\nstop gate red — studio-run: SCRIPT ERROR\n' > "$SCEN/A"
+  printf 'gaterepair\n' > "$SCEN/A.gate"
+  run_lanes start "$MFP"
+  assert_eq 1 "$LS_STATUS" "a story red after its repairs makes the run partial"
+  assert_contains "$(last_lanes_dir)/stories/A" "^stopped gate red after 1 repairs — studio-run: SCRIPT ERROR$" "the cap names the repairs and the last red line"
+  assert_contains "$(last_lanes_dir)/stories/B" "^skipped A$" "the dependent is skipped"
+  assert_eq 1 "$(gate_calls)" "one repair, no second"
+  assert_contains "$(last_lanes_dir)/report.md" "stopped — gate red after 1 repairs — studio-run: SCRIPT ERROR" "the report names why"
+}
+# The same Stop line twice on the same date (the second finish fails as the
+# first did) is still a new stop: missed, the finish would be retried and ship.
+test_lanes_gate_repair_same_stop_twice() {
+  LANES_CONFIG='{"overnight": {"gate_repairs": 1}}'; export LANES_CONFIG
+  lanes_fixture gatesame integration A:-
+  printf 'auto\nauto\nstop gate red — studio-test: 1 failed\nstop gate red — studio-test: 1 failed\n' > "$SCEN/A"
+  printf 'gaterepair\n' > "$SCEN/A.gate"
+  run_lanes start "$MFP"
+  assert_contains "$(last_lanes_dir)/stories/A" "^stopped gate red after 1 repairs — studio-test: 1 failed$" "the repeated stop is detected"
+  assert_eq 4 "$(cat "$CALLS/m-A" 2>/dev/null)" "no finish retry after the second red gate"
+}
+test_lanes_gate_repairs_zero() {
+  LANES_CONFIG='{"overnight": {"gate_repairs": 0}}'; export LANES_CONFIG
+  lanes_fixture gatezero integration A:- B:A
+  printf 'auto\nauto\nstop gate red — studio-test: 1 failed\n' > "$SCEN/A"
+  printf 'gaterepair\n' > "$SCEN/A.gate"
+  run_lanes start "$MFP"
+  assert_contains "$(last_lanes_dir)/stories/A" "^stopped stop: gate red — studio-test: 1 failed$" "gate_repairs 0: the first red gate stops the story"
+  assert_contains "$(last_lanes_dir)/stories/B" "^skipped A$" "and its dependent is skipped"
+  assert_eq 0 "$(gate_calls)" "no gate-repair unit"
+}
+test_lanes_gate_hard_stops_no_repair() {
+  lanes_fixture gatehard integration A:- B:- C:-
+  printf 'auto\nauto\nstop studio-test: GODOT_PATH is not set\n' > "$SCEN/A"
+  printf 'auto\nauto\nstop studio-test: GUT is not installed\n' > "$SCEN/B"
+  printf 'auto\nauto\nstop gate timed out — studio-test ran past 90 min\n' > "$SCEN/C"
+  for id in A B C; do printf 'gaterepair\n' > "$SCEN/$id.gate"; done
+  run_lanes start "$MFP"
+  assert_contains "$(last_lanes_dir)/stories/A" "^stopped stop: studio-test: GODOT_PATH is not set$" "exit 2 stays a hard stop"
+  assert_contains "$(last_lanes_dir)/stories/B" "^stopped stop: studio-test: GUT is not installed$" "exit 3 stays a hard stop"
+  assert_contains "$(last_lanes_dir)/stories/C" "^stopped stop: gate timed out — studio-test ran past 90 min$" "a timed-out gate stays a hard stop"
+  assert_eq 0 "$(gate_calls)" "no hard stop gets a gate-repair unit"
+}
+test_lanes_gate_repair_no_progress() {
+  lanes_fixture gatenp integration A:-
+  printf 'auto\nauto\nstop gate red — studio-test: 1 failed\n' > "$SCEN/A"
+  printf 'noop\n' > "$SCEN/A.gate"
+  run_lanes start "$MFP"
+  assert_contains "$(last_lanes_dir)/stories/A" "^stopped gate repair made no progress$" "a repair with no Repair: line stops"
+  assert_contains "$(last_lanes_dir)/lanes/1/units.tsv" "	A-gate-repair	.*	noprog$" "its row says noprog"
+  lanes_fixture gatered integration A:-
+  printf 'auto\nauto\nstop gate red — studio-test: 1 failed\n' > "$SCEN/A"
+  printf 'stop gate repair red — studio-test: 1 failed\n' > "$SCEN/A.gate"
+  run_lanes start "$MFP"
+  assert_contains "$(last_lanes_dir)/stories/A" "^stopped stop: gate repair red — studio-test: 1 failed$" "a repair's own red is a hard stop"
+  assert_eq 1 "$(gate_calls)" "and gets no second repair"
+}
+test_lanes_gate_repair_model_and_no_log() {
+  LANES_CONFIG='{"overnight": {"model_repair": "r-m"}}'; export LANES_CONFIG
+  lanes_fixture gatemodel integration A:-
+  printf 'auto\nauto\nstop gate red — studio-run: SCRIPT ERROR\n' > "$SCEN/A"
+  printf 'gaterepair\n' > "$SCEN/A.gate"
+  run_lanes start "$MFP"
+  n="$(gate_call)"; [ -n "$n" ] || n=0
+  assert_eq r-m "$(sed -n 4p "$CALLS/$n.argv" 2>/dev/null)" "model_for gate-repair is model_repair"
+  assert_contains "$CALLS/$n.env" "^STUDIO_REPAIR=gate:-$" "no studio-test log: gate:-"
+  assert_contains "$(last_lanes_dir)/stories/A" "^landed " "the repaired story lands"
+}
+test_lanes_gate_repair_budget() {
+  LANES_CONFIG='{"overnight": {"run_usd": 30, "session_usd": 25}}'; export LANES_CONFIG
+  lanes_fixture gatebudget integration A:-
+  printf 'cost 2\ncost 2\ncost 2; stop gate red — studio-test: 1 failed\n' > "$SCEN/A"
+  printf 'gaterepair\n' > "$SCEN/A.gate"
+  run_lanes start "$MFP"
+  assert_contains "$(last_lanes_dir)/stories/A" "^stopped stop: run budget$" "spent 6 + 25 > 30: the run budget refuses the repair"
+  assert_eq 0 "$(gate_calls)" "no gate-repair unit"
+}
 # ---- T11: the integration final step and the direct progress landing ----
 
 # prompt_calls PROMPT — the stub call numbers whose prompt is exactly PROMPT.
@@ -1946,7 +2063,10 @@ run_tests test_lanes_chain_rule test_lanes_manifest_refusals test_lanes_prefligh
   test_lanes_land_second_conflict_stops test_lanes_land_repair_no_progress test_lanes_direct_refused_then_repaired test_lanes_direct_merged_never_repairs test_lanes_direct_merge_timeout \
   test_lanes_land_once_explicit_branch test_lanes_land_idempotent \
   test_lanes_land_crash_after_push test_lanes_land_lock_reclaim test_lanes_land_shipped_resume \
-  test_lanes_gate_never_overlaps test_lanes_final_step_once test_lanes_final_red_after_repair \
+  test_lanes_gate_never_overlaps test_lanes_gate_repair_then_lands test_lanes_gate_repair_cap \
+  test_lanes_gate_repair_same_stop_twice test_lanes_gate_repairs_zero test_lanes_gate_hard_stops_no_repair \
+  test_lanes_gate_repair_no_progress test_lanes_gate_repair_model_and_no_log test_lanes_gate_repair_budget \
+  test_lanes_final_step_once test_lanes_final_red_after_repair \
   test_lanes_final_repair_turns_green test_lanes_final_conflict test_lanes_final_resume_edits_pr \
   test_lanes_final_skipped_on_stop_or_nothing_landed test_lanes_final_gate_default test_lanes_direct_progress_landing \
   test_lanes_final_dirty_unit_is_red test_lanes_final_budget test_lanes_final_conflict_then_red test_lanes_final_gate_interrupted_not_recorded \

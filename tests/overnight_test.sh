@@ -112,7 +112,7 @@ test_overnight_help() {
   assert_eq 0 "$st" "--help exits 0"
   printf '%s\n' "$out" > "$TMP/help.txt"
   for w in "start \[--dry-run\]" "status" "stop" "STUDIO_OVERNIGHT_SESSION_SECONDS" "overnight-deny.txt" "report.md" \
-           "run_usd .*0-5000" "max_lanes" "model_task" "model_final" "model_finish" "model_repair" "model_progress" "merge_command"; do
+           "run_usd .*0-5000" "max_lanes" "model_task" "model_final" "model_finish" "model_repair" "model_progress" "merge_command" "gate_repairs .*0-3"; do
     assert_contains "$TMP/help.txt" "$w" "help names $w"
   done
   assert_contains "$TMP/help.txt" "$RUNNER" "help names the runner by its absolute path"
@@ -184,7 +184,7 @@ test_overnight_preflight_all_failures() {
 
 test_overnight_config_refusals() {
   for bad in '"session_usd": 0' '"session_usd": 201' '"run_usd": 5001' '"session_minutes": 9' \
-             '"session_minutes": 1.5' '"run_usd": 0.5' '"retries": 4' '"retries": "two"' '"kill_grace_seconds": 4'; do
+             '"session_minutes": 1.5' '"run_usd": 0.5' '"retries": 4' '"retries": "two"' '"kill_grace_seconds": 4' '"gate_repairs": 4'; do
     key="$(printf '%s' "$bad" | sed 's/^"\([a-z_]*\)".*/\1/')"
     fixture cfg "{ \"overnight\": { $bad } }"
     refuse_case "config $bad" "$key"

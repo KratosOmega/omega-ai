@@ -490,7 +490,7 @@ land_repair() {
   n=$((${n:-0} + 1)); run_unit "$n" repair
   PROMPT="$_lr_p"; LAUNCH_ENV="$_lr_e"
   snapshot "$UNIT_DIR/stops.after"
-  _lr_new="$(comm -13 "$UNIT_DIR/stops.before" "$UNIT_DIR/stops.after" | tail -n 1)"
+  _lr_new="$(new_stop "$UNIT_DIR/stops.before" "$UNIT_DIR/stops.after")"
   _lr_a="$(ledger_of "$FEATURE_DIR" | grep -c '^- [0-9-]* Repair: ')"
   if [ -n "$_lr_new" ]; then
     row "$n" repair stop; story_write "$1" "stopped stop: ${_lr_new#*Stop: }"; return 1
@@ -502,6 +502,46 @@ land_repair() {
   fi
   if [ "$(unit_outcome)" = noprog ]; then row "$n" repair noprog; story_write "$1" "stopped repair made no progress"
   else row "$n" repair "timed out"; story_write "$1" "stopped repair timed out (session_minutes $SESSION_MINUTES)"; fi
+  return 1
+}
+
+# gate_log_of DIR — the newest studio-test log under DIR/.studio/reports (the
+# adapter's test-<stamp>.log), absolute when DIR is; `-` when there is none.
+gate_log_of() {
+  _gl="$(ls -t "$1"/.studio/reports/test-*.log 2>/dev/null | head -n 1)"
+  printf '%s\n' "${_gl:--}"
+}
+
+# gate_repair ID — the gate-repair unit of a story whose finish gate was red
+# (`stop: gate red — …`; the finish runs the gate once, and a fix plus a
+# full re-run do not fit one session): stories/ID = gate-repair, then
+# `/game-dev:execute --gate-repair` (label gate-repair, model_repair) with
+# STUDIO_REPAIR=gate:<gate_log_of the feature checkout> added to the story's
+# env words. The unit fixes and re-runs only the failing tests. Returns 0
+# when the feature ledger gained a `Repair:` line: the caller re-runs
+# story_units, whose fresh finish re-runs the full gate. Else returns 1 with
+# ENDING set: the halt reason; `stop: run budget` (story_units' rule, before
+# any launch); `stop: <reason>` for a new Stop: line (the unit's own `gate
+# repair red` is a hard stop); `gate repair made no progress`; or `gate
+# repair timed out (session_minutes N)`.
+gate_repair() {
+  if lane_halt; then ENDING="$(lane_halt_reason)"; return 1; fi
+  if run_budget_out; then ENDING="stop: run budget"; return 1; fi
+  story_write "$1" gate-repair
+  snapshot "$UNIT_DIR/stops.before"
+  _gr_b="$(ledger_of "$FEATURE_DIR" | grep -c '^- [0-9-]* Repair: ')"
+  _gr_p="$PROMPT"; _gr_e="$LAUNCH_ENV"
+  PROMPT="/game-dev:execute --gate-repair"
+  LAUNCH_ENV="$LAUNCH_ENV STUDIO_REPAIR=$(sq "gate:$(gate_log_of "$FEATURE_DIR")")"
+  n=$((${n:-0} + 1)); run_unit "$n" gate-repair
+  PROMPT="$_gr_p"; LAUNCH_ENV="$_gr_e"
+  snapshot "$UNIT_DIR/stops.after"
+  _gr_new="$(new_stop "$UNIT_DIR/stops.before" "$UNIT_DIR/stops.after")"
+  _gr_a="$(ledger_of "$FEATURE_DIR" | grep -c '^- [0-9-]* Repair: ')"
+  if [ -n "$_gr_new" ]; then row "$n" gate-repair stop; ENDING="stop: ${_gr_new#*Stop: }"; return 1; fi
+  if [ "$_gr_a" -gt "$_gr_b" ]; then row "$n" gate-repair progress; story_write "$1" running; return 0; fi
+  if [ "$(unit_outcome)" = noprog ]; then row "$n" gate-repair noprog; ENDING="gate repair made no progress"
+  else row "$n" gate-repair "timed out"; ENDING="gate repair timed out (session_minutes $SESSION_MINUTES)"; fi
   return 1
 }
 
@@ -680,7 +720,11 @@ run_chain() {
 }
 
 # run_story ID — bundle 2's unit loop for one story, one fresh session per
-# unit, under the story's env; then its landing.
+# unit, under the story's env; then its landing. A red finish gate (`stop:
+# gate red — <line>`, the one repairable stop) gets a gate-repair unit and
+# then the unit loop again (a fresh finish: the full gate), up to
+# gate_repairs times; past that the story ends `stopped gate red after <k>
+# repairs — <line>` (gate_repairs 0: `stopped stop: gate red — <line>`).
 run_story() {
   CUR_ID="$1"
   STUDIO_STORY="$1"; STUDIO_RUN="$RUN_DIR/manifest.md"; STUDIO_DOCS_REV="$MF_DOCS"
@@ -695,6 +739,17 @@ run_story() {
   n=0
   snapshot "$UNIT_DIR/stops.before"
   if [ "$SIG_STAGE" = idle ] && [ "$SIG_SHIPPED" -gt 0 ]; then ENDING=done; else story_units; fi
+  _rs_rep=0
+  while :; do
+    case "$ENDING" in "stop: gate red — "*) ;; *) break ;; esac
+    if [ "$_rs_rep" -ge "$GATE_REPAIRS" ]; then
+      [ "$_rs_rep" -eq 0 ] || ENDING="gate red after $_rs_rep repairs — ${ENDING#stop: gate red — }"
+      break
+    fi
+    _rs_rep=$((_rs_rep + 1))
+    gate_repair "$1" || break
+    story_units
+  done
   # story_units says `stopped by user` for any halt; name the real one. A
   # halt also holds back the landing (spec 124-127).
   [ "$ENDING" != "stopped by user" ] || ENDING="$(lane_halt_reason)"
@@ -891,7 +946,7 @@ story_ledger_lines() {
 # `<id>-<unit label>`) as a markdown table; `(no units)` when none ran.
 story_units_table() {
   cat "$RUN_DIR"/lanes/*/units.tsv 2>/dev/null | awk -F'\t' -v p="$1-" '
-    index($2, p) == 1 && substr($2, length(p) + 1) ~ /^(T[0-9]+|final-review|finish|repair)(-retry)?$/ {
+    index($2, p) == 1 && substr($2, length(p) + 1) ~ /^(T[0-9]+|final-review|finish|repair|gate-repair)(-retry)?$/ {
       if (!n++) print "| # | Unit | Exit | Cost | Minutes | Timed out | Outcome |\n|---|------|------|------|---------|-----------|---------|"
       printf "| %s | %s | %s | %s | %s | %s | %s |\n", $1, $2, $3, $4, $5, $6, $7 }
     END { if (!n) print "(no units)" }'
