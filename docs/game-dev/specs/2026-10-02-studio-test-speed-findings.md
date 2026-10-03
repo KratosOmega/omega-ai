@@ -140,11 +140,12 @@ Shards were split by LPT over the serial report's per-file times, with `-gconfig
 
   So the second half of the rule holds, but the first fails. Tiers would not shorten the finish
   in any case.
-- **Recommended instead (not built; a workflow decision).** A per-task gate could run the task's
+- **Considered and declined: targeted per-task gates.** A per-task gate could run the task's
   own test files, `studio-test <the Verify: unit files>`, with the full suite left to the final
-  review and the finish. That cuts each task's gate from about 14 min to under a minute. It
-  trades away catching a cross-file regression at the task that caused it; the final review
-  still catches it.
+  review and the finish. That would cut each task's gate from about 14 min to under a minute.
+  It trades away catching a cross-file regression, or a test-isolation leak like §1's, at the
+  task that caused it. The user declined it on 2026-10-03, so per-task gates keep running the
+  full suite.
 
 ## 3. `studio-test --slowest [N]`: BUILD, done
 
