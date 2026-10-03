@@ -29,7 +29,7 @@ done
 [ -d "$_d" ] || { echo "studio-event: no run dir $_d" >&2; exit 1; }
 _line="$(LC_ALL=C awk -v ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)" -v run="${_d##*/}" -v ev="$_e" '
   function esc(s,   c) {
-    gsub(/\\/, "\\\\", s); gsub(/"/, "\\\"", s); gsub(/\t/, "\\t", s); gsub(/\n/, "\\n", s); gsub(/\r/, "\\r", s)
+    gsub(/\\/, "&&", s); gsub(/"/, "\\\"", s); gsub(/\t/, "\\t", s); gsub(/\n/, "\\n", s); gsub(/\r/, "\\r", s)
     for (c = 1; c < 32; c++) if (c != 9 && c != 10 && c != 13) gsub(sprintf("%c", c), "", s)
     gsub(sprintf("%c", 127), "", s)
     return s

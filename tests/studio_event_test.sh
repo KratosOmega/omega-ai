@@ -35,6 +35,17 @@ test_event_escaping() {
     assert_eq "a\"b\\c${nl}d	ef" "$(tail -n 1 "$R/events.jsonl" | jq -r .why)" "the line is valid JSON and round-trips"
   fi
 }
+test_event_backslash_portable() {
+  for posix in 1 ""; do
+    fresh
+    if [ -n "$posix" ]; then
+      POSIXLY_CORRECT=1 sh "$EV" "$R" story_state story=S1 'why=a\b"c' 'tail=x\'
+    else
+      sh "$EV" "$R" story_state story=S1 'why=a\b"c' 'tail=x\'
+    fi
+    assert_contains "$R/events.jsonl" '"why":"a\\\\b\\"c","tail":"x\\\\"}$' "each backslash is written as two (POSIXLY_CORRECT=${posix:-unset})"
+  done
+}
 test_event_cut_500() {
   fresh
   sh "$EV" "$R" story_state story=S1 state=stopped "why=$(printf '%600s' '' | tr ' ' b)"
@@ -94,5 +105,5 @@ test_event_minimal_path() {
   assert_contains "$R/events.jsonl" '"event":"ok","a":"b"}$' "and the line is written"
 }
 
-run_tests test_event_line_shape test_event_escaping test_event_cut_500 test_event_utf8_cut \
+run_tests test_event_line_shape test_event_escaping test_event_backslash_portable test_event_cut_500 test_event_utf8_cut \
   test_event_line_cap_4k test_event_numbers_null_arrays test_event_usage test_event_minimal_path
