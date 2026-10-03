@@ -7,6 +7,7 @@ STUDIO_DIR="$REPO_ROOT/studios/game-dev"
 HOOK="$STUDIO_DIR/hooks/session-start.sh"
 GUARD="$STUDIO_DIR/hooks/guard-state.sh"
 STAGE_GUARD="$STUDIO_DIR/hooks/stage-guard.sh"
+INBOX="$STUDIO_DIR/hooks/operator-inbox.sh"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
@@ -369,6 +370,34 @@ test_stage_guard_spaced_input() {
   assert_warns plan execute "a pretty-printed input with a spaced transcript path warns"
 }
 
+test_inbox_hook_registered() {
+  J="$STUDIO_DIR/hooks/hooks.json"
+  assert_contains "$J" '"matcher": "startup|compact"' "a SessionStart entry for startup and compact"
+  assert_contains "$J" '"PostToolUse"' "a PostToolUse entry"
+  assert_contains "$J" '"matcher": "\*"' "PostToolUse matches every tool"
+  assert_eq 2 "$(grep -c 'hooks/operator-inbox.sh' "$J")" "operator-inbox.sh is registered twice"
+  if command -v jq >/dev/null 2>&1; then
+    assert_eq "startup|compact" "$(jq -r '.hooks.SessionStart[] | select(.hooks[0].command | test("operator-inbox")) | .matcher' "$J")" "SessionStart: startup|compact"
+    assert_eq "*" "$(jq -r '.hooks.PostToolUse[] | select(.hooks[0].command | test("operator-inbox")) | .matcher' "$J")" "PostToolUse: *"
+  fi
+}
+test_inbox_hook_silent_outside_units() {
+  for e in none tag dir; do
+    ( unset STUDIO_UNIT_TAG STUDIO_RUN_DIR
+      case "$e" in tag) STUDIO_UNIT_TAG=t; export STUDIO_UNIT_TAG ;; dir) STUDIO_RUN_DIR="$TMP"; export STUDIO_RUN_DIR ;; esac
+      printf '{"hook_event_name":"PostToolUse"}' | sh "$INBOX" ) > "$TMP/ib.out" 2>&1; st=$?
+    assert_eq 0 "$st" "exit 0 without both variables ($e)"
+    assert_eq "" "$(cat "$TMP/ib.out")" "prints nothing without both variables ($e)"
+  done
+  # Reads no stdin: a writer that holds the pipe open for 3 s must not delay it.
+  rm -f "$TMP/ib.fifo"; mkfifo "$TMP/ib.fifo"
+  ( exec 3> "$TMP/ib.fifo"; sleep 3 ) & _w=$!
+  t0="$(date +%s)"
+  ( unset STUDIO_UNIT_TAG STUDIO_RUN_DIR; sh "$INBOX" < "$TMP/ib.fifo" ) > "$TMP/ib.out" 2>&1
+  t1="$(date +%s)"; wait "$_w" 2>/dev/null
+  assert_eq 1 "$([ $((t1 - t0)) -le 1 ] && echo 1 || echo 0)" "exits without reading stdin"
+}
+
 run_tests test_hook_files test_hook_output_shape test_hook_defaults_from_studio_json \
   test_hook_reads_project_config test_hook_partial_config_falls_back test_hook_escapes_json \
   test_hook_fills_config_value_with_metacharacters test_guard_state_blocks_direct_writes \
@@ -378,4 +407,5 @@ run_tests test_hook_files test_hook_output_shape test_hook_defaults_from_studio_
   test_stage_guard_envelope_prompt test_stage_guard_names_latest_prior_stage \
   test_stage_guard_same_stage_silent test_stage_guard_ignores_mentions \
   test_stage_guard_ordinary_prompt_silent test_stage_guard_scheduled_task_silent \
-  test_stage_guard_no_transcript_silent test_stage_guard_spaced_input
+  test_stage_guard_no_transcript_silent test_stage_guard_spaced_input \
+  test_inbox_hook_registered test_inbox_hook_silent_outside_units
