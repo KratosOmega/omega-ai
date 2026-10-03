@@ -8,6 +8,7 @@ HOOK="$STUDIO_DIR/hooks/session-start.sh"
 GUARD="$STUDIO_DIR/hooks/guard-state.sh"
 STAGE_GUARD="$STUDIO_DIR/hooks/stage-guard.sh"
 INBOX="$STUDIO_DIR/hooks/operator-inbox.sh"
+AUTOPILOT_GUARD="$STUDIO_DIR/hooks/autopilot-guard.sh"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
@@ -398,6 +399,116 @@ test_inbox_hook_silent_outside_units() {
   assert_eq 1 "$([ $((t1 - t0)) -le 1 ] && echo 1 || echo 0)" "exits without reading stdin"
 }
 
+# ptu_in TOOL INPUT_JSON — a PreToolUse input for TOOL whose tool_input is
+# INPUT_JSON, as Claude Code sends it.
+ptu_in() {
+  printf '{"session_id":"s-1","transcript_path":"%s/t.jsonl","cwd":"%s","hook_event_name":"PreToolUse","tool_name":"%s","tool_input":%s}\n' \
+    "$TMP" "$TMP" "$1" "$2"
+}
+
+# autopilot VALUE TOOL INPUT_JSON — run the autopilot guard with
+# OMEGA_AUTOPILOT=VALUE ("-" unsets it). Asserts exit 0; stdout lands in
+# $TMP/ap.out.
+autopilot() {
+  ptu_in "$2" "$3" > "$TMP/ap.in"
+  _ast=0
+  if [ "$1" = - ]; then
+    env -u OMEGA_AUTOPILOT CLAUDE_PLUGIN_ROOT="$STUDIO_DIR" sh "$AUTOPILOT_GUARD" \
+      < "$TMP/ap.in" > "$TMP/ap.out" 2> "$TMP/ap.err" || _ast=$?
+  else
+    OMEGA_AUTOPILOT="$1" CLAUDE_PLUGIN_ROOT="$STUDIO_DIR" sh "$AUTOPILOT_GUARD" \
+      < "$TMP/ap.in" > "$TMP/ap.out" 2> "$TMP/ap.err" || _ast=$?
+  fi
+  assert_eq "0" "$_ast" "the autopilot guard exits 0"
+}
+
+# assert_denied MSG — stdout is one PreToolUse deny decision.
+assert_denied() {
+  if command -v jq >/dev/null 2>&1; then
+    assert_eq "deny" "$(jq -r '.hookSpecificOutput.permissionDecision' "$TMP/ap.out" 2>/dev/null)" "$1"
+    assert_eq "PreToolUse" "$(jq -r '.hookSpecificOutput.hookEventName' "$TMP/ap.out" 2>/dev/null)" "$1 (event name)"
+  else
+    assert_contains "$TMP/ap.out" '"permissionDecision":"deny"' "$1"
+  fi
+}
+
+# assert_allowed MSG — the autopilot guard printed nothing at all.
+assert_allowed() {
+  assert_eq "" "$(cat "$TMP/ap.out")" "$1"
+}
+
+test_autopilot_guard_registered() {
+  assert_file "$AUTOPILOT_GUARD" "autopilot-guard.sh exists"
+  assert_contains "$STUDIO_DIR/hooks/hooks.json" 'CLAUDE_PLUGIN_ROOT}/hooks/autopilot-guard.sh' \
+    "hooks.json runs autopilot-guard.sh from the plugin root"
+  assert_contains "$STUDIO_DIR/hooks/hooks.json" 'Agent|Task|Bash|Monitor' \
+    "the autopilot guard matches Agent, Task, Bash and Monitor"
+  if command -v jq >/dev/null 2>&1; then
+    assert_status 0 "hooks.json is valid JSON with the autopilot guard" -- jq -e . "$STUDIO_DIR/hooks/hooks.json"
+  fi
+}
+
+# A headless -p unit ends when its turn ends, and print mode kills every
+# background task 600 s later (phoenix mob-composer-parity, units 4 and 6,
+# 2026-10-03). Under OMEGA_AUTOPILOT=1 nothing may run in the background.
+test_autopilot_guard_denies_background_agent() {
+  autopilot 1 Agent '{"description":"T4","subagent_type":"game-dev:gameplay-programmer","prompt":"do T4"}'
+  assert_denied "an Agent call with no run_in_background (the async default) is denied"
+  assert_contains "$TMP/ap.out" 'run_in_background: false' "the Agent reason says how to re-dispatch"
+  autopilot 1 Agent '{"description":"T4","prompt":"do T4","run_in_background":true}'
+  assert_denied "an Agent call with run_in_background true is denied"
+  autopilot 1 Task '{"description":"T4","prompt":"do T4","run_in_background":true}'
+  assert_denied "the older Task name with run_in_background true is denied"
+  autopilot 1 Task '{"description":"T4","prompt":"do T4"}'
+  assert_allowed "the older Task name with no field (a foreground default) is allowed"
+}
+
+test_autopilot_guard_allows_foreground_agent() {
+  autopilot 1 Agent '{"description":"T4","prompt":"do T4","run_in_background":false}'
+  assert_allowed "an Agent call with run_in_background false is allowed"
+  autopilot 1 Agent '{
+    "description": "T4",
+    "run_in_background" : false,
+    "prompt": "do T4"
+  }'
+  assert_allowed "a pretty-printed run_in_background false is allowed"
+}
+
+# A brief quotes the rule; a prompt that mentions the field is not the field.
+test_autopilot_guard_reads_the_field_not_the_prompt() {
+  autopilot 1 Agent '{"description":"T4","prompt":"never \"run_in_background\": false here"}'
+  assert_denied "an escaped mention inside the prompt does not count as the field"
+  autopilot 1 Bash '{"command":"echo \"run_in_background\": true"}'
+  assert_allowed "an escaped mention inside a Bash command does not count as the field"
+}
+
+test_autopilot_guard_bash_and_monitor() {
+  autopilot 1 Bash '{"command":"studio-test","timeout":5400000,"run_in_background":true}'
+  assert_denied "a background Bash call is denied"
+  assert_contains "$TMP/ap.out" 'foreground' "the Bash reason says to run it in the foreground"
+  autopilot 1 Bash '{"command":"studio-test","timeout":5400000}'
+  assert_allowed "a foreground Bash call is allowed"
+  autopilot 1 Bash '{"command":"ls","run_in_background":false}'
+  assert_allowed "an explicit foreground Bash call is allowed"
+  autopilot 1 Monitor '{"command":"tail -f x"}'
+  assert_denied "Monitor is denied: its events arrive only after the turn ends"
+}
+
+test_autopilot_guard_off_outside_autopilot() {
+  autopilot - Agent '{"description":"T4","prompt":"do T4"}'
+  assert_allowed "without OMEGA_AUTOPILOT a background Agent is allowed"
+  autopilot 0 Bash '{"command":"x","run_in_background":true}'
+  assert_allowed "OMEGA_AUTOPILOT=0 allows a background Bash"
+  autopilot - Monitor '{"command":"tail -f x"}'
+  assert_allowed "without OMEGA_AUTOPILOT Monitor is allowed"
+  autopilot 1 Read '{"file_path":"/x"}'
+  assert_allowed "another tool is never touched"
+  _ast=0
+  printf 'not json' | OMEGA_AUTOPILOT=1 sh "$AUTOPILOT_GUARD" > "$TMP/ap.out" 2>/dev/null || _ast=$?
+  assert_eq "0" "$_ast" "a non-JSON input exits 0"
+  assert_allowed "a non-JSON input prints nothing"
+}
+
 run_tests test_hook_files test_hook_output_shape test_hook_defaults_from_studio_json \
   test_hook_reads_project_config test_hook_partial_config_falls_back test_hook_escapes_json \
   test_hook_fills_config_value_with_metacharacters test_guard_state_blocks_direct_writes \
@@ -408,4 +519,7 @@ run_tests test_hook_files test_hook_output_shape test_hook_defaults_from_studio_
   test_stage_guard_same_stage_silent test_stage_guard_ignores_mentions \
   test_stage_guard_ordinary_prompt_silent test_stage_guard_scheduled_task_silent \
   test_stage_guard_no_transcript_silent test_stage_guard_spaced_input \
-  test_inbox_hook_registered test_inbox_hook_silent_outside_units
+  test_inbox_hook_registered test_inbox_hook_silent_outside_units \
+  test_autopilot_guard_registered test_autopilot_guard_denies_background_agent \
+  test_autopilot_guard_allows_foreground_agent test_autopilot_guard_reads_the_field_not_the_prompt \
+  test_autopilot_guard_bash_and_monitor test_autopilot_guard_off_outside_autopilot

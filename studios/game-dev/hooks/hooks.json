@@ -29,6 +29,15 @@
             "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/guard-state.sh\""
           }
         ]
+      },
+      {
+        "matcher": "Agent|Task|Bash|Monitor",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/autopilot-guard.sh\""
+          }
+        ]
       }
     ],
     "UserPromptSubmit": [

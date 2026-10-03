@@ -715,8 +715,21 @@ row() {  # row N LABEL OUTCOME — the label column is ID-LABEL when CUR_ID is s
   run_event unit_ended "story=${CUR_ID:--}" "unit=$UNIT_TAG" "label=$2" "outcome=$3" "usd:=$UNIT_COST"
 }
 # unit_outcome — a unit that changed nothing: `timed out` when the session
-# cap ended it (UNIT_TIMED_OUT), else `noprog`.
-unit_outcome() { if [ "${UNIT_TIMED_OUT:-0}" = 1 ]; then echo "timed out"; else echo noprog; fi; }
+# cap ended it (UNIT_TIMED_OUT); `orphaned` when the session ended its turn
+# with background work running, so print mode killed that work 600 s later
+# and said so on stderr (phoenix mob-composer-parity, 2026-10-03); else
+# `noprog`. An orphaned unit counts as no progress everywhere else.
+unit_outcome() {
+  if [ "${UNIT_TIMED_OUT:-0}" = 1 ]; then echo "timed out"
+  elif grep -q 'Background tasks still running after' "$UNIT_DIR/$UNIT_STEM.err" 2>/dev/null; then echo orphaned
+  else echo noprog; fi
+}
+# orphan_note OUTCOME — the cause appended to a no-progress ending when
+# OUTCOME is `orphaned`; empty otherwise.
+orphan_note() {
+  [ "$1" = orphaned ] && printf ' (orphaned: the session ended its turn with background work running)'
+  return 0
+}
 # write_report REASON — the morning report: how it ended, what it cost, the
 # rulings to check, what to play, the PR, and how to resume.
 write_report() {
@@ -797,7 +810,8 @@ on_exit() {
 
 # story_units — bundle 2's unit loop for the current story. Returns with
 # ENDING set: done · stopped by user · stop: <reason> · stop: run budget ·
-# no progress on <label> · stop: unexpected stage <s>. Its scratch files
+# no progress on <label> [(orphaned: …)] · timed out on <label> (…) ·
+# stop: unexpected stage <s>. Its scratch files
 # live in UNIT_DIR (the run dir; a lane's own dir in manifest mode). Unit
 # numbers run on from the caller's n (0 when unset), so a second call for the
 # same story (after a gate repair) never reuses a unit's file names.
@@ -820,8 +834,8 @@ story_units() {
     if [ "$SIG" != "$_before" ]; then row "$n" "$_base$suffix" progress; noprog=0; suffix=""; continue; fi
     _out="$(unit_outcome)"; row "$n" "$_base$suffix" "$_out"; noprog=$((noprog + 1))
     if [ "$noprog" -le "$RETRIES" ]; then suffix="-retry"; continue; fi
-    if [ "$_out" = noprog ]; then ENDING="no progress on $_base"
-    else ENDING="timed out on $_base (session_minutes $SESSION_MINUTES)"; fi
+    if [ "$_out" = "timed out" ]; then ENDING="timed out on $_base (session_minutes $SESSION_MINUTES)"
+    else ENDING="no progress on $_base$(orphan_note "$_out")"; fi
     return 0
   done
 }

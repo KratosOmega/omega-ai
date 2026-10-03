@@ -477,7 +477,7 @@ land_once_direct() {
 # STUDIO_REPAIR=$LAND_REPAIR added to the story's env words. Returns 0 when
 # the story ledger (feature checkout) gained a `Repair:` line — retry; else
 # writes the ending (`stopped stop: <reason>` for a new Stop: line, `stopped
-# repair made no progress` for neither — `stopped repair timed out (…)` when
+# repair made no progress [(orphaned: …)]` for neither — `stopped repair timed out (…)` when
 # the session cap ended it — the halt reason when the lane must stop) and
 # returns 1. Called after studio-gate has exited, so the repair's
 # own gate takes the gate lock itself (D17).
@@ -501,7 +501,8 @@ land_repair() {
     if lane_halt; then story_write "$1" "stopped $(lane_halt_reason)"; return 1; fi
     story_write "$1" landing; return 0
   fi
-  if [ "$(unit_outcome)" = noprog ]; then row "$n" repair noprog; story_write "$1" "stopped repair made no progress"
+  _lr_o="$(unit_outcome)"
+  if [ "$_lr_o" != "timed out" ]; then row "$n" repair "$_lr_o"; story_write "$1" "stopped repair made no progress$(orphan_note "$_lr_o")"
   else row "$n" repair "timed out"; story_write "$1" "stopped repair timed out (session_minutes $SESSION_MINUTES)"; fi
   return 1
 }
@@ -523,7 +524,7 @@ gate_log_of() {
 # story_units, whose fresh finish re-runs the full gate. Else returns 1 with
 # ENDING set: the halt reason; `stop: run budget` (story_units' rule, before
 # any launch); `stop: <reason>` for a new Stop: line (the unit's own `gate
-# repair red` is a hard stop); `gate repair made no progress`; or `gate
+# repair red` is a hard stop); `gate repair made no progress [(orphaned: …)]`; or `gate
 # repair timed out (session_minutes N)` — the halt reason instead when the
 # lane must stop.
 gate_repair() {
@@ -542,7 +543,8 @@ gate_repair() {
   _gr_a="$(ledger_of "$FEATURE_DIR" | grep -c '^- [0-9-]* Repair: ')"
   if [ -n "$_gr_new" ]; then row "$n" gate-repair stop; ENDING="stop: ${_gr_new#*Stop: }"; return 1; fi
   if [ "$_gr_a" -gt "$_gr_b" ]; then row "$n" gate-repair progress; story_write "$1" running; return 0; fi
-  if [ "$(unit_outcome)" = noprog ]; then row "$n" gate-repair noprog; ENDING="gate repair made no progress"
+  _gr_o="$(unit_outcome)"
+  if [ "$_gr_o" != "timed out" ]; then row "$n" gate-repair "$_gr_o"; ENDING="gate repair made no progress$(orphan_note "$_gr_o")"
   else row "$n" gate-repair "timed out"; ENDING="gate repair timed out (session_minutes $SESSION_MINUTES)"; fi
   # A halt that ended the unit (or arrived while it ran) names the story's end.
   ! lane_halt || ENDING="$(lane_halt_reason)"
@@ -1225,7 +1227,8 @@ final_stopped() {
 # OMEGA_AUTOPILOT, STUDIO_RUN, STUDIO_DOCS_REV and the Bash timeouts, plus
 # ENV_WORDS (KEY='value', sq-quoted); never STUDIO_STORY. Its row in
 # final/units.tsv is `progress` when FINAL_W's HEAD moved, else `noprog`
-# (`timed out` when the session cap ended it).
+# (`timed out` when the session cap ended it, `orphaned` when print mode
+# killed its background work).
 # Returns 1, launching nothing, when a stop was requested or the run budget
 # (story_units' rule: spent_all + SESSION_USD > RUN_USD) refuses it, with a
 # note. Returns 2 when the unit left FINAL_W dirty: the uncommitted work is

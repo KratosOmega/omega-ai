@@ -14,6 +14,24 @@ approval page in `artifacts/`.
 
 ## Log
 
+### 2026-10-03 — overnight: no background subagents in a -p unit
+
+- Two phoenix `mob-composer-parity` units (4-S3-T3, 6-S3-T4) ended `noprog`
+  at 10.7 min. Each main session dispatched its implementer as a background
+  `Agent` (the build's default) and ended its turn to wait for the report. A
+  `-p` session ends with its turn, and print mode killed the subagent 600 s
+  later along with the `studio-test` it was running. The foreground-gate
+  rule from 2026-10-02 was kept, but it covered only Bash and Monitor, not
+  the dispatch. Each death spent the task's only retry.
+- `hooks/autopilot-guard.sh` (PreToolUse, `Agent|Task|Bash|Monitor`) denies,
+  under `OMEGA_AUTOPILOT=1` only, an `Agent`/`Task` call whose
+  `run_in_background` is not `false`, a `Bash` call with
+  `run_in_background: true`, and every `Monitor` call. The deny reason says
+  how to re-issue the call. The execute skill's §0 has a matching rule.
+- The runner records such a unit `orphaned` (from print mode's "Background
+  tasks still running after 600s" line in the unit's `.err`), and a
+  no-progress ending gains `(orphaned: …)`. It still counts as no progress.
+
 ### 2026-10-03 — studio-test speed (#22)
 
 - The 75-minute phoenix suite was our bug. `test.sh` never passed `-gconfig`,

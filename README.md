@@ -146,7 +146,11 @@ stories as parallel lanes of dependency chains:
   ends its turn to wait on a background job ends there, and the job is
   orphaned. When a unit ends, the runner ends any gate it left running
   (`.studio/gate.units/`). A unit the watchdog ends with no progress is
-  recorded `timed out`, not `no progress`. Every gate run logs its seconds to
+  recorded `timed out`, not `no progress`. Subagents run in the foreground
+  too: under `OMEGA_AUTOPILOT=1` the studio's `autopilot-guard.sh` PreToolUse
+  hook denies a background `Agent`, a background `Bash` call and `Monitor`.
+  A unit whose session still ended its turn with background work running
+  (print mode kills that work 600 s later) is recorded `orphaned`. Every gate run logs its seconds to
   `.studio/gate.times`; preflight warns when the slowest recent `studio-test`
   leaves too little room under `session_minutes`.
 - `studio-overnight status` works from any directory: inside a project it shows
