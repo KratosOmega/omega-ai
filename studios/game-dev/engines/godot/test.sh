@@ -7,10 +7,10 @@
 #          included. The project's .gutconfig.json (root or tests/) is always
 #          passed, so its hooks run.
 #
-# Exit: 0 all passed · 1 failures (or not a project) · 2 no Godot binary ·
-#       3 GUT not installed. Prints "studio-test: N passed, M failed", then
-#       the failing test names. JUnit XML and the engine log are written to
-#       .studio/reports/test-<stamp>.{xml,log}.
+# Exit: 0 all passed · 1 failures, no tests run, a crash, a failed import (or
+#       not a project) · 2 no Godot binary · 3 GUT not installed. Prints
+#       "studio-test: N passed, M failed", then the failing test names. JUnit
+#       XML and the engine log are written to .studio/reports/test-<stamp>.{xml,log}.
 set -u
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -63,8 +63,8 @@ xml_rel=".studio/reports/test-$stamp.xml"
 log="$PROJECT/.studio/reports/test-$stamp.log"
 
 # An absent or incomplete import cache (a fresh worktree, a killed import, a
-# branch that adds assets) is imported first; one the import cannot complete
-# stops here rather than failing minutes into the suite (import.sh).
+# branch that adds assets with their .import files) is imported first; an
+# import that fails stops here rather than minutes into the suite (import.sh).
 . "$HERE/import.sh"
 ensure_import "$GODOT" "$PROJECT" "$log" studio-test || exit 1
 
@@ -73,18 +73,29 @@ ensure_import "$GODOT" "$PROJECT" "$log" studio-test || exit 1
 engine_status=$?
 
 # A Godot crash prints "handle_crash: Program crashed with signal N"; GUT prints
-# each test script's res:// path on a line of its own as it starts it, so the
-# last such line before the crash names the script that was running.
+# each test script's res:// path on a line of its own as it starts it (an inner
+# class as res://x.gd.Inner), so the last such line before the crash names the
+# script that was running. Once GUT prints its Run Summary or "Results saved
+# to", the run is over: the paths it lists then are a summary, not a run, and a
+# crash after them is one at shutdown.
 crash_line() {
   awk '
-    /^res:\/\/.*\.gd$/ { script = $0 }
-    /handle_crash: Program crashed with signal/ { sig = $NF; at = script; exit }
-    END { if (sig != "") printf "studio-test: Godot crashed (signal %s)%s\n", sig, (at != "" ? " while running " at : "") }
+    /= Run Summary/ || /^Results saved to / { script = ""; after = 1 }
+    !after && /^res:\/\/.*\.gd(\.[A-Za-z0-9_]+)?$/ { script = $0; sub(/\.gd\.[A-Za-z0-9_]+$/, ".gd", script) }
+    /handle_crash: Program crashed with signal/ { sig = $NF; at = script; late = after; exit }
+    END {
+      if (sig == "") exit
+      if (late) printf "studio-test: Godot crashed (signal %s) at shutdown, after the run\n", sig
+      else printf "studio-test: Godot crashed (signal %s)%s\n", sig, (at != "" ? " while running " at : "")
+    }
   ' "$log"
 }
 
-xml="$PROJECT/$xml_rel"
-if [ ! -f "$xml" ]; then
+# GUT names the report -gjunit_xml_file, or adds a timestamp to it when the
+# config sets junit_xml_timestamp; the newest match is this run's.
+xml="$(ls "$PROJECT/.studio/reports/test-$stamp"*.xml 2>/dev/null | sort | tail -n 1)"
+if [ -n "$xml" ]; then xml_rel="${xml#"$PROJECT"/}"; fi
+if [ -z "$xml" ]; then
   crash_line >&2
   echo "studio-test: GUT produced no report (engine exit $engine_status); last lines of $log:" >&2
   tail -n 20 "$log" >&2
@@ -111,6 +122,12 @@ if [ "$engine_status" -ne 0 ]; then
   crash_line
   printf 'studio-test: Godot exited %s after writing the report%s\n' "$engine_status" \
     "${gutconfig:+ (a post-run hook in $gutconfig can fail the run; see the log)}"
+fi
+# GUT passes a run that found nothing to run: a mistyped PATH, or a config
+# whose dirs are empty. A gate that ran no tests is not green.
+if [ "$total" -eq 0 ]; then
+  echo "studio-test: no tests ran (check PATH or the config's dirs)"
+  exit 1
 fi
 
 [ "$failed" -eq 0 ] && [ "$engine_status" -eq 0 ]

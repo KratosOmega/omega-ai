@@ -3,8 +3,9 @@
 # one scene) for N seconds and scan the log for script errors. Invoked by
 # studio-dispatch from the project root.
 #
-# Exit: 0 clean · 1 script errors, bad usage, or not a project · 2 no Godot
-# binary. The full log is .studio/reports/run-<stamp>.log; error lines are
+# Exit: 0 clean · 1 script errors, a failed import, bad usage, or not a
+# project · 2 no Godot binary. The full log is .studio/reports/run-<stamp>.log
+# (an import first logs to import-<stamp>.log); error lines are
 # echoed first, then the last 40 lines. macOS has no timeout(1), so the
 # engine is started in the background, slept on, and sent TERM.
 set -u
@@ -46,10 +47,11 @@ stamp="$(date +%Y%m%d-%H%M%S)"
 log_rel=".studio/reports/run-$stamp.log"
 log="$PROJECT/$log_rel"
 
-# An absent or incomplete import cache is imported first; one the import
-# cannot complete stops the run (import.sh).
+# An absent or incomplete import cache is imported first; an import that fails
+# stops the run (import.sh). The import logs to its own file: the ERROR lines
+# an import prints are not the run's script errors, which the scan below finds.
 . "$HERE/import.sh"
-ensure_import "$GODOT" "$PROJECT" "$log" studio-run || exit 1
+ensure_import "$GODOT" "$PROJECT" "$PROJECT/.studio/reports/import-$stamp.log" studio-run || exit 1
 
 # Build the argument list without word-splitting a scene path.
 set -- --path "$PROJECT"
