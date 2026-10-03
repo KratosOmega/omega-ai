@@ -212,10 +212,11 @@ apply in inline mode too, and so do §4a's re-review and no-third-pass rules
 (3 and 4); §2's dispatch and §4 do not, and you make each fix yourself where
 §4a and §5 dispatch a fresh agent.
 
-Two more modes are units only the overnight runner launches (the headless
-rules of §8 apply to both):
+Three more modes are units only the overnight runner launches (the headless
+rules of §8 apply to all three):
 
 - `--land`: the landing repair unit (§9), launched when a landing conflicts or the merge command refuses.
+- `--gate-repair`: the gate repair unit (§11), launched under a lane when a story's finish gate is red.
 - `--progress`: the run's PROGRESS entry unit (§10), launched once per run.
 
 ## 2. Who implements (subagent-driven mode)
@@ -382,6 +383,9 @@ the last task's review. Under `--one`, see §8: a task unit never starts it.
      a finding of the original severity;
    - SDD's deferred-minor and parked lines — triage which must be fixed
      before merge;
+   - "Gate-enforced findings are must-fix": a finding about anything the
+     gate checks — line length, docs budgets, any check under `tests/` —
+     whatever its severity, is never ruled `leave`, deferred or parked;
    - the `studio-test` and `studio-lint` output from step 1. Under a lane, in place of that output, the brief says
      "step 1 skipped under a lane: no fresh test run; each task's tests
      ran in its implementer, and the finish gate runs the full gate after
@@ -394,6 +398,11 @@ the last task's review. Under `--one`, see §8: a task unit never starts it.
    owning role (the `Role:` of the plan task whose `Files:` names the file;
    `game-dev:gameplay-programmer` when none does) — usually one dispatch,
    with §4a rule 2's brief. Commit subject `fix(final): <summary>`.
+   Every gate-enforced finding (step 3) is in the wave, whatever its
+   severity: it would turn the finish gate red, and under a lane that costs
+   a gate-repair unit and a second full gate. Never accept a claim that a
+   file is outside such a check (it "is not under" that test) without
+   running that test file: `studio-test <path>`.
    Re-review per §4a rule 3 (a Minor-only wave is never re-reviewed); never
    a third pass (§4a rule 4).
 6. `studio-state ledger "final review done"`, then commit the ledger:
@@ -555,8 +564,10 @@ runner's (`STUDIO_RUN`'s header), and the base is `origin/<Target>`:
   Any other non-zero exit is a red gate: the finish runs
   `studio-state ledger "Stop: gate red — <failing command and line>"`.
   Each stop is committed as §8's stops are committed, writes no `shipped` line, pushes
-  nothing further, and ends the turn; steps 2–6 do not run. The runner then
-  records the story stopped; only its repair unit repairs it.
+  nothing further, and ends the turn; steps 2–6 do not run. A `gate red` stop
+  is the one the runner repairs: it launches the gate-repair unit (§11), then
+  a fresh finish that runs this gate again, up to `overnight.gate_repairs`
+  times. Every other stop here is hard: the runner records the story stopped.
   Otherwise step 3 (PROGRESS) is skipped; step 4 pushes `<Branch>` and
   opens no PR; `studio-state ledger "shipped <Branch>"`.
 - **Direct:** step 1 is skipped (the runner's merge command is the gate);
@@ -641,14 +652,15 @@ runs exactly one unit, writes its state, commits, pushes, and ends the turn.
 ## 9. Landing repair (--land)
 
 The runner launches this unit when a landing conflicts or the merge command
-refuses: prompt `/game-dev:execute --land`, in the story's worktree, with
+refuses: prompt `/game-dev:execute --land`, from the start checkout, with
 `STUDIO_STORY`, `STUDIO_RUN`, `OMEGA_AUTOPILOT=1` and `STUDIO_REPAIR` set.
 It bypasses §0's stage gate: these preconditions replace it, and any miss is
 a `Stop:` line (§8's stop rule).
 
+- **Enter the feature checkout** through `studio-state worktree`, first:
+  the ledger the checks below read is the feature checkout's.
 - **Preconditions:** `stage idle`, a `shipped` line in the ledger, and
   `STUDIO_REPAIR` set.
-- **Enter the feature checkout** through `studio-state worktree`.
 - **Merge the target:** `git fetch origin`, then
   `git merge --no-edit origin/<Target>`. Merge, never rebase: the branch is
   already pushed and force-push is denied.
@@ -691,4 +703,57 @@ there is no plan to read.
   A unit that makes no commit is red.
 - **It does not push** and no session merges into `main` (the default
   branch) in any run mode: the runner pushes and lands the entry.
+- One unit: end the turn.
+
+## 11. Gate repair (--gate-repair)
+
+The runner launches this unit under a lane when a story's finish stopped on
+a red gate (`Stop: gate red — …`, §7's lane rules) and the story has gate
+repairs left (`overnight.gate_repairs`): prompt
+`/game-dev:execute --gate-repair`, from the start checkout, with the
+story's env (`STUDIO_STORY`, `STUDIO_RUN`, `STUDIO_DOCS_REV`,
+`OMEGA_AUTOPILOT=1`, `BASH_DEFAULT_TIMEOUT_MS`, `BASH_MAX_TIMEOUT_MS`) and
+`STUDIO_REPAIR=gate:<log>` set. `<log>` is the newest `studio-test` log of
+the feature checkout (`.studio/reports/test-<stamp>.log`), or `-` when there
+is none. It bypasses §0's stage gate: these preconditions replace it, and
+any miss is a `Stop:` line (§8's stop rule).
+
+A full gate can take most of a session, so this unit never runs it: it
+fixes, proves the fix on what failed, and records the repair. The runner
+then launches a fresh finish, which runs the full gate once (§7).
+
+- **Enter the feature checkout** through `studio-state worktree`, first:
+  the `Stop: gate red` line is in the feature checkout's ledger only, so
+  the checks below read it there. A miss before entering is §8's stop in
+  the start checkout.
+- **Preconditions:** `stage execute`, no `shipped` line in the feature
+  ledger, its latest `Stop:` line is a `gate red` one, and `STUDIO_REPAIR`
+  starts with `gate:`.
+- **Read the failure:** the `Stop: gate red — <failing command and line>`
+  line names the red command. For `studio-test`, read the failing tests'
+  names and output from the log at `<log>`; when `<log>` is `-` or shows no
+  failure, the Stop line's failing line is the failure.
+- **Fix:** dispatch one fresh fixer (§5 step 5's owning role) with the
+  failing output. It commits `fix(gate): <summary>`.
+- **Verify what failed, not the whole gate:** `studio-test <path>` for each
+  failing test file; `studio-lint` or `studio-run --seconds 10` when that was
+  the red command. Each runs as a foreground Bash call with `timeout` set to
+  `$BASH_MAX_TIMEOUT_MS` (§7's lane rule). Up to three rounds, a round
+  being one run of every failing file (or of the red command); the same
+  fixer (or a fresh one given the new failing output) fixes between
+  rounds. Exit codes keep §7's lane meaning: `studio-lint` exit 3 is not red;
+  `studio-test` or `studio-run` exit 2 and `studio-test` exit 3 are hard
+  stops that end the unit at once with
+  `studio-state ledger "Stop: <the printed message>"`, committed.
+- **Record:** `studio-state ledger "Repair: gate — <summary>"`, commit the
+  ledger (`git add .studio/ledger && git commit -m "chore(studio): gate repair"`),
+  then push the story branch. The runner reads that `Repair:` line and
+  launches the fresh finish.
+- **Red after three rounds:** `studio-state ledger "Stop: gate repair red — <failing line>"`,
+  committed. It is a hard stop: the runner launches no further repair.
+- A git write whose stderr says `could not lock` or `cannot lock ref` is retried, as §0 and §7 do.
+- **Never ships, never lands:** no `shipped` line, no PR, no change to
+  `stage` or `task`. No session merges into `main` (the default branch) in
+  any run mode; this unit never merges, never pushes the target or `main`,
+  and never runs the merge command.
 - One unit: end the turn.

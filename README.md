@@ -121,6 +121,12 @@ stories as parallel lanes of dependency chains:
   **direct**: the runner merges each story into `main` through the project's
   `merge_command`, each dependent after its dependency. Sessions never merge in
   either mode.
+- A story's finish runs its full gate once per session. A red gate is not the
+  end: the runner launches a gate-repair session, which fixes the failure and
+  re-runs only the failing tests, then a fresh finish, which runs the full gate
+  again. It does this up to `overnight.gate_repairs` times (default 2; 0 stops
+  the story at the first red gate). Hard stops (no Godot, GUT missing, a
+  timed-out gate) are never repaired.
 - One gate lock per project (`.studio/gate.lock`): `studio-test`, `studio-run`,
   the merge command and the final gate take it, so only one test or gate run
   happens at a time across all lanes.

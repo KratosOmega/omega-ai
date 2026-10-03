@@ -90,7 +90,7 @@ model_for() {
     T*) UNIT_MODEL="$MODEL_TASK" ;;
     final-review) UNIT_MODEL="$MODEL_FINAL" ;;
     finish) UNIT_MODEL="$MODEL_FINISH" ;;
-    repair|final-repair) UNIT_MODEL="$MODEL_REPAIR" ;;
+    repair|final-repair|gate-repair) UNIT_MODEL="$MODEL_REPAIR" ;;
     progress) UNIT_MODEL="$MODEL_PROGRESS" ;;
     *) say "no model for unit $1"; exit 3 ;;
   esac
@@ -204,6 +204,9 @@ Config: .studio/config.json "overnight" (defaults, ranges):
                                     runs under. The preflight warns when the slowest recent
                                     studio-test (.studio/gate.times) × 1.2 + 10 min exceeds it.
   retries              1     0-3      retries of an unchanged unit
+  gate_repairs         2     0-3      lanes: gate-repair units per story after a red finish gate,
+                                    each followed by a fresh finish (the full gate again);
+                                    0 = a red gate stops the story
   kill_grace_seconds   30    5-120    TERM-to-KILL grace
   max_lanes            0     0-8      lane processes (0 = one per chain)
   model_task           sonnet   model for task units      (^[a-z0-9.-]+$)
@@ -332,6 +335,7 @@ preflight() {
   cfg session_minutes 90 10 480 int
   gate_room_check
   cfg retries 1 0 3 int
+  cfg gate_repairs 2 0 3 int
   cfg kill_grace_seconds 30 5 120 int
   GRACE="${KILL_GRACE_SECONDS:-30}"
   if lock_live; then
@@ -363,8 +367,12 @@ feature_dir() {
   _w="$(cd "$START_DIR" && sh "$STATE_BIN" worktree 2>/dev/null)"
   if [ -n "$_w" ] && [ -d "$_w" ]; then printf '%s\n' "$_w"; else printf '%s\n' "$START_DIR"; fi
 }
-# snapshot STOPS_FILE — the progress signature, and the de-duplicated set of
-# Stop: lines from the feature and start checkouts.
+# snapshot STOPS_FILE — the progress signature, and the Stop: lines of the
+# feature and start checkouts, sorted: each line suffixed with a tab and its
+# occurrence number in its own ledger, then de-duplicated across the two (the
+# feature ledger starts as a copy of the start's). A stop written again with
+# the same text on the same day is a new `<line>\t2`, so a comm -13 of two
+# snapshots finds it; a reader strips the suffix (new_stop).
 snapshot() {
   FEATURE_DIR="$(feature_dir)"
   _l="$(ledger_of "$FEATURE_DIR")"
@@ -372,8 +380,20 @@ snapshot() {
   SIG_FRD="$(printf '%s\n' "$_l" | grep -c '^- [0-9-]* final review done$')"
   SIG_SHIPPED="$(printf '%s\n' "$_l" | grep -c '^- [0-9-]* shipped ')"
   SIG="stage=$SIG_STAGE;task=$SIG_TASK;frd=$SIG_FRD;shipped=$SIG_SHIPPED"
-  if [ "$FEATURE_DIR" = "$START_DIR" ]; then printf '%s\n' "$_l"   # one ledger: read it once
-  else { printf '%s\n' "$_l"; ledger_of "$START_DIR"; }; fi | grep '^- [0-9-]* Stop: ' | sort -u > "$1"
+  if [ "$FEATURE_DIR" = "$START_DIR" ]; then printf '%s\n' "$_l" | stop_lines   # one ledger: read it once
+  else { printf '%s\n' "$_l" | stop_lines; ledger_of "$START_DIR" | stop_lines; }; fi | sort -u > "$1"
+}
+# stop_lines — the Stop: lines of one ledger on stdin, each suffixed with a
+# tab and its occurrence number (snapshot's rule).
+stop_lines() { grep '^- [0-9-]* Stop: ' | awk '{ k[$0]++; printf "%s\t%d\n", $0, k[$0] }'; }
+# new_stop BEFORE AFTER — the Stop: line in snapshot AFTER that BEFORE does
+# not hold (the last, when several), its suffix stripped; empty for none.
+new_stop() { _ns="$(comm -13 "$1" "$2" | tail -n 1)"; printf '%s\n' "${_ns%	*}"; }
+# run_budget_out — the run budget refuses one more session: run_usd is set
+# and spent_all + session_usd exceeds it.
+run_budget_out() {
+  awk -v r="$RUN_USD" 'BEGIN { exit !(r > 0) }' \
+    && awk -v s="$(spent_all)" -v u="$SESSION_USD" -v r="$RUN_USD" 'BEGIN { exit !(s + u > r) }'
 }
 # label_for — the unit's name from the SIG_* values (D8); names files only.
 label_for() {
@@ -727,23 +747,23 @@ on_exit() {
 # story_units — bundle 2's unit loop for the current story. Returns with
 # ENDING set: done · stopped by user · stop: <reason> · stop: run budget ·
 # no progress on <label> · stop: unexpected stage <s>. Its scratch files
-# live in UNIT_DIR (the run dir; a lane's own dir in manifest mode).
+# live in UNIT_DIR (the run dir; a lane's own dir in manifest mode). Unit
+# numbers run on from the caller's n (0 when unset), so a second call for the
+# same story (after a gate repair) never reuses a unit's file names.
 story_units() {
-  n=0; noprog=0; suffix=""
+  n="${n:-0}"; noprog=0; suffix=""; _su_first=1
   while :; do
     if stop_requested; then ENDING="stopped by user"; return 0; fi
     # First pass takes the before-snapshot; later passes reuse the previous after-snapshot.
-    if [ "$n" -eq 0 ]; then snapshot "$UNIT_DIR/stops.before"; else cp "$UNIT_DIR/stops.after" "$UNIT_DIR/stops.before"; fi
+    if [ "$_su_first" = 1 ]; then snapshot "$UNIT_DIR/stops.before"; _su_first=0
+    else cp "$UNIT_DIR/stops.after" "$UNIT_DIR/stops.before"; fi
     _stage="$SIG_STAGE"
     case "$_stage" in plan|execute) ;; *) ENDING="stop: unexpected stage $_stage"; return 0 ;; esac
-    if awk -v r="$RUN_USD" 'BEGIN { exit !(r > 0) }' \
-       && awk -v s="$(spent_all)" -v u="$SESSION_USD" -v r="$RUN_USD" 'BEGIN { exit !(s + u > r) }'; then
-      ENDING="stop: run budget"; return 0
-    fi
+    if run_budget_out; then ENDING="stop: run budget"; return 0; fi
     _before="$SIG"; _base="${STUDIO_OVERNIGHT_LABEL:-$(label_for)}"
     n=$((n + 1)); run_unit "$n" "$_base$suffix"
     snapshot "$UNIT_DIR/stops.after"
-    _new="$(comm -13 "$UNIT_DIR/stops.before" "$UNIT_DIR/stops.after" | tail -n 1)"
+    _new="$(new_stop "$UNIT_DIR/stops.before" "$UNIT_DIR/stops.after")"
     if [ -n "$_new" ]; then row "$n" "$_base$suffix" stop; ENDING="stop: ${_new#*Stop: }"; return 0; fi
     if [ "$SIG_STAGE" = idle ] && [ "$SIG_SHIPPED" -gt 0 ]; then row "$n" "$_base$suffix" done; ENDING=done; return 0; fi
     if [ "$SIG" != "$_before" ]; then row "$n" "$_base$suffix" progress; noprog=0; suffix=""; continue; fi
@@ -868,7 +888,7 @@ cmd_start() {
   trap 'STOP_REQ=1' INT TERM
   trap 'HUP_REQ=1; exit 129' HUP
   run_setup
-  UNIT_DIR="$RUN_DIR"; UNIT_PREFIX=""; CUR_ID=""
+  UNIT_DIR="$RUN_DIR"; UNIT_PREFIX=""; CUR_ID=""; n=0
   story_units
   finish_run "$ENDING"
 }

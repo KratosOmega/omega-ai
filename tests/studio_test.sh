@@ -538,6 +538,37 @@ test_execute_land_and_progress() {
   assert_contains "$E" '^- `--progress`' "§1 lists --progress"
 }
 
+# Gate repair: a red lane gate is repaired across sessions (§11), and the
+# final review never leaves a finding the gate enforces (§5).
+test_execute_gate_repair() {
+  E="$REPO_ROOT/studios/game-dev/skills/execute/SKILL.md"
+  assert_contains "$E" '^## 11. Gate repair (--gate-repair)' "§11 exists"
+  assert_contains "$E" '^- `--gate-repair`' "§1 lists --gate-repair"
+  assert_contains "$E" 'STUDIO_REPAIR=gate:<log>' "the repair reads the red gate's log"
+  assert_contains "$E" 'its latest `Stop:` line is a `gate red` one' "§11's preconditions name the gate red stop"
+  assert_contains "$E" 'fix(gate): <summary>' "the repair commit"
+  assert_contains "$E" '`studio-test <path>` for each' "the repair re-runs only the failing test files"
+  assert_contains "$E" 'Repair: gate — <summary>' "the ledger line the runner reads"
+  assert_contains "$E" 'Stop: gate repair red — <failing line>' "a repair red after three runs is a hard stop"
+  assert_contains "$E" 'Never ships, never lands' "the repair never ships"
+  assert_contains "$E" 'overnight.gate_repairs' "§7 and §11 name the cap"
+  assert_not_contains "$E" 'only its repair unit repairs it' "§7 no longer names a unit that does not exist"
+  assert_contains "$E" 'Gate-enforced findings are must-fix' "§5's brief makes gate-enforced findings must-fix"
+  assert_contains "$E" 'is never ruled `leave`, deferred or parked' "they are never left or deferred"
+  assert_contains "$E" 'running that test file: `studio-test <path>`' "§5 runs the test before accepting an out-of-scope claim"
+  assert_contains "$E" 'Up to three rounds, a round' "§11 counts rounds, not single runs"
+  # The runner starts both repair units in the start checkout, and the Stop
+  # and shipped lines they check are in the feature ledger: enter, then check.
+  for _sec in '## 9\.' '## 11\.'; do
+    assert_eq "enter-first" "$(awk -v s="^$_sec" '
+      $0 ~ s { in_s = 1; next } in_s && /^## / { in_s = 0 }
+      in_s && /^- \*\*Enter the feature checkout\*\*/ && !e { e = NR }
+      in_s && /^- \*\*Preconditions:\*\*/ && !p { p = NR }
+      END { print (e && p && e < p) ? "enter-first" : "check-first" }' "$E")" "$_sec enters the feature checkout before its preconditions"
+  done
+  assert_not_contains "$E" '`/game-dev:execute --land`, in the story.s worktree' "§9 names the checkout the runner starts it in"
+}
+
 test_plan_brainstorm_lanes() {
   PL="$REPO_ROOT/studios/game-dev/skills/plan/SKILL.md"
   BR="$REPO_ROOT/studios/game-dev/skills/brainstorm/SKILL.md"
@@ -583,5 +614,5 @@ run_tests test_plugin_manifests test_skill_frontmatter test_agent_frontmatter \
   test_stage_chain test_execute_contract test_agent_contracts test_feature_checkout_copies test_next_lines \
   test_review_contract test_on_demand_skills_keep_stage test_playtest_contract test_retro_contract \
   test_no_ship_references test_superpowers_requires_referenced test_no_last_playtest_callers \
-  test_execute_one_contract test_router_overnight_lock test_execute_lanes test_execute_lane_gate_foreground test_execute_land_and_progress test_final_wave_contracts \
+  test_execute_one_contract test_router_overnight_lock test_execute_lanes test_execute_lane_gate_foreground test_execute_land_and_progress test_execute_gate_repair test_final_wave_contracts \
   test_plan_brainstorm_lanes
