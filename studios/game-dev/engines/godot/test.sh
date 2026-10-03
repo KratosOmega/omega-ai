@@ -44,11 +44,11 @@ stamp="$(date +%Y%m%d-%H%M%S)"
 xml_rel=".studio/reports/test-$stamp.xml"
 log="$PROJECT/.studio/reports/test-$stamp.log"
 
-# A project the editor has never opened has no .godot/ (and so no
-# global_script_class_cache.cfg); import once so class_name lookups resolve.
-if [ ! -d "$PROJECT/.godot" ]; then
-  "$GODOT" --headless --path "$PROJECT" --import >>"$log" 2>&1 || true
-fi
+# An absent or incomplete import cache (a fresh worktree, a killed import, a
+# branch that adds assets) is imported first; one the import cannot complete
+# stops here rather than failing minutes into the suite (import.sh).
+. "$HERE/import.sh"
+ensure_import "$GODOT" "$PROJECT" "$log" studio-test || exit 1
 
 "$GODOT" --headless --path "$PROJECT" -s addons/gut/gut_cmdln.gd \
   "$@" -gexit "-gjunit_xml_file=res://$xml_rel" >> "$log" 2>&1
