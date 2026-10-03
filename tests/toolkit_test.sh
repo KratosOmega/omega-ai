@@ -19,15 +19,30 @@ trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/stub"
 cat > "$TMP/stub/godot" <<'STUB'
 #!/bin/sh
-proj="."; xml=""; want=0
+proj="."; xml=""; want=0; import=0
 printf 'stub godot args: %s\n' "$*"
 for a in "$@"; do
   if [ "$want" = 1 ]; then proj="$a"; want=0; continue; fi
   case "$a" in
     --path) want=1 ;;
+    --import) import=1 ;;
     -gjunit_xml_file=res://*) xml="${a#-gjunit_xml_file=res://}" ;;
   esac
 done
+# --import: .godot/ always appears; unless STUB_IMPORT=partial (killed early) or
+# STUB_IMPORT=fail (exits 1), every dest_files product and the class cache are written.
+# An import run ends there: it runs no tests, so STUB_FAILS does not apply to it.
+if [ "$import" = 1 ]; then
+  mkdir -p "$proj/.godot/imported"
+  [ "${STUB_IMPORT:-}" = fail ] && exit 1
+  if [ "${STUB_IMPORT:-}" != partial ]; then
+    : > "$proj/.godot/global_script_class_cache.cfg"
+    find "$proj" -name '*.import' -not -path '*/.godot/*' | while read -r f; do
+      sed -n 's/^dest_files=\["res:\/\/\(.*\)"\]$/\1/p' "$f" | while read -r d; do : > "$proj/$d"; done
+    done
+  fi
+  exit 0
+fi
 if [ -n "$xml" ]; then
   fails="${STUB_FAILS:-0}"
   mkdir -p "$(dirname "$proj/$xml")"
@@ -74,6 +89,7 @@ verb() {
   status=0
   ( cd "$_dir" && OMEGA_STUDIO_ROOT="$STUDIO" GODOT_PATH="$GODOT_STUB" \
       STUB_FAILS="${STUB_FAILS:-0}" STUB_SCRIPT_ERROR="${STUB_SCRIPT_ERROR:-0}" STUB_SLEEP="${STUB_SLEEP:-0}" \
+      STUB_IMPORT="${STUB_IMPORT:-}" \
       sh "$BIN/$_name" "$@" ) > "$TMP/out" 2>&1 || status=$?
   printf '%s\n' "$status" > "$TMP/status"
 }
@@ -222,6 +238,130 @@ test_test_imports_when_dot_godot_is_absent() {
   assert_not_contains "$log" "\-\-import" "a project with .godot/ is not imported again"
 }
 
+# with_asset DIR NAME — an imported asset: art/NAME, and art/NAME.import naming one product.
+with_asset() {
+  mkdir -p "$1/art"
+  : > "$1/art/$2"
+  printf '[remap]\n\nimporter="texture"\n\n[deps]\n\nsource_file="res://art/%s"\ndest_files=["res://.godot/imported/%s-0a1b.ctex"]\n' "$2" "$2" > "$1/art/$2.import"
+}
+
+test_test_reimports_a_partial_cache() {
+  P="$(fresh_project partial)"
+  with_gut "$P"
+  with_asset "$P" hero.png
+  mkdir -p "$P/.godot/imported"   # what a killed import leaves: the directory, no products
+  verb "$P" studio-test
+  assert_eq "0" "$(cat "$TMP/status")" "a cache missing products is re-imported, then the suite runs"
+  assert_contains "$TMP/out" "^studio-test: import cache incomplete (1 missing) — importing" "the re-import is announced with the missing count"
+  assert_file "$P/.godot/imported/hero.png-0a1b.ctex" "the missing product is imported"
+  log="$(ls "$P"/.studio/reports/test-*.log | head -n 1)"
+  assert_contains "$log" "^stub godot args: --headless --path $P --import$" "the import runs before the suite"
+}
+
+test_test_skips_import_when_the_cache_is_complete() {
+  P="$(fresh_project complete)"
+  with_gut "$P"
+  with_asset "$P" hero.png
+  mkdir -p "$P/.godot/imported"
+  : > "$P/.godot/imported/hero.png-0a1b.ctex"
+  mkdir -p "$P/old"
+  printf '[deps]\n\nsource_file="res://old/gone.png"\ndest_files=["res://.godot/imported/gone.png-ffff.ctex"]\n' > "$P/old/gone.png.import"
+  verb "$P" studio-test
+  log="$(ls "$P"/.studio/reports/test-*.log | head -n 1)"
+  assert_not_contains "$log" "\-\-import" "every product present (an orphan .import with no source ignored): no import"
+  assert_not_contains "$TMP/out" "import cache incomplete" "and nothing is announced"
+}
+
+test_test_imports_when_the_class_cache_is_missing() {
+  P="$(fresh_project classcache)"
+  with_gut "$P"
+  mkdir -p "$P/.godot" "$P/scripts"
+  printf 'class_name Hero\nextends Node\n' > "$P/scripts/hero.gd"
+  verb "$P" studio-test
+  log="$(ls "$P"/.studio/reports/test-*.log | head -n 1)"
+  assert_contains "$log" "\-\-import" "a class_name script with no global_script_class_cache.cfg is imported"
+}
+
+test_test_fails_clearly_when_the_import_stays_incomplete() {
+  P="$(fresh_project stays-partial)"
+  with_gut "$P"
+  with_asset "$P" hero.png
+  STUB_IMPORT=partial verb "$P" studio-test
+  assert_eq "1" "$(cat "$TMP/status")" "an import that leaves products missing exits 1"
+  assert_contains "$TMP/out" "^studio-test: the asset import did not complete — 1 import product(s) still missing" "the message says the import is incomplete"
+  assert_contains "$TMP/out" "hero.png-0a1b.ctex" "and names a missing product"
+  log="$(ls "$P"/.studio/reports/test-*.log | head -n 1)"
+  assert_not_contains "$log" "gut_cmdln" "the suite is not run on a broken cache"
+  STUB_IMPORT=fail verb "$P" studio-test
+  assert_eq "1" "$(cat "$TMP/status")" "an import that exits non-zero exits 1"
+  assert_contains "$TMP/out" "^studio-test: the asset import did not complete (engine exit 1)" "the message carries the engine's exit"
+}
+
+test_slowest_reports_files_and_tests() {
+  P="$(fresh_project slowest)"
+  mkdir -p "$P/.studio/reports"
+  cat > "$P/.studio/reports/test-20260101-000000.xml" <<'XML'
+<testsuites name="GutTests" failures="0" tests="9" >
+  <testsuite name="tests/unit/test_old.gd" tests="1" time="99.0" >
+      <testcase name="test_old" status="pass" classname="tests/unit/test_old.gd" time="99.0" >
+      </testcase>
+  </testsuite>
+</testsuites>
+XML
+  cat > "$P/.studio/reports/test-20260102-000000.xml" <<'XML'
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="GutTests" failures="0" tests="5" >
+  <testsuite name="tests/unit/test_menu.gd" tests="2" failures="0" skipped="0" time="8.5" >
+      <testcase name="test_open" assertions="1" status="pass" classname="tests/unit/test_menu.gd" time="4.25" >
+      </testcase>
+      <testcase name="test_close" assertions="1" status="pass" classname="tests/unit/test_menu.gd" time="4.25" >
+      </testcase>
+  </testsuite>
+  <testsuite name="tests/unit/test_fast.gd" tests="2" failures="0" skipped="0" time="0.02" >
+      <testcase name="test_a" assertions="1" status="pass" classname="tests/unit/test_fast.gd" time="0.01" >
+      </testcase>
+      <testcase name="test_b" assertions="1" status="pass" classname="tests/unit/test_fast.gd" time="0.01" >
+      </testcase>
+  </testsuite>
+  <testsuite name="tests/unit/test_hoist.gd" tests="1" failures="0" skipped="0" time="6.0" >
+      <testcase name="test_lift" assertions="1" status="pass" classname="tests/unit/test_hoist.gd" time="6.0" >
+      </testcase>
+  </testsuite>
+</testsuites>
+XML
+  verb "$P" studio-test --slowest 2
+  assert_eq "0" "$(cat "$TMP/status")" "--slowest exits 0"
+  assert_contains "$TMP/out" "test-20260102-000000.xml — 5 tests in 3 files, 14.5 s" "the newest report is read and totalled"
+  assert_eq "tests/unit/test_menu.gd" "$(awk '/^slowest files/ { f = 1; next } f { print $NF; exit }' "$TMP/out")" "files are ranked by total time"
+  assert_contains "$TMP/out" "8.5 s *2 tests *4.25 s/test *tests/unit/test_menu.gd" "a file row has time, count and mean"
+  assert_eq "test_lift" "$(awk '/^slowest tests/ { f = 1; next } f { print $NF; exit }' "$TMP/out")" "tests are ranked by time"
+  assert_not_contains "$TMP/out" "test_fast.gd" "only N rows are shown"
+  assert_not_contains "$TMP/out" "test_old" "an older report is ignored"
+  assert_contains "$TMP/out" "^tests at 0.5 s or more: 3 of 5, 14.5 s (100% of the time)" "the slow-test share is summarised"
+}
+
+test_slowest_does_not_wait_for_the_gate() {
+  gate_proj slowest-gate
+  mkdir -p "$GP/.studio/reports" "$GP/.studio/gate.lock"
+  printf '<testsuites tests="1">\n<testsuite name="t.gd">\n<testcase name="test_x" classname="t.gd" time="1.0">\n</testcase>\n</testsuite>\n</testsuites>\n' > "$GP/.studio/reports/test-20260101-000000.xml"
+  sleep 30 & holder=$!
+  echo "$holder" > "$GP/.studio/gate.lock/pid"; echo studio-test > "$GP/.studio/gate.lock/who"
+  verb "$GP" studio-test --slowest
+  kill "$holder" 2>/dev/null; rm -rf "$GP/.studio/gate.lock"
+  assert_eq "0" "$(cat "$TMP/status")" "--slowest reads the report while a run holds the gate"
+  assert_not_contains "$TMP/out" "gate: waiting" "and never waits for the lock"
+}
+
+test_slowest_without_a_report_or_with_bad_n() {
+  P="$(fresh_project slowest-none)"
+  verb "$P" studio-test --slowest
+  assert_eq "1" "$(cat "$TMP/status")" "no report exits 1"
+  assert_contains "$TMP/out" "no JUnit report in .studio/reports" "and says to run studio-test first"
+  verb "$P" studio-test --slowest ten
+  assert_eq "1" "$(cat "$TMP/status")" "a non-numeric N exits 1"
+  assert_contains "$TMP/out" "usage: studio-test --slowest \[N\]" "and prints the usage"
+}
+
 test_run_clean() {
   P="$(fresh_project run-clean)"
   verb "$P" studio-run --seconds 1
@@ -286,6 +426,15 @@ test_run_imports_when_dot_godot_is_absent() {
   verb "$P" studio-run --seconds 1
   log="$(ls "$P"/.studio/reports/run-*.log | head -n 1)"
   assert_not_contains "$log" "\-\-import" "a project with .godot/ is not imported again"
+  P="$(fresh_project run-partial)"
+  with_asset "$P" hero.png
+  mkdir -p "$P/.godot/imported"
+  verb "$P" studio-run --seconds 1
+  assert_file "$P/.godot/imported/hero.png-0a1b.ctex" "studio-run re-imports a cache missing products"
+  rm -f "$P/.godot/imported/hero.png-0a1b.ctex"
+  STUB_IMPORT=partial verb "$P" studio-run --seconds 1
+  assert_eq "1" "$(cat "$TMP/status")" "studio-run stops on an import that stays incomplete"
+  assert_contains "$TMP/out" "^studio-run: the asset import did not complete" "with studio-run's own prefix"
 }
 
 # lint_stubs DIR — put recording stubs for gdlint and gdformat in DIR. Each
@@ -507,6 +656,9 @@ run_tests test_gate_no_overlap test_gate_status_and_held test_gate_stale_reclaim
   test_test_needs_a_project test_test_falls_back_to_studio_json test_test_exits_3_without_gut \
   test_test_exits_2_without_engine test_test_passes_and_reports test_test_reports_failures \
   test_test_targets_a_file test_test_targets_a_directory test_test_imports_when_dot_godot_is_absent \
+  test_test_reimports_a_partial_cache test_test_skips_import_when_the_cache_is_complete \
+  test_test_imports_when_the_class_cache_is_missing test_test_fails_clearly_when_the_import_stays_incomplete \
+  test_slowest_reports_files_and_tests test_slowest_does_not_wait_for_the_gate test_slowest_without_a_report_or_with_bad_n \
   test_run_clean test_run_detects_script_errors test_run_passes_scene_and_windowed \
   test_run_terminates_a_long_process test_run_rejects_bad_options \
   test_run_traps_signals_to_avoid_orphaning_the_child test_run_imports_when_dot_godot_is_absent \
