@@ -1,4 +1,9 @@
 #!/bin/sh
 # studio-test [PATH] — run the project's test suite through the engine adapter,
 # one run at a time per project (studio-gate).
+# studio-test --slowest [N] — the slowest files and tests of the last run's
+# report; it only reads a file, so it never waits for the gate.
+case "${1:-}" in
+  --slowest) shift; exec sh "$(dirname "$0")/studio-dispatch" slowest "$@" ;;
+esac
 exec sh "$(dirname "$0")/studio-gate" studio-test -- sh "$(dirname "$0")/studio-dispatch" test "$@"

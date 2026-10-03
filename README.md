@@ -92,8 +92,9 @@ The shim puts `studios/game-dev/bin/` on `PATH`. From a Godot project root:
 
 | Verb | Does | Exit codes |
 |---|---|---|
-| `studio-test [PATH]` | GUT headless; JUnit XML and log in `.studio/reports/` | 0 pass · 1 failures · 2 no Godot · 3 GUT missing |
-| `studio-run [--scene S] [--seconds N] [--windowed]` | Boots the project for N seconds and scans the log for script errors | 0 clean · 1 errors · 2 no Godot |
+| `studio-test [PATH]` | GUT headless with the project's `.gutconfig.json` (root or `tests/`), so its hooks run; JUnit XML and log in `.studio/reports/` | 0 pass · 1 failures, no tests run, crash, or a failed import · 2 no Godot · 3 GUT missing |
+| `studio-test --slowest [N]` | The N slowest files and tests of the last report (default 10); reads only, never waits for the gate | 0 · 1 no report, or a bad N |
+| `studio-run [--scene S] [--seconds N] [--windowed]` | Boots the project for N seconds and scans the log for script errors | 0 clean · 1 errors or a failed import · 2 no Godot |
 | `studio-lint [PATH]` | `gdlint` and `gdformat --check` when gdtoolkit is installed | 0 clean · 1 findings · 3 not installed |
 | `studio-state …` | Reads and writes `.studio/STATE.md` | 0 · 1 |
 | `studio-overnight start [<manifest>] \| status \| watch \| stop \| next` | Runs approved plans unattended, one fresh headless session per unit; see below | start: 0 done · 1 other ending · 2 refused |
@@ -102,6 +103,16 @@ The verbs never name Godot; `studios/game-dev/engines/godot/` does. Godot is
 found through `GODOT_PATH`, then `/Applications/Godot*.app`, then `godot` on
 `PATH`. GUT is installed per project with the `Install:` line in
 `engines/godot/GUIDE.md` (`studio-test` prints it when GUT is missing).
+
+Before the engine runs, `studio-test` and `studio-run` check the import cache:
+every `*.import` product and its `.md5` sidecar (outside directories Godot
+does not scan), and the script class cache. The check takes 2–3 s. A fresh
+worktree, an import cut off part way, or a branch that adds assets with their
+`.import` files is imported first (24–130 s for phoenix). An import that fails
+stops the run; one that succeeds but leaves products missing prints a warning
+naming them, and the run goes on. An asset added without its `.import` file
+is not detected. `studio-test` exits 1 when no tests ran. A Godot crash is
+reported with the script it was running, or as one at shutdown.
 
 ### Overnight runs
 

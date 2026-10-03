@@ -14,6 +14,27 @@ approval page in `artifacts/`.
 
 ## Log
 
+### 2026-10-03 — studio-test speed (#22)
+
+- The 75-minute phoenix suite was our bug. `test.sh` never passed `-gconfig`,
+  so phoenix's `tests/.gutconfig.json` hooks never ran under `studio-test`.
+  Those hooks keep the 7.9 MB humanoid rig loaded (KAN-919), pin the locale
+  and isolate Inventory leaks. Each actor-building test reparsed the rig, at
+  3–4 s a time. `studio-test` now passes the project's config: the full suite
+  went from 4,485 s to 847 s, with the hooks' isolation back.
+- The overnight `studio-test 472 1` was a segfault. A lane's first import was
+  cut off, and the old check (import only when `.godot/` is absent) ran the
+  suite on the half-built cache. `studio-test` and `studio-run` now check every
+  import product and its `.md5` sidecar, which Godot writes only after a file's
+  import finishes. They re-import, and stop only when the import itself fails;
+  products still missing after an import that succeeded are a warning. A crash
+  is reported with the script it was running, or as one at shutdown.
+- `studio-test --slowest [N]` reports where the suite's time goes.
+- Sharding is deferred: 4 shards were 2.9× faster with no swap, but phoenix has
+  an order-dependent test and a flaky one that only fail sharded. Tiers are
+  dropped: the fast tier was 51% of the full run. Numbers and verdicts:
+  `specs/2026-10-02-studio-test-speed-findings.md`.
+
 ### 2026-10-02 — Overnight lanes repair a red gate
 
 - In a lane, a story's finish runs the full gate once. A red gate used to
