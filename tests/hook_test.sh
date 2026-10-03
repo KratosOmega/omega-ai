@@ -428,8 +428,10 @@ test_autopilot_guard_denies_background_agent() {
   assert_contains "$TMP/ap.out" 'run_in_background: false' "the Agent reason says how to re-dispatch"
   autopilot 1 Agent '{"description":"T4","prompt":"do T4","run_in_background":true}'
   assert_denied "an Agent call with run_in_background true is denied"
+  autopilot 1 Task '{"description":"T4","prompt":"do T4","run_in_background":true}'
+  assert_denied "the older Task name with run_in_background true is denied"
   autopilot 1 Task '{"description":"T4","prompt":"do T4"}'
-  assert_denied "the older Task name is denied the same way"
+  assert_allowed "the older Task name with no field (a foreground default) is allowed"
 }
 
 test_autopilot_guard_allows_foreground_agent() {

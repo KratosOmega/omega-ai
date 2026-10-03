@@ -8,8 +8,9 @@
 # the gate it was running, and the unit ended with no progress (phoenix
 # mob-composer-parity, units 4-S3-T3 and 6-S3-T4, 2026-10-03). So, only
 # while OMEGA_AUTOPILOT is exactly 1, this denies:
-#   - an Agent (older name: Task) call whose run_in_background is not the
-#     literal false — the async default counts as background;
+#   - an Agent call whose run_in_background is not the literal false — the
+#     async default counts as background; under the older name Task (a
+#     foreground default), only run_in_background true;
 #   - a Bash call with run_in_background true;
 #   - any Monitor call (its events arrive only after the turn ends).
 # A deny hands the reason back to the model, which re-issues the call.
@@ -47,6 +48,9 @@ deny() {
 case "${tool:-}" in
   Agent|Task)
     [ "${bg:-}" = false ] && exit 0
+    # Task is the older name, whose dispatch ran in the foreground unless
+    # asked otherwise: deny it only when it asks for the background.
+    [ "${tool:-}" = Task ] && [ "${bg:-}" != true ] && exit 0
     deny "game-dev autopilot: this headless -p unit ends when its turn ends, and a background subagent is killed with it. Re-dispatch with run_in_background: false and wait for the report in this turn (several foreground dispatches in one message still run in parallel)." ;;
   Bash)
     [ "${bg:-}" = true ] || exit 0
