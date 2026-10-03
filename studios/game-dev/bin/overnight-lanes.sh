@@ -250,7 +250,8 @@ lanes_dry_run() {
 # so a reader never sees half a line. Only the lane holding ID writes it,
 # plus the parent before the lanes start and in its sweep.
 story_write() {
-  printf '%s\n' "$2" > "$RUN_DIR/stories/.$1.tmp" && mv -f "$RUN_DIR/stories/.$1.tmp" "$RUN_DIR/stories/$1"
+  printf '%s\n' "$2" > "$RUN_DIR/stories/.$1.tmp" && mv -f "$RUN_DIR/stories/.$1.tmp" "$RUN_DIR/stories/$1" \
+    && state_event "$1" "$2"
 }
 # story_get ID — the story's record line (empty when none).
 story_get() { cat "$RUN_DIR/stories/$1" 2>/dev/null; }
@@ -1049,6 +1050,7 @@ lanes_report() {
     printf '\n## Cleanup\n\nRun this after the final PR is landed; the run itself never deletes a remote branch.\n\n'
     printf 'cd %s && git push origin --delete %s\n' "$(sq "$START_DIR")" "$_r_del"
   } > "$RUN_DIR/report.md"
+  run_event run_ended "ending=$1" "report=$RUN_DIR/report.md"
 }
 # lanes_finish ENDING — report; RECORD/done on `done` (removed on any other
 # ending); unlock; exit 0 only for done.
@@ -1102,6 +1104,7 @@ lanes_live_lanes() {
 lanes_reap() {
   LR_LIVE="$(lanes_live_lanes)"
   [ -z "$LR_LIVE" ] || return 1
+  EV_ON=1
   SWEEP_WHY="stopped: runner gone"
   lanes_sweep
   SWEEP_WHY=""
@@ -1531,6 +1534,12 @@ lanes_run() {
   _nch="$(wc -l < "$CHAINS" | tr -d ' ')"
   _L="$_nch"
   [ "$MAX_LANES" -eq 0 ] || [ "$MAX_LANES" -ge "$_nch" ] || _L="$MAX_LANES"
+  run_event run_started "mode=$MF_MODE" "max_lanes:=$_L" "hold_minutes:=$HOLD_MINUTES"
+  for _id in $(awk -F'\t' '!seen[$1]++ { print $1 }' "$MF_ROWS"); do
+    run_event story_listed "story=$_id" "chain:=$(chain_of "$_id")" "depends[]=$(row_field "$_id" deps)"
+  done
+  EV_ON=1
+  for _id in $(awk -F'\t' '!seen[$1]++ { print $1 }' "$MF_ROWS"); do state_event "$_id" "$(story_get "$_id")"; done
   _k=1
   while [ "$_k" -le "$_L" ]; do
     ( lane_main "$_k" ) &

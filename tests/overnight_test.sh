@@ -31,6 +31,7 @@ echo "$$" > "$CALLS/$n.pid"
 date +%s > "$CALLS/$n.t0"
 for a in "$@"; do printf '%s\n' "$a"; done > "$CALLS/$n.argv"
 pwd -P > "$CALLS/$n.pwd"
+printf '%s %s\n' "${STUDIO_UNIT_TAG:-unset}" "${STUDIO_RUN_DIR:-unset}" > "$CALLS/$n.chan"
 printf '%s\n' "${OMEGA_AUTOPILOT:-unset}" > "$CALLS/$n.env"
 root="$(sh "$STUB_STATE_BIN" root)"
 cp "$root/.studio/overnight.lock" "$CALLS/$n.lock" 2>/dev/null
@@ -72,6 +73,8 @@ printf '#!/bin/sh\nexit "${GH_STATUS:-0}"\n' > "$FAKE/gh"
 printf '#!/bin/sh\nprintf "%%s\\n" "$*" > "$CALLS/caffeinate.args"\necho "$$" > "$CALLS/caffeinate.pid"\nwhile kill -0 "$3" 2>/dev/null; do sleep 1; done\n' > "$FAKE/caffeinate"
 chmod +x "$FAKE"/*
 export PATH="$FAKE:$PATH" STUB_STATE_BIN="$STATE_BIN"
+# The suites test today's endings: hold_minutes 0 (spec milestone gate 1).
+STUDIO_OVERNIGHT_HOLD_MINUTES=0; export STUDIO_OVERNIGHT_HOLD_MINUTES
 
 # fixture NAME [CONFIG_JSON] — a committed project at stage plan with an
 # approved spec and plan (with ## Decisions); fresh $CALLS and scenario.
@@ -528,6 +531,8 @@ test_overnight_no_inhibitor() {
   ( cd "$P" && PATH="$TMP/minbin" sh "$RUNNER" start ) > "$TMP/rs.out" 2> "$TMP/rs.err" || RS_STATUS=$?
   assert_eq 0 "$RS_STATUS" "the run continues without a sleep inhibitor"
   assert_contains "$TMP/rs.err" "no sleep inhibitor" "one warning names the missing inhibitor"
+  assert_contains "$(last_run_dir)/events.jsonl" '"event":"run_ended","ending":"done"' "studio-event runs under the minimal PATH"
+  assert_not_contains "$TMP/rs.err" "events.jsonl" "no event write failed"
 }
 
 test_overnight_report_done() {
@@ -666,6 +671,50 @@ test_overnight_run_usd_default_uncapped() {
   assert_eq 0 "$RS_STATUS" "run_usd 0 caps nothing: an \$801 run ends done"
 }
 
+test_overnight_hold_config_refused() {
+  fixture hcf '{"overnight": {"hold_minutes": 1441}}'; refuse_case "hold_minutes 1441" "hold_minutes"
+  fixture hcf '{"overnight": {"directive_chars": 499}}'; refuse_case "directive_chars 499" "directive_chars"
+  for bad in abc 1441 -1 1.5; do
+    fixture "hcm$bad"; STUDIO_OVERNIGHT_HOLD_MINUTES="$bad"
+    refuse_case "STUDIO_OVERNIGHT_HOLD_MINUTES=$bad" "STUDIO_OVERNIGHT_HOLD_MINUTES"
+  done
+  STUDIO_OVERNIGHT_HOLD_MINUTES=0
+  fixture hcs; STUDIO_OVERNIGHT_HOLD_SECONDS=1.5; export STUDIO_OVERNIGHT_HOLD_SECONDS
+  refuse_case "STUDIO_OVERNIGHT_HOLD_SECONDS=1.5" "STUDIO_OVERNIGHT_HOLD_SECONDS"
+  unset STUDIO_OVERNIGHT_HOLD_SECONDS
+}
+test_overnight_channel_file() {
+  fixture chf; done_scenario; run_start
+  assert_eq "hold_minutes=0|directive_chars=4000" "$(tr '\n' '|' < "$(last_run_dir)/channel" | sed 's/|$//')" "channel: the effective hold_minutes and the default cap"
+  fixture chf2 '{"overnight": {"directive_chars": 800, "hold_minutes": 30}}'; done_scenario; run_start
+  assert_contains "$(last_run_dir)/channel" "^directive_chars=800$" "the configured cap"
+  assert_contains "$(last_run_dir)/channel" "^hold_minutes=0$" "the test override wins over config"
+}
+test_overnight_unit_env() {
+  fixture uenv; done_scenario; run_start
+  _r="$(last_run_dir)"
+  assert_eq "$(basename "$_r")-0-1-T1 $_r" "$(cat "$CALLS/1.chan")" "a unit gets STUDIO_UNIT_TAG and STUDIO_RUN_DIR"
+  fixture uenv2; run_start --dry-run
+  assert_not_contains "$RS_OUT" "STUDIO_RUN_DIR" "the dry-run launch line is unchanged"
+}
+test_overnight_events_two_units() {
+  fixture ev2
+  scenario "stage execute; task 1/1; ledger T1 complete; cost 2" \
+           "ledger final review done; ledger shipped https://github.com/o/r/pull/9; stage idle; task -; cost 1"
+  run_start
+  E="$(last_run_dir)/events.jsonl"; B="$(basename "$(last_run_dir)")"
+  assert_eq "run_started story_listed story_state unit_started unit_ended unit_started unit_ended run_ended" \
+    "$(sed -n 's/.*"event":"\([a-z_]*\)".*/\1/p' "$E" | tr '\n' ' ' | sed 's/ $//')" "the events, in order"
+  assert_eq 8 "$(grep -c "^{\"v\":1,\"ts\":\"[0-9-]*T[0-9:]*Z\",\"run\":\"$B\",\"event\":" "$E")" "every line: v, ts, run"
+  assert_contains "$E" '"event":"run_started","mode":"single","max_lanes":1,"hold_minutes":0}$' "run_started"
+  assert_contains "$E" '"event":"story_listed","story":"-","chain":1,"depends":\[\]}$' "one story_listed: -"
+  assert_contains "$E" '"event":"story_state","story":"-","state":"running"}$' "running"
+  assert_contains "$E" "\"event\":\"unit_started\",\"story\":\"-\",\"unit\":\"$B-0-1-T1\",\"label\":\"T1\",\"model\":\"sonnet\"}\$" "unit_started"
+  assert_contains "$E" "\"event\":\"unit_ended\",\"story\":\"-\",\"unit\":\"$B-0-1-T1\",\"label\":\"T1\",\"outcome\":\"progress\",\"usd\":2}\$" "unit_ended: progress, usd"
+  assert_contains "$E" '"label":"final-review","outcome":"done","usd":1}$' "the second unit ends done"
+  assert_contains "$E" "\"event\":\"run_ended\",\"ending\":\"done\",\"report\":\"$(last_run_dir)/report.md\"}\$" "run_ended names the report"
+}
+
 run_tests test_overnight_report_done test_overnight_report_not_done \
   test_overnight_report_anchors test_overnight_resume_quote test_overnight_label_t1 \
   test_overnight_session_seconds_refused test_overnight_claim_without_run_dir \
@@ -685,4 +734,6 @@ run_tests test_overnight_report_done test_overnight_report_not_done \
   test_overnight_overhead test_overnight_unknown_label_stops \
   test_overnight_models_by_unit test_overnight_config_refusals_v2 \
   test_overnight_default_branch_required test_overnight_deny_merge_basename \
-  test_overnight_run_usd_default_uncapped
+  test_overnight_run_usd_default_uncapped \
+  test_overnight_hold_config_refused test_overnight_channel_file test_overnight_unit_env \
+  test_overnight_events_two_units

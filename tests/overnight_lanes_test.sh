@@ -396,6 +396,8 @@ export PATH STUB_STATE_BIN
 # Default for later tasks: the final step's full gate is `true` (T11); a test
 # that needs another gate exports its own and restores this afterwards.
 STUDIO_OVERNIGHT_GATE_CMD=true; export STUDIO_OVERNIGHT_GATE_CMD
+# The suites test today's endings: hold_minutes 0 (spec milestone gate 1).
+STUDIO_OVERNIGHT_HOLD_MINUTES=0; export STUDIO_OVERNIGHT_HOLD_MINUTES
 
 # calls — the stub session counter (0 when none ran).
 calls() { cat "$CALLS/count" 2>/dev/null || echo 0; }
@@ -2060,6 +2062,27 @@ test_lanes_gate_room_warning() {
   assert_not_contains "$LS_ERR" "warning: the slowest" "a 10-minute gate fits 90 minutes"
 }
 
+test_lanes_story_listed_events() {
+  lanes_fixture evl integration A:- B:A C:-
+  run_lanes start "$MFP"
+  E="$(last_lanes_dir)/events.jsonl"
+  assert_eq run_started "$(sed -n '1s/.*"event":"\([a-z_]*\)".*/\1/p' "$E")" "run_started is the first line"
+  assert_contains "$E" '"event":"run_started","mode":"integration","max_lanes":2,"hold_minutes":0}$' "mode, lanes started, hold_minutes"
+  assert_eq "story_listed story_listed story_listed" "$(sed -n '2,4s/.*"event":"\([a-z_]*\)".*/\1/p' "$E" | tr '\n' ' ' | sed 's/ $//')" "every story_listed right after run_started"
+  assert_contains "$E" '"story":"A","chain":1,"depends":\[\]}$' "A: chain 1, no dependencies"
+  assert_contains "$E" '"story":"B","chain":1,"depends":\["A"\]}$' "B: in A's chain, depends on A"
+  assert_contains "$E" '"story":"C","chain":2,"depends":\[\]}$' "C: chain 2"
+  for id in A B C; do
+    assert_contains "$E" "\"event\":\"story_state\",\"story\":\"$id\",\"state\":\"landed\"}\$" "$id landed"
+  done
+  assert_eq run_ended "$(sed -n '$s/.*"event":"\([a-z_]*\)".*/\1/p' "$E")" "run_ended is the last line"
+}
+test_lanes_unit_env_run_dir() {
+  lanes_fixture uenvl integration A:-
+  run_lanes start "$MFP"
+  assert_contains "$CALLS/1.fullenv" "^STUDIO_RUN_DIR=$(last_lanes_dir)$" "a lane unit gets STUDIO_RUN_DIR"
+}
+
 # Last: no process any test started is still alive.
 test_lanes_no_orphans() {
   _left="$(pgrep -f "$TMP" 2>/dev/null; pgrep -f "$RUNNER" 2>/dev/null)"
@@ -2092,4 +2115,4 @@ run_tests test_lanes_chain_rule test_lanes_manifest_refusals test_lanes_prefligh
   test_lanes_detach_timeout_lock_held_points_at_status test_lanes_detach_timeout_no_lock_ends_child \
   test_lanes_help_modes test_lanes_left_gate_reaped test_lanes_timed_out_outcome test_lanes_heartbeat \
   test_lanes_activity_verb test_lanes_status_anywhere test_lanes_status_ended_partial test_lanes_watch \
-  test_lanes_gate_room_warning test_lanes_no_orphans
+  test_lanes_gate_room_warning test_lanes_story_listed_events test_lanes_unit_env_run_dir test_lanes_no_orphans

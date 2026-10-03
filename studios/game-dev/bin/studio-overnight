@@ -57,6 +57,27 @@ cfg() {
   eval "$(printf '%s' "$1" | tr 'a-z' 'A-Z')=\$_v"
 }
 
+# hold_overrides — R26: STUDIO_OVERNIGHT_HOLD_MINUTES (0-1440) replaces
+# hold_minutes; STUDIO_OVERNIGHT_HOLD_SECONDS (whole seconds) replaces only
+# the deadline's length. Sets HOLD_MINUTES (normalized: awk reads 010 as 10),
+# HOLD_ON (1 iff HOLD_MINUTES > 0) and HOLD_SECS. A bad value is a refusal.
+hold_overrides() {
+  _ho_m="${STUDIO_OVERNIGHT_HOLD_MINUTES:-}"
+  if [ -n "$_ho_m" ]; then
+    case "$_ho_m" in
+      *[!0-9]*) refuse "STUDIO_OVERNIGHT_HOLD_MINUTES must be a whole number from 0 to 1440, got $_ho_m" ;;
+      *) if awk -v v="$_ho_m" 'BEGIN { exit !(v <= 1440) }'; then HOLD_MINUTES="$_ho_m"
+         else refuse "STUDIO_OVERNIGHT_HOLD_MINUTES must be a whole number from 0 to 1440, got $_ho_m"; fi ;;
+    esac
+  fi
+  case "${STUDIO_OVERNIGHT_HOLD_SECONDS:-}" in
+    *[!0-9]*) refuse "STUDIO_OVERNIGHT_HOLD_SECONDS must be a whole number of seconds, got $STUDIO_OVERNIGHT_HOLD_SECONDS" ;;
+  esac
+  HOLD_MINUTES="$(awk -v v="${HOLD_MINUTES:-0}" 'BEGIN { print v + 0 }')"
+  HOLD_ON=0; [ "$HOLD_MINUTES" -eq 0 ] || HOLD_ON=1
+  HOLD_SECS="$(awk -v s="${STUDIO_OVERNIGHT_HOLD_SECONDS:-}" -v m="$HOLD_MINUTES" 'BEGIN { print (s != "") ? s + 0 : m * 60 }')"
+}
+
 # cfg_str KEY DEFAULT REGEX — the quoted string value of "KEY" (first match
 # anywhere in config.json); DEFAULT when absent. A value not matching REGEX is
 # a refusal naming the key. Sets the variable named by KEY's upper case.
@@ -336,6 +357,9 @@ preflight() {
   gate_room_check
   cfg retries 1 0 3 int
   cfg gate_repairs 2 0 3 int
+  cfg hold_minutes 480 0 1440 int
+  cfg directive_chars 4000 500 16000 int
+  hold_overrides
   cfg kill_grace_seconds 30 5 120 int
   GRACE="${KILL_GRACE_SECONDS:-30}"
   if lock_live; then
@@ -413,6 +437,28 @@ cost_of() {
 spent_all() { spent; }
 stop_requested() { [ -f "$STOP_FILE" ] || [ "$STOP_REQ" = 1 ]; }
 spent() { awk -F'\t' '$4 != "unknown" { s += $4 } END { printf "%.2f\n", s + 0 }' "$RUN_DIR/units.tsv" 2>/dev/null || echo 0.00; }
+
+# ---- The event log (spec AC28-29; docs/game-dev/overnight-events.md) ----
+# run_event EVENT FIELD… — one line in RUN_DIR/events.jsonl (studio-event);
+# a failure is a stderr note, never fatal.
+run_event() { sh "$SELF_DIR/studio-event" "$RUN_DIR" "$@" || say "events.jsonl: $1 not written"; }
+# state_event ID RECORD — a story_state event for record line RECORD (R17):
+# state is its first word (a trailing ':' dropped); why for held, stopped
+# and skipped; until for held. Nothing until EV_ON=1.
+state_event() {
+  [ "${EV_ON:-0}" = 1 ] || return 0
+  _se_r="$2"; _se_s="${_se_r%% *}"; _se_s="${_se_s%:}"; _se_w=""; _se_u=""
+  case "$_se_r" in
+    "held "*) _se_w="${_se_r#held }"; _se_u="${_se_w##* until }"; _se_w="${_se_w% until *}" ;;
+    stopped:*|skipped:*) _se_w="${_se_r#*: }" ;;
+    "stopped "*|"skipped "*) _se_w="${_se_r#* }" ;;
+  esac
+  if [ "$_se_s" = held ]; then run_event story_state "story=$1" state=held "why=$_se_w" "until=$_se_u"
+  elif [ -n "$_se_w" ]; then run_event story_state "story=$1" "state=$_se_s" "why=$_se_w"
+  else run_event story_state "story=$1" "state=$_se_s"; fi
+}
+# iso_utc EPOCH — EPOCH as YYYY-MM-DDTHH:MM:SSZ (GNU date -d, else BSD -r).
+iso_utc() { date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -r "$1" +%Y-%m-%dT%H:%M:%SZ; }
 
 # ---- What a unit is doing: activity, elapsed time, heartbeat ----
 
@@ -601,7 +647,8 @@ reg_end() {
 start_session() {
   set -m 2>/dev/null || true   # own process group: a terminal Ctrl-C reaches only the runner (D6; a lane subshell too, D1c)
   ( cd "${UNIT_CWD:-$START_DIR}" && unset STUDIO_GATE_HELD && eval "export ${LAUNCH_ENV:-OMEGA_AUTOPILOT=1}" \
-      && STUDIO_UNIT_TAG="$UNIT_TAG" && export STUDIO_UNIT_TAG && exec claude-gd -p "$@" ) \
+      && STUDIO_UNIT_TAG="$UNIT_TAG" && export STUDIO_UNIT_TAG \
+      && STUDIO_RUN_DIR="$RUN_DIR" && export STUDIO_RUN_DIR && exec claude-gd -p "$@" ) \
     > "$UNIT_DIR/$UNIT_STEM.jsonl" 2> "$UNIT_DIR/$UNIT_STEM.err" < /dev/null &
   CPID=$!
   set +m 2>/dev/null || true
@@ -618,6 +665,7 @@ run_unit() {
   UNIT_TAG="$(printf '%s' "$(basename "$RUN_DIR")-${LANE_K:-0}-$UNIT_STEM" | tr -c 'A-Za-z0-9._-' '_')"
   [ -z "${LDIR:-}" ] || printf '%s\n' "$UNIT_TAG" > "$LDIR/utag"
   model_for "$2"
+  run_event unit_started "story=${CUR_ID:--}" "unit=$UNIT_TAG" "label=$2" "model=$UNIT_MODEL"
   _t0="$(date +%s)"
   printf '%s %s\n' "$_t0" "$UNIT_STEM" > "$UNIT_DIR/unit.now"
   say "${CUR_ID:+$CUR_ID }$2 · started${LANE_K:+ (lane $LANE_K)}"
@@ -664,6 +712,7 @@ row() {  # row N LABEL OUTCOME — the label column is ID-LABEL when CUR_ID is s
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$1" "${CUR_ID:+$CUR_ID-}$2" "$UNIT_EXIT" "$UNIT_COST" "$UNIT_MIN" "$UNIT_TIMED_OUT" "$3" \
     >> "$UNIT_DIR/units.tsv" || { say "cannot write $UNIT_DIR/units.tsv"; exit 3; }
   say "${CUR_ID:+$CUR_ID }$2 · ended: $3 · exit $UNIT_EXIT · $UNIT_MIN min${UNIT_REAPED:+ · a left-behind gate was ended}"
+  run_event unit_ended "story=${CUR_ID:--}" "unit=$UNIT_TAG" "label=$2" "outcome=$3" "usd:=$UNIT_COST"
 }
 # unit_outcome — a unit that changed nothing: `timed out` when the session
 # cap ended it (UNIT_TIMED_OUT), else `noprog`.
@@ -695,6 +744,8 @@ write_report() {
       printf '\n## Resume\n\ncd %s && %s start\n' "$(sq "$START_DIR")" "$(sq "$SELF_ABS")"
     fi
   } > "$RUN_DIR/report.md"
+  [ "$1" = done ] || state_event - "stopped $1"
+  run_event run_ended "ending=$1" "report=$RUN_DIR/report.md"
 }
 unlock() {
   [ -z "${INHIB_PID:-}" ] || kill "$INHIB_PID" 2>/dev/null
@@ -888,6 +939,9 @@ cmd_start() {
   trap 'STOP_REQ=1' INT TERM
   trap 'HUP_REQ=1; exit 129' HUP
   run_setup
+  run_event run_started mode=single max_lanes:=1 "hold_minutes:=$HOLD_MINUTES"
+  run_event story_listed story=- chain:=1 'depends[]='
+  EV_ON=1; state_event - running
   UNIT_DIR="$RUN_DIR"; UNIT_PREFIX=""; CUR_ID=""; n=0
   story_units
   finish_run "$ENDING"
@@ -926,6 +980,8 @@ acquire_run_lock() {
 # run_setup — once the lock and traps are in place: the sleep inhibitor, the
 # reports dir's .gitignore, and the lock and stop files kept out of git.
 run_setup() {
+  printf 'hold_minutes=%s\ndirective_chars=%s\n' "$HOLD_MINUTES" "$DIRECTIVE_CHARS" > "$RUN_DIR/channel" \
+    || say "cannot write $RUN_DIR/channel — the operator verbs will refuse this run"
   INHIB_PID=""
   case "$(uname -s)" in
     Darwin)
