@@ -523,7 +523,8 @@ gate_log_of() {
 # ENDING set: the halt reason; `stop: run budget` (story_units' rule, before
 # any launch); `stop: <reason>` for a new Stop: line (the unit's own `gate
 # repair red` is a hard stop); `gate repair made no progress`; or `gate
-# repair timed out (session_minutes N)`.
+# repair timed out (session_minutes N)` — the halt reason instead when the
+# lane must stop.
 gate_repair() {
   if lane_halt; then ENDING="$(lane_halt_reason)"; return 1; fi
   if run_budget_out; then ENDING="stop: run budget"; return 1; fi
@@ -542,6 +543,8 @@ gate_repair() {
   if [ "$_gr_a" -gt "$_gr_b" ]; then row "$n" gate-repair progress; story_write "$1" running; return 0; fi
   if [ "$(unit_outcome)" = noprog ]; then row "$n" gate-repair noprog; ENDING="gate repair made no progress"
   else row "$n" gate-repair "timed out"; ENDING="gate repair timed out (session_minutes $SESSION_MINUTES)"; fi
+  # A halt that ended the unit (or arrived while it ran) names the story's end.
+  ! lane_halt || ENDING="$(lane_halt_reason)"
   return 1
 }
 

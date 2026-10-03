@@ -556,6 +556,17 @@ test_execute_gate_repair() {
   assert_contains "$E" 'Gate-enforced findings are must-fix' "§5's brief makes gate-enforced findings must-fix"
   assert_contains "$E" 'is never ruled `leave`, deferred or parked' "they are never left or deferred"
   assert_contains "$E" 'running that test file: `studio-test <path>`' "§5 runs the test before accepting an out-of-scope claim"
+  assert_contains "$E" 'Up to three rounds, a round' "§11 counts rounds, not single runs"
+  # The runner starts both repair units in the start checkout, and the Stop
+  # and shipped lines they check are in the feature ledger: enter, then check.
+  for _sec in '## 9\.' '## 11\.'; do
+    assert_eq "enter-first" "$(awk -v s="^$_sec" '
+      $0 ~ s { in_s = 1; next } in_s && /^## / { in_s = 0 }
+      in_s && /^- \*\*Enter the feature checkout\*\*/ && !e { e = NR }
+      in_s && /^- \*\*Preconditions:\*\*/ && !p { p = NR }
+      END { print (e && p && e < p) ? "enter-first" : "check-first" }' "$E")" "$_sec enters the feature checkout before its preconditions"
+  done
+  assert_not_contains "$E" '`/game-dev:execute --land`, in the story.s worktree' "§9 names the checkout the runner starts it in"
 }
 
 test_plan_brainstorm_lanes() {

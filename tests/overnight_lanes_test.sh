@@ -1331,6 +1331,21 @@ test_lanes_gate_repair_model_and_no_log() {
   assert_contains "$CALLS/$n.env" "^STUDIO_REPAIR=gate:-$" "no studio-test log: gate:-"
   assert_contains "$(last_lanes_dir)/stories/A" "^landed " "the repaired story lands"
 }
+# A stop requested while the gate-repair unit runs: no fresh finish starts,
+# and the story ends with the halt's reason whether or not the repair landed.
+test_lanes_gate_repair_halt() {
+  for act in noop gaterepair; do
+    lanes_fixture "gatehalt-$act" integration A:-
+    printf 'auto\nauto\nstop gate red — studio-test: 1 failed\n' > "$SCEN/A"
+    printf 'sleep 3; %s\n' "$act" > "$SCEN/A.gate"
+    ( cd "$P" && exec sh "$RUNNER" start "$MFP" ) > /dev/null 2>&1 & RPID=$!
+    wait_for "[ -f '$CALLS/m-A.gate' ]" 60
+    ( cd "$P" && sh "$RUNNER" stop ) >/dev/null
+    wait_pid_or_fail "$RPID" 60 "the runner ends after stop"
+    assert_contains "$(last_lanes_dir)/stories/A" "^stopped stopped by user$" "$act repair, then a stop: the story ends stopped by user"
+    assert_eq 3 "$(cat "$CALLS/m-A" 2>/dev/null)" "$act repair, then a stop: no fresh finish"
+  done
+}
 test_lanes_gate_repair_budget() {
   LANES_CONFIG='{"overnight": {"run_usd": 30, "session_usd": 25}}'; export LANES_CONFIG
   lanes_fixture gatebudget integration A:-
@@ -2065,7 +2080,7 @@ run_tests test_lanes_chain_rule test_lanes_manifest_refusals test_lanes_prefligh
   test_lanes_land_crash_after_push test_lanes_land_lock_reclaim test_lanes_land_shipped_resume \
   test_lanes_gate_never_overlaps test_lanes_gate_repair_then_lands test_lanes_gate_repair_cap \
   test_lanes_gate_repair_same_stop_twice test_lanes_gate_repairs_zero test_lanes_gate_hard_stops_no_repair \
-  test_lanes_gate_repair_no_progress test_lanes_gate_repair_model_and_no_log test_lanes_gate_repair_budget \
+  test_lanes_gate_repair_no_progress test_lanes_gate_repair_model_and_no_log test_lanes_gate_repair_budget test_lanes_gate_repair_halt \
   test_lanes_final_step_once test_lanes_final_red_after_repair \
   test_lanes_final_repair_turns_green test_lanes_final_conflict test_lanes_final_resume_edits_pr \
   test_lanes_final_skipped_on_stop_or_nothing_landed test_lanes_final_gate_default test_lanes_direct_progress_landing \

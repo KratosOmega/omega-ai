@@ -652,14 +652,15 @@ runs exactly one unit, writes its state, commits, pushes, and ends the turn.
 ## 9. Landing repair (--land)
 
 The runner launches this unit when a landing conflicts or the merge command
-refuses: prompt `/game-dev:execute --land`, in the story's worktree, with
+refuses: prompt `/game-dev:execute --land`, from the start checkout, with
 `STUDIO_STORY`, `STUDIO_RUN`, `OMEGA_AUTOPILOT=1` and `STUDIO_REPAIR` set.
 It bypasses §0's stage gate: these preconditions replace it, and any miss is
 a `Stop:` line (§8's stop rule).
 
+- **Enter the feature checkout** through `studio-state worktree`, first:
+  the ledger the checks below read is the feature checkout's.
 - **Preconditions:** `stage idle`, a `shipped` line in the ledger, and
   `STUDIO_REPAIR` set.
-- **Enter the feature checkout** through `studio-state worktree`.
 - **Merge the target:** `git fetch origin`, then
   `git merge --no-edit origin/<Target>`. Merge, never rebase: the branch is
   already pushed and force-push is denied.
@@ -709,8 +710,9 @@ there is no plan to read.
 The runner launches this unit under a lane when a story's finish stopped on
 a red gate (`Stop: gate red — …`, §7's lane rules) and the story has gate
 repairs left (`overnight.gate_repairs`): prompt
-`/game-dev:execute --gate-repair`, from the start checkout, with
-`STUDIO_STORY`, `STUDIO_RUN`, `OMEGA_AUTOPILOT=1` and
+`/game-dev:execute --gate-repair`, from the start checkout, with the
+story's env (`STUDIO_STORY`, `STUDIO_RUN`, `STUDIO_DOCS_REV`,
+`OMEGA_AUTOPILOT=1`, `BASH_DEFAULT_TIMEOUT_MS`, `BASH_MAX_TIMEOUT_MS`) and
 `STUDIO_REPAIR=gate:<log>` set. `<log>` is the newest `studio-test` log of
 the feature checkout (`.studio/reports/test-<stamp>.log`), or `-` when there
 is none. It bypasses §0's stage gate: these preconditions replace it, and
@@ -720,10 +722,13 @@ A full gate can take most of a session, so this unit never runs it: it
 fixes, proves the fix on what failed, and records the repair. The runner
 then launches a fresh finish, which runs the full gate once (§7).
 
+- **Enter the feature checkout** through `studio-state worktree`, first:
+  the `Stop: gate red` line is in the feature checkout's ledger only, so
+  the checks below read it there. A miss before entering is §8's stop in
+  the start checkout.
 - **Preconditions:** `stage execute`, no `shipped` line in the feature
   ledger, its latest `Stop:` line is a `gate red` one, and `STUDIO_REPAIR`
   starts with `gate:`.
-- **Enter the feature checkout** through `studio-state worktree`.
 - **Read the failure:** the `Stop: gate red — <failing command and line>`
   line names the red command. For `studio-test`, read the failing tests'
   names and output from the log at `<log>`; when `<log>` is `-` or shows no
@@ -733,9 +738,10 @@ then launches a fresh finish, which runs the full gate once (§7).
 - **Verify what failed, not the whole gate:** `studio-test <path>` for each
   failing test file; `studio-lint` or `studio-run --seconds 10` when that was
   the red command. Each runs as a foreground Bash call with `timeout` set to
-  `$BASH_MAX_TIMEOUT_MS` (§7's lane rule). Up to three targeted runs; the
-  same fixer (or a fresh one given the new failing output) fixes between
-  runs. Exit codes keep §7's lane meaning: `studio-lint` exit 3 is not red;
+  `$BASH_MAX_TIMEOUT_MS` (§7's lane rule). Up to three rounds, a round
+  being one run of every failing file (or of the red command); the same
+  fixer (or a fresh one given the new failing output) fixes between
+  rounds. Exit codes keep §7's lane meaning: `studio-lint` exit 3 is not red;
   `studio-test` or `studio-run` exit 2 and `studio-test` exit 3 are hard
   stops that end the unit at once with
   `studio-state ledger "Stop: <the printed message>"`, committed.
@@ -743,7 +749,7 @@ then launches a fresh finish, which runs the full gate once (§7).
   ledger (`git add .studio/ledger && git commit -m "chore(studio): gate repair"`),
   then push the story branch. The runner reads that `Repair:` line and
   launches the fresh finish.
-- **Red after three runs:** `studio-state ledger "Stop: gate repair red — <failing line>"`,
+- **Red after three rounds:** `studio-state ledger "Stop: gate repair red — <failing line>"`,
   committed. It is a hard stop: the runner launches no further repair.
 - A git write whose stderr says `could not lock` or `cannot lock ref` is retried, as §0 and §7 do.
 - **Never ships, never lands:** no `shipped` line, no PR, no change to
