@@ -1,7 +1,7 @@
 # Overnight operator channel — Spec
 
 Date: 2026-10-03
-Status: Approved 2026-10-03 (revision 3: falsifier pass 1 C1–C2, I1–I7, M1–M11 and pass 2 N1–N6, N-m1–N-m10 folded in)
+Status: Approved 2026-10-03 (revision 4: falsifier pass 1 C1–C2, I1–I7, M1–M11 and pass 2 N1–N6, N-m1–N-m10 folded in; amendments A1–A3 from the approved #28 spec — `--run` pinning, `say … -- <text>`, stale inbox lock)
 Milestone: Plan 3 — Content (studio tooling; follows overnight lanes, #19, and gate repair, #23)
 Classification: architectural
 
@@ -55,10 +55,11 @@ n/a — studio tooling, no game loop.
 
 ## Player verbs
 
-- Added: `studio-overnight say <story> [--unit] '<text>'`, `said <story>`,
-  `unsay <story> <id>`, `hold <story>`, `resume <story>`, `stop <story>`.
-  All take an optional `--run <name>`. In single-plan mode `<story>` is `-`.
-  `stop` without a story is unchanged.
+- Added: `studio-overnight say <story> [--unit] '<text>'` (or
+  `say <story> [--unit] -- <text>`), `said <story>`, `unsay <story> <id>`,
+  `hold <story>`, `resume <story>`, `stop <story>`. All take an optional
+  `--run <run dir basename>` (AC4a). In single-plan mode `<story>` is `-`.
+  `stop` without a story ends the run as today, and also takes `--run`.
 - Changed: a stop rule holds the story (state `held`) instead of ending it,
   when `hold_minutes > 0` (the default, 480).
 - Added for tools: `events.jsonl` in the run dir.
@@ -121,7 +122,9 @@ Verbs
 1. `say <story> '<text>'` writes one message file into the run's inbox for
    that story, atomically (temp file, then `mv`), with the next id for the
    story and scope `story`; prints the id; exits 0. `--unit` gives scope
-   `unit`.
+   `unit`. The text may instead follow `--` (`say <story> [--unit] --
+   <text>`): every argument after `--` is text, joined with single spaces,
+   and never parsed as an option. Empty text exits 2.
 2. `unsay <story> <id>`: for a pending (not yet delivered) message, removes it
    from the inbox; for an active directive (ledgered) or a delivered message
    not yet recorded, queues a message of scope `retire` with `target: <id>`.
@@ -133,6 +136,12 @@ Verbs
    found; more than one live run is found outside a project and `--run` is
    absent; the story is not in the run; the story's record is an ending
    (`landed`, `stopped …`, `skipped …`). Bad usage exits 2.
+
+   4a. `--run <run dir basename>` may appear anywhere before `--`, on every
+   new verb and on bare `stop`. When given, the verb acts only on the live
+   run whose run dir has that basename (inside a project: only that
+   project's live run) and exits 1 with "run <name> is not live" otherwise;
+   it never falls back to another run.
 5. `say` exits 1 when the story's active, pending and delivered-not-recorded
    `story` text would exceed `directive_chars`; the message lists those
    directives with ids.
@@ -362,6 +371,11 @@ Ids are per story: one more than the highest id among the story's
 feature-ledger `Directive` lines and its inbox (pending and delivered),
 assigned under the inbox's `mkdir` lock. They stay unique across runs because
 the ledger carries them forward.
+
+The lock is stale when its directory's mtime is more than 10 seconds old. A
+verb waits at most 15 seconds for it; it breaks a stale lock by renaming it
+to a unique name and then removing that, so two waiters cannot both break
+it; on timeout it exits 1 with "inbox busy".
 
 ### Delivery block (what the session reads)
 
