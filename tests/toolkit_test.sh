@@ -234,6 +234,61 @@ test_test_targets_a_directory() {
   assert_contains "$log" "\-gdir=res://tests/integration" "a directory argument runs that directory"
 }
 
+# with_gutconfig DIR PATH [DIRS] — a GUT config at PATH with a pre-run hook; DIRS (a JSON
+# array) becomes its "dirs" entry, or the config names none.
+with_gutconfig() {
+  mkdir -p "$(dirname "$1/$2")"
+  {
+    printf '{\n'
+    [ -z "${3:-}" ] || printf '  "dirs": %s,\n' "$3"
+    printf '  "pre_run_script": "res://tests/helpers/pre_run.gd"\n}\n'
+  } > "$1/$2"
+}
+
+# last_log DIR — the newest test log in DIR's reports.
+last_log() { ls "$1"/.studio/reports/test-*.log | sort | tail -n 1; }
+
+test_test_passes_the_projects_gut_config() {
+  P="$(fresh_project gutconfig)"
+  with_gut "$P"
+  mkdir -p "$P/.godot" "$P/tests/unit"
+  : > "$P/tests/unit/test_dash.gd"
+  with_gutconfig "$P" tests/.gutconfig.json '["res://tests/unit"]'
+  verb "$P" studio-test
+  log="$(last_log "$P")"
+  assert_contains "$log" "\-gconfig=res://tests/.gutconfig.json" "a tests/.gutconfig.json is passed, so its hooks run"
+  assert_not_contains "$log" "\-gdir" "with no PATH the config's own dirs are the suite"
+  rm -rf "$P/.studio/reports"
+  verb "$P" studio-test tests/unit/test_dash.gd
+  log="$(last_log "$P")"
+  assert_contains "$log" "\-gconfig=res://tests/.gutconfig.json \-gdir= \-gtest=res://tests/unit/test_dash.gd" "a file target keeps the config and empties its dirs, so only that file runs"
+  rm -rf "$P/.studio/reports"
+  verb "$P" studio-test tests/unit
+  log="$(last_log "$P")"
+  assert_contains "$log" "\-gconfig=res://tests/.gutconfig.json \-gdir=res://tests/unit \-ginclude_subdirs" "a directory target keeps the config and replaces its dirs"
+}
+
+test_test_gut_config_lookup() {
+  P="$(fresh_project gutconfig-root)"
+  with_gut "$P"
+  mkdir -p "$P/.godot"
+  with_gutconfig "$P" .gutconfig.json '["res://tests/unit"]'
+  with_gutconfig "$P" tests/.gutconfig.json '["res://tests/other"]'
+  verb "$P" studio-test
+  assert_contains "$(last_log "$P")" "\-gconfig=res://.gutconfig.json" "GUT's default root config wins over tests/"
+  P="$(fresh_project gutconfig-nodirs)"
+  with_gut "$P"
+  mkdir -p "$P/.godot"
+  with_gutconfig "$P" tests/.gutconfig.json
+  verb "$P" studio-test
+  assert_contains "$(last_log "$P")" "\-gconfig=res://tests/.gutconfig.json \-gdir=res://tests \-ginclude_subdirs" "a config naming no dirs still runs res://tests"
+  P="$(fresh_project gutconfig-none)"
+  with_gut "$P"
+  mkdir -p "$P/.godot"
+  verb "$P" studio-test
+  assert_not_contains "$(last_log "$P")" "\-gconfig" "no config: none is passed"
+}
+
 test_test_imports_when_dot_godot_is_absent() {
   P="$(fresh_project import)"
   with_gut "$P"
@@ -702,6 +757,7 @@ run_tests test_gate_no_overlap test_gate_status_and_held test_gate_stale_reclaim
   test_test_targets_a_file test_test_targets_a_directory test_test_imports_when_dot_godot_is_absent \
   test_test_reimports_a_partial_cache test_test_skips_import_when_the_cache_is_complete \
   test_test_reimports_a_product_without_its_md5 test_test_names_a_crash \
+  test_test_passes_the_projects_gut_config test_test_gut_config_lookup \
   test_test_imports_when_the_class_cache_is_missing test_test_fails_clearly_when_the_import_stays_incomplete \
   test_slowest_reports_files_and_tests test_slowest_does_not_wait_for_the_gate test_slowest_without_a_report_or_with_bad_n \
   test_run_clean test_run_detects_script_errors test_run_passes_scene_and_windowed \

@@ -3,7 +3,9 @@
 # from the project root.
 #
 #   PATH   a test file (-gtest=res://PATH) or directory (-gdir=res://PATH);
-#          default res://tests, subdirectories included
+#          default the GUT config's dirs, else res://tests, subdirectories
+#          included. The project's .gutconfig.json (root or tests/) is always
+#          passed, so its hooks run.
 #
 # Exit: 0 all passed · 1 failures (or not a project) · 2 no Godot binary ·
 #       3 GUT not installed. Prints "studio-test: N passed, M failed", then
@@ -28,16 +30,32 @@ if [ ! -f "$PROJECT/addons/gut/gut_cmdln.gd" ]; then
   exit 3
 fi
 
+# The project's own GUT config: res://.gutconfig.json (GUT's default), else
+# res://tests/.gutconfig.json. It carries the project's pre/post-run hooks —
+# phoenix's pins its heavy resources for the run and watches for leaks —
+# so running without it is slower and less isolated, not just different.
+gutconfig=""
+for c in .gutconfig.json tests/.gutconfig.json; do
+  if [ -f "$PROJECT/$c" ]; then gutconfig="$c"; break; fi
+done
+
 # Target: a file becomes -gtest, a directory becomes -gdir. Paths are given
-# relative to the project root and turned into res:// paths.
-target="${1:-tests}"
+# relative to the project root and turned into res:// paths. Command-line
+# options win over the config's, and GUT runs the config's dirs as well as any
+# -gtest, so a targeted run empties dirs (-gdir=). With no PATH, the config's
+# own dirs are the suite when it names any.
+target="${1:-}"
 target="${target#./}"
 target="${target%/}"
-if [ -f "$PROJECT/$target" ]; then
+if [ -n "$target" ] && [ -f "$PROJECT/$target" ]; then
   set -- "-gtest=res://$target"
+  [ -z "$gutconfig" ] || set -- "-gdir=" "$@"
+elif [ -n "$target" ] || [ -z "$gutconfig" ] || ! grep -q '"dirs"' "$PROJECT/$gutconfig"; then
+  set -- "-gdir=res://${target:-tests}" "-ginclude_subdirs"
 else
-  set -- "-gdir=res://$target" "-ginclude_subdirs"
+  set --
 fi
+[ -z "$gutconfig" ] || set -- "-gconfig=res://$gutconfig" "$@"
 
 mkdir -p "$PROJECT/.studio/reports"
 stamp="$(date +%Y%m%d-%H%M%S)"
@@ -91,7 +109,8 @@ printf 'report: %s\nlog: %s\n' "$xml_rel" ".studio/reports/test-$stamp.log"
 # The report can be whole while the engine still failed (a crash at shutdown).
 if [ "$engine_status" -ne 0 ]; then
   crash_line
-  printf 'studio-test: Godot exited %s after writing the report\n' "$engine_status"
+  printf 'studio-test: Godot exited %s after writing the report%s\n' "$engine_status" \
+    "${gutconfig:+ (a post-run hook in $gutconfig can fail the run; see the log)}"
 fi
 
 [ "$failed" -eq 0 ] && [ "$engine_status" -eq 0 ]
