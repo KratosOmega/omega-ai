@@ -54,8 +54,20 @@ ensure_import "$GODOT" "$PROJECT" "$log" studio-test || exit 1
   "$@" -gexit "-gjunit_xml_file=res://$xml_rel" >> "$log" 2>&1
 engine_status=$?
 
+# A Godot crash prints "handle_crash: Program crashed with signal N"; GUT prints
+# each test script's res:// path on a line of its own as it starts it, so the
+# last such line before the crash names the script that was running.
+crash_line() {
+  awk '
+    /^res:\/\/.*\.gd$/ { script = $0 }
+    /handle_crash: Program crashed with signal/ { sig = $NF; at = script; exit }
+    END { if (sig != "") printf "studio-test: Godot crashed (signal %s)%s\n", sig, (at != "" ? " while running " at : "") }
+  ' "$log"
+}
+
 xml="$PROJECT/$xml_rel"
 if [ ! -f "$xml" ]; then
+  crash_line >&2
   echo "studio-test: GUT produced no report (engine exit $engine_status); last lines of $log:" >&2
   tail -n 20 "$log" >&2
   exit 1
@@ -76,5 +88,10 @@ awk '
   /<failure|<error/ { if (name != "") { print "  FAIL " name; name = "" } }
 ' "$xml"
 printf 'report: %s\nlog: %s\n' "$xml_rel" ".studio/reports/test-$stamp.log"
+# The report can be whole while the engine still failed (a crash at shutdown).
+if [ "$engine_status" -ne 0 ]; then
+  crash_line
+  printf 'studio-test: Godot exited %s after writing the report\n' "$engine_status"
+fi
 
 [ "$failed" -eq 0 ] && [ "$engine_status" -eq 0 ]

@@ -16,6 +16,8 @@ trap 'rm -rf "$TMP"' EXIT
 # -gjunit_xml_file=res://… by writing a JUnit file into the project, prints a
 # SCRIPT ERROR line when STUB_SCRIPT_ERROR=1, sleeps STUB_SLEEP seconds, and
 # exits 1 when STUB_FAILS is greater than 0 (as GUT does with -gexit).
+# STUB_CRASH=mid crashes inside res://tests/unit/test_dash.gd before any report;
+# STUB_CRASH=exit writes a passing report, then crashes at shutdown.
 mkdir -p "$TMP/stub"
 cat > "$TMP/stub/godot" <<'STUB'
 #!/bin/sh
@@ -38,11 +40,18 @@ if [ "$import" = 1 ]; then
   if [ "${STUB_IMPORT:-}" != partial ]; then
     : > "$proj/.godot/global_script_class_cache.cfg"
     find "$proj" -name '*.import' -not -path '*/.godot/*' | while read -r f; do
-      sed -n 's/^dest_files=\["res:\/\/\(.*\)"\]$/\1/p' "$f" | while read -r d; do : > "$proj/$d"; done
+      sed -n 's/^dest_files=\["res:\/\/\(.*\)"\]$/\1/p' "$f" | while read -r d; do
+        : > "$proj/$d"
+        # A hashed product gets its .md5 sidecar, as Godot writes once a file is imported.
+        m="$(printf '%s' "$d" | sed -n 's/^\(.*-[0-9a-f]\{32\}\)\..*$/\1.md5/p')"
+        [ -z "$m" ] || : > "$proj/$m"
+      done
     done
   fi
   exit 0
 fi
+crash() { printf '\n================================================================\nhandle_crash: Program crashed with signal 11\n'; exit 139; }
+if [ "${STUB_CRASH:-}" = mid ]; then printf 'res://tests/unit/test_dash.gd\n'; crash; fi
 if [ -n "$xml" ]; then
   fails="${STUB_FAILS:-0}"
   mkdir -p "$(dirname "$proj/$xml")"
@@ -63,6 +72,7 @@ if [ "${STUB_SCRIPT_ERROR:-0}" = 1 ]; then
 fi
 echo "Godot Engine v4.3.stable (stub)"
 sleep "${STUB_SLEEP:-0}"
+[ "${STUB_CRASH:-}" = exit ] && { printf 'res://tests/unit/test_dash.gd\n'; crash; }
 [ "${STUB_FAILS:-0}" -eq 0 ]
 STUB
 chmod +x "$TMP/stub/godot"
@@ -89,7 +99,7 @@ verb() {
   status=0
   ( cd "$_dir" && OMEGA_STUDIO_ROOT="$STUDIO" GODOT_PATH="$GODOT_STUB" \
       STUB_FAILS="${STUB_FAILS:-0}" STUB_SCRIPT_ERROR="${STUB_SCRIPT_ERROR:-0}" STUB_SLEEP="${STUB_SLEEP:-0}" \
-      STUB_IMPORT="${STUB_IMPORT:-}" \
+      STUB_IMPORT="${STUB_IMPORT:-}" STUB_CRASH="${STUB_CRASH:-}" \
       sh "$BIN/$_name" "$@" ) > "$TMP/out" 2>&1 || status=$?
   printf '%s\n' "$status" > "$TMP/status"
 }
@@ -238,11 +248,12 @@ test_test_imports_when_dot_godot_is_absent() {
   assert_not_contains "$log" "\-\-import" "a project with .godot/ is not imported again"
 }
 
-# with_asset DIR NAME — an imported asset: art/NAME, and art/NAME.import naming one product.
+# with_asset DIR NAME [HASH] — an imported asset: art/NAME, and art/NAME.import naming one
+# product, .godot/imported/NAME-HASH.ctex (HASH defaults to 0a1b, too short to carry a sidecar).
 with_asset() {
   mkdir -p "$1/art"
   : > "$1/art/$2"
-  printf '[remap]\n\nimporter="texture"\n\n[deps]\n\nsource_file="res://art/%s"\ndest_files=["res://.godot/imported/%s-0a1b.ctex"]\n' "$2" "$2" > "$1/art/$2.import"
+  printf '[remap]\n\nimporter="texture"\n\n[deps]\n\nsource_file="res://art/%s"\ndest_files=["res://.godot/imported/%s-%s.ctex"]\n' "$2" "$2" "${3:-0a1b}" > "$1/art/$2.import"
 }
 
 test_test_reimports_a_partial_cache() {
@@ -270,6 +281,39 @@ test_test_skips_import_when_the_cache_is_complete() {
   log="$(ls "$P"/.studio/reports/test-*.log | head -n 1)"
   assert_not_contains "$log" "\-\-import" "every product present (an orphan .import with no source ignored): no import"
   assert_not_contains "$TMP/out" "import cache incomplete" "and nothing is announced"
+}
+
+test_test_reimports_a_product_without_its_md5() {
+  P="$(fresh_project nomd5)"
+  with_gut "$P"
+  h=b06b736de5fc6ebcd1337dfd9abfd984
+  with_asset "$P" hero.png "$h"
+  mkdir -p "$P/.godot/imported"
+  : > "$P/.godot/imported/hero.png-$h.ctex"   # written, but the import was cut off before its .md5
+  verb "$P" studio-test
+  assert_contains "$TMP/out" "^studio-test: import cache incomplete (1 missing) — importing" "a product without its .md5 sidecar counts as missing"
+  assert_file "$P/.godot/imported/hero.png-$h.md5" "the re-import completes it"
+  rm -rf "$P/.studio/reports"   # a second run in the same second would append to the same log
+  verb "$P" studio-test
+  log="$(ls "$P"/.studio/reports/test-*.log | head -n 1)"
+  assert_not_contains "$log" "\-\-import" "a product with its .md5 is complete: no import"
+}
+
+test_test_names_a_crash() {
+  P="$(fresh_project crash)"
+  with_gut "$P"
+  mkdir -p "$P/.godot"
+  STUB_CRASH=mid verb "$P" studio-test
+  assert_eq "1" "$(cat "$TMP/status")" "a crash before the report exits 1"
+  assert_contains "$TMP/out" "^studio-test: Godot crashed (signal 11) while running res://tests/unit/test_dash.gd$" "the crash names its signal and the script that was running"
+  rm -rf "$P/.studio/reports"
+  STUB_CRASH=exit verb "$P" studio-test
+  assert_eq "1" "$(cat "$TMP/status")" "a crash at shutdown after a passing report exits 1"
+  assert_contains "$TMP/out" "^studio-test: Godot crashed (signal 11)" "the shutdown crash is named"
+  assert_contains "$TMP/out" "^studio-test: Godot exited 139 after writing the report$" "with the engine's exit"
+  rm -rf "$P/.studio/reports"
+  verb "$P" studio-test
+  assert_not_contains "$TMP/out" "Godot crashed" "a clean run reports no crash"
 }
 
 test_test_imports_when_the_class_cache_is_missing() {
@@ -657,6 +701,7 @@ run_tests test_gate_no_overlap test_gate_status_and_held test_gate_stale_reclaim
   test_test_exits_2_without_engine test_test_passes_and_reports test_test_reports_failures \
   test_test_targets_a_file test_test_targets_a_directory test_test_imports_when_dot_godot_is_absent \
   test_test_reimports_a_partial_cache test_test_skips_import_when_the_cache_is_complete \
+  test_test_reimports_a_product_without_its_md5 test_test_names_a_crash \
   test_test_imports_when_the_class_cache_is_missing test_test_fails_clearly_when_the_import_stays_incomplete \
   test_slowest_reports_files_and_tests test_slowest_does_not_wait_for_the_gate test_slowest_without_a_report_or_with_bad_n \
   test_run_clean test_run_detects_script_errors test_run_passes_scene_and_windowed \
