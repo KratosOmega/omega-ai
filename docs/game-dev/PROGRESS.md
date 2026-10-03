@@ -14,6 +14,27 @@ approval page in `artifacts/`.
 
 ## Log
 
+### 2026-10-02 — Overnight lanes repair a red gate
+
+- In a lane, a story's finish runs the full gate once. A red gate used to
+  stop the story and skip every story that depended on it. In one incident,
+  a 121-character doc line halted a phoenix run at 85 minutes. Now
+  `Stop: gate red — …` is the one repairable stop. The runner launches a
+  `gate-repair` unit (`/game-dev:execute --gate-repair`, model_repair,
+  `STUDIO_REPAIR=gate:<studio-test log>`), which fixes the failure and
+  re-runs only the failing test files. Its `Repair: gate — …` line makes the
+  runner launch a fresh finish, which runs the full gate again.
+  `overnight.gate_repairs` (default 2, 0-3) bounds it. Past the cap the
+  story ends `stopped gate red after <n> repairs — <line>`.
+- A stop written twice with the same text on the same day is now detected:
+  `snapshot` numbers each Stop line's occurrences within its ledger instead
+  of de-duplicating them.
+- The execute skill's final review makes every gate-enforced finding (line
+  length, docs budgets, any `tests/` check) must-fix, and refuses an "it is
+  not under that test" claim until the test has been run. That ruling was
+  the root cause of the incident.
+- Plan: `plans/2026-10-02-overnight-gate-repair.md`.
+
 ### 2026-10-02 — Overnight foreground gate and status anywhere
 
 - The finish unit never ran its tests: under a lane, the execute skill told
