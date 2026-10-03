@@ -1,7 +1,7 @@
 # Overnight operator channel — Spec
 
 Date: 2026-10-03
-Status: Draft (revision 3: falsifier pass 1 C1–C2, I1–I7, M1–M11 and pass 2 N1–N6, N-m1–N-m10 folded in) — awaiting user review
+Status: Approved 2026-10-03 (revision 3: falsifier pass 1 C1–C2, I1–I7, M1–M11 and pass 2 N1–N6, N-m1–N-m10 folded in)
 Milestone: Plan 3 — Content (studio tooling; follows overnight lanes, #19, and gate repair, #23)
 Classification: architectural
 
