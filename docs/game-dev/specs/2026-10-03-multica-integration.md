@@ -906,3 +906,30 @@ stands in for them.
       stub assumes it does. If the real CLI hides them, the effects are benign
       (nothing is written for a closed issue, commands on a closed issue are not
       read, a status set by someone else on it draws no note).
+24. **Live check (milestone gate step 4): pass, with deviations noted**
+    (operator run 2026-10-04, Multica CLI 0.6.1). The throwaway project lived
+    under `~/GameDev/proj`, not `~/Documents`, so no file-access grant was
+    exercised (as for P5 and P6). Its origin was a local bare repository.
+    - 4.1 pass: install set up the properties, both runtimes, the agent and the
+      bridge; `multica-bridge status` was healthy with no file-access error.
+    - 4.2 pass: the runner outlived the agent's task, and its registry entry
+      held `origin=multica:<that task's id>`.
+    - 4.3 pass: "Run live" sat under the request issue with one sub-issue per
+      story; statuses followed the run and every unit start and end got a
+      comment.
+    - 4.4 pass: `/say` on a story got `studio: ✓ 1`, then "message 1 queued"
+      and "message 1 delivered to unit …". Hold and resume were exercised on
+      studio-held stories rather than an operator `/hold`: both stories held
+      themselves at the test gate (the project had no GUT addon), `/hold` on
+      one got `✗ … story B is already held`, and after GUT and a smoke test
+      were committed to both story branches, `/resume` on each got
+      `studio: ✓ resume requested` and both stories ran on and landed. An empty
+      `/say` got `✗ usage: /say <text>`.
+    - 4.5 pass: the run ended (`partial: 2 landed …; no final PR`); the Run
+      issue read Done with a "run ended: <ending> — report: <path>" comment
+      about 20 s after the end, and the agent posted its run summary on the
+      request issue. "partial" came only from the final PR step: `gh pr list`
+      cannot work against a local bare origin.
+    - 4.6 pass: `issue runs` on the request issue listed the operator's run
+      and exactly one wakeup (`trigger_summary` "Wakeup: sub-issues closed",
+      rule `child_done`); no other run.
