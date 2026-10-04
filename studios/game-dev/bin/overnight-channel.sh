@@ -59,8 +59,15 @@ chan_fail() { say "$2"; exit "$1"; }
 # chan_lock — take CH_IB's lock (waiting up to the inbox wait) or fail with
 # the real reason: busy, or the inbox dir cannot be created.
 chan_lock() {
-  inbox_lock "$CH_IB" "${STUDIO_OVERNIGHT_INBOX_WAIT:-15}" break && return 0
-  if [ "$?" = 2 ]; then chan_fail 1 "cannot create $CH_IB"; fi
+  inbox_lock "$CH_IB" "${STUDIO_OVERNIGHT_INBOX_WAIT:-15}" break; _cl_rc=$?
+  if [ "$_cl_rc" = 0 ]; then
+    # a verb is its own process: a signal or an exit releases the lock (the
+    # runner never breaks a lock, so a stale one would skip its checks all night)
+    trap 'inbox_unlock "$CH_IB"' EXIT
+    trap 'exit 130' INT TERM HUP
+    return 0
+  fi
+  if [ "$_cl_rc" = 2 ]; then chan_fail 1 "cannot create $CH_IB"; fi
   chan_fail 1 "inbox busy: story $CH_STORY (try again)"
 }
 chan_usage() {

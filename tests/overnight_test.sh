@@ -1250,6 +1250,21 @@ test_inbox_lock_busy() {
   assert_eq 1 "$([ -d "$FR_DIR/inbox/-/.lock" ] && echo 1 || echo 0)" "a fresh lock is never broken"
   fake_run_end
 }
+# a verb killed (INT, TERM) while it holds the inbox lock releases it
+test_inbox_lock_released_on_signal() {
+  for sig in TERM INT; do
+    D="$TMP/lsig-$sig"; mkdir -p "$D"; rm -f "$D/held"
+    ( SELF_DIR="$REPO_ROOT/studios/game-dev/bin"; . "$SELF_DIR/overnight-channel.sh"
+      CH_IB="$D/inbox"; CH_STORY=-; trap - INT TERM
+      chan_lock; : > "$D/held"; sleep 30 & wait ) > /dev/null 2>&1 &
+    LP=$!
+    wait_for "$D/held"
+    assert_file "$D/held" "$sig: the verb took the lock"
+    assert_eq 1 "$([ -d "$D/inbox/.lock" ] && echo 1 || echo 0)" "$sig: the lock is held"
+    kill -$sig "$LP" 2>/dev/null; wait "$LP" 2>/dev/null
+    assert_eq 0 "$([ -d "$D/inbox/.lock" ] && echo 1 || echo 0)" "$sig: the lock is gone after the signal"
+  done
+}
 test_channel_sourced_only() {
   assert_status 2 "overnight-channel.sh refuses to run on its own" -- sh "$REPO_ROOT/studios/game-dev/bin/overnight-channel.sh"
   assert_eq "overnight-channel.sh: sourced by studio-overnight" \
@@ -1593,6 +1608,7 @@ run_tests test_overnight_report_done test_overnight_report_not_done \
   test_verbs_run_pinning \
   test_inbox_lock_stale_broken \
   test_inbox_lock_busy \
+  test_inbox_lock_released_on_signal \
   test_channel_sourced_only \
   test_overnight_hold_on_feature_stop \
   test_overnight_start_ledger_stop_ends_at_once \
