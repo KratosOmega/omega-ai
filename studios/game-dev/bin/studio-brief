@@ -8,11 +8,15 @@
 #                           the `### Task <n>:` block, and every range on that
 #                           block's `Spec:` line (`<path>:L<a>-<b>` or
 #                           `<path>§<heading line as written>`, separated by
-#                           ", ")
+#                           ", "), then the story ledger's active directives
+#                           (`Directive <id>:` lines not later retired) as a
+#                           part `==> <ledger>`
 #   studio-brief final      the spec's ## Acceptance criteria (only the story's
 #                           items when the spec has ## Stories), the story's
-#                           ## Stories row, the story ledger's `Ruling: ` and
-#                           `minor (deferred)` lines, and the line
+#                           ## Stories row, the ledger's `Ruling: ` and
+#                           `minor (deferred)` lines (anchored at the line's
+#                           prefix), the active directives the same way as for
+#                           `task`, before `diff:`, and the line
 #                           `diff: git diff origin/<Target>...HEAD` (Target from
 #                           $STUDIO_RUN's `Target:` header, else origin/HEAD).
 #                           No plan text. The story id is $STUDIO_STORY.
@@ -57,6 +61,28 @@ state_get() {
   printf '%s\n' "$_v"
 }
 
+# ledger_path — the story's ledger in this checkout: .studio/ledger/
+# <STUDIO_STORY>.md, else the spec slug's (date prefix stripped); empty when
+# neither is known.
+ledger_path() {
+  if [ -n "${STUDIO_STORY:-}" ]; then printf '%s\n' "$WORK/.studio/ledger/$STUDIO_STORY.md"; return 0; fi
+  _lp_s="$(state_get spec)"; [ -n "$_lp_s" ] || return 0
+  printf '%s\n' "$WORK/.studio/ledger/$(basename "$_lp_s" | sed -e 's/\.md$//' -e 's/^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}-//').md"
+}
+# directives_part — AC15: the ledger's active directives (a `Directive <id>:`
+# line with no later `Directive <id> retired`), as one part headed
+# `==> <ledger path>`; nothing when there are none.
+directives_part() {
+  _dp_l="$(ledger_path)"
+  [ -n "$_dp_l" ] && [ -f "$_dp_l" ] || return 0
+  _dp="$(awk '
+    { t = $0; sub(/^- [0-9-]+ /, "", t) }
+    t ~ /^Directive [0-9]+: / { id = t; sub(/^Directive /, "", id); sub(/:.*/, "", id); L[NR] = $0; D[NR] = id; next }
+    t ~ /^Directive [0-9]+ retired *$/ { id = t; sub(/^Directive /, "", id); sub(/ .*/, "", id); R[id] = NR }
+    END { for (i = 1; i <= NR; i++) if ((i in L) && !((D[i] in R) && R[D[i]] > i)) print L[i] }' "$_dp_l")"
+  [ -z "$_dp" ] || printf '==> %s\n%s\n' "$_dp_l" "$_dp"
+}
+
 WORK="$(sh "$STATE_BIN" root --work 2>/dev/null)" && cd "$WORK" 2>/dev/null
 
 [ $# -ge 1 ] || usage
@@ -92,6 +118,7 @@ task)
   set -- $tr
   ta="$1"; tb="$2"
   emit "$plan" "$ta" "$tb"
+  directives_part
   specline="$(sed -n "${ta},${tb}p" "$plan" | sed -n 's/^Spec: //p' | head -n 1)"
   if [ -z "$specline" ]; then
     printf '(task %s has no Spec: line)\n' "$n"
@@ -186,18 +213,14 @@ final)
     emit "$spec" "$aa" "$ab"
   fi
   # the story's ledger
-  if [ -n "$story" ]; then
-    ledger="$WORK/.studio/ledger/$story.md"
-  else
-    slug="$(basename "$spec" | sed -e 's/\.md$//' -e 's/^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}-//')"
-    ledger="$WORK/.studio/ledger/$slug.md"
-  fi
+  ledger="$(ledger_path)"
   if [ -f "$ledger" ]; then
     printf '==> %s\n' "$ledger"
-    grep -E 'Ruling: |minor \(deferred\)' "$ledger" || true
+    grep -E '^- [0-9-]+ ((T[0-9]+|Task [0-9]+:) )?(Ruling: |minor \(deferred\))' "$ledger" || true
   else
     printf '(no ledger at %s)\n' "$ledger"
   fi
+  directives_part
   # the diff command
   target=""
   if [ -n "${STUDIO_RUN:-}" ] && [ -f "$STUDIO_RUN" ]; then
