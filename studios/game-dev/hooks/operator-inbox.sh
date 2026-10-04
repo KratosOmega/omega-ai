@@ -15,6 +15,7 @@
 trap 'exit 0' EXIT
 [ -n "${STUDIO_UNIT_TAG:-}" ] && [ -n "${STUDIO_RUN_DIR:-}" ] || exit 0
 RD="$STUDIO_RUN_DIR"; TAG="$STUDIO_UNIT_TAG"
+LC_ALL=C; export LC_ALL
 [ -d "$RD" ] || exit 0
 # A manifest run's unit with no story (the final step) gets nothing (AC9).
 if [ -f "$RD/rows.tsv" ]; then S="${STUDIO_STORY:-}"; [ -n "$S" ] || exit 0; else S=-; fi
@@ -25,10 +26,32 @@ IN="$(cat)"
 
 # field KEY — a top-level string field of the hook input (R19: no jq).
 field() { printf '%s' "$IN" | tr -d '\n' | sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" | head -n 1; }
-# The same three helpers as overnight-channel.sh (kept identical).
-msg_get() { sed -n "1,/^--\$/s/^$1: //p" "$2" 2>/dev/null | head -n 1; }
-msg_body() { sed '1,/^--$/d' "$1" 2>/dev/null | tr '\n' ' ' | sed 's/ *$//'; }
+# msg_get and msg_body are the same as in overnight-channel.sh, and sq the
+# same as in studio-overnight (kept identical; byte-wise, so invalid UTF-8 in
+# a message body is carried whole).
+msg_get() { LC_ALL=C sed -n "1,/^--\$/s/^$1: //p" "$2" 2>/dev/null | head -n 1; }
+msg_body() { LC_ALL=C sed '1,/^--$/d' "$1" 2>/dev/null | LC_ALL=C tr '\n' ' ' | LC_ALL=C sed 's/ *$//'; }
 sq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
+# top_agent_id — true when the hook input has a top-level agent_id (a
+# subagent's call). A cheap grep first; only a match pays for the depth scan
+# that ignores an agent_id key nested in tool_input or tool_response.
+top_agent_id() {
+  printf '%s' "$IN" | grep -q '"agent_id"' || return 1
+  printf '%s' "$IN" | tr -d '\n' | awk '{
+    n = length($0); d = 0; ins = 0; cur = ""; last = ""; lastd = -1
+    for (i = 1; i <= n; i++) {
+      c = substr($0, i, 1)
+      if (ins) {
+        if (c == "\\") i++
+        else if (c == "\"") { ins = 0; last = cur; lastd = d }
+        else cur = cur c
+      } else if (c == "\"") { ins = 1; cur = "" }
+      else if (c == "{" || c == "[") d++
+      else if (c == "}" || c == "]") d--
+      else if (c == ":" && d == 1 && lastd == 1 && last == "agent_id") exit 0
+    }
+    exit 1 }'
+}
 # list DIR — DIR's message file names, lowest id first.
 list() {
   for _f in "$1"/[0-9]*.msg; do [ -f "$_f" ] && printf '%s\n' "${_f##*/}"; done \
@@ -44,7 +67,7 @@ case "$EVN" in
       *) exit 0 ;;
     esac ;;
   PostToolUse)
-    printf '%s' "$IN" | grep -q '"agent_id"' && exit 0
+    top_agent_id && exit 0
     MODE=claim; VIA=tool_call ;;
   *) exit 0 ;;
 esac
@@ -57,7 +80,11 @@ if [ "$MODE" = claim ]; then
   for m in $(list "$IB"); do
     case "$(msg_get scope "$IB/$m")" in
       story|unit|retire) ;;
-      *) echo "operator-inbox: $IB/$m has no scope header; left pending" >&2; continue ;;
+      *) [ -f "$IB/$m" ] || continue   # another hook claimed it first: not malformed
+         # a malformed message is logged once, not on every tool call
+         grep -qF "operator-inbox: $IB/$m has no scope header" "$RD/hook.log" 2>/dev/null \
+           || echo "operator-inbox: $IB/$m has no scope header; left pending" >&2
+         continue ;;
     esac
     mkdir -p "$DL" || break
     mv "$IB/$m" "$DL/$m" 2>/dev/null || continue   # another hook claimed it first

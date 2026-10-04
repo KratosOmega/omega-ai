@@ -10,9 +10,9 @@
 CH_TAB="$(printf '\t')"
 
 # msg_get KEY FILE — a message header's value (header lines only).
-msg_get() { sed -n "1,/^--\$/s/^$1: //p" "$2" 2>/dev/null | head -n 1; }
+msg_get() { LC_ALL=C sed -n "1,/^--\$/s/^$1: //p" "$2" 2>/dev/null | head -n 1; }
 # msg_body FILE — the message text, its newlines folded to spaces.
-msg_body() { sed '1,/^--$/d' "$1" 2>/dev/null | tr '\n' ' ' | sed 's/ *$//'; }
+msg_body() { LC_ALL=C sed '1,/^--$/d' "$1" 2>/dev/null | LC_ALL=C tr '\n' ' ' | LC_ALL=C sed 's/ *$//'; }
 # mtime PATH — PATH's modification time in epoch seconds (GNU, else BSD).
 mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null; }
 

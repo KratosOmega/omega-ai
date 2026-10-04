@@ -76,6 +76,7 @@ directives_part() {
   _dp_l="$(ledger_path)"
   [ -n "$_dp_l" ] && [ -f "$_dp_l" ] || return 0
   _dp="$(awk '
+    $0 !~ /^- [0-9-]+ / { next }
     { t = $0; sub(/^- [0-9-]+ /, "", t) }
     t ~ /^Directive [0-9]+: / { id = t; sub(/^Directive /, "", id); sub(/:.*/, "", id); L[NR] = $0; D[NR] = id; next }
     t ~ /^Directive [0-9]+ retired *$/ { id = t; sub(/^Directive /, "", id); sub(/ .*/, "", id); R[id] = NR }

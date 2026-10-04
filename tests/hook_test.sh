@@ -38,7 +38,10 @@ inbox_run() {
     printf '%s' "$2" | sh "$INBOX" ) > "${3:-$TMP/ib.out}" 2> "$TMP/ib.err" || IB_ST=$?
 }
 # delivered N — the count of message_delivered events in IR.
-delivered() { grep -c '"event":"message_delivered"' "$IR/events.jsonl" 2>/dev/null || echo 0; }
+delivered() {
+  [ -f "$IR/events.jsonl" ] || { echo 0; return 0; }
+  grep -c '"event":"message_delivered"' "$IR/events.jsonl" || true
+}
 AUTOPILOT_GUARD="$STUDIO_DIR/hooks/autopilot-guard.sh"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -555,6 +558,20 @@ test_inbox_hook_skips_subagent() {
   assert_file "$IS/1.msg" "and claims nothing"
   inbox_run none "$SS_CLEAR"
   assert_eq "" "$(cat "$TMP/ib.out")" "SessionStart clear delivers nothing"
+  assert_eq 0 "$(delivered)" "delivered() is a single 0 when there is no event log"
+  : > "$IR/events.jsonl"
+  assert_eq 0 "$(delivered)" "and a single 0 when the log has no match"
+}
+test_inbox_agent_id_top_level_only() {
+  ib_fresh single; put_msg "$IS" 1 story "use the bus"
+  _nested='{"session_id":"s","hook_event_name":"PostToolUse","tool_name":"mcp__x","tool_input":{"agent_id":"in"},"tool_response":{"agent_id":"a9","list":[{"agent_id":"b"}]}}'
+  inbox_run none "$_nested"
+  assert_contains "$TMP/ib.out" '\[1, story\] use the bus' "an agent_id nested in tool_input / tool_response does not skip delivery"
+  ib_fresh single; put_msg "$IS" 1 story "use the bus"
+  _late='{"session_id":"s","hook_event_name":"PostToolUse","tool_name":"Bash","tool_response":{"stdout":"x \"agent_id\": y"},"agent_id":"a1"}'
+  inbox_run none "$_late"
+  assert_eq "" "$(cat "$TMP/ib.out")" "a top-level agent_id after tool_response still marks a subagent"
+  assert_file "$IS/1.msg" "and claims nothing"
 }
 test_inbox_session_start_plain() {
   ib_fresh single; put_msg "$IS" 1 story "Use the EventBus autoload."
@@ -657,14 +674,21 @@ test_inbox_compact_reshows() {
 }
 test_inbox_escapes_quotes_dollar_backticks_newlines() {
   ib_fresh single
-  t="it's \"q\" \$HOME \`x\` a"
+  t="it's \"q\" \$HOME \`x\` a\\b$(printf '\t')c"
   put_msg "$IS" 1 story "$t
 b"
   inbox_run none "$SS_START"
   cmd="$(sed -n 's/^    studio-state ledger //p' "$TMP/ib.out" | head -n 1)"
   eval "set -- $cmd"
   assert_eq "Directive 1: $t b" "$1" "the suggested command round-trips the text exactly, its newline folded to a space"
-  assert_contains "$TMP/ib.out" "^\[1, story\] it's \"q\" \\\$HOME \`x\` a b$" "the message line, newline folded"
+  assert_eq "[1, story] $t b" "$(sed -n '/^\[1, story\]/p' "$TMP/ib.out")" "the message line (backslash and tab kept), newline folded"
+  ib_fresh single; put_msg "$IS" 1 story "$t
+b"
+  inbox_run none "$PTU"
+  assert_contains "$TMP/ib.out" 'a\\\\b\\tc b' "PostToolUse: the backslash is doubled and the tab is \\t in the raw JSON"
+  ib_fresh single; put_msg "$IS" 1 story "a$(printf '\001')b"
+  inbox_run none "$PTU"
+  assert_contains "$TMP/ib.out" '\[1, story\] ab' "PostToolUse: a control byte is dropped"
   ib_fresh single; put_msg "$IS" 1 story "$t
 b"
   inbox_run none "$PTU"
@@ -675,6 +699,31 @@ b"
     eval "set -- $cmd"
     assert_eq "Directive 1: $t b" "$1" "the same through additionalContext"
   fi
+}
+test_inbox_lost_claim_race_not_logged() {
+  # a stub mv lets a rival hook claim the message first (it moves it, then fails)
+  ib_fresh single; put_msg "$IS" 1 story one
+  mkdir -p "$TMP/mvbin"
+  printf '#!/bin/sh\n/bin/mv "$@"; exit 1\n' > "$TMP/mvbin/mv"; chmod +x "$TMP/mvbin/mv"
+  _mv_path="$PATH"; PATH="$TMP/mvbin:$PATH"; inbox_run none "$PTU"; PATH="$_mv_path"
+  assert_eq 0 "$IB_ST" "a lost claim exits 0"
+  assert_not_contains "$IR/hook.log" "no scope header" "a lost claim is not logged as a missing scope"
+  # the file is gone before the scope is read (the hook's list saw it, the rival took it)
+  ib_fresh single; put_msg "$IS" 1 story one
+  printf '#!/bin/sh\ncase "$*" in *1.msg*) /bin/rm -f "%s/1.msg" ;; esac\nexec /usr/bin/sed "$@"\n' "$IS" > "$TMP/mvbin/sed"; chmod +x "$TMP/mvbin/sed"
+  rm -f "$TMP/mvbin/mv"
+  if [ -x /usr/bin/sed ]; then
+    _mv_path="$PATH"; PATH="$TMP/mvbin:$PATH"; inbox_run none "$PTU"; PATH="$_mv_path"
+    assert_not_contains "$IR/hook.log" "no scope header" "a message claimed before its scope is read is not malformed"
+  fi
+}
+test_inbox_invalid_utf8_body_whole() {
+  _loc="$(locale -a 2>/dev/null | grep -iE '^(en_US|C)\.utf-?8$' | head -n 1)"
+  [ -n "$_loc" ] || return 0
+  ib_fresh single; put_msg "$IS" 1 story "bad $(printf '\377\376') bytes here"
+  export LC_ALL="$_loc"; inbox_run none "$SS_START"; unset LC_ALL
+  assert_eq "bad $(printf '\377\376') bytes here" "$(LC_ALL=C sed -n 's/^\[1, story\] //p' "$TMP/ib.out" | LC_ALL=C head -n 1)" "an invalid UTF-8 body is delivered whole, not cut at the bad byte"
+  assert_eq 1 "$(LC_ALL=C grep -c "studio-state ledger 'Directive 1: bad .* bytes here'" "$TMP/ib.out")" "and so is the suggested ledger command"
 }
 test_inbox_hook_never_fails() {
   ( STUDIO_UNIT_TAG=t; STUDIO_RUN_DIR="$TMP/no-such-run"; export STUDIO_UNIT_TAG STUDIO_RUN_DIR
@@ -689,6 +738,8 @@ test_inbox_hook_never_fails() {
   assert_eq 0 "$IB_ST" "a message with no header: exit 0"
   assert_file "$IS/2.msg" "a malformed message is left pending"
   assert_contains "$IR/hook.log" "2.msg" "and named in hook.log"
+  inbox_run none "$PTU"; inbox_run none "$PTU"
+  assert_eq 1 "$(grep -c '2\.msg has no scope header' "$IR/hook.log")" "a malformed message is logged once, not on every tool call"
   if [ "$(id -u)" != 0 ]; then
     ib_fresh single; put_msg "$IS" 1 story x; chmod 555 "$IS"
     inbox_run none "$PTU"
@@ -784,8 +835,8 @@ run_tests test_hook_files test_hook_output_shape test_hook_defaults_from_studio_
   test_autopilot_guard_registered test_autopilot_guard_denies_background_agent \
   test_autopilot_guard_allows_foreground_agent test_autopilot_guard_reads_the_field_not_the_prompt \
   test_autopilot_guard_bash_and_monitor test_autopilot_guard_off_outside_autopilot \
-  test_inbox_hook_skips_storyless_manifest_unit test_inbox_hook_skips_subagent \
+  test_inbox_hook_skips_storyless_manifest_unit test_inbox_hook_skips_subagent test_inbox_agent_id_top_level_only \
   test_inbox_session_start_plain test_inbox_post_tool_use_json test_inbox_claim_moves_to_delivered \
   test_inbox_one_claim_under_two_hooks test_inbox_compact_reshows \
-  test_inbox_escapes_quotes_dollar_backticks_newlines test_inbox_hook_never_fails \
+  test_inbox_escapes_quotes_dollar_backticks_newlines test_inbox_hook_never_fails test_inbox_lost_claim_race_not_logged test_inbox_invalid_utf8_body_whole \
   test_inbox_probe_usage test_inbox_probe_fake_launcher

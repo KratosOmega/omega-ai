@@ -187,6 +187,29 @@ test_brief_directive_text_not_ruling() {
   assert_contains "$TMP/dr.rulings" "minor (deferred): rename" "a Task-prefixed deferred minor still matches"
   assert_not_contains "$TMP/dr.rulings" "Directive" "directive text never reads as a ruling"
 }
+test_brief_directive_edge_cases() {
+  Q="$TMP/proje"; build_fixture "$Q"
+  ( cd "$Q" && STUDIO_STORY=S1 && export STUDIO_STORY
+    sh "$STATE_BIN" ledger "Directive 1: use the bus"
+    sh "$STATE_BIN" ledger "Directive 10: ten"
+    sh "$STATE_BIN" ledger "Directive 10 retired"
+    sh "$STATE_BIN" ledger "Directive 5 retired"
+    sh "$STATE_BIN" ledger "Directive 5: after its retire line" ) >/dev/null 2>&1
+  printf 'Directive 8: bare line with no date prefix\n' >> "$Q/.studio/ledger/S1.md"
+  ( cd "$Q" && STUDIO_STORY=S1 sh "$BRIEF" task 3 ) > "$TMP/de.txt"
+  assert_contains "$TMP/de.txt" "Directive 1: use the bus" "retiring id 10 leaves id 1 active (no prefix match)"
+  assert_not_contains "$TMP/de.txt" "Directive 10" "id 10 is retired, its line and its retire line left out"
+  assert_contains "$TMP/de.txt" "Directive 5: after its retire line" "a retire line before the directive does not retire it"
+  assert_not_contains "$TMP/de.txt" "Directive 8" "a line without the '- <date> ' prefix is not a directive"
+  # no STUDIO_STORY: the ledger is the spec slug's (a dated spec name, its date stripped)
+  Q2="$TMP/projs"; build_fixture "$Q2"
+  cp "$Q2/docs/spec.md" "$Q2/docs/2026-10-03-demo.md"
+  ( cd "$Q2" && unset STUDIO_STORY && sh "$STATE_BIN" set spec docs/2026-10-03-demo.md && sh "$STATE_BIN" set plan docs/plan.md \
+    && sh "$STATE_BIN" ledger "Directive 1: slug path" ) >/dev/null 2>&1
+  ( cd "$Q2" && unset STUDIO_STORY && sh "$BRIEF" task 3 ) > "$TMP/dslug.txt"
+  assert_contains "$TMP/dslug.txt" "^==> .*/\.studio/ledger/demo\.md$" "no STUDIO_STORY: the part is headed by the dated spec name's slug ledger"
+  assert_contains "$TMP/dslug.txt" "Directive 1: slug path" "and carries the directive"
+}
 test_brief_no_directives_no_part() {
   ( cd "$P" && STUDIO_STORY=S1 sh "$BRIEF" task 3 ) > "$TMP/nd.txt"
   assert_eq 0 "$(grep -c '^==> .*\.studio/ledger/' "$TMP/nd.txt")" "no directives: no ledger part in task"
@@ -194,4 +217,4 @@ test_brief_no_directives_no_part() {
   assert_eq 1 "$(grep -c '^==> .*\.studio/ledger/' "$TMP/ndf.txt")" "final keeps only its rulings part"
 }
 
-run_tests test_brief_task test_brief_final test_brief_refusals test_brief_missing_sections test_brief_directives_task test_brief_directives_final test_brief_directive_text_not_ruling test_brief_no_directives_no_part
+run_tests test_brief_task test_brief_final test_brief_refusals test_brief_missing_sections test_brief_directives_task test_brief_directives_final test_brief_directive_text_not_ruling test_brief_directive_edge_cases test_brief_no_directives_no_part
