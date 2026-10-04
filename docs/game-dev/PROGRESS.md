@@ -47,8 +47,11 @@ approval page in `artifacts/`.
   in use. Finding from P1: a per-machine `runtime profile set-path` override beats
   the profile's command, and command changes need a daemon restart (Settings,
   Daemon, Restart); README and install now say so.
-- The live install check (spec milestone gate step 4) is still open for the
-  operator, tracked in #30.
+- The live install check (spec milestone gate step 4) passed on 2026-10-04
+  (spec References item 24). Say, resume, the end-of-run Done status and the
+  single "sub-issues closed" wakeup all worked. The deviations: the test project
+  was outside `~/Documents`, hold and resume were exercised on stories the
+  studio held itself, and no final PR opened because the origin was local.
 
 ### 2026-10-04 — Overnight operator channel (#27)
 
