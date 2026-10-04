@@ -96,6 +96,52 @@ the board stays empty (bridge) or a mode 3 session stalls on a prompt nobody see
 
 `multica-bridge status` shows a file-access error until the first grant is done.
 
+## Nightly workflow
+
+Plan at the desk, start from the board, steer from the phone, review in the
+morning. A run asks no questions overnight, so every decision is made before it
+starts.
+
+1. **Plan (terminal, in the project).** Run `claude-gd`, then `/omega:autopilot`.
+   - Answer its first question: integration mode (recommended: stories land on
+     `integration/<slug>` and you get one draft PR into main) and the lane count.
+   - List the night's stories. It writes the manifest `docs/runs/<slug>.md` on
+     branch `run/<slug>`.
+   - Work the planning loop: for each story it prints `/clear` and the next
+     command (`/game-dev:brainstorm <id>` or `/game-dev:plan`). Answer, reply
+     **approve**, then run `/omega:autopilot` again. Repeat until every story is
+     planned.
+   - It then seeds the stories, pushes, runs the readiness check and asks how
+     to start. Stop there.
+2. **Start (board).** Create an issue such as "Tonight: <slug>", assign it to
+   the omega game-dev agent, and ask it to start the overnight run
+   `docs/runs/<slug>.md`. The agent runs `studio-overnight start --detach`,
+   replies with the run name and ends; the runner keeps going.
+   Starting from the terminal instead also works. The run then shows as a
+   top-level Run issue, and no agent posts a summary at the end.
+3. **Steer (phone).** Watch the Run issue and the story sub-issues (see
+   [What the board shows](#what-the-board-shows)). When a story goes Blocked,
+   read its `studio: held:` comment, then post `/say <guidance>` and `/resume`,
+   or `/stop`. See [Commands](#commands).
+4. **Review (morning).** The agent's summary is on your request issue, and the
+   report path is in the Run issue's `studio: run ended:` comment. In
+   integration mode, review and merge the draft PR `integration/<slug>` → main,
+   then close the request issue.
+
+Before the first real run:
+
+- The project has GUT installed and at least one test. Without them every story
+  holds at the test gate.
+- `gh auth status` passes. Without it the final PR step fails and the run ends
+  `partial`.
+- Multica.app's daemon is running, so the agent picks up the issue. The bridge
+  runs on its own as a launchd service.
+- The Mac stays plugged in. The runner holds `caffeinate -i`, which stops idle
+  sleep but not sleep from closing the lid on battery.
+- One run per project at a time: a second `start` in the same project is
+  refused. Put the whole night in one manifest and use lanes. Runs in different
+  projects can go side by side, each under its own request issue.
+
 ## Commands
 
 Post a command as a comment on an issue, as the operator (you). The bridge replies
