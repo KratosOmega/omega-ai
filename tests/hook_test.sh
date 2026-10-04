@@ -8,6 +8,37 @@ HOOK="$STUDIO_DIR/hooks/session-start.sh"
 GUARD="$STUDIO_DIR/hooks/guard-state.sh"
 STAGE_GUARD="$STUDIO_DIR/hooks/stage-guard.sh"
 INBOX="$STUDIO_DIR/hooks/operator-inbox.sh"
+# ---- #27: the operator-inbox hook ----
+SS_START='{"session_id":"s","hook_event_name":"SessionStart","source":"startup"}'
+SS_COMPACT='{"session_id":"s","hook_event_name":"SessionStart","source":"compact"}'
+SS_CLEAR='{"session_id":"s","hook_event_name":"SessionStart","source":"clear"}'
+PTU='{"session_id":"s","hook_event_name":"PostToolUse","tool_name":"Bash","tool_input":{"command":"ls"},"tool_response":{"stdout":""}}'
+PTU_SUB='{"session_id":"s","agent_id":"a1","agent_type":"general-purpose","hook_event_name":"PostToolUse","tool_name":"Bash"}'
+# ib_fresh single|manifest — a fresh run dir IR. manifest adds rows.tsv with
+# story S1. IS is the story's inbox (inbox/- or inbox/S1).
+ib_fresh() {
+  IR="$TMP/overnight-ib-$1"; rm -rf "$IR"; mkdir -p "$IR"
+  if [ "$1" = manifest ]; then printf 'S1\tS1-b\tS1\t-\t-\t\n' > "$IR/rows.tsv"; IS="$IR/inbox/S1"
+  else IS="$IR/inbox/-"; fi
+  mkdir -p "$IS"
+}
+# put_msg DIR ID SCOPE TEXT [TARGET] — a message file, as `say` writes it.
+put_msg() {
+  printf 'id: %s\nscope: %s\ntarget: %s\nstory: -\nqueued: 2026-10-03T21:04:00Z\nrequeues: 0\n--\n%s\n' \
+    "$2" "$3" "${5:--}" "$4" > "$1/$2.msg"
+}
+# inbox_run STORY|none JSON [OUT] — the hook as a unit's session runs it:
+# tag ${TG:-tagA}, run dir IR, STUDIO_STORY unless none. IB_ST; output in OUT
+# (default $TMP/ib.out).
+inbox_run() {
+  IB_ST=0
+  ( unset STUDIO_STORY
+    [ "$1" = none ] || { STUDIO_STORY="$1"; export STUDIO_STORY; }
+    STUDIO_UNIT_TAG="${TG:-tagA}"; STUDIO_RUN_DIR="$IR"; export STUDIO_UNIT_TAG STUDIO_RUN_DIR
+    printf '%s' "$2" | sh "$INBOX" ) > "${3:-$TMP/ib.out}" 2> "$TMP/ib.err" || IB_ST=$?
+}
+# delivered N — the count of message_delivered events in IR.
+delivered() { grep -c '"event":"message_delivered"' "$IR/events.jsonl" 2>/dev/null || echo 0; }
 AUTOPILOT_GUARD="$STUDIO_DIR/hooks/autopilot-guard.sh"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -509,6 +540,143 @@ test_autopilot_guard_off_outside_autopilot() {
   assert_allowed "a non-JSON input prints nothing"
 }
 
+test_inbox_hook_skips_storyless_manifest_unit() {
+  ib_fresh manifest; put_msg "$IS" 1 story "use the bus"
+  inbox_run none "$PTU"
+  assert_eq 0 "$IB_ST" "exit 0"
+  assert_eq "" "$(cat "$TMP/ib.out")" "a manifest unit with no STUDIO_STORY (the final step) gets nothing"
+  assert_file "$IS/1.msg" "the message stays pending"
+  inbox_run none "$SS_START"; assert_eq "" "$(cat "$TMP/ib.out")" "nor at startup"
+}
+test_inbox_hook_skips_subagent() {
+  ib_fresh single; put_msg "$IS" 1 story "use the bus"
+  inbox_run none "$PTU_SUB"
+  assert_eq "" "$(cat "$TMP/ib.out")" "a subagent's tool call delivers nothing"
+  assert_file "$IS/1.msg" "and claims nothing"
+  inbox_run none "$SS_CLEAR"
+  assert_eq "" "$(cat "$TMP/ib.out")" "SessionStart clear delivers nothing"
+}
+test_inbox_session_start_plain() {
+  ib_fresh single; put_msg "$IS" 1 story "Use the EventBus autoload."
+  inbox_run S9 "$SS_START"
+  assert_eq 0 "$IB_ST" "exit 0"
+  assert_eq "OPERATOR MESSAGES — from the user, for story - (overnight run)." "$(sed -n 1p "$TMP/ib.out")" "the header (a single-plan run's story is -, whatever STUDIO_STORY says)"
+  assert_contains "$TMP/ib.out" "^\[1, story\] Use the EventBus autoload\.$" "the message line"
+  assert_contains "$TMP/ib.out" "^  → Follow this for the rest of the story\. Record it in the feature checkout's$" "the story instruction"
+  assert_contains "$TMP/ib.out" "after §0 step (c), not merely after" "names the recording point"
+  assert_contains "$TMP/ib.out" "^    studio-state ledger 'Directive 1: Use the EventBus autoload\.'$" "the command, single-quoted"
+  assert_contains "$TMP/ib.out" "^If a message conflicts with the approved plan or spec, follow it for how you$" "the conflict rule"
+  assert_contains "$TMP/ib.out" "^work; for what you build, record a \`Stop:\` with the conflict instead\.$" "its second line"
+  assert_not_contains "$TMP/ib.out" "^{" "plain text, not JSON"
+  assert_file "$IS/delivered/tagA/1.msg" "claimed into delivered/<tag>/"
+  assert_contains "$IR/events.jsonl" '"event":"message_delivered","story":"-","id":1,"scope":"story","unit":"tagA","via":"session_start"}$' "a message_delivered event"
+  assert_not_contains "$IR/events.jsonl" "EventBus" "no message text in the log"
+}
+test_inbox_post_tool_use_json() {
+  ib_fresh manifest; put_msg "$IS" 2 unit "Skip the polish step."
+  inbox_run S1 "$PTU"
+  assert_contains "$TMP/ib.out" '^{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":"OPERATOR MESSAGES — from the user, for story S1 (overnight run)\.\\n\[2, unit\] Skip the polish step\.\\n  → Follow this in this unit only\. Do not record it\.\\n' "PostToolUse: additionalContext JSON, one line"
+  assert_eq 1 "$(wc -l < "$TMP/ib.out" | tr -d ' ')" "one line of output"
+  if command -v jq >/dev/null 2>&1; then
+    assert_eq "[2, unit] Skip the polish step." "$(jq -r '.hookSpecificOutput.additionalContext' "$TMP/ib.out" | sed -n 2p)" "valid JSON; the context's second line"
+  fi
+  assert_contains "$IR/events.jsonl" '"scope":"unit","unit":"tagA","via":"tool_call"}$' "via tool_call"
+  printf '{\n  "session_id": "s",\n  "hook_event_name": "PostToolUse"\n}\n' > "$TMP/ptu-ml.json"
+  put_msg "$IS" 3 story "three"
+  inbox_run S1 "$(cat "$TMP/ptu-ml.json")"
+  assert_contains "$TMP/ib.out" '\[3, story\] three' "pretty-printed hook input is read too"
+}
+test_inbox_claim_moves_to_delivered() {
+  ib_fresh single
+  put_msg "$IS" 10 story ten; put_msg "$IS" 2 story two; put_msg "$IS" 1 retire "retire directive 7" 7
+  : > "$IS/.say.123"
+  inbox_run none "$PTU"
+  if command -v jq >/dev/null 2>&1; then jq -r '.hookSpecificOutput.additionalContext' "$TMP/ib.out" > "$TMP/ib.ctx"; else cp "$TMP/ib.out" "$TMP/ib.ctx"; fi
+  l1="$(grep -n '^\[retire 7\]' "$TMP/ib.ctx" | cut -d: -f1)"; l2="$(grep -n '^\[2, story\]' "$TMP/ib.ctx" | cut -d: -f1)"; l10="$(grep -n '^\[10, story\]' "$TMP/ib.ctx" | cut -d: -f1)"
+  assert_eq 1 "$([ -n "$l1" ] && [ -n "$l2" ] && [ -n "$l10" ] && [ "$l1" -lt "$l2" ] && [ "$l2" -lt "$l10" ] && echo 1 || echo 0)" "oldest (lowest id) first: 1, 2, 10"
+  assert_contains "$TMP/ib.ctx" "^  → Stop following directive 7\. Record, the same way:$" "the retire instruction"
+  assert_contains "$TMP/ib.ctx" "^    studio-state ledger 'Directive 7 retired'$" "the retire command"
+  for i in 1 2 10; do assert_file "$IS/delivered/tagA/$i.msg" "message $i claimed"; assert_missing "$IS/$i.msg" "message $i no longer pending"; done
+  assert_file "$IS/.say.123" "a verb's temp file is never claimed"
+  inbox_run none "$PTU"
+  assert_eq "" "$(cat "$TMP/ib.out")" "nothing pending: the next tool call prints nothing"
+  put_msg "$IS" 11 story eleven
+  inbox_run none "$PTU"
+  assert_contains "$TMP/ib.out" '\[11, story\] eleven' "a new message arrives on the next tool call"
+  assert_not_contains "$TMP/ib.out" '\[2, story\]' "and only it"
+  assert_eq 4 "$(delivered)" "one event per claim"
+}
+test_inbox_one_claim_under_two_hooks() {
+  ib_fresh single
+  i=1; while [ "$i" -le 20 ]; do put_msg "$IS" "$i" story "m$i"; i=$((i + 1)); done
+  inbox_run none "$PTU" "$TMP/ib.a" & _a=$!
+  inbox_run none "$PTU" "$TMP/ib.b" & _b=$!
+  wait "$_a"; wait "$_b"
+  cat "$TMP/ib.a" "$TMP/ib.b" | grep -o '\[[0-9]*, story\]' | sed 's/^\[\([0-9]*\),.*/\1/' | sort -n > "$TMP/ib.ids"
+  assert_eq 20 "$(wc -l < "$TMP/ib.ids" | tr -d ' ')" "20 deliveries between the two hooks"
+  assert_eq 20 "$(sort -u "$TMP/ib.ids" | wc -l | tr -d ' ')" "each message delivered exactly once"
+  assert_eq 20 "$(delivered)" "20 message_delivered events"
+  assert_eq 20 "$(ls "$IS/delivered/tagA" | wc -l | tr -d ' ')" "every message claimed"
+  assert_eq "" "$(ls "$IS" | grep '\.msg$')" "none left pending"
+}
+test_inbox_compact_reshows() {
+  ib_fresh single; put_msg "$IS" 1 story one; put_msg "$IS" 2 unit two
+  inbox_run none "$SS_START"
+  put_msg "$IS" 3 story three
+  inbox_run none "$SS_COMPACT"
+  assert_eq "OPERATOR MESSAGES — reminder: already delivered in this unit, from the user, for story - (overnight run)." \
+    "$(sed -n 1p "$TMP/ib.out")" "the reminder header"
+  assert_contains "$TMP/ib.out" '^\[1, story\] one$' "the story message again"
+  assert_contains "$TMP/ib.out" '^\[2, unit\] two$' "the unit message again"
+  assert_not_contains "$TMP/ib.out" '\[3, story\]' "nothing new is claimed on compact"
+  assert_file "$IS/3.msg" "message 3 is still pending"
+  assert_eq 2 "$(delivered)" "a re-show writes no event"
+  TG=tagB; inbox_run none "$SS_COMPACT"; unset TG
+  assert_eq "" "$(cat "$TMP/ib.out")" "another unit's compact re-shows nothing of this unit's"
+}
+test_inbox_escapes_quotes_dollar_backticks_newlines() {
+  ib_fresh single
+  t="it's \"q\" \$HOME \`x\` a"
+  put_msg "$IS" 1 story "$t
+b"
+  inbox_run none "$SS_START"
+  cmd="$(sed -n 's/^    studio-state ledger //p' "$TMP/ib.out" | head -n 1)"
+  eval "set -- $cmd"
+  assert_eq "Directive 1: $t b" "$1" "the suggested command round-trips the text exactly, its newline folded to a space"
+  assert_contains "$TMP/ib.out" "^\[1, story\] it's \"q\" \\\$HOME \`x\` a b$" "the message line, newline folded"
+  ib_fresh single; put_msg "$IS" 1 story "$t
+b"
+  inbox_run none "$PTU"
+  if command -v jq >/dev/null 2>&1; then
+    jq -r '.hookSpecificOutput.additionalContext' "$TMP/ib.out" > "$TMP/ib.ctx"
+    assert_eq 0 "$?" "the JSON parses"
+    cmd="$(sed -n 's/^    studio-state ledger //p' "$TMP/ib.ctx" | head -n 1)"
+    eval "set -- $cmd"
+    assert_eq "Directive 1: $t b" "$1" "the same through additionalContext"
+  fi
+}
+test_inbox_hook_never_fails() {
+  ( STUDIO_UNIT_TAG=t; STUDIO_RUN_DIR="$TMP/no-such-run"; export STUDIO_UNIT_TAG STUDIO_RUN_DIR
+    printf '%s' "$PTU" | sh "$INBOX" ) > "$TMP/ib.out" 2>&1; st=$?
+  assert_eq 0 "$st" "a missing run dir: exit 0"
+  assert_eq "" "$(cat "$TMP/ib.out")" "and nothing printed"
+  ib_fresh single; put_msg "$IS" 1 story x
+  inbox_run none 'not json at all'
+  assert_eq 0 "$IB_ST" "garbage input: exit 0"; assert_eq "" "$(cat "$TMP/ib.out")" "nothing printed"
+  printf 'garbage\n' > "$IS/2.msg"
+  inbox_run none "$PTU"
+  assert_eq 0 "$IB_ST" "a message with no header: exit 0"
+  assert_file "$IS/2.msg" "a malformed message is left pending"
+  assert_contains "$IR/hook.log" "2.msg" "and named in hook.log"
+  if [ "$(id -u)" != 0 ]; then
+    ib_fresh single; put_msg "$IS" 1 story x; chmod 555 "$IS"
+    inbox_run none "$PTU"
+    assert_eq 0 "$IB_ST" "an unwritable inbox: exit 0"
+    assert_eq "" "$(cat "$TMP/ib.out")" "nothing claimed, nothing printed"
+    chmod 755 "$IS"
+  fi
+}
+
 run_tests test_hook_files test_hook_output_shape test_hook_defaults_from_studio_json \
   test_hook_reads_project_config test_hook_partial_config_falls_back test_hook_escapes_json \
   test_hook_fills_config_value_with_metacharacters test_guard_state_blocks_direct_writes \
@@ -522,4 +690,8 @@ run_tests test_hook_files test_hook_output_shape test_hook_defaults_from_studio_
   test_inbox_hook_registered test_inbox_hook_silent_outside_units \
   test_autopilot_guard_registered test_autopilot_guard_denies_background_agent \
   test_autopilot_guard_allows_foreground_agent test_autopilot_guard_reads_the_field_not_the_prompt \
-  test_autopilot_guard_bash_and_monitor test_autopilot_guard_off_outside_autopilot
+  test_autopilot_guard_bash_and_monitor test_autopilot_guard_off_outside_autopilot \
+  test_inbox_hook_skips_storyless_manifest_unit test_inbox_hook_skips_subagent \
+  test_inbox_session_start_plain test_inbox_post_tool_use_json test_inbox_claim_moves_to_delivered \
+  test_inbox_one_claim_under_two_hooks test_inbox_compact_reshows \
+  test_inbox_escapes_quotes_dollar_backticks_newlines test_inbox_hook_never_fails
