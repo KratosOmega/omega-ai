@@ -542,7 +542,10 @@ requeue_check() {
     if printf '%s\n' "$_rq_l" | awk -v p="$_rq_p" '{ sub(/^- [0-9-]+ /, "") } index($0, p) == 1 { f = 1 } END { exit !f }'; then
       continue
     fi
-    _rq_n="$(msg_get requeues "$_rq_f")"; _rq_n=$(( ${_rq_n:-0} + 1 ))
+    _rq_n="$(msg_get requeues "$_rq_f")"
+    case "$_rq_n" in ''|*[!0-9]*) _rq_n=0 ;; esac      # a corrupt header counts as 0
+    _rq_n="${_rq_n#"${_rq_n%%[!0]*}"}"                 # no leading zeros (08 is not octal-safe)
+    _rq_n=$(( ${_rq_n:-0} + 1 ))
     _rq_t="$_rq_ib/.rq.$$"
     if sed "1,/^--\$/s/^requeues: .*/requeues: $_rq_n/" "$_rq_f" > "$_rq_t" && mv -f "$_rq_t" "$_rq_ib/${_rq_f##*/}"; then
       rm -f "$_rq_f"

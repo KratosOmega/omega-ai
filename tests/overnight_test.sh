@@ -64,6 +64,10 @@ for act in "$@"; do
     inbox)        printf '{"session_id":"s","hook_event_name":"SessionStart","source":"startup"}' \
                     | sh "$STUB_PLUGIN/hooks/operator-inbox.sh" > "$CALLS/$n.inbox" ;;
     "say "*)      sh "$STUB_RUNNER" say - -- "${act#say }" > /dev/null 2>&1 ;;
+    "corruptrq "*) r="$(sed -n 's/^run=//p' "$root/.studio/overnight.lock")"
+                  for f in "$r"/inbox/-/delivered/*/[0-9]*.msg; do
+                    sed "s/^requeues: .*/requeues: ${act#corruptrq }/" "$f" > "$f.t" && mv "$f.t" "$f"
+                  done ;;
     holdop)       sh "$STUB_RUNNER" hold - > /dev/null 2>&1 ;;
     stopop)       sh "$STUB_RUNNER" stop - > /dev/null 2>&1 ;;
     "unsay "*)    sh "$STUB_RUNNER" unsay - "${act#unsay }" > /dev/null 2>&1 ;;
@@ -1393,6 +1397,20 @@ test_overnight_requeue_done_no_hold() {
   assert_contains "$R/report.md" "^- 1 (story, requeues 1): use the bus$" "the message is listed"
   holds_off
 }
+# a hand-edited `requeues:` header ("1x", "08") counts as 0: the runner lives
+test_overnight_requeue_corrupt_header() {
+  for bad in 1x 08; do
+    want=1; [ "$bad" != 08 ] || want=9   # 08 is decimal 8: requeued to 9
+    fixture rch$bad '{"overnight": {"retries": 0}}'; holds_on 60
+    scenario "stage execute; branch feat; task 1/1; wtledger T1 complete a..b; say use the bus" \
+             "inbox; corruptrq $bad; wtledger final review done; wtledger shipped https://x/pull/5; stage idle; task -"
+    run_start; R="$(last_run_dir)"
+    assert_eq 0 "$RS_STATUS" "requeues: $bad does not kill the runner"
+    assert_contains "$R/report.md" "^Ending: done$" "$bad: done"
+    assert_contains "$R/events.jsonl" '"event":"message_requeued".*"requeues":'"$want" "$bad: counted as $((want - 1)), requeued to $want"
+    holds_off
+  done
+}
 test_overnight_prestop_and_limit_end_at_once() {
   holds_on 60
   fixture pli '{"overnight": {"retries": 0}}'
@@ -1587,6 +1605,7 @@ run_tests test_overnight_report_done test_overnight_report_not_done \
   test_overnight_recorded_directive_stays_delivered \
   test_overnight_requeue_id_prefix \
   test_overnight_requeue_done_no_hold \
+  test_overnight_requeue_corrupt_header \
   test_overnight_prestop_and_limit_end_at_once \
   test_overnight_stop_story_running \
   test_overnight_hold_story_running \
