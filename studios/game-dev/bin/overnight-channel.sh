@@ -277,6 +277,53 @@ chan_stop_run() {
   echo "stop requested: the run ends after its running unit (pid $CH_PID)"
 }
 
+# chan_ctl_write KIND — control/<story>.KIND, by temp file then mv, and a
+# control event. Writing it again is the same success (R22).
+chan_ctl_write() {
+  mkdir -p "$CH_CTL" 2>/dev/null
+  _cw_t="$CH_CTL/.$CH_STORY.$1.$$"
+  if date -u +%Y-%m-%dT%H:%M:%SZ > "$_cw_t" && mv -f "$_cw_t" "$CH_CTL/$CH_STORY.$1"; then
+    chan_event control "story=$CH_STORY" "action=$1"; return 0
+  fi
+  rm -f "$_cw_t"; chan_fail 1 "cannot write $CH_CTL/$CH_STORY.$1"
+}
+# chan_holds_on — AC8: hold and resume exit 1 when the run's hold_minutes is 0.
+chan_holds_on() { [ "${CH_HOLD_MIN:-0}" -gt 0 ] 2>/dev/null || chan_fail 1 "holds are off: hold_minutes 0"; }
+# chan_hold — AC7's hold column.
+chan_hold() {
+  chan_holds_on
+  case "$CH_REC" in
+    held*) chan_fail 1 "story $CH_STORY is already held" ;;
+    landing*|repair*) chan_fail 1 "story $CH_STORY is landing: landing holds the land lock" ;;
+  esac
+  chan_ctl_write hold
+  case "$CH_REC" in
+    queued*|waiting*) echo "hold requested: $CH_STORY holds when it would start" ;;
+    *) echo "hold requested: $CH_STORY holds at its next unit boundary" ;;
+  esac
+}
+# chan_resume — AC7's resume column, AC21's dirty check (R22: the run's
+# start checkout, never the cwd).
+chan_resume() {
+  chan_holds_on
+  case "$CH_REC" in held*) ;; *) chan_fail 1 "story $CH_STORY is not held ($CH_REC)" ;; esac
+  if [ "$CH_MODE" = single ]; then _cr_p=.studio/ledger; else _cr_p=".studio/ledger/$CH_STORY.md"; fi
+  _cr_d="$(git -C "$CH_START" status --porcelain -- "$_cr_p" 2>/dev/null | head -n 1)"
+  [ -z "$_cr_d" ] || chan_fail 1 "resume refused: ${_cr_d#???} has uncommitted changes in $CH_START (a restart would refuse it too)"
+  chan_ctl_write resume
+  echo "resume requested: $CH_STORY resumes within one poll"
+}
+# chan_stop — AC7's stop column; AC23.
+chan_stop() {
+  case "$CH_REC" in landing*|repair*) chan_fail 1 "story $CH_STORY is landing: landing holds the land lock" ;; esac
+  chan_ctl_write stop
+  case "$CH_REC" in
+    queued*|waiting*) echo "stop requested: $CH_STORY stops when its lane reaches it" ;;
+    held*) echo "stop requested: $CH_STORY stops within one poll" ;;
+    *) echo "stop requested: $CH_STORY stops after its running unit" ;;
+  esac
+}
+
 # chan_main VERB ARGS… — parse, check usage (exit 2, before any run lookup),
 # find the run, open the story, act. Never returns.
 chan_main() {
@@ -291,7 +338,8 @@ chan_main() {
     said) [ "$A_N" -eq 1 ] || chan_usage ;;
     unsay) [ "$A_N" -eq 2 ] || chan_usage
            case "$A_P2" in ''|0*|*[!0-9]*) chan_usage ;; esac ;;
-    stop) [ "$A_N" -eq 0 ] || chan_usage ;;
+    hold|resume) [ "$A_N" -eq 1 ] || chan_usage ;;
+    stop) [ "$A_N" -le 1 ] || chan_usage ;;
     *) chan_usage ;;
   esac
   chan_find_run
@@ -301,6 +349,9 @@ chan_main() {
     say) chan_say "$_cm_t" ;;
     said) chan_said ;;
     unsay) chan_unsay "$A_P2" ;;
+    hold) chan_hold ;;
+    resume) chan_resume ;;
+    stop) chan_stop ;;
   esac
   exit 0
 }

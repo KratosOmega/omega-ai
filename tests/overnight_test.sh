@@ -139,7 +139,7 @@ fake_run() {
     ( cd "$P" && STUDIO_STORY="$_fr_id" && export STUDIO_STORY \
         && sh "$STATE_BIN" init && sh "$STATE_BIN" ledger "plan approved x" ) >/dev/null 2>&1
   done
-  ( cd "$P" && git add -A .studio/stories .studio/ledger && git -c user.name=t -c user.email=t@t commit -qm stories ) >/dev/null 2>&1
+  ( cd "$P" && git add -A .studio/ledger && git -c user.name=t -c user.email=t@t commit -qm stories ) >/dev/null 2>&1
 }
 # fake_run_end [PID] — end a fake run (default FR_PID): its dummy, lock and
 # registry entry.
@@ -941,6 +941,92 @@ test_unsay_id_prefix() {
   verb unsay - 1; assert_eq 1 "$V_STATUS" "a second unsay 1 is unknown"
   fake_run_end
 }
+test_hold_resume_stop_table() {
+  fixture tb
+  fake_run overnight-tb-1 manifest Q=queued W=waiting R=running G=gate-repair \
+    H="held stop: need art until 2026-10-04T05:00:00Z" L=landing P=repair
+  C="$FR_DIR/control"
+  for id in Q W R G H L P; do cp "$FR_DIR/stories/$id" "$TMP/rec-$id"; done
+  for id in Q W; do verb hold "$id"; assert_eq "hold requested: $id holds when it would start" "$(cat "$V_OUT")" "hold $id"; done
+  for id in R G; do verb hold "$id"; assert_eq "hold requested: $id holds at its next unit boundary" "$(cat "$V_OUT")" "hold $id"; done
+  for id in Q W R G; do assert_file "$C/$id.hold" "hold $id writes control/$id.hold"; done
+  verb hold H; assert_eq 1 "$V_STATUS" "hold on a held story"; assert_contains "$V_ERR" "already held" "named"
+  for id in L P; do
+    verb hold "$id"; assert_eq 1 "$V_STATUS" "hold $id (landing)"; assert_contains "$V_ERR" "land lock" "named"
+    verb resume "$id"; assert_eq 1 "$V_STATUS" "resume $id (landing)"
+    verb stop "$id"; assert_eq 1 "$V_STATUS" "stop $id (landing)"; assert_contains "$V_ERR" "land lock" "named"
+    verb say "$id" note; assert_eq 0 "$V_STATUS" "say $id still queues"
+  done
+  for id in Q W R G; do verb resume "$id"; assert_eq 1 "$V_STATUS" "resume $id: not held"; assert_contains "$V_ERR" "is not held" "named"; done
+  verb resume H; assert_eq "resume requested: H resumes within one poll" "$(cat "$V_OUT")" "resume H"
+  assert_file "$C/H.resume" "control/H.resume"
+  for id in Q W; do verb stop "$id"; assert_eq "stop requested: $id stops when its lane reaches it" "$(cat "$V_OUT")" "stop $id"; done
+  for id in R G; do verb stop "$id"; assert_eq "stop requested: $id stops after its running unit" "$(cat "$V_OUT")" "stop $id"; done
+  verb stop H; assert_eq "stop requested: H stops within one poll" "$(cat "$V_OUT")" "stop H"
+  for id in Q W R G H; do assert_file "$C/$id.stop" "control/$id.stop"; done
+  for id in L P; do assert_missing "$C/$id.hold" "no control file for $id"; assert_missing "$C/$id.stop" "nor a stop"; done
+  for id in Q W R G H L P; do assert_eq "$(cat "$TMP/rec-$id")" "$(cat "$FR_DIR/stories/$id")" "the verbs never write $id's record"; done
+  verb hold Q; assert_eq "hold requested: Q holds when it would start" "$(cat "$V_OUT")" "hold again: the same line (R22)"
+  assert_contains "$FR_DIR/events.jsonl" '"event":"control","story":"Q","action":"hold"}$' "a control event for hold"
+  assert_contains "$FR_DIR/events.jsonl" '"event":"control","story":"H","action":"resume"}$' "for resume"
+  assert_contains "$FR_DIR/events.jsonl" '"event":"control","story":"R","action":"stop"}$' "for stop"
+  assert_eq "" "$(ls -A "$C" | grep '^\.')" "no temp control file left"
+  fake_run_end
+}
+test_hold_minutes_zero() {
+  fixture hz; FR_HOLD=0; fake_run overnight-hz-1 manifest S1=running S2="held stop: x until 2026-10-04T05:00:00Z"; unset FR_HOLD
+  verb hold S1;   assert_eq 1 "$V_STATUS" "hold with hold_minutes 0"
+  assert_eq "studio-overnight: holds are off: hold_minutes 0" "$(cat "$V_ERR")" "the exact line"
+  verb resume S2; assert_eq 1 "$V_STATUS" "resume with hold_minutes 0"
+  assert_contains "$V_ERR" "holds are off: hold_minutes 0" "named"
+  verb say S1 x;  assert_eq 0 "$V_STATUS" "say works"
+  verb said S1;   assert_eq 0 "$V_STATUS" "said works"
+  verb unsay S1 1; assert_eq 0 "$V_STATUS" "unsay works"
+  verb stop S1;   assert_eq 0 "$V_STATUS" "stop <story> works"
+  fake_run_end
+}
+test_single_plan_verbs() {
+  fixture spv; fake_run overnight-spv-1 single; C="$FR_DIR/control"
+  verb hold -;   assert_eq "hold requested: - holds at its next unit boundary" "$(cat "$V_OUT")" "hold - on the running story"
+  verb resume -; assert_eq 1 "$V_STATUS" "resume -: not held"
+  verb hold S1;  assert_eq 1 "$V_STATUS" "a story id in a single-plan run"
+  mkdir -p "$C"; printf 'held stop: x until 2026-10-04T05:00:00Z\n' > "$C/-.held"
+  verb hold -;   assert_eq 1 "$V_STATUS" "control/-.held: already held"
+  verb resume -; assert_eq 0 "$V_STATUS" "resume - on a held story"
+  assert_file "$C/-.resume" "control/-.resume"
+  verb stop -;   assert_eq "stop requested: - stops within one poll" "$(cat "$V_OUT")" "stop - on a held story"
+  rm -f "$C/-.held"
+  verb stop -;   assert_eq "stop requested: - stops after its running unit" "$(cat "$V_OUT")" "stop - on the running story"
+  assert_missing "$P/.studio/overnight.stop" "stop - never writes the run's stop file"
+  fake_run_end
+}
+test_resume_refused_dirty_ledger() {
+  fixture rd; fake_run overnight-rd-1 manifest H="held stop: x until 2026-10-04T05:00:00Z"
+  printf -- '- 2026-10-03 hand edit\n' >> "$P/.studio/ledger/H.md"
+  verb resume H; assert_eq 1 "$V_STATUS" "a dirty start ledger refuses resume"
+  assert_contains "$V_ERR" "\.studio/ledger/H\.md" "it names the file"
+  assert_missing "$FR_DIR/control/H.resume" "no control file"
+  fake_run_end
+  fixture rd2; ledger_add "Directive 1: x"; fake_run overnight-rd2-1 single
+  mkdir -p "$FR_DIR/control"; printf 'held stop: x until 2026-10-04T05:00:00Z\n' > "$FR_DIR/control/-.held"
+  printf -- '- 2026-10-03 hand edit\n' >> "$P/.studio/ledger/spec.md"
+  verb resume -; assert_eq 1 "$V_STATUS" "single-plan: a dirty .studio/ledger refuses resume"
+  assert_contains "$V_ERR" "\.studio/ledger/spec\.md" "it names the file"
+  fake_run_end
+}
+test_resume_from_feature_worktree() {
+  fixture rw; fake_run overnight-rw-1 manifest H="held stop: x until 2026-10-04T05:00:00Z"
+  git -C "$P" worktree add -q -b feat-h "$TMP/wt-rw" >/dev/null 2>&1
+  printf -- '- 2026-10-03 feature-side edit\n' >> "$TMP/wt-rw/.studio/ledger/H.md"
+  verb_in "$TMP/wt-rw" said H; assert_eq 0 "$V_STATUS" "a verb inside a feature worktree finds the run"
+  verb_in "$TMP/wt-rw" resume H
+  assert_eq 0 "$V_STATUS" "the dirty check reads the run's start checkout, not the cwd"
+  assert_file "$FR_DIR/control/H.resume" "the control file is the run's"
+  rm -f "$FR_DIR/control/H.resume"
+  printf -- '- 2026-10-03 start-side edit\n' >> "$P/.studio/ledger/H.md"
+  verb_in "$TMP/wt-rw" resume H; assert_eq 1 "$V_STATUS" "a dirty start ledger refuses, from the worktree too"
+  fake_run_end
+}
 test_verbs_refusals() {
   fixture rf
   verb say - x; assert_eq 1 "$V_STATUS" "no live run: exit 1"
@@ -1059,6 +1145,11 @@ run_tests test_overnight_report_done test_overnight_report_not_done \
   test_unsay_pending_active_delivered \
   test_unsay_id_prefix \
   test_unsay_loses_race_to_hook \
+  test_hold_resume_stop_table \
+  test_hold_minutes_zero \
+  test_single_plan_verbs \
+  test_resume_refused_dirty_ledger \
+  test_resume_from_feature_worktree \
   test_verbs_refusals \
   test_verbs_run_pinning \
   test_inbox_lock_stale_broken \
