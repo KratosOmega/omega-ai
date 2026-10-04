@@ -963,7 +963,7 @@ write_report() {
   } > "$RUN_DIR/report.md"
   case "$1" in
     done) ;;
-    "stopped "*) state_event - "$1" ;;
+    "stopped by operator") state_event - "$1" ;;
     *) state_event - "stopped $1" ;;
   esac
   run_event run_ended "ending=$1" "report=$RUN_DIR/report.md"
