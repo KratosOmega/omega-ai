@@ -9,8 +9,9 @@ Story #27 defines it; #28 (the Multica bridge) builds on it. Spec:
 - Inside a project, the live run is the one holding the project's lock
   (`.studio/overnight.lock`: `pid=`, `run=`, `started=`).
 - From anywhere, the user-level registry `~/.claude-gamedev/runs/` holds one
-  file per live run, `<run name>-<pid>` (the run name starts `overnight-`),
-  with these lines:
+  file per run whose runner started, `<run name>-<pid>` (the run name starts
+  `overnight-`). A run is live only while its `pid` is alive and is a
+  studio-overnight; a runner killed with SIGKILL leaves its entry. The lines:
 
   ```
   root=<project root>
@@ -45,21 +46,55 @@ envelope, in this order:
 - Fields marked (number) are JSON numbers, or `null` when the runner does not
   know the value (for example a unit's `usd`). Single-plan runs use
   `"story":"-"`; the final step's units do too.
+- Optional fields: `why` appears only for `held`, `stopped` and `skipped`;
+  `until` only for `held`. No other field is optional, except that a line
+  carrying `"cut":true` may be missing any trailing field, so a reader
+  tolerates that.
+- `why` is free display text taken from the story's record. Never match on
+  it, and never treat the examples as an enum: `by operator` (an operator
+  stop, in lanes and single-plan runs alike), `held by operator` (an operator
+  hold), the halt's text such as `stopped by user`, or the stop rule's own
+  text (for example `stop: need art`), possibly
+  followed by ` (was held: …)`. To detect an operator stop, read the
+  `control` event (action `stop`) and the story's next terminal `story_state`.
 - A failed write never stops the run. Verbs and the hook note it in
   `<run dir>/hook.log`; the runner notes it on its stderr.
 
-| event | fields |
-|---|---|
-| `run_started` | `mode` (`single`, `integration`, `direct`), `max_lanes` (number), `hold_minutes` (number) |
-| `story_listed` | `story`, `chain` (number), `depends` (array of story ids) — one per story, right after `run_started`; together they are the queue |
-| `story_state` | `story`, `state` (`queued`, `waiting`, `running`, `repair`, `gate-repair`, `held`, `landing`, `landed`, `stopped`, `skipped`), `why` (held, stopped, skipped: the reason text, for example `by operator`), `until` (held: ISO-8601 UTC) |
-| `unit_started` | `story`, `unit` (the unit tag), `label` (for example `repair`, without the story id), `model` |
-| `unit_ended` | `story`, `unit`, `label`, `outcome` (`progress`, `done`, `stop`, `noprog`, `timed out`, `orphaned`), `usd` (number or `null`) |
-| `message_queued` | `story`, `id` (number), `scope` (`story`, `unit`, `retire`) |
-| `message_delivered` | `story`, `id` (number), `scope`, `unit`, `via` (`session_start`, `tool_call`) — a compact re-show of a delivered message is not logged |
-| `message_requeued` | `story`, `id` (number), `unit`, `requeues` (number) |
-| `control` | `story`, `action` (`hold`, `resume`, `stop`) — the request, written by the verb |
-| `run_ended` | `ending`, `report` (path of `report.md`) |
+| event | fields | values and notes |
+|---|---|---|
+| `run_started` | `mode`, `max_lanes`, `hold_minutes` | `mode`: `single`, `integration`, `direct`; `max_lanes` and `hold_minutes` are numbers |
+| `story_listed` | `story`, `chain`, `depends` | `chain` is a number; `depends` is an array of story ids; one per story, right after `run_started`; together they are the queue |
+| `story_state` | `story`, `state`, `why`, `until` | `state`: `queued`, `waiting`, `running`, `repair`, `gate-repair`, `held`, `landing`, `landed`, `stopped`, `skipped`; `why` only for held, stopped, skipped; `until` only for held (ISO-8601 UTC) |
+| `unit_started` | `story`, `unit`, `label`, `model` | `unit` is the unit tag; `label` is for example `repair`, without the story id |
+| `unit_ended` | `story`, `unit`, `label`, `outcome`, `usd` | `outcome`: `progress`, `done`, `stop`, `noprog`, `timed out`, `orphaned`; `usd` is a number or `null` |
+| `message_queued` | `story`, `id`, `scope` | `id` is a number; `scope`: `story`, `unit`, `retire` |
+| `message_delivered` | `story`, `id`, `scope`, `unit`, `via` | `via`: `session_start`, `tool_call`; a compact re-show of a delivered message is not logged |
+| `message_requeued` | `story`, `id`, `unit`, `requeues` | `id` and `requeues` are numbers |
+| `control` | `story`, `action` | `action`: `hold`, `resume`, `stop`; the request, written by the verb |
+| `run_ended` | `ending`, `report` | `report` is the path of `report.md`; `ending` is `done` or free text |
+
+## Lifecycle and ordering
+
+- **Order is file order only.** `ts` has one-second resolution, so equal
+  stamps are common. The runner, the lanes, the verbs and the hook append
+  concurrently; each line is one append of at most 4096 bytes, so lines
+  interleave but never mix. Only one story's events are causally ordered. A
+  verb's `message_queued` or `control` can precede `run_started`.
+- **`run_ended` may never come.** Single-plan: a runner killed with SIGKILL
+  writes none. Manifest runs: the next `start` reaps the dead run, appending
+  `story_state` lines and a final `run_ended` (ending `stop: runner gone`) to
+  the dead run's log, possibly hours later, from another process. A consumer
+  decides a run is over when the registry `pid` is dead, not by waiting for
+  `run_ended`.
+- **`ending`**: `done` is the only success value; anything else is free text
+  (do not match on it).
+- **Single-plan stories**: the one story `-` starts at `running` (never
+  `queued`) and never gets `landed`; `run_ended` with ending `done` is its
+  only success signal. Lanes: each story gets one `story_state` right after
+  the listing (`queued`, or `landed` for a resumed run).
+- **Message ids** are unique per story only while a message exists: the id of
+  the newest pending message is reused after `unsay` removes it (#27 R11).
+  Key on the event's position in the file, not on `id`.
 
 ## Verbs
 
@@ -72,9 +107,9 @@ and otherwise exits 1 with `run <name> is not live` — never another run.
 | `say <story> [--unit] '<text>'` or `say <story> [--unit] -- <text>` | queues a message (scope `story`, or `unit` with `--unit`); text after `--` is every word joined by spaces | the message id |
 | `said <story>` | lists directives: `<id>  <state>  <text>`, state `active`, `pending`, `pending (unit)`, `delivered`, `retiring` | the list, or `(no directives)` |
 | `unsay <story> <id>` | removes a pending message, or queues a `retire` for an active or delivered one | `removed message <id> …` or `retire queued: …` |
-| `hold <story>` | `control/<story>.hold` (refused while landing, when already held, and when `hold_minutes` is 0) | `hold requested: …` |
+| `hold <story>` | `control/<story>.hold` (refused while landing (`landing` or `repair`), when already held, and when `hold_minutes` is 0) | `hold requested: …` |
 | `resume <story>` | `control/<story>.resume` (refused while the start checkout's ledger is dirty, when the story is not held, and when `hold_minutes` is 0) | `resume requested: …` |
-| `stop <story>` | `control/<story>.stop` (refused while landing) | `stop requested: …` |
+| `stop <story>` | `control/<story>.stop` (refused while landing (`landing` or `repair`)) | `stop requested: …` |
 | `stop [--run <run>]` | ends the whole run after its running unit, as before | `stop requested: …` |
 
 Exit codes (every verb):
@@ -83,7 +118,11 @@ Exit codes (every verb):
 |---|---|---|
 | 0 | done | stdout |
 | 1 | refused (no live run, two live runs and no `--run`, unknown story, an ended story, the directive cap, holds off, inbox busy, …) | one stderr line naming the reason (the cap lists the directives) |
-| 2 | usage (bad options, empty text) | usage on stderr |
+| 2 | usage (bad options, empty text) | the usage text, or `say: empty text`, on stderr |
+
+Exception: bare `stop` without `--run` keeps today's output (R27): stdout,
+exit 0 or 1, so its `no run in …` refusal is on stdout. Use `stop --run <run>`
+for the stderr form.
 
 ## Files
 
@@ -115,7 +154,7 @@ Use the EventBus autoload, not direct signals, for HUD updates.
 - `scope` is `story`, `unit` or `retire`; `target` is the retired id
   (`retire` only, else `-`); every line after `--` is the text.
 - Ids are per story: one more than the highest among the feature ledger's
-  `Directive <id>:` lines and the inbox, assigned under `.lock/`. A lock
+  `Directive` lines and the inbox, assigned under `.lock/`. A lock
   older than 10 seconds is stale and is broken by rename; a verb waits at
   most 15 seconds, then exits 1 `inbox busy`.
 - A control file holds the UTC time it was written; the runner acts on it

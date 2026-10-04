@@ -222,7 +222,8 @@ Talking to a live run (<story> is - in a single-plan run; every verb takes
   ending it; say + resume, or stop, ends the hold, else the deadline does.
   A hold fixes what a session can be told; a red landing, the run budget,
   a whole-run stop or a dead runner still end at once.
-  Exit: 0 done (stdout), 1 refused (one stderr line), 2 usage.
+  Exit: 0 done (stdout), 1 refused (one stderr line), 2 usage. Bare stop (no
+  --run) keeps today's output: stdout, exit 0 or 1.
   Events: <run dir>/events.jsonl, schema v1 (docs/game-dev/overnight-events.md).
 
 Exit: start 0 done, 1 any other ending, 2 refused.

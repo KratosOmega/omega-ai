@@ -203,17 +203,31 @@ test_overnight_help() {
 # doc's table and every documented event is written; the doc names the
 # envelope, the verbs and exit codes, the files and run discovery.
 test_events_contract_doc() {
-  DOC="$REPO_ROOT/docs/game-dev/overnight-events.md"
+  DOC="${EVENTS_DOC:-$REPO_ROOT/docs/game-dev/overnight-events.md}"   # EVENTS_DOC: a scratch copy, to prove the check fails
   B="$REPO_ROOT/studios/game-dev/bin"; H="$REPO_ROOT/studios/game-dev/hooks/operator-inbox.sh"
   assert_file "$DOC" "the contract exists"
+  # every call site, comment lines dropped: `run_event NAME …`, `chan_event
+  # NAME …` and the hook's `"$RD" NAME …`
+  cat "$B/studio-overnight" "$B/overnight-lanes.sh" "$B/overnight-channel.sh" "$H" | grep -v '^[[:space:]]*#' \
+    | grep -oE '(run_event|chan_event|"\$RD") [a-z_]+ ("|[a-z_]+(=|:=|\[\]=)|'"'"')' > "$TMP/ev-calls.txt"
+  cat "$B/studio-overnight" "$B/overnight-lanes.sh" "$B/overnight-channel.sh" "$H" | grep -v '^[[:space:]]*#' \
+    | grep -oE '(run_event|chan_event|"\$RD") [a-z_]+ .*' > "$TMP/ev-lines.txt"
   for e in run_started story_listed story_state unit_started unit_ended message_queued message_delivered message_requeued control run_ended; do
     assert_contains "$DOC" "^| \`$e\` |" "the doc's table lists $e"
-    assert_eq 1 "$(cat "$B/studio-overnight" "$B/overnight-lanes.sh" "$B/overnight-channel.sh" "$H" | grep -qE "(run_event|chan_event|\"\\\$RD\") $e " && echo 1 || echo 0)" "the code writes $e"
+    assert_eq 1 "$(awk -v e="$e" '$2 == e { f = 1 } END { print f ? 1 : 0 }' "$TMP/ev-calls.txt")" "the code writes $e"
+    # fields: those at the event's call sites equal those in the doc's fields column
+    awk -v e="$e" '$2 == e' "$TMP/ev-lines.txt" | grep -oE "(^| |\"|')[a-z_]+(:=|\[\]=|=)" \
+      | tr -d " \"'" | sed -e 's/:=$//' -e 's/\[\]=$//' -e 's/=$//' | sort -u > "$TMP/ev-code.txt"
+    grep "^| \`$e\` |" "$DOC" | awk -F'|' '{ print $3 }' | grep -oE '`[a-z_]+`' | tr -d '`' | sort -u > "$TMP/ev-doc.txt"
+    for k in $(cat "$TMP/ev-code.txt"); do
+      assert_eq 1 "$(grep -qx "$k" "$TMP/ev-doc.txt" && echo 1 || echo 0)" "$e: emitted field $k is in the doc's row"
+    done
+    for k in $(cat "$TMP/ev-doc.txt"); do
+      assert_eq 1 "$(grep -qx "$k" "$TMP/ev-code.txt" && echo 1 || echo 0)" "$e: documented field $k is emitted"
+    done
   done
-  # a call site is `run_event NAME "` or `run_event NAME key=` (comments
-  # such as "run_event EVENT FIELD…" do not match)
-  for e in $( { cat "$B/studio-overnight" "$B/overnight-lanes.sh" "$B/overnight-channel.sh" | grep -oE '(run_event|chan_event) [a-z_]+ ("|[a-z_]+(=|:=|\[\]=))'
-               grep -oE '"\$RD" [a-z_]+ "' "$H"; } | awk '{ print $2 }' | sort -u); do
+  # every event the code writes is documented
+  for e in $(awk '{ print $2 }' "$TMP/ev-calls.txt" | sort -u); do
     assert_contains "$DOC" "^| \`$e\` |" "$e, written by the code, is documented"
   done
   for w in '"v":1' '^## Schema v1' 'never renamed or removed' 'run=<run dir>' 'events.jsonl' 'hook.log' 'inbox/<story>/<id>.msg' \
