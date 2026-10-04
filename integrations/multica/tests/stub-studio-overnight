@@ -1,0 +1,36 @@
+#!/bin/sh
+# Stub studio-overnight: records its invocation under $STUB_SO_DIR, behaves per script (#28).
+d="${STUB_SO_DIR:?STUB_SO_DIR not set}"
+mkdir -p "$d"
+n=0
+[ -f "$d/n" ] && n="$(cat "$d/n")"
+n=$((n + 1))
+echo "$n" > "$d/n"
+printf '%s\0' "$@" > "$d/$n.argv"
+pwd -P > "$d/$n.pwd"
+env | grep '^MULTICA_' | sort > "$d/$n.env"
+printf '%s\n%s\n' "$$" "$(ps -o pgid= -p $$ | tr -d ' ')" > "$d/$n.ids"
+head -c 100 <&0 > "$d/$n.stdin" 2>/dev/null &
+rp=$!
+( sleep 1; kill "$rp" 2>/dev/null ) >/dev/null 2>&1 &
+wait "$rp" 2>/dev/null
+verb="${1:-}"
+script="$d/$verb.script"
+[ -f "$script" ] || script="$d/default.script"
+if [ ! -f "$script" ]; then
+  echo ok
+  exit 0
+fi
+while IFS= read -r line || [ -n "$line" ]; do
+  cmd="${line%% *}"
+  arg=""
+  case "$line" in *" "*) arg="${line#* }" ;; esac
+  case "$cmd" in
+    out) printf '%s\n' "$arg" ;;
+    err) printf '%s\n' "$arg" >&2 ;;
+    exit) exit "$arg" ;;
+    sleep) sleep "$arg" ;;
+    spawn) sleep 300 >/dev/null 2>&1 & echo $! > "$d/grandchild.pid" ;;
+  esac
+done < "$script"
+exit 0

@@ -1,0 +1,64 @@
+#!/bin/sh
+# p1-agent-wrapper — P1/P3/P4/P5 probe stand-in for omega-multica-agent (AC3).
+# Installed by p1-agent-session.sh as ~/.local/bin/omega-probe-agent (a copy,
+# so it is outside ~/Documents); the context file sits beside it as
+# ~/.local/bin/omega-probe-context.md. Run by Multica's daemon, never by hand.
+# Writes: $RES/p1-calls.log (argv and cwd, never env) and
+# <workdir>/.omega-context.md.
+RES="${MULTICA_PROBE_RESULTS:-$HOME/.claude-gamedev/multica/probes}"
+HERE="$(dirname "$0")"
+
+# AC3.1 — the daemon's availability check.
+if [ "${1:-}" = "--version" ]; then exec claude-gd --version; fi
+
+WORKDIR="$PWD"
+{
+  mkdir -p "$RES" && {
+    printf '%s cwd=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PWD"
+    for _a in "$@"; do printf '  argv: %s\n' "$_a"; done
+  } >> "$RES/p1-calls.log"
+} 2>/dev/null
+
+[ -n "${OMEGA_PROJECT:-}" ] && [ -d "$OMEGA_PROJECT" ] || {
+  echo "omega-probe-agent: OMEGA_PROJECT is unset or not a directory" >&2
+  exit 1
+}
+
+# AC3.5 — Multica's CLAUDE.md, then the probe's context text.
+{
+  [ -f "$WORKDIR/CLAUDE.md" ] && cat "$WORKDIR/CLAUDE.md"
+  cat "$HERE/omega-probe-context.md"
+} > "$WORKDIR/.omega-context.md" || {
+  echo "omega-probe-agent: cannot write $WORKDIR/.omega-context.md" >&2
+  exit 1
+}
+
+# AC3.6 — the run's origin (P4).
+if [ -n "${MULTICA_TASK_ID:-}" ]; then
+  STUDIO_RUN_ORIGIN="multica:$MULTICA_TASK_ID"
+  export STUDIO_RUN_ORIGIN
+fi
+
+cd "$OMEGA_PROJECT" || exit 1
+
+# D8 — the deny list is a copy of what multica-deny.txt will hold: spec AC5
+# (eight rules, spec L297-301), plan R47 (two more) and the four ~/.multica
+# path rules added in Task 3's review. One flag per rule.
+exec claude-gd \
+  --disallowedTools 'Read(~/.multica/**)' \
+  --disallowedTools 'Bash(*.multica/profiles*)' \
+  --disallowedTools 'Bash(*multica*--profile*)' \
+  --disallowedTools 'Bash(*multica login*)' \
+  --disallowedTools 'Bash(*multica auth*)' \
+  --disallowedTools 'Bash(*multica setup*)' \
+  --disallowedTools 'Bash(*multica config*)' \
+  --disallowedTools 'Bash(*multica workspace switch*)' \
+  --disallowedTools 'Bash(*MULTICA_TOKEN=*)' \
+  --disallowedTools 'Bash(*multica*--server-url*)' \
+  --disallowedTools 'Bash(*~/.multica*)' \
+  --disallowedTools 'Bash(*$HOME/.multica*)' \
+  --disallowedTools 'Bash(*${HOME}/.multica*)' \
+  --disallowedTools 'Bash(*/Users/*/.multica*)' \
+  --append-system-prompt-file "$WORKDIR/.omega-context.md" \
+  --add-dir "$WORKDIR" \
+  "$@"

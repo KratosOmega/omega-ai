@@ -1,0 +1,21 @@
+[
+  {
+    "created_at": "2026-10-02T17:19:43Z",
+    "custom_name": "",
+    "daemon_id": "00000000-0000-4000-8000-000000000002",
+    "device_info": "Claude (host.example.lan) - host.example.lan",
+    "id": "00000000-0000-4000-8000-000000000004",
+    "last_seen_at": "2026-10-02T17:19:43Z",
+    "launch_header": "",
+    "metadata": {},
+    "name": "Claude (host.example.lan)",
+    "owner_id": "00000000-0000-4000-8000-000000000001",
+    "profile_id": "00000000-0000-4000-8000-000000000005",
+    "provider": "claude",
+    "runtime_mode": "local",
+    "status": "online",
+    "updated_at": "2026-10-02T17:19:43Z",
+    "visibility": "workspace",
+    "workspace_id": "00000000-0000-4000-8000-0000000000aa"
+  }
+]

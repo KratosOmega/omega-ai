@@ -1,0 +1,600 @@
+#!/usr/bin/env python3
+"""stub-multica: offline stand-in for the Multica CLI 0.6.x (#28 tests).
+
+Row shapes, envelopes, timestamp form and error texts follow the P7 recording
+(see tests/fixtures/cli/README.md). State lives in $STUB_MULTICA_DIR, else
+<directory of argv[0] as invoked>/stub-state: board.json, calls.jsonl,
+faults.json, errors/<name>.txt (+ optional <name>.exit)."""
+from __future__ import annotations
+
+import fcntl
+import json
+import os
+import sys
+import time
+from datetime import datetime, timezone
+
+ENV_KEYS = ("MULTICA_TOKEN", "MULTICA_SERVER_URL", "MULTICA_WORKSPACE_ID",
+            "MULTICA_DAEMON_PORT", "MULTICA_TASK_ID", "HOME", "PATH")
+GLOBAL_VALUE = ("--profile", "--server-url", "--workspace-id", "--output")
+GLOBAL_BOOL = ("--debug",)
+_SIGNIN = ("Your session has expired or you are not signed in. Run `multica login` to sign in again. "
+           "On a self-hosted or non-OAuth setup, ask your administrator for valid credentials.")
+DEFAULT_ERRORS = {
+    "no-token": _SIGNIN,
+    "unauthorized": _SIGNIN,
+    "not-found": "The requested resource was not found. Check the ID, or run the matching `list` command "
+                 "to see what exists in this workspace.",
+    "duplicate": "Active duplicate issue exists: {ident} {title} (status: {status}). "
+                 "Set allow_duplicate=true or use --allow-duplicate to create another.",
+    "bad-status": "Invalid request: invalid status \"{status}\"; valid values: "
+                  "backlog, todo, in_progress, in_review, blocked, done, cancelled",
+    "forbidden": "Forbidden: workspace owner or admin required",
+}
+DEFAULT_EXIT = {"no-token": 3, "unauthorized": 3, "not-found": 4, "duplicate": 1, "bad-status": 5, "forbidden": 1}
+STATUSES = ("backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled")
+TERMINAL = ("done", "cancelled")
+ACTIVE_RUN = ("queued", "dispatched", "running")
+SPEC = {  # command words: (value flags, bool flags, positional count)
+    ("version",): ((), (), 0),
+    ("user", "profile", "get"): ((), (), 0),
+    ("issue", "create"): (("--title", "--description", "--parent", "--status", "--assignee-id", "--property"),
+                          ("--description-stdin", "--allow-duplicate"), 0),
+    ("issue", "get"): ((), (), 1),
+    ("issue", "list"): (("--property", "--assignee-id", "--sort", "--direction", "--limit", "--offset", "--status"), (), 0),
+    ("issue", "status"): ((), ("--no-start",), 2),
+    ("issue", "assign"): (("--agent", "--member", "--squad"), ("--unassign", "--no-start"), 1),
+    ("issue", "runs"): ((), ("--active",), 1),
+    ("issue", "comment", "add"): (("--parent", "--content"), ("--content-stdin",), 1),
+    ("issue", "comment", "list"): (("--since",), (), 1),
+    ("property", "list"): ((), ("--include-archived",), 0),
+    ("property", "create"): (("--name", "--type", "--description"), (), 0),
+    ("runtime", "list"): ((), (), 0),
+    ("runtime", "profile", "list"): ((), (), 0),
+    ("runtime", "profile", "create"): (("--display-name", "--command-name", "--protocol-family"), (), 0),
+    ("runtime", "profile", "delete"): ((), (), 1),
+    ("agent", "list"): ((), ("--include-archived",), 0),
+    ("agent", "create"): (("--name", "--runtime-id", "--max-concurrent-tasks", "--instructions"), ("--custom-env-stdin",), 0),
+}
+REPEATABLE = ("--property",)
+NO_OUTPUT = (("runtime", "profile", "delete"),)
+
+
+class Exit(Exception):
+    def __init__(self, code, out="", err=""):
+        super().__init__(code)
+        self.code, self.out, self.err = code, out, err
+
+
+def state_dir():
+    return os.environ.get("STUB_MULTICA_DIR") or os.path.join(
+        os.path.dirname(os.path.abspath(sys.argv[0])), "stub-state")
+
+
+def error_text(d, name, **kw):
+    try:
+        with open(os.path.join(d, "errors", name + ".txt"), encoding="utf-8") as f:
+            text = f.read().strip()
+    except OSError:
+        text = DEFAULT_ERRORS[name]
+    for k, v in kw.items():         # {ident} {title} {status}; no str.format, texts may hold braces
+        text = text.replace("{%s}" % k, str(v))
+    return text
+
+
+def error_exit(d, name):
+    try:
+        with open(os.path.join(d, "errors", name + ".exit"), encoding="utf-8") as f:
+            return int(f.read().strip())
+    except (OSError, ValueError):
+        return DEFAULT_EXIT[name]
+
+
+def fail(d, name, **kw):
+    return Exit(error_exit(d, name), err=error_text(d, name, **kw))
+
+
+def usage(msg):
+    return Exit(2, err="Error: " + msg)
+
+
+# ----- clock and ids -------------------------------------------------------
+
+def fmt(t):
+    """P7d form: UTC, Z, second resolution."""
+    return datetime.fromtimestamp(int(t), timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def parse_ts(s):
+    s = s.strip().rstrip("Z").partition(".")[0]
+    return datetime.strptime(s, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc).timestamp()
+
+
+def now(board):
+    t = board.get("now")
+    return fmt(time.time() if t is None else t)
+
+
+def next_n(board, kind):
+    c = board.setdefault("counters", {})
+    c[kind] = c.get(kind, 0) + 1
+    return c[kind]
+
+
+def ws():
+    return os.environ.get("MULTICA_WORKSPACE_ID") or "ws-test"
+
+
+# ----- row templates (key sets = the P7 recording) -------------------------
+
+def make_issue(board, title, description="", status="backlog", parent=None, assignee_type=None,
+               assignee_id=None, props=None, created_at=None):
+    n = next_n(board, "issue")
+    at = created_at or now(board)
+    row = {"assignee_id": assignee_id, "assignee_type": assignee_type, "created_at": at,
+           "creator_id": board["user"]["id"], "creator_type": "member", "description": description,
+           "due_date": None, "duplicate_of": None, "id": "iss-%d" % n, "identifier": "OMEG-%d" % n,
+           "labels": [], "last_activity_at": at, "metadata": {}, "number": n, "parent_issue_id": parent,
+           "position": float(n), "priority": "none", "project_id": None, "properties": dict(props or {}),
+           "revision": 1, "stage": None, "start_date": None, "status": status, "status_category": status,
+           "status_name": "", "title": title, "updated_at": at, "workspace_id": ws()}
+    board.setdefault("issues", []).append(row)
+    return row
+
+
+def make_comment(board, issue_id, content, author_type="member", author_id=None, parent=None, at=None):
+    n = next_n(board, "comment")
+    at = at or now(board)
+    row = {"attachments": [], "author_id": author_id or board["user"]["id"], "author_type": author_type,
+           "content": content, "created_at": at, "id": "cm-%d" % n, "issue_id": issue_id,
+           "issue_revision": 1, "parent_id": parent, "reactions": [], "resolved_at": None,
+           "resolved_by_id": None, "resolved_by_type": None, "revision": 1, "type": "comment",
+           "updated_at": at}
+    board.setdefault("comments", []).append(row)
+    return row
+
+
+def make_run(issue_id, run_id, started_at, completed_at=None, status="completed"):
+    return {"agent_id": "ag-1", "attempt": 1, "attribution": None, "completed_at": completed_at,
+            "created_at": started_at, "delivered_comment_ids": [], "dispatched_at": started_at,
+            "error": None, "id": run_id, "issue_id": issue_id, "kind": "issue_assignment",
+            "max_attempts": 2, "priority": 0, "relative_work_dir": "", "result": {},
+            "runtime_id": "rt-1", "started_at": started_at, "status": status,
+            "trigger_comment_id": None, "trigger_summary": "", "usage": [], "work_dir": "",
+            "workspace_id": ws()}
+
+
+def make_property(board, name, ptype="text", description=""):
+    n = next_n(board, "property")
+    at = now(board)
+    return {"archived": False, "config": {"options": None}, "created_at": at, "description": description,
+            "icon": "", "id": "prop-%d" % n, "name": name, "position": n, "type": ptype,
+            "updated_at": at, "usage_count": 0}
+
+
+def make_profile(board, display_name, command_name, protocol_family):
+    n = next_n(board, "profile")
+    at = now(board)
+    return {"command_name": command_name, "created_at": at, "created_by": board["user"]["id"],
+            "description": "", "display_name": display_name, "enabled": True, "fixed_args": [],
+            "id": "rp-%d" % n, "protocol_family": protocol_family, "runtime_type": "custom",
+            "updated_at": at, "visibility": "workspace", "workspace_id": ws()}
+
+
+def make_runtime(board, name, profile_id):
+    n = next_n(board, "runtime")
+    at = now(board)
+    return {"created_at": at, "custom_name": "", "daemon_id": board.get("daemon_id", "daemon-1"),
+            "device_info": "%s - host.example.lan" % name, "id": "rt-%d" % n, "last_seen_at": at,
+            "launch_header": "", "metadata": {}, "name": name, "owner_id": board["user"]["id"],
+            "profile_id": profile_id, "provider": "claude", "runtime_mode": "local", "status": "online",
+            "updated_at": at, "visibility": "workspace", "workspace_id": ws()}
+
+
+def make_agent(board, name, runtime_id, max_tasks, instructions, env_keys):
+    n = next_n(board, "agent")
+    at = now(board)
+    return {"archived_at": None, "archived_by": None, "avatar_url": None, "conversation_starters": [],
+            "created_at": at, "custom_args": [], "custom_env_key_count": len(env_keys), "description": "",
+            "disabled_runtime_skills": [], "has_custom_env": bool(env_keys), "id": "ag-%d" % n,
+            "instructions": instructions, "invocation_targets": [], "max_concurrent_tasks": max_tasks,
+            "mcp_config": None, "mcp_config_redacted": False, "model": "", "name": name,
+            "owner_id": board["user"]["id"], "permission_mode": "", "runtime_bound": True,
+            "runtime_config": {}, "runtime_id": runtime_id, "runtime_mode": "local", "service_tier": "",
+            "skills": [], "status": "idle", "thinking_level": "", "updated_at": at,
+            "visibility": "workspace", "workspace_id": ws()}
+
+
+# ----- parsing --------------------------------------------------------------
+
+def parse(argv):
+    """-> (words, values, bools, positionals, output). Global flags may sit anywhere."""
+    toks, output, has_output, i = [], "table", False, 0
+    while i < len(argv):
+        a = argv[i]
+        name, eq, val = a.partition("=")
+        if name in GLOBAL_VALUE:
+            if not eq:
+                if i + 1 >= len(argv):
+                    raise usage("flag needs an argument: " + name)
+                val, i = argv[i + 1], i + 1
+            if name == "--output":
+                output, has_output = val, True
+        elif a not in GLOBAL_BOOL:
+            toks.append(a)
+        i += 1
+    words = next((tuple(toks[:n]) for n in (3, 2, 1) if tuple(toks[:n]) in SPEC), None)
+    if words is None:
+        raise usage("unknown command: " + " ".join(toks[:3]))
+    if has_output and words in NO_OUTPUT:
+        raise usage("unknown flag: --output")
+    vflags, bflags, npos = SPEC[words]
+    values, bools, pos, rest, j = {}, set(), [], toks[len(words):], 0
+    while j < len(rest):
+        a = rest[j]
+        name, eq, val = a.partition("=")
+        if name in vflags:
+            if not eq:
+                if j + 1 >= len(rest):
+                    raise usage("flag needs an argument: " + name)
+                val, j = rest[j + 1], j + 1
+            if name in REPEATABLE:
+                values.setdefault(name, []).append(val)
+            else:
+                values[name] = val
+        elif a in bflags:
+            bools.add(a)
+        elif a.startswith("-") and a != "-":
+            raise usage("unknown flag: " + name)
+        else:
+            pos.append(a)
+        j += 1
+    if len(pos) != npos:
+        raise usage("accepts %d arg(s), received %d" % (npos, len(pos)))
+    return words, values, bools, pos, output
+
+
+# ----- state files -----------------------------------------------------------
+
+def save(d, board):
+    tmp = os.path.join(d, "board.json.tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(board, f)
+    os.replace(tmp, os.path.join(d, "board.json"))
+
+
+def take_fault(d, words, argv):
+    path = os.path.join(d, "faults.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            rules = json.load(f)
+    except (OSError, ValueError):
+        return None
+    cmd, joined = " ".join(words), " ".join(argv)
+    for r in rules:
+        if r.get("cmd") != cmd or r.get("count", 1) == 0:
+            continue
+        if r.get("contains") and r["contains"] not in joined:
+            continue
+        fired = dict(r)
+        if r.get("count", 1) > 0:
+            r["count"] = r.get("count", 1) - 1
+        with open(path + ".tmp", "w", encoding="utf-8") as f:
+            json.dump(rules, f)
+        os.replace(path + ".tmp", path)
+        return fired
+    return None
+
+
+# ----- handlers ----------------------------------------------------------------
+
+def live_issues(board):
+    dead = board.get("deleted", [])
+    return [r for r in board.get("issues", []) if r["id"] not in dead]
+
+
+def find_issue(board, ident, d):
+    for r in live_issues(board):
+        if ident in (r["identifier"], r["id"]):
+            return r
+    raise fail(d, "not-found")
+
+
+def prop_by_ref(board, ref):
+    for p in board.get("properties", []):
+        if ref == p["id"] or ref.lower() == p["name"].lower():
+            return p
+    return None
+
+
+def split_prop(s):
+    k, eq, v = s.partition("=")
+    if not eq:
+        raise usage("invalid --property (want Name=Value): " + s)
+    return k, v
+
+
+def h_version(board, d, v, b, pos, stdin):
+    return {"arch": "arm64", "commit": "0000000", "date": "2026-10-04T00:00:00Z", "go": "go1.24",
+            "os": "darwin", "version": board["version"]}
+
+
+def h_profile_get(board, d, v, b, pos, stdin):
+    u = board["user"]
+    return {"avatar_url": None, "created_at": "2026-10-01T00:00:00Z", "email": u.get("email", ""),
+            "id": u["id"], "language": "en", "name": u.get("name", ""), "onboarded_at": None,
+            "onboarding_questionnaire": {}, "profile_description": "", "starter_content_state": None,
+            "timezone": "UTC", "updated_at": "2026-10-01T00:00:00Z"}
+
+
+def h_issue_create(board, d, v, b, pos, stdin):
+    title = v.get("--title")
+    if not title:
+        raise usage("required flag(s) \"title\" not set")
+    desc = stdin if "--description-stdin" in b else v.get("--description", "")
+    parent = find_issue(board, v["--parent"], d)["id"] if v.get("--parent") else None
+    props = {}
+    for s in v.get("--property", []):
+        k, val = split_prop(s)
+        p = prop_by_ref(board, k)
+        if p is None:
+            raise Exit(1, err="Invalid request: unknown property \"%s\"" % k)
+        if val == "__none__":
+            raise Exit(1, err="Invalid request: invalid value for property \"%s\"" % k)
+        props[p["id"]] = val
+    status = v.get("--status", "backlog")
+    if status not in STATUSES:
+        raise fail(d, "bad-status", status=status)
+    if "--allow-duplicate" not in b:
+        for r in live_issues(board):
+            if r["title"] == title and r["parent_issue_id"] == parent and r["status"] not in TERMINAL:
+                raise fail(d, "duplicate", ident=r["identifier"], title=r["title"], status=r["status"])
+    aid = v.get("--assignee-id")
+    return make_issue(board, title, desc, status, parent, "agent" if aid else None, aid, props)
+
+
+def h_issue_get(board, d, v, b, pos, stdin):
+    return find_issue(board, pos[0], d)
+
+
+def matches(board, row, specs):
+    groups = {}
+    for s in specs:
+        k, val = split_prop(s)
+        p = prop_by_ref(board, k)
+        if p is None:
+            raise Exit(1, err="Invalid request: unknown property \"%s\"" % k)
+        groups.setdefault(p["id"], []).append(val)
+    for pid, vals in groups.items():
+        have = row["properties"].get(pid)
+        if not any((have is None) if val == "__none__" else (have == val) for val in vals):
+            return False
+    return True
+
+
+def h_issue_list(board, d, v, b, pos, stdin):
+    try:
+        limit, offset = int(v.get("--limit", 50)), int(v.get("--offset", 0))
+    except ValueError:
+        raise usage("invalid number")
+    if not 1 <= limit <= 100:
+        raise usage("--limit must be between 1 and 100")
+    if offset < 0:
+        raise usage("--offset must not be negative")
+    rows = [r for r in live_issues(board)
+            if matches(board, r, v.get("--property", []))
+            and (not v.get("--assignee-id") or r["assignee_id"] == v["--assignee-id"])
+            and (not v.get("--status") or r["status"] == v["--status"])]
+    rows.sort(key=lambda r: r["number"])
+    if v.get("--sort"):
+        if v["--sort"] != "created_at":
+            raise usage("unsupported --sort: " + v["--sort"])
+        rows.sort(key=lambda r: (r["created_at"], r["number"]), reverse=v.get("--direction", "asc") == "desc")
+    page = rows[offset:offset + limit]
+    return {"has_more": offset + len(page) < len(rows), "issues": page, "limit": limit,
+            "offset": offset, "total": len(rows)}
+
+
+def h_issue_status(board, d, v, b, pos, stdin):
+    row = find_issue(board, pos[0], d)
+    if pos[1] not in STATUSES:
+        raise fail(d, "bad-status", status=pos[1])
+    row["status"] = row["status_category"] = pos[1]
+    row["updated_at"] = now(board)
+    row["revision"] += 1
+    return {k: x for k, x in row.items() if k != "labels"}
+
+
+def h_issue_assign(board, d, v, b, pos, stdin):
+    if "--unassign" in b and "--no-start" in b:
+        raise Exit(1, err="Error: --no-start cannot be used with --unassign")
+    row = find_issue(board, pos[0], d)
+    if "--unassign" in b:
+        row["assignee_type"] = row["assignee_id"] = None
+    else:
+        for flag, kind in (("--agent", "agent"), ("--member", "member"), ("--squad", "squad")):
+            if v.get(flag):
+                row["assignee_type"], row["assignee_id"] = kind, v[flag]
+                break
+        else:
+            raise usage("one of --agent, --member, --squad or --unassign is required")
+    row["updated_at"] = now(board)
+    return row
+
+
+def h_issue_runs(board, d, v, b, pos, stdin):
+    row = find_issue(board, pos[0], d)
+    runs = board.get("runs", {}).get(row["identifier"], [])
+    return [r for r in runs if "--active" not in b or r["status"] in ACTIVE_RUN]
+
+
+def h_comment_add(board, d, v, b, pos, stdin):
+    row = find_issue(board, pos[0], d)
+    if "--content-stdin" in b:
+        content = stdin
+    elif "--content" in v:
+        content = v["--content"]
+    else:
+        raise usage("required flag(s) \"content\" not set")
+    parent = v.get("--parent")
+    if parent and not any(c["id"] == parent and c["issue_id"] == row["id"] for c in board.get("comments", [])):
+        raise Exit(1, err="Invalid request: parent comment not found on this issue")
+    return make_comment(board, row["id"], content, "member", board["user"]["id"], parent)
+
+
+def h_comment_list(board, d, v, b, pos, stdin):
+    row = find_issue(board, pos[0], d)
+    since = None
+    if v.get("--since"):
+        try:
+            since = parse_ts(v["--since"])
+        except ValueError:
+            raise Exit(1, err="Invalid request: invalid --since: " + v["--since"])
+    out = [c for c in board.get("comments", [])
+           if c["issue_id"] == row["id"] and (since is None or parse_ts(c["created_at"]) >= since)]  # P7e: inclusive
+    out.sort(key=lambda c: (c["created_at"], int(c["id"].rsplit("-", 1)[-1])))
+    return [{k: x for k, x in c.items() if k != "issue_revision"} for c in out]
+
+
+def h_property_list(board, d, v, b, pos, stdin):
+    return [p for p in board.get("properties", []) if "--include-archived" in b or not p["archived"]]
+
+
+def h_property_create(board, d, v, b, pos, stdin):
+    if board.get("role") not in ("owner", "admin"):
+        raise fail(d, "forbidden")
+    if not v.get("--name"):
+        raise usage("required flag(s) \"name\" not set")
+    if prop_by_ref(board, v["--name"]) is not None:
+        raise Exit(1, err="Invalid request: property \"%s\" already exists" % v["--name"])
+    p = make_property(board, v["--name"], v.get("--type", "text"), v.get("--description", ""))
+    board.setdefault("properties", []).append(p)
+    return p
+
+
+def h_runtime_list(board, d, v, b, pos, stdin):
+    return board.get("runtimes", [])
+
+
+def h_profile_list(board, d, v, b, pos, stdin):
+    return board.get("runtime_profiles", [])
+
+
+def h_profile_create(board, d, v, b, pos, stdin):
+    for flag in ("--display-name", "--command-name", "--protocol-family"):
+        if not v.get(flag):
+            raise usage("required flag(s) \"%s\" not set" % flag[2:])
+    p = make_profile(board, v["--display-name"], v["--command-name"], v["--protocol-family"])
+    board.setdefault("runtime_profiles", []).append(p)
+    if board.get("auto_runtime"):
+        board.setdefault("runtimes", []).append(make_runtime(board, p["display_name"], p["id"]))
+    return p
+
+
+def h_profile_delete(board, d, v, b, pos, stdin):
+    profiles = board.get("runtime_profiles", [])
+    if not any(p["id"] == pos[0] for p in profiles):
+        raise fail(d, "not-found")
+    board["runtime_profiles"] = [p for p in profiles if p["id"] != pos[0]]
+    raise Exit(0, err="Deleted runtime profile " + pos[0])
+
+
+def h_agent_list(board, d, v, b, pos, stdin):
+    return [a for a in board.get("agents", []) if "--include-archived" in b or not a["archived_at"]]
+
+
+def h_agent_create(board, d, v, b, pos, stdin):
+    for flag in ("--name", "--runtime-id"):
+        if not v.get(flag):
+            raise usage("required flag(s) \"%s\" not set" % flag[2:])
+    env = {}
+    if "--custom-env-stdin" in b:
+        try:
+            env = json.loads(stdin)
+            if not isinstance(env, dict):
+                raise ValueError
+        except ValueError:
+            raise Exit(1, err="Invalid request: custom env must be a JSON object")
+    try:
+        mct = int(v.get("--max-concurrent-tasks", 6))
+    except ValueError:
+        raise usage("invalid --max-concurrent-tasks")
+    a = make_agent(board, v["--name"], v["--runtime-id"], mct, v.get("--instructions", ""), list(env))
+    board.setdefault("agents", []).append(a)
+    return a
+
+
+HANDLERS = {
+    ("version",): h_version, ("user", "profile", "get"): h_profile_get,
+    ("issue", "create"): h_issue_create, ("issue", "get"): h_issue_get, ("issue", "list"): h_issue_list,
+    ("issue", "status"): h_issue_status, ("issue", "assign"): h_issue_assign, ("issue", "runs"): h_issue_runs,
+    ("issue", "comment", "add"): h_comment_add, ("issue", "comment", "list"): h_comment_list,
+    ("property", "list"): h_property_list, ("property", "create"): h_property_create,
+    ("runtime", "list"): h_runtime_list, ("runtime", "profile", "list"): h_profile_list,
+    ("runtime", "profile", "create"): h_profile_create, ("runtime", "profile", "delete"): h_profile_delete,
+    ("agent", "list"): h_agent_list, ("agent", "create"): h_agent_create,
+}
+
+
+def log_call(d, rec):
+    with open(os.path.join(d, "calls.jsonl"), "a", encoding="utf-8") as f:
+        f.write(json.dumps(rec) + "\n")
+
+
+def main():
+    d = state_dir()
+    stdin = "" if sys.stdin is None or sys.stdin.isatty() else sys.stdin.read()
+    rec = {"argv": sys.argv[1:], "stdin": stdin, "cwd": os.getcwd(),
+           "env": {k: os.environ[k] for k in ENV_KEYS if k in os.environ}}
+    code, out, err, logged = 0, "", "", False
+    lock = open(os.path.join(d, ".lock"), "w")
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    try:
+        with open(os.path.join(d, "board.json"), encoding="utf-8") as f:
+            board = json.load(f)
+        try:
+            words, values, bools, pos, output = parse(sys.argv[1:])
+            if words != ("version",):
+                tok = os.environ.get("MULTICA_TOKEN", "")
+                if not tok:
+                    raise fail(d, "no-token")
+                if tok != board["token"]:
+                    raise fail(d, "unauthorized")
+            fault = take_fault(d, words, sys.argv[1:])
+            result, done = None, False
+            if fault and fault.get("sleep"):
+                # "Timed out but landed": do the write, then log the call, BEFORE sleeping, so a
+                # caller that kills this process at its timeout still finds both on disk.
+                if fault.get("apply"):
+                    result = HANDLERS[words](board, d, values, bools, pos, stdin)
+                    save(d, board)
+                    done = True
+                log_call(d, dict(rec, exit=None))
+                logged = True
+                time.sleep(fault["sleep"])
+            if fault and not fault.get("apply"):
+                raise Exit(fault.get("exit", 1), fault.get("stdout", ""), fault.get("stderr", ""))
+            if not done:
+                result = HANDLERS[words](board, d, values, bools, pos, stdin)
+                save(d, board)
+            if fault:
+                raise Exit(fault.get("exit", 1), fault.get("stdout", ""), fault.get("stderr", ""))
+            if result is not None:
+                out = json.dumps(result) if output == "json" else "TABLE OUTPUT"
+        except Exit as e:
+            code, out, err = e.code, e.out, e.err
+            if code == 0:       # a handler that succeeds with only a stderr note (profile delete)
+                save(d, board)
+    finally:
+        if not logged:
+            log_call(d, dict(rec, exit=code))
+        fcntl.flock(lock, fcntl.LOCK_UN)
+    if out:
+        sys.stdout.write(out + "\n")
+    if err:
+        sys.stderr.write(err + "\n")
+    sys.exit(code)
+
+
+if __name__ == "__main__":
+    main()

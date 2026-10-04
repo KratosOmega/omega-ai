@@ -1909,6 +1909,40 @@ test_lanes_detach_timeout_no_lock_ends_child() {
   sleep 1
   assert_eq 0 "$(pgrep -f 'sleep 301' | wc -l | tr -d ' ')" "no child survives"
 }
+test_lanes_origin_attached() {
+  lanes_fixture ora integration A:-
+  rm -f "$HOME/.claude-gamedev/runs/last"
+  STUDIO_RUN_ORIGIN="multica:task-a1"; export STUDIO_RUN_ORIGIN
+  run_lanes start "$MFP"; unset STUDIO_RUN_ORIGIN
+  assert_eq 0 "$LS_STATUS" "the manifest run lands A"
+  assert_contains "$HOME/.claude-gamedev/runs/last" '^origin=multica:task-a1$' "manifest mode writes origin=, kept in runs/last"
+  assert_not_contains "$CALLS/1.fullenv" '^STUDIO_RUN_ORIGIN=' "no unit session inherits the variable"
+}
+test_lanes_origin_detach() {
+  lanes_fixture ord integration A:-
+  printf 'emit %s; sleep 8\n' "$ACT" > "$SCEN/A"
+  st=0
+  ( cd "$P" && env STUDIO_RUN_ORIGIN=multica:task-d1 sh "$RUNNER" start --detach "$MFP" ) > "$TMP/det.out" 2>&1 || st=$?
+  assert_eq 0 "$st" "detach starts"
+  wait_for "[ -f '$CALLS/1.fullenv' ]" 60
+  _e="$(ls -t "$HOME"/.claude-gamedev/runs/overnight-demo-* 2>/dev/null | head -n 1)"
+  assert_contains "$_e" '^origin=multica:task-d1$' "--detach carries origin= through its STUDIO_* strip"
+  assert_not_contains "$CALLS/1.fullenv" '^STUDIO_RUN_ORIGIN=' "the detached run's unit does not inherit it"
+  detach_stop
+  assert_contains "$HOME/.claude-gamedev/runs/last" '^origin=multica:task-d1$' "kept in runs/last"
+}
+test_lanes_origin_detach_refused() {
+  lanes_fixture odr integration A:-
+  st=0
+  ( cd "$P" && env 'STUDIO_RUN_ORIGIN=bad value' sh "$RUNNER" start --detach "$MFP" ) > "$TMP/det.out" 2>&1 || st=$?
+  assert_eq 0 "$st" "a refused origin still starts the run"
+  wait_for "[ -f '$CALLS/1.fullenv' ]" 60
+  _e="$(ls -t "$HOME"/.claude-gamedev/runs/overnight-demo-* 2>/dev/null | head -n 1)"
+  assert_not_contains "$_e" '^origin=' "no origin= line"
+  _dl="$(ls -t "$P"/.studio/reports/overnight-demo-detached-*.log | head -n 1)"
+  assert_eq 1 "$(cat "$TMP/det.out" "$_dl" | grep -c 'STUDIO_RUN_ORIGIN ignored')" "one warning, in the foreground only"
+  detach_stop
+}
 test_lanes_help_modes() {
   sh "$RUNNER" --help > "$TMP/help"
   for t in "integration" "direct" "next" "gate lock" "max_lanes" "merge_command" "--detach" \
@@ -2432,6 +2466,7 @@ run_tests test_lanes_chain_rule test_lanes_manifest_refusals test_lanes_prefligh
   test_lanes_done_marker test_lanes_status_reaps_dead_runner test_lanes_reap_names_final_pr \
   test_lanes_detach_strips_env test_lanes_detach_refusal_in_foreground test_lanes_detach_child_refusal_surfaces \
   test_lanes_detach_timeout_lock_held_points_at_status test_lanes_detach_timeout_no_lock_ends_child \
+  test_lanes_origin_attached test_lanes_origin_detach test_lanes_origin_detach_refused \
   test_lanes_help_modes test_lanes_left_gate_reaped test_lanes_timed_out_outcome test_lanes_heartbeat \
   test_lanes_activity_verb test_lanes_status_anywhere test_lanes_status_ended_partial test_lanes_watch \
   test_lanes_gate_room_warning test_lanes_story_listed_events test_lanes_unit_env_run_dir \

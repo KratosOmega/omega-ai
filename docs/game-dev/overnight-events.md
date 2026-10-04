@@ -21,6 +21,11 @@ Story #27 defines it; #28 (the Multica bridge) builds on it. Spec:
   started=<ISO-8601 UTC>
   ```
 
+  An entry may also hold `origin=<value>` after `started=`, copied from
+  `STUDIO_RUN_ORIGIN` at start (AC1a of #28: 1–200 characters of
+  A-Z a-z 0-9 . _ : -, else left out with a warning); it stays when the entry
+  moves to `runs/last`; the core never interprets it.
+
   The run dir's basename is the run's name; every verb's `--run <run>` takes
   it. `last` is the newest ended run (it also has `ended=`) and is never live.
 - A run dir holds `channel` (`hold_minutes=<N>`, `directive_chars=<N>`; the
@@ -119,6 +124,13 @@ Exit codes (every verb):
 | 0 | done | stdout |
 | 1 | refused (no live run, two live runs and no `--run`, unknown story, an ended story, the directive cap, holds off, inbox busy, …) | one stderr line naming the reason (the cap lists the directives) |
 | 2 | usage (bad options, empty text) | the usage text, or `say: empty text`, on stderr |
+
+`studio-overnight deny-rules [--dir <path>]` prints the deny rules a unit
+would get for the project at `<path>` (default: here), one per line, to
+stdout; notes for a placeholder with no value go to stderr. It reads no run
+state; it is not a run verb and takes no `--run`. Exit 0; 1 for a missing or
+rule-less deny file; 2 for usage (an unknown argument, `--dir` without a
+value, a `--dir` that is not a directory).
 
 Exception: bare `stop` without `--run` keeps today's output (R27): stdout,
 exit 0 or 1, so its `no run in …` refusal is on stdout. Use `stop --run <run>`

@@ -189,9 +189,12 @@ test_overnight_help() {
            "run_usd .*0-5000" "max_lanes" "model_task" "model_final" "model_finish" "model_repair" "model_progress" "merge_command" "gate_repairs .*0-3" \
            "say <story>" "said <story>" "unsay <story> <id>" "hold <story>" "resume <story>" "stop <story>" "--run <run>" "hold_minutes .*0-1440" \
            "directive_chars .*500-16000" "STUDIO_OVERNIGHT_HOLD_MINUTES — test hook" "STUDIO_OVERNIGHT_HOLD_SECONDS — test hook" \
-           "STUDIO_OVERNIGHT_INBOX_WAIT — test hook" "events.jsonl" "next tool call"; do
+           "STUDIO_OVERNIGHT_INBOX_WAIT — test hook" "events.jsonl" "next tool call" \
+           "deny-rules \[--dir" "STUDIO_RUN_ORIGIN"; do
     assert_contains "$TMP/help.txt" "$w" "help names $w"
   done
+  assert_contains "$REPO_ROOT/docs/game-dev/overnight-events.md" "deny-rules" "the contract doc lists deny-rules"
+  assert_contains "$REPO_ROOT/docs/game-dev/overnight-events.md" "origin=" "the contract doc documents origin="
   assert_contains "$TMP/help.txt" "$RUNNER" "help names the runner by its absolute path"
   assert_contains "$TMP/help.txt" "STUDIO_OVERNIGHT_RACE_HOOK — test hook" "help documents the race test hook (D13)"
   assert_contains "$TMP/help.txt" "^The run may: commit, push the feature branch, open a draft PR\.$" "help lists what the run may do"
@@ -839,6 +842,117 @@ test_overnight_deny_merge_basename() {
   assert_eq 0 "$RS_STATUS" "a valid merge_command passes"
   assert_contains "$RS_OUT" "'Bash(\*merge.sh\*)'" "the merge program is denied by basename"
   assert_contains "$RS_OUT" "'Bash(gh api \*pulls/\*/merge\*)'" "the merge endpoint is denied"
+}
+# dr DIR [ARGS] — deny-rules from DIR; stdout dr.out, stderr dr.err, exit DR_STATUS.
+dr() {
+  _d="$1"; shift; DR_STATUS=0
+  ( cd "$_d" && sh "$RUNNER" deny-rules "$@" ) > "$TMP/dr.out" 2> "$TMP/dr.err" || DR_STATUS=$?
+}
+DENY_SRC="$REPO_ROOT/studios/game-dev/bin/overnight-deny.txt"
+test_overnight_deny_rules_basic() {
+  fixture drb '{"merge_command": "scripts/merge.sh <pr>"}'
+  dr "$P"
+  assert_eq 0 "$DR_STATUS" "deny-rules exits 0 in a project"
+  assert_eq "$(grep -Evc '^[[:space:]]*(#|$)' "$DENY_SRC")" "$(grep -c . "$TMP/dr.out")" "every rule printed once"
+  assert_contains "$TMP/dr.out" '^Bash(git push \* main)$' "{default_branch} expanded from origin/HEAD"
+  assert_contains "$TMP/dr.out" '^Bash(\*merge\.sh\*)$' "{merge_basename} is the first word's basename"
+  assert_not_contains "$TMP/dr.out" '{' "no placeholder left"
+  assert_eq "" "$(cat "$TMP/dr.err")" "no notes when both values exist"
+}
+test_overnight_deny_rules_no_origin_head() {
+  fixture drh; git -C "$P" remote set-head origin -d >/dev/null 2>&1
+  dr "$P"
+  assert_eq 0 "$DR_STATUS" "no origin/HEAD still exits 0"
+  assert_not_contains "$TMP/dr.out" 'git push \* {default_branch}' "no raw placeholder"
+  assert_not_contains "$TMP/dr.out" '^Bash(git push \* )$' "no rule with an empty branch"
+  assert_eq "$(grep -v '^#' "$DENY_SRC" | grep . | grep -v '{default_branch}' | grep -vc '{merge_basename}')" \
+    "$(grep -c . "$TMP/dr.out")" "only placeholder-free rules remain"
+  assert_contains "$TMP/dr.err" 'deny-rules: no origin/HEAD in .* rules using {default_branch} dropped' "one note for {default_branch}"
+  assert_contains "$TMP/dr.err" 'rules using {merge_basename} dropped' "one note for {merge_basename}"
+  assert_eq 2 "$(grep -c . "$TMP/dr.err")" "exactly one note per dropped placeholder"
+}
+test_overnight_deny_rules_merge_basename() {
+  fixture drm
+  dr "$P"
+  assert_eq 0 "$DR_STATUS" "no merge_command still exits 0"
+  assert_eq "$(grep -v '^#' "$DENY_SRC" | grep . | grep -vc '{merge_basename}')" \
+    "$(grep -c . "$TMP/dr.out")" "only the {merge_basename} rule is dropped"
+  assert_contains "$TMP/dr.err" 'no merge_command in .*config.json .* rules using {merge_basename} dropped' "one note naming the config"
+  assert_eq 1 "$(grep -c . "$TMP/dr.err")" "no {default_branch} note when origin/HEAD is set"
+}
+test_overnight_deny_rules_dir() {
+  fixture drd '{"merge_command": "scripts/merge.sh <pr>"}'; mkdir -p "$TMP/elsewhere"
+  dr "$TMP/elsewhere" --dir "$P"
+  assert_eq 0 "$DR_STATUS" "--dir works from another directory"
+  assert_contains "$TMP/dr.out" '^Bash(git push \* main)$' "values come from --dir, not the cwd"
+  assert_contains "$TMP/dr.out" '^Bash(\*merge\.sh\*)$' "merge_command read from the work root's config"
+  dr "$TMP/elsewhere" --dir="$P/docs"
+  assert_contains "$TMP/dr.out" '^Bash(git push \* main)$' "--dir=PATH form, a subdirectory resolves to the work root"
+  assert_contains "$TMP/dr.out" '^Bash(\*merge\.sh\*)$' "merge_command read from the work root's config"
+}
+test_overnight_deny_rules_outside_git() {
+  mkdir -p "$TMP/plain"
+  dr "$TMP/plain"
+  assert_eq 0 "$DR_STATUS" "outside git and outside a studio project: exit 0"
+  assert_eq 2 "$(grep -c . "$TMP/dr.err")" "two notes"
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if [ -e "$TMP/plain/.studio" ]; then _fail "deny-rules writes nothing"; else _pass "deny-rules writes nothing"; fi
+}
+test_overnight_deny_rules_empty_file() {
+  mkdir -p "$TMP/drcopy"; cp -R "$REPO_ROOT/studios/game-dev/bin/." "$TMP/drcopy/"
+  printf '# only a comment\n\n' > "$TMP/drcopy/overnight-deny.txt"
+  st=0; ( cd "$TMP" && sh "$TMP/drcopy/studio-overnight" deny-rules ) >/dev/null 2>"$TMP/dr.err" || st=$?
+  assert_eq 1 "$st" "a deny file with no rules exits 1"
+  rm -f "$TMP/drcopy/overnight-deny.txt"
+  st=0; ( cd "$TMP" && sh "$TMP/drcopy/studio-overnight" deny-rules ) >/dev/null 2>&1 || st=$?
+  assert_eq 1 "$st" "a missing deny file exits 1"
+}
+test_overnight_deny_rules_usage() {
+  fixture dru
+  dr "$P" --bogus;            assert_eq 2 "$DR_STATUS" "an unknown argument exits 2"
+  dr "$P" --dir;              assert_eq 2 "$DR_STATUS" "--dir without a value exits 2"
+  dr "$P" --dir "$TMP/nope";  assert_eq 2 "$DR_STATUS" "--dir that is not a directory exits 2"
+}
+test_overnight_deny_rules_match_launch() {
+  fixture drl; done_scenario; run_start
+  sed '1,/^--disallowedTools$/d' "$CALLS/1.argv" > "$TMP/launch-rules.txt"
+  dr "$P"
+  assert_eq "$(cat "$TMP/launch-rules.txt")" "$(cat "$TMP/dr.out")" "deny-rules prints exactly the unit's rules"
+}
+REGL="$HOME/.claude-gamedev/runs/last"
+# reg_keys FILE — the entry's keys in order, space-separated.
+reg_keys() { sed 's/=.*//' "$1" | tr '\n' ' ' | sed 's/ $//'; }
+test_overnight_origin_written() {
+  fixture org; done_scenario; rm -f "$REGL"
+  STUDIO_RUN_ORIGIN="multica:0b5f-12ab"; export STUDIO_RUN_ORIGIN
+  run_start; unset STUDIO_RUN_ORIGIN
+  assert_eq 0 "$RS_STATUS" "the run ends normally"
+  assert_contains "$REGL" '^origin=multica:0b5f-12ab$' "origin= written and kept in runs/last"
+  assert_eq "root start run pid started origin ended" "$(reg_keys "$REGL")" "origin= follows started=, ended= is last"
+  assert_not_contains "$RS_ERR" 'STUDIO_RUN_ORIGIN ignored' "a valid value draws no warning"
+}
+test_overnight_origin_absent_without_variable() {
+  fixture orn; done_scenario; rm -f "$REGL"; unset STUDIO_RUN_ORIGIN
+  run_start
+  assert_eq "root start run pid started ended" "$(reg_keys "$REGL")" "without the variable the entry is unchanged"
+  STUDIO_RUN_ORIGIN=""; export STUDIO_RUN_ORIGIN
+  fixture ore; done_scenario; rm -f "$REGL"; run_start; unset STUDIO_RUN_ORIGIN
+  assert_not_contains "$REGL" '^origin=' "an empty variable writes no line"
+  assert_not_contains "$RS_ERR" 'STUDIO_RUN_ORIGIN' "and no warning"
+}
+test_overnight_origin_refused() {
+  long="$(printf '%0201d' 0 | tr 0 a)"; i=0
+  for v in "has space" "a/b" "a=b" "a
+b" "$long" "héllo"; do
+    i=$((i + 1)); fixture "orr$i"; done_scenario; rm -f "$REGL"
+    STUDIO_RUN_ORIGIN="$v"; export STUDIO_RUN_ORIGIN; run_start; unset STUDIO_RUN_ORIGIN
+    assert_eq 0 "$RS_STATUS" "a refused origin still runs ($i)"
+    assert_not_contains "$REGL" '^origin=' "no origin= line ($i)"
+    assert_eq 1 "$(grep -c 'STUDIO_RUN_ORIGIN ignored' "$RS_ERR")" "exactly one warning ($i)"
+  done
+  fixture or200; done_scenario; rm -f "$REGL"
+  STUDIO_RUN_ORIGIN="${long%a}"; export STUDIO_RUN_ORIGIN; run_start; unset STUDIO_RUN_ORIGIN
+  assert_contains "$REGL" "^origin=${long%a}$" "200 bytes is accepted"
 }
 test_overnight_run_usd_default_uncapped() {
   fixture uncapped
@@ -1616,6 +1730,10 @@ run_tests test_overnight_report_done test_overnight_report_not_done \
   test_overnight_models_by_unit test_overnight_config_refusals_v2 \
   test_overnight_default_branch_required test_overnight_deny_merge_basename \
   test_overnight_run_usd_default_uncapped \
+  test_overnight_deny_rules_basic test_overnight_deny_rules_no_origin_head test_overnight_deny_rules_merge_basename \
+  test_overnight_deny_rules_dir test_overnight_deny_rules_outside_git test_overnight_deny_rules_empty_file \
+  test_overnight_deny_rules_usage test_overnight_deny_rules_match_launch \
+  test_overnight_origin_written test_overnight_origin_absent_without_variable test_overnight_origin_refused \
   test_overnight_hold_config_refused test_overnight_channel_file test_overnight_unit_env \
   test_overnight_events_two_units \
   test_say_writes_message \

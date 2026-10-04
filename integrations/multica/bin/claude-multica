@@ -1,0 +1,17 @@
+#!/bin/sh
+# claude-multica — the "claude (multica)" runtime (mode 2): your normal
+# claude, plus the core's and Multica's deny rules. Multica's cwd and env
+# pass through unchanged.
+self="$0"
+while [ -L "$self" ]; do
+  link="$(readlink "$self")"
+  case "$link" in /*) self="$link" ;; *) self="$(dirname "$self")/$link" ;; esac
+done
+WRAPPER=claude-multica
+unset CDPATH
+. "$(cd "$(dirname "$self")" && pwd -P)/wrapper-lib.sh"
+[ "${1:-}" = "--version" ] && exec claude --version
+words="$(deny_words "$PWD")" || exit 1
+unset STUDIO_RUN_ORIGIN      # never an inherited origin: a run this session starts is not a stale task's (M15)
+eval "set -- $words \"\$@\""
+exec claude "$@"

@@ -1,0 +1,1 @@
+Active duplicate issue exists: {ident} {title} (status: {status}). Set allow_duplicate=true or use --allow-duplicate to create another.
