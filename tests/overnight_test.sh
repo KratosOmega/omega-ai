@@ -61,6 +61,11 @@ for act in "$@"; do
                   touch "$r/units.tsv"; chmod 444 "$r/units.tsv" ;;
     rmrundir)     r="$(sed -n 's/^run=//p' "$root/.studio/overnight.lock")"; rm -rf "$r" ;;
     "exit "*)     code="${act#exit }" ;;
+    inbox)        printf '{"session_id":"s","hook_event_name":"SessionStart","source":"startup"}' \
+                    | sh "$STUB_PLUGIN/hooks/operator-inbox.sh" > "$CALLS/$n.inbox" ;;
+    "say "*)      sh "$STUB_RUNNER" say - -- "${act#say }" > /dev/null 2>&1 ;;
+    holdop)       sh "$STUB_RUNNER" hold - > /dev/null 2>&1 ;;
+    stopop)       sh "$STUB_RUNNER" stop - > /dev/null 2>&1 ;;
   esac
 done
 printf '{"type":"system","subtype":"init"}\n'
@@ -73,7 +78,7 @@ printf '#!/bin/sh\nexit "${GH_STATUS:-0}"\n' > "$FAKE/gh"
 # A fake caffeinate: records its argv and pid, then lives until the -w pid dies.
 printf '#!/bin/sh\nprintf "%%s\\n" "$*" > "$CALLS/caffeinate.args"\necho "$$" > "$CALLS/caffeinate.pid"\nwhile kill -0 "$3" 2>/dev/null; do sleep 1; done\n' > "$FAKE/caffeinate"
 chmod +x "$FAKE"/*
-export PATH="$FAKE:$PATH" STUB_STATE_BIN="$STATE_BIN"
+export PATH="$FAKE:$PATH" STUB_STATE_BIN="$STATE_BIN" STUB_RUNNER="$RUNNER" STUB_PLUGIN="$REPO_ROOT/studios/game-dev"
 # The suites test today's endings: hold_minutes 0 (spec milestone gate 1).
 STUDIO_OVERNIGHT_HOLD_MINUTES=0; export STUDIO_OVERNIGHT_HOLD_MINUTES
 
@@ -506,6 +511,42 @@ start_bg() {
 # wait_for FILE — up to 10 s.
 wait_for() { _i=0; while [ ! -e "$1" ] && [ "$_i" -lt 50 ]; do sleep 0.2; _i=$((_i + 1)); done; }
 bg_status() { BG_STATUS=0; wait "$RPID" || BG_STATUS=$?; }
+# ---- #27: single-plan holds ----
+# holds_on SECS — holds on for the next run: hold_minutes 5, a deadline of
+# SECS seconds, a 1 s poll. holds_off — the suite's default (holds off).
+holds_on() {
+  STUDIO_OVERNIGHT_HOLD_MINUTES=5; STUDIO_OVERNIGHT_HOLD_SECONDS="$1"; STUDIO_OVERNIGHT_POLL_SECONDS=1
+  export STUDIO_OVERNIGHT_HOLD_MINUTES STUDIO_OVERNIGHT_HOLD_SECONDS STUDIO_OVERNIGHT_POLL_SECONDS
+}
+holds_off() { STUDIO_OVERNIGHT_HOLD_MINUTES=0; unset STUDIO_OVERNIGHT_HOLD_SECONDS STUDIO_OVERNIGHT_POLL_SECONDS; }
+# wait_held SECS — up to SECS s for the newest run's control/-.held; R is
+# the run dir.
+wait_held() {
+  _wh_i=0
+  while [ "$_wh_i" -lt $(( $1 * 5 )) ]; do
+    R="$(last_run_dir)"; [ -n "$R" ] && [ -f "$R/control/-.held" ] && return 0
+    sleep 0.2; _wh_i=$((_wh_i + 1))
+  done
+  R="$(last_run_dir)"; return 1
+}
+# bg_alive — the start_bg runner runs and is not a zombie.
+bg_alive() {
+  kill -0 "$RPID" 2>/dev/null || return 1
+  case "$(ps -o stat= -p "$RPID" 2>/dev/null)" in Z*|'') return 1 ;; esac
+}
+# bg_end SECS MSG — passes MSG when the start_bg run ends within SECS (else
+# KILLs it and fails); then bg_status.
+bg_end() {
+  _be_i=0; while bg_alive && [ "$_be_i" -lt "$1" ]; do sleep 1; _be_i=$((_be_i + 1)); done
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if bg_alive; then kill -KILL "$RPID" 2>/dev/null; _fail "$2 (still running after $1 s)"; else _pass "$2"; fi
+  bg_status
+}
+# unit_col N — column N of the newest run's units.tsv, space-joined.
+unit_col() { awk -F'\t' -v c="$1" '{ printf "%s%s", (NR > 1 ? " " : ""), $c }' "$(last_run_dir)/units.tsv"; }
+# ISO1 — one unit's actions that isolate the run (a feature worktree) and
+# finish T1 of 2.
+ISO1="stage execute; branch feat; task 1/2; wtledger T1 complete a..b"
 
 test_overnight_timeout() {
   fixture tmo; scenario "stage execute; sleep 30" "cost 1"
@@ -595,16 +636,21 @@ test_overnight_claim_without_run_dir() {
   if [ $((t1 - t0)) -lt 20 ]; then _pass "the run did not wait out the session's sleep 30 ($((t1 - t0))s)"; else _fail "the run took $((t1 - t0))s: the watchdog did not act"; fi
 }
 
-test_overnight_no_inhibitor() {
-  # A PATH holding only what the runner needs, and no caffeinate or
-  # systemd-inhibit.
-  fixture nocaf; done_scenario
+# make_minbin — $TMP/minbin: only what the runner needs, plus the stubs.
+make_minbin() {
   mkdir -p "$TMP/minbin"
   for u in sh git sed awk grep sort comm date ps pkill kill sleep cat mkdir rm touch \
            head tail tr dirname basename readlink wc uname mktemp cp mv chmod env printf; do
     p="$(command -v "$u" 2>/dev/null)" && case "$p" in /*) ln -sf "$p" "$TMP/minbin/$u" ;; esac
   done
   for f in claude claude-gd gh; do ln -sf "$FAKE/$f" "$TMP/minbin/$f"; done
+}
+
+test_overnight_no_inhibitor() {
+  # A PATH holding only what the runner needs, and no caffeinate or
+  # systemd-inhibit.
+  fixture nocaf; done_scenario
+  make_minbin
   RS_STATUS=0
   ( cd "$P" && PATH="$TMP/minbin" sh "$RUNNER" start ) > "$TMP/rs.out" 2> "$TMP/rs.err" || RS_STATUS=$?
   assert_eq 0 "$RS_STATUS" "the run continues without a sleep inhibitor"
@@ -1113,6 +1159,238 @@ test_channel_sourced_only() {
     "$(sh "$REPO_ROOT/studios/game-dev/bin/overnight-channel.sh" 2>&1)" "and says why"
 }
 
+test_overnight_hold_on_feature_stop() {
+  fixture hof; holds_on 60
+  scenario "$ISO1" "wtledger Stop: need art"
+  start_bg
+  wait_held 20; assert_file "$R/control/-.held" "a feature-ledger Stop: after isolation holds the story"
+  assert_contains "$R/control/-.held" "^held stop: need art until 20[0-9-]*T[0-9:]*Z$" "the held record: why, then the deadline"
+  sleep 2; assert_eq 2 "$(calls)" "no session runs while held"
+  assert_contains "$R/events.jsonl" '"event":"story_state","story":"-","state":"held","why":"stop: need art","until":"20' "a held story_state event"
+  verb status
+  assert_contains "$V_OUT" "^held — stop: need art — until [0-9][0-9]:[0-9][0-9] — say / resume / stop -$" "status shows the held line"
+  verb stop -; assert_eq "stop requested: - stops within one poll" "$(cat "$V_OUT")" "stop - on the held story"
+  bg_end 20 "the run ends within a poll"
+  assert_eq 1 "$BG_STATUS" "a stopped run exits 1"
+  assert_contains "$R/report.md" "^Ending: stop: need art$" "stop on a held story ends it with its why (AC23)"
+  assert_eq "" "$(ls -A "$R/control")" "no control file is left (R25)"
+  assert_missing "$P/.studio/overnight.lock" "the lock is released"
+  holds_off
+}
+test_overnight_start_ledger_stop_ends_at_once() {
+  holds_on 60
+  fixture sls; scenario "stage execute; branch feat; task 1/2; ledger Stop: from the start checkout"; run_start
+  assert_contains "$(last_run_dir)/report.md" "^Ending: stop: from the start checkout$" "a Stop: in the start ledger after isolation ends at once"
+  assert_missing "$(last_run_dir)/control/-.held" "never held"
+  fixture sls2; scenario "stage execute; task 1/2; ledger Stop: before isolation"; run_start
+  assert_contains "$(last_run_dir)/report.md" "^Ending: stop: before isolation$" "a Stop: before isolation ends at once"
+  fixture sls3; scenario "stage execute; branch feat; wtledger Stop: both; ledger Stop: both"; run_start
+  assert_contains "$(last_run_dir)/report.md" "^Ending: stop: both$" "the same Stop: in both ledgers ends at once (AC18's tie)"
+  assert_not_contains "$(last_run_dir)/events.jsonl" '"state":"held"' "no held event"
+  holds_off
+}
+test_overnight_resume_runs_next_unit() {
+  fixture rnu; holds_on 60
+  scenario "$ISO1" "wtledger Stop: need art" "inbox; task 2/2; wtledger T2 complete b..c" \
+           "wtledger final review done" "wtledger shipped https://x/pull/3; stage idle; task -"
+  start_bg; wait_held 20
+  verb say - "use the bus"; assert_eq 1 "$(cat "$V_OUT")" "say on the held story: id 1"
+  verb say - --unit "skip polish"
+  verb resume -; assert_eq "resume requested: - resumes within one poll" "$(cat "$V_OUT")" "resume -"
+  bg_end 60 "the resumed run finishes"
+  assert_eq 0 "$BG_STATUS" "it ends done"
+  assert_eq "1 2 3 4 5" "$(unit_col 1)" "unit numbers run on after the hold"
+  assert_contains "$CALLS/3.inbox" '^\[1, story\] use the bus$' "the next unit got the directive at startup"
+  assert_contains "$CALLS/3.inbox" '^\[2, unit\] skip polish$' "and the unit message"
+  assert_contains "$R/events.jsonl" '"event":"message_requeued","story":"-","id":1,"unit":"[^"]*-0-3-T2","requeues":1}$' "the unrecorded directive was requeued (AC13)"
+  assert_contains "$R/inbox/-/1.msg" "^requeues: 1$" "back in pending with requeues 1"
+  assert_missing "$R/inbox/-/2.msg" "a unit message is never requeued"
+  assert_contains "$R/report.md" "^## Operator messages left$" "the report lists the messages left (AC14)"
+  assert_contains "$R/report.md" "^- 1 (story, requeues 1): use the bus$" "id, scope, requeues, text"
+  assert_contains "$R/events.jsonl" '"state":"running"}$' "a running event after the resume"
+  holds_off
+}
+test_overnight_new_stop_holds_again() {
+  fixture nsh; holds_on 60
+  scenario "$ISO1" "wtledger Stop: need art" "wtledger Stop: still need art"
+  start_bg; wait_held 20
+  verb resume -
+  _i=0; while [ "$(calls)" -lt 3 ] && [ "$_i" -lt 50 ]; do sleep 0.2; _i=$((_i + 1)); done
+  wait_held 20
+  _j=0; until grep -q 'still need art' "$R/control/-.held" 2>/dev/null || [ "$_j" -ge 50 ]; do sleep 0.2; _j=$((_j + 1)); done
+  assert_contains "$R/control/-.held" "^held stop: still need art until " "a new stop after a resume holds again (AC20)"
+  verb stop -; bg_end 20 "the run ends"
+  assert_contains "$R/report.md" "^Ending: stop: still need art$" "with the new why"
+  holds_off
+}
+test_overnight_hold_deadline() {
+  fixture hdl; holds_on 2
+  scenario "$ISO1" "wtledger Stop: need art"
+  t0="$(date +%s)"; run_start; t1="$(date +%s)"
+  assert_eq 1 "$RS_STATUS" "the run ends 1"
+  assert_contains "$(last_run_dir)/report.md" "^Ending: stop: need art (held 0h0m, no reply)$" "the deadline appends the hold's length (AC24)"
+  assert_eq 1 "$([ $((t1 - t0)) -ge 2 ] && echo 1 || echo 0)" "it waited out the deadline"
+  assert_eq 2 "$(calls)" "no unit ran while held"
+  holds_off
+}
+test_overnight_stop_beats_resume() {
+  fixture sbr; holds_on 60; STUDIO_OVERNIGHT_POLL_SECONDS=3
+  scenario "$ISO1" "wtledger Stop: need art" "wtledger final review done"
+  start_bg; wait_held 20; sleep 1
+  # Both files land between two polls: the runner is paused while they are written.
+  kill -STOP "$RPID"; : > "$R/control/-.stop"; : > "$R/control/-.resume"; kill -CONT "$RPID"
+  bg_end 20 "the run ends"
+  assert_contains "$R/report.md" "^Ending: stop: need art$" ".stop beats .resume in one poll (AC22)"
+  assert_eq 2 "$(calls)" "no unit ran"
+  holds_off
+}
+test_overnight_resume_wins_at_deadline() {
+  fixture rwd; holds_on 2; STUDIO_OVERNIGHT_POLL_SECONDS=4
+  scenario "$ISO1" "wtledger Stop: need art" "wtledger final review done" \
+           "wtledger shipped https://x/pull/7; stage idle; task -"
+  start_bg; wait_held 20
+  verb resume -
+  bg_end 60 "the run ends"
+  assert_eq 0 "$BG_STATUS" "a resume seen at the poll after the deadline still resumes (AC22)"
+  assert_contains "$R/report.md" "^Ending: done$" "and the run finishes"
+  holds_off
+}
+test_overnight_requeue_then_hold() {
+  fixture rth; holds_on 60
+  scenario "stage execute; branch feat; task 1/3; wtledger T1 complete a..b; say use the bus" \
+           "inbox; task 2/3; wtledger T2 complete b..c" \
+           "inbox; task 3/3; wtledger T3 complete c..d"
+  start_bg; wait_held 20
+  assert_contains "$R/control/-.held" "^held directive 1 not recorded until " "requeued retries + 1 times: the story holds (AC14)"
+  assert_eq "progress progress progress" "$(unit_col 7)" "the unit's own outcome is kept in its row"
+  verb stop -; bg_end 20 "the run ends"
+  assert_contains "$R/report.md" "^Ending: directive 1 not recorded$" "stop ends it with that why"
+  assert_contains "$R/report.md" "^- 1 (story, requeues 2): use the bus$" "the message is listed"
+  holds_off
+}
+test_overnight_recorded_directive_stays_delivered() {
+  fixture rds
+  scenario "stage execute; branch feat; task 1/2; wtledger T1 complete a..b; say use the bus" \
+           "inbox; wtledger Directive 1: use the bus; task 2/2; wtledger T2 complete b..c" \
+           "wtledger final review done" "wtledger shipped https://x/pull/4; stage idle; task -"
+  run_start
+  assert_eq 0 "$RS_STATUS" "done"
+  R="$(last_run_dir)"
+  assert_eq 1 "$(ls "$R"/inbox/-/delivered/*/1.msg 2>/dev/null | wc -l | tr -d ' ')" "a recorded directive stays delivered"
+  assert_not_contains "$R/events.jsonl" '"event":"message_requeued"' "and is not requeued"
+  assert_not_contains "$R/report.md" "Operator messages left" "nothing left"
+}
+test_overnight_requeue_id_prefix() {
+  fixture rip
+  scenario "stage execute; branch feat; task 1/2; wtledger T1 complete a..b; say one" \
+           "inbox; wtledger Directive 10: not one; task 2/2; wtledger T2 complete b..c" \
+           "wtledger final review done" "wtledger shipped https://x/pull/8; stage idle; task -"
+  run_start; R="$(last_run_dir)"
+  assert_contains "$R/events.jsonl" '"event":"message_requeued","story":"-","id":1,' "Directive 10: does not record message 1"
+  assert_contains "$R/report.md" "^- 1 (story, requeues 1): one$" "message 1 is left"
+}
+test_overnight_requeue_done_no_hold() {
+  fixture rdn '{"overnight": {"retries": 0}}'; holds_on 60
+  scenario "stage execute; branch feat; task 1/1; wtledger T1 complete a..b; say use the bus" \
+           "inbox; wtledger final review done; wtledger shipped https://x/pull/5; stage idle; task -"
+  run_start; R="$(last_run_dir)"
+  assert_eq 0 "$RS_STATUS" "a unit that ships is done, whatever it left unrecorded (AC14)"
+  assert_contains "$R/report.md" "^Ending: done$" "done"
+  assert_not_contains "$R/events.jsonl" '"state":"held"' "never held"
+  assert_contains "$R/report.md" "^- 1 (story, requeues 1): use the bus$" "the message is listed"
+  holds_off
+}
+test_overnight_prestop_and_limit_end_at_once() {
+  holds_on 60
+  fixture pli '{"overnight": {"retries": 0}}'
+  scenario "stage execute; task 1/2; ledger T1 complete a..b; say x" \
+           "inbox; task 2/2; ledger T2 complete b..c" "ledger final review done" \
+           "ledger shipped https://x/pull/6; stage idle; task -"
+  run_start
+  assert_eq 0 "$RS_STATUS" "before isolation the limit never holds; the story goes on (R6)"
+  assert_contains "$(last_run_dir)/events.jsonl" '"event":"message_requeued"' "the message was still requeued"
+  fixture pl2 '{"overnight": {"retries": 0}}'
+  scenario "stage execute; branch feat; task 1/2; wtledger T1 complete a..b; say x" \
+           "inbox; ledger Stop: start side"
+  run_start
+  assert_contains "$(last_run_dir)/report.md" "^Ending: stop: start side$" "a start-ledger Stop: in the same unit as the limit ends at once (AC18)"
+  assert_missing "$(last_run_dir)/control/-.held" "never held"
+  holds_off
+}
+test_overnight_stop_story_running() {
+  fixture ssr
+  scenario "stage execute; task 1/3; stopop" "task 2/3"
+  run_start
+  assert_eq 1 "$(calls)" "stop - on the running story ends it after its unit"
+  assert_contains "$(last_run_dir)/report.md" "^Ending: stopped by operator$" "stopped by operator (AC23)"
+  assert_eq "" "$(ls -A "$(last_run_dir)/control" 2>/dev/null)" "no control file left"
+}
+test_overnight_hold_story_running() {
+  fixture hsr; holds_on 60
+  scenario "$ISO1; holdop" "wtledger final review done" "wtledger shipped https://x/pull/9; stage idle; task -"
+  start_bg; wait_held 20
+  assert_contains "$R/control/-.held" "^held held by operator until " "hold - holds at the next unit boundary"
+  assert_eq 1 "$(calls)" "before the next unit"
+  verb resume -; bg_end 60 "the run goes on"
+  assert_eq 0 "$BG_STATUS" "and finishes"
+  assert_eq 3 "$(calls)" "the remaining units ran"
+  holds_off
+}
+test_overnight_hold_last_unit_done_finishes() {
+  fixture hld; holds_on 60
+  scenario "stage execute; task 1/1; ledger T1 complete a..b" "ledger final review done" \
+           "holdop; ledger shipped https://x/pull/6; stage idle; task -"
+  run_start
+  assert_eq 0 "$RS_STATUS" "a hold sent during the last unit: the run still finishes done"
+  assert_not_contains "$(last_run_dir)/events.jsonl" '"state":"held"' "never held"
+  assert_eq "" "$(ls -A "$(last_run_dir)/control" 2>/dev/null)" "the .hold is cleared"
+  holds_off
+}
+test_overnight_run_stop_while_held() {
+  fixture rsh; holds_on 60
+  scenario "$ISO1" "wtledger Stop: need art"
+  start_bg; wait_held 20
+  verb stop; assert_contains "$V_OUT" "^stop requested: the run ends after its running unit" "bare stop, as today"
+  bg_end 20 "the run ends"
+  assert_contains "$R/report.md" "^Ending: stopped by user (was held: stop: need art)$" "the halt's reason, then the hold's (AC25)"
+  holds_off
+}
+test_overnight_hold_minutes_zero_ends_at_once() {
+  fixture hmz
+  scenario "$ISO1; holdop" "wtledger Stop: need art"
+  run_start
+  assert_eq 2 "$(calls)" "hold_minutes 0: a hold is refused, nothing waits"
+  assert_contains "$(last_run_dir)/report.md" "^Ending: stop: need art$" "a feature Stop: ends at once, as today (AC26)"
+  assert_missing "$(last_run_dir)/control/-.held" "never held"
+}
+test_overnight_requeue_minimal_path() {
+  fixture rmp; make_minbin
+  scenario "stage execute; branch feat; task 1/2; wtledger T1 complete a..b; say use the bus" \
+           "inbox; task 2/2; wtledger T2 complete b..c" "wtledger final review done" \
+           "wtledger shipped https://x/pull/2; stage idle; task -"
+  RS_STATUS=0
+  ( cd "$P" && PATH="$TMP/minbin" sh "$RUNNER" start ) > "$TMP/rs.out" 2> "$TMP/rs.err" || RS_STATUS=$?
+  assert_eq 0 "$RS_STATUS" "the channel works under the minimal PATH"
+  assert_not_contains "$TMP/rs.err" "not found" "no missing command"
+  assert_contains "$CALLS/2.inbox" '^\[1, story\] use the bus$' "say, the hook and the claim ran"
+  assert_contains "$(last_run_dir)/events.jsonl" '"event":"message_requeued"' "and the requeue check"
+  assert_contains "$(last_run_dir)/report.md" "^- 1 (story, requeues 1): use the bus$" "and the report"
+}
+test_overnight_orphaned_holds_after_isolation() {
+  fixture oho; holds_on 2
+  scenario "$ISO1" "cost 1" "cost 1; orphan"
+  run_start; R="$(last_run_dir)"
+  assert_eq 3 "$(calls)" "the orphaned no-progress ending comes after the retry"
+  assert_contains "$R/events.jsonl" '"state":"held","why":"no progress on T2 (orphaned: ' "an orphaned no-progress ending holds after isolation, like any no-progress ending"
+  assert_contains "$R/report.md" "^Ending: no progress on T2 (orphaned: .*) (held 0h0m, no reply)$" "the deadline then ends it with the cause kept"
+  fixture oho2; holds_on 2
+  scenario "stage execute; task 1/2" "cost 1" "cost 1; orphan"
+  run_start; R="$(last_run_dir)"
+  assert_contains "$R/report.md" "^Ending: no progress on T2 (orphaned: .*)$" "before isolation it ends at once"
+  assert_not_contains "$R/events.jsonl" '"state":"held"' "never held"
+  holds_off
+}
+
 run_tests test_overnight_report_done test_overnight_report_not_done \
   test_overnight_report_anchors test_overnight_resume_quote test_overnight_label_t1 \
   test_overnight_session_seconds_refused test_overnight_claim_without_run_dir \
@@ -1154,4 +1432,23 @@ run_tests test_overnight_report_done test_overnight_report_not_done \
   test_verbs_run_pinning \
   test_inbox_lock_stale_broken \
   test_inbox_lock_busy \
-  test_channel_sourced_only
+  test_channel_sourced_only \
+  test_overnight_hold_on_feature_stop \
+  test_overnight_start_ledger_stop_ends_at_once \
+  test_overnight_resume_runs_next_unit \
+  test_overnight_new_stop_holds_again \
+  test_overnight_hold_deadline \
+  test_overnight_stop_beats_resume \
+  test_overnight_resume_wins_at_deadline \
+  test_overnight_requeue_then_hold \
+  test_overnight_recorded_directive_stays_delivered \
+  test_overnight_requeue_id_prefix \
+  test_overnight_requeue_done_no_hold \
+  test_overnight_prestop_and_limit_end_at_once \
+  test_overnight_stop_story_running \
+  test_overnight_hold_story_running \
+  test_overnight_hold_last_unit_done_finishes \
+  test_overnight_run_stop_while_held \
+  test_overnight_hold_minutes_zero_ends_at_once \
+  test_overnight_requeue_minimal_path \
+  test_overnight_orphaned_holds_after_isolation

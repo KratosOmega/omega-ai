@@ -404,8 +404,15 @@ snapshot() {
   SIG_FRD="$(printf '%s\n' "$_l" | grep -c '^- [0-9-]* final review done$')"
   SIG_SHIPPED="$(printf '%s\n' "$_l" | grep -c '^- [0-9-]* shipped ')"
   SIG="stage=$SIG_STAGE;task=$SIG_TASK;frd=$SIG_FRD;shipped=$SIG_SHIPPED"
-  if [ "$FEATURE_DIR" = "$START_DIR" ]; then printf '%s\n' "$_l" | stop_lines   # one ledger: read it once
-  else { printf '%s\n' "$_l" | stop_lines; ledger_of "$START_DIR" | stop_lines; }; fi | sort -u > "$1"
+  # $1.start: the start checkout's Stop: lines (the whole set before
+  # isolation, when one ledger is both), so take_new_stop can tell a Stop
+  # written before isolation, or in both ledgers, from a feature-only one.
+  if [ "$FEATURE_DIR" = "$START_DIR" ]; then   # one ledger: read it once
+    printf '%s\n' "$_l" | stop_lines | sort -u > "$1"; cp "$1" "$1.start"
+  else
+    ledger_of "$START_DIR" | stop_lines | sort -u > "$1.start"
+    { printf '%s\n' "$_l" | stop_lines; cat "$1.start"; } | sort -u > "$1"
+  fi
 }
 # stop_lines — the Stop: lines of one ledger on stdin, each suffixed with a
 # tab and its occurrence number (snapshot's rule).
@@ -413,6 +420,20 @@ stop_lines() { grep '^- [0-9-]* Stop: ' | awk '{ k[$0]++; printf "%s\t%d\n", $0,
 # new_stop BEFORE AFTER — the Stop: line in snapshot AFTER that BEFORE does
 # not hold (the last, when several), its suffix stripped; empty for none.
 new_stop() { _ns="$(comm -13 "$1" "$2" | tail -n 1)"; printf '%s\n' "${_ns%	*}"; }
+# take_new_stop BEFORE AFTER — new_stop's line (NEW_STOP; empty for none),
+# its ending (STOP_ENDING, `stop: <reason>`), and where it came from
+# (STOP_SRC): `start` when any line new in AFTER is also in the start
+# checkout's ledger (AFTER.start), else `feature` (AC17-18, R6).
+take_new_stop() {
+  NEW_STOP="$(new_stop "$1" "$2")"; STOP_ENDING=""; STOP_SRC=""
+  [ -n "$NEW_STOP" ] || return 0
+  STOP_ENDING="stop: ${NEW_STOP#*Stop: }"
+  if comm -13 "$1" "$2" | awk -v st="$2.start" 'FILENAME == st { s[$0] = 1; next } ($0 in s) { f = 1 } END { exit !f }' "$2.start" -; then
+    STOP_SRC=start
+  else
+    STOP_SRC=feature
+  fi
+}
 # run_budget_out — the run budget refuses one more session: run_usd is set
 # and spent_all + session_usd exceeds it.
 run_budget_out() {
@@ -459,6 +480,143 @@ state_event() {
 }
 # iso_utc EPOCH — EPOCH as YYYY-MM-DDTHH:MM:SSZ (GNU date -d, else BSD -r).
 iso_utc() { date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -r "$1" +%Y-%m-%dT%H:%M:%SZ; }
+# ---- Operator messages and holds (#27; spec AC13-14, AC17-27) ----
+# requeue_check — after each unit: each story or retire message the unit
+# claimed (inbox/<story>/delivered/<UNIT_TAG>/) is checked against the
+# story's feature-checkout ledger (`Directive <id>:` or `Directive <target>
+# retired` at a line's start, after its date). One with no match goes back to
+# pending with requeues + 1 and a message_requeued event. REQ_LIMIT is the
+# first id whose requeues reach RETRIES + 1, when holds are on and the story
+# is isolated (R6, R9). Writes no studio state. A manifest run's storyless
+# unit (the final step) has no inbox.
+requeue_check() {
+  REQ_LIMIT=""
+  if [ -z "${CUR_ID:-}" ] && [ -f "$RUN_DIR/rows.tsv" ]; then return 0; fi
+  _rq_s="${CUR_ID:--}"; _rq_ib="$RUN_DIR/inbox/$_rq_s"; _rq_dl="$_rq_ib/delivered/$UNIT_TAG"
+  [ -d "$_rq_dl" ] || return 0
+  _rq_fd="$(feature_dir)"; _rq_l="$(ledger_of "$_rq_fd")"
+  inbox_lock "$_rq_ib" 5 || { say "inbox busy: the directive check after $UNIT_STEM was skipped"; return 0; }
+  for _rq_f in "$_rq_dl"/[0-9]*.msg; do
+    [ -f "$_rq_f" ] || continue
+    _rq_id="$(msg_get id "$_rq_f")"
+    case "$(msg_get scope "$_rq_f")" in
+      story) _rq_p="Directive $_rq_id:" ;;
+      retire) _rq_p="Directive $(msg_get target "$_rq_f") retired" ;;
+      *) continue ;;
+    esac
+    if printf '%s\n' "$_rq_l" | awk -v p="$_rq_p" '{ sub(/^- [0-9-]+ /, "") } index($0, p) == 1 { f = 1 } END { exit !f }'; then
+      continue
+    fi
+    _rq_n="$(msg_get requeues "$_rq_f")"; _rq_n=$(( ${_rq_n:-0} + 1 ))
+    _rq_t="$_rq_ib/.rq.$$"
+    if sed "1,/^--\$/s/^requeues: .*/requeues: $_rq_n/" "$_rq_f" > "$_rq_t" && mv -f "$_rq_t" "$_rq_ib/${_rq_f##*/}"; then
+      rm -f "$_rq_f"
+    else
+      rm -f "$_rq_t"; continue
+    fi
+    run_event message_requeued "story=$_rq_s" "id:=$_rq_id" "unit=$UNIT_TAG" "requeues:=$_rq_n"
+    if [ -z "$REQ_LIMIT" ] && [ "$_rq_n" -ge $((RETRIES + 1)) ] && [ "$HOLD_ON" = 1 ] && [ "$_rq_fd" != "$START_DIR" ]; then
+      REQ_LIMIT="$_rq_id"
+    fi
+  done
+  inbox_unlock "$_rq_ib"
+}
+# ctl_take ID KIND — control/ID.KIND exists: remove it, return 0.
+ctl_take() { [ -f "$RUN_DIR/control/$1.$2" ] || return 1; rm -f "$RUN_DIR/control/$1.$2"; }
+# ctl_clear ID — R25: a story that ends leaves no control file.
+ctl_clear() {
+  rm -f "$RUN_DIR/control/$1.hold" "$RUN_DIR/control/$1.resume" "$RUN_DIR/control/$1.stop" "$RUN_DIR/control/$1.held"
+}
+# op_boundary ID — R8, before a unit: the halt (`stopped by user`), then an
+# operator stop (`stopped by operator`), then, with holds on, an operator
+# hold (`held by operator`). Returns 1 with ENDING set when one acts.
+op_boundary() {
+  if stop_requested; then ENDING="stopped by user"; return 1; fi
+  if ctl_take "$1" stop; then ENDING="stopped by operator"; return 1; fi
+  if [ "$HOLD_ON" = 1 ] && ctl_take "$1" hold; then ENDING="held by operator"; return 1; fi
+  return 0
+}
+# isolated — the last snapshot's feature checkout is not the start checkout.
+isolated() { [ "${FEATURE_DIR:-$START_DIR}" != "$START_DIR" ]; }
+# holdable — AC17-18, R6: ENDING holds instead of ending. Never under a halt,
+# never with holds off; `held by operator` always; a `stop:` only when it is
+# the feature-only Stop take_new_stop saw; the rest only after isolation.
+holdable() {
+  [ "$HOLD_ON" = 1 ] || return 1
+  ! stop_requested || return 1
+  case "$ENDING" in
+    "held by operator") return 0 ;;
+    "stop: "*) [ "$ENDING" = "${STOP_ENDING:-}" ] && [ "${STOP_SRC:-}" = feature ] && isolated; return $? ;;
+    "no progress on "*|"timed out on "*|"directive "*" not recorded"|"gate red after "*|"gate repair made no progress"|"gate repair timed out"*)
+      isolated; return $? ;;
+  esac
+  return 1
+}
+# hold_record ID RECORD — the story's record while it holds and resumes.
+# Single-plan mode keeps a held line in control/ID.held (removed for any
+# other record) and writes the story_state event; overnight-lanes.sh
+# redefines it as story_write.
+hold_record() {
+  mkdir -p "$RUN_DIR/control" 2>/dev/null
+  case "$2" in
+    held*) printf '%s\n' "$2" > "$RUN_DIR/control/.held.$$" && mv -f "$RUN_DIR/control/.held.$$" "$RUN_DIR/control/$1.held" ;;
+    *) rm -f "$RUN_DIR/control/$1.held" ;;
+  esac
+  state_event "$1" "$2"
+}
+# halt_reason — the ending a halt gives a held story (R28); lanes redefine
+# it as lane_halt_reason.
+halt_reason() { echo "stopped by user"; }
+# hm SECS — `<h>h<m>m`.
+hm() { printf '%dh%dm' $(( $1 / 3600 )) $(( $1 % 3600 / 60 )); }
+# hold_wait ID — AC19-25: hold the story ENDING names until the operator
+# acts, the run halts, or HOLD_SECS pass; a poll every
+# STUDIO_OVERNIGHT_POLL_SECONDS (default 5), no session running. A poll checks
+# the halt, then .stop, then .resume, then the deadline (AC22). Returns 0 on
+# resume (record running, ENDING cleared; n is kept, so units run on);
+# else 1 with ENDING set.
+hold_wait() {
+  _hw_why="$ENDING"
+  rm -f "$RUN_DIR/control/$1.hold" "$RUN_DIR/control/$1.resume"
+  _hw_dl=$(( $(date +%s) + HOLD_SECS ))
+  hold_record "$1" "held $_hw_why until $(iso_utc "$_hw_dl")"
+  say "${CUR_ID:+$CUR_ID }held: $_hw_why — say / resume / stop ${CUR_ID:--}"
+  while :; do
+    if stop_requested; then ENDING="$(halt_reason) (was held: $_hw_why)"; return 1; fi
+    if ctl_take "$1" stop; then ENDING="$_hw_why"; return 1; fi
+    if ctl_take "$1" resume; then hold_record "$1" running; ENDING=""; return 0; fi
+    if [ "$(date +%s)" -ge "$_hw_dl" ]; then ENDING="$_hw_why (held $(hm "$HOLD_SECS"), no reply)"; return 1; fi
+    sleep "${STUDIO_OVERNIGHT_POLL_SECONDS:-5}"
+  done
+}
+# hhmm_local ISO — ISO-8601 UTC as local HH:MM: days-from-civil to an epoch,
+# then GNU `date -d @E`, else BSD `date -r E`; the ISO itself when neither
+# works (R20, trial t6).
+hhmm_local() {
+  _hh_e="$(printf '%s\n' "$1" | awk -F'[-T:Z]' 'NF >= 6 { y = $1; m = $2; d = $3; if (m <= 2) { y--; m += 12 }
+    era = int(y / 400); yoe = y - era * 400; doy = int((153 * (m - 3) + 2) / 5) + d - 1
+    doe = yoe * 365 + int(yoe / 4) - int(yoe / 100) + doy
+    print (era * 146097 + doe - 719468) * 86400 + $4 * 3600 + $5 * 60 + $6 }')"
+  if [ -n "$_hh_e" ]; then
+    date -d "@$_hh_e" +%H:%M 2>/dev/null || date -r "$_hh_e" +%H:%M 2>/dev/null || printf '%s\n' "$1"
+  else
+    printf '%s\n' "$1"
+  fi
+}
+# held_line RECORD ID — AC27, R20.
+held_line() {
+  _hl_r="${1#held }"
+  printf 'held — %s — until %s — say / resume / stop %s\n' "${_hl_r% until *}" "$(hhmm_local "${_hl_r##* until }")" "$2"
+}
+# msgs_left ID — R21: the story's pending messages, lowest id first, as
+# `- <id> (<scope>, requeues <n>): <text>`.
+msgs_left() {
+  for _ml_f in "$RUN_DIR/inbox/$1"/[0-9]*.msg; do
+    [ -f "$_ml_f" ] || continue
+    printf '%s\t- %s (%s, requeues %s): %s\n' "$(msg_get id "$_ml_f")" "$(msg_get id "$_ml_f")" \
+      "$(msg_get scope "$_ml_f")" "$(msg_get requeues "$_ml_f")" "$(msg_body "$_ml_f")"
+  done | sort -n | awk '{ sub(/^[0-9]+\t/, ""); print }'
+}
 
 # ---- What a unit is doing: activity, elapsed time, heartbeat ----
 
@@ -707,6 +865,7 @@ run_unit() {
   unit_reap "$UNIT_TAG"; [ -z "${LDIR:-}" ] || rm -f "$LDIR/utag"
   UNIT_MIN="$(awk -v s="$(( $(date +%s) - _t0 ))" 'BEGIN { printf "%.1f", s / 60 }')"
   UNIT_COST="$(cost_of "$UNIT_DIR/$UNIT_STEM.jsonl")"; [ -n "$UNIT_COST" ] || UNIT_COST=unknown
+  requeue_check
 }
 row() {  # row N LABEL OUTCOME — the label column is ID-LABEL when CUR_ID is set
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$1" "${CUR_ID:+$CUR_ID-}$2" "$UNIT_EXIT" "$UNIT_COST" "$UNIT_MIN" "$UNIT_TIMED_OUT" "$3" \
@@ -753,6 +912,8 @@ write_report() {
     printf '%s\n' "$_ld" | grep -E '^- [0-9-]* ([^ ]+ )?Ruling: ' || echo '(none)'
     printf '\n## Play list\n\n'
     printf '%s\n' "$_ld" | grep -E '^- [0-9-]* P[0-9]+ Play: ' || echo '(none)'
+    _wr_m="$(msgs_left -)"
+    [ -z "$_wr_m" ] || printf '\n## Operator messages left\n\n%s\n' "$_wr_m"
     if [ "$1" != done ]; then
       printf '\n## Resume\n\ncd %s && %s start\n' "$(sq "$START_DIR")" "$(sq "$SELF_ABS")"
     fi
@@ -809,7 +970,8 @@ on_exit() {
 }
 
 # story_units — bundle 2's unit loop for the current story. Returns with
-# ENDING set: done · stopped by user · stop: <reason> · stop: run budget ·
+# ENDING set: done · stopped by user · stopped by operator · held by
+# operator · directive <id> not recorded · stop: <reason> · stop: run budget ·
 # no progress on <label> [(orphaned: …)] · timed out on <label> (…) ·
 # stop: unexpected stage <s>. Its scratch files
 # live in UNIT_DIR (the run dir; a lane's own dir in manifest mode). Unit
@@ -817,8 +979,9 @@ on_exit() {
 # same story (after a gate repair) never reuses a unit's file names.
 story_units() {
   n="${n:-0}"; noprog=0; suffix=""; _su_first=1
+  STOP_ENDING=""; STOP_SRC=""
   while :; do
-    if stop_requested; then ENDING="stopped by user"; return 0; fi
+    op_boundary "${CUR_ID:--}" || return 0
     # First pass takes the before-snapshot; later passes reuse the previous after-snapshot.
     if [ "$_su_first" = 1 ]; then snapshot "$UNIT_DIR/stops.before"; _su_first=0
     else cp "$UNIT_DIR/stops.after" "$UNIT_DIR/stops.before"; fi
@@ -828,9 +991,13 @@ story_units() {
     _before="$SIG"; _base="${STUDIO_OVERNIGHT_LABEL:-$(label_for)}"
     n=$((n + 1)); run_unit "$n" "$_base$suffix"
     snapshot "$UNIT_DIR/stops.after"
-    _new="$(new_stop "$UNIT_DIR/stops.before" "$UNIT_DIR/stops.after")"
-    if [ -n "$_new" ]; then row "$n" "$_base$suffix" stop; ENDING="stop: ${_new#*Stop: }"; return 0; fi
+    take_new_stop "$UNIT_DIR/stops.before" "$UNIT_DIR/stops.after"
+    if [ -n "$NEW_STOP" ]; then row "$n" "$_base$suffix" stop; ENDING="$STOP_ENDING"; return 0; fi
     if [ "$SIG_STAGE" = idle ] && [ "$SIG_SHIPPED" -gt 0 ]; then row "$n" "$_base$suffix" done; ENDING=done; return 0; fi
+    if [ -n "$REQ_LIMIT" ]; then
+      if [ "$SIG" != "$_before" ]; then _su_o=progress; else _su_o="$(unit_outcome)"; fi
+      row "$n" "$_base$suffix" "$_su_o"; ENDING="directive $REQ_LIMIT not recorded"; return 0
+    fi
     if [ "$SIG" != "$_before" ]; then row "$n" "$_base$suffix" progress; noprog=0; suffix=""; continue; fi
     _out="$(unit_outcome)"; row "$n" "$_base$suffix" "$_out"; noprog=$((noprog + 1))
     if [ "$noprog" -le "$RETRIES" ]; then suffix="-retry"; continue; fi
@@ -958,6 +1125,13 @@ cmd_start() {
   EV_ON=1; state_event - running
   UNIT_DIR="$RUN_DIR"; UNIT_PREFIX=""; CUR_ID=""; n=0
   story_units
+  # A holdable ending waits for the operator (AC17-25); a resume runs the
+  # unit loop on (a new stop holds again).
+  while holdable; do
+    hold_wait - || break
+    story_units
+  done
+  ctl_clear -
   finish_run "$ENDING"
 }
 
@@ -1066,7 +1240,8 @@ project_status() {
     RUN_DIR="$(sed -n 's/^run=//p' "$LOCK" | head -n 1)"
     printf 'run: %s\nunit: %s\ntask: %s\nspent: $%s\npid: %s\n' "$RUN_DIR" \
       "$(cat "$RUN_DIR/current" 2>/dev/null)" "$(state get task 2>/dev/null)" "$(spent)" "$(lock_pid)"
-    _ps_now="$(unit_now_line "$RUN_DIR")"; [ -z "$_ps_now" ] || printf 'now: %s\n' "$_ps_now"
+    if [ -f "$RUN_DIR/control/-.held" ]; then held_line "$(cat "$RUN_DIR/control/-.held")" -
+    else _ps_now="$(unit_now_line "$RUN_DIR")"; [ -z "$_ps_now" ] || printf 'now: %s\n' "$_ps_now"; fi
     gate_line "$RUN_DIR"
     return 0
   fi
