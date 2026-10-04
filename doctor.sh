@@ -208,6 +208,17 @@ if [ -n "$ENGINE" ]; then
 fi
 
 log "launch:       $SHIM_NAME"
+# The hook delivery probe (tests/probes/hook_delivery_probe.sh) records the
+# Claude Code version it last passed on: the overnight operator channel
+# relies on that hook delivery. Informational; never a failure.
+if [ "$STUDIO" = game-dev ]; then
+  _hp="${HOME%/}/.claude-gamedev/probes/hook_delivery"
+  if [ -s "$_hp" ]; then
+    log "hook probe:   $(sed -n 1p "$_hp") — passed $(sed -n 2p "$_hp")"
+  else
+    log "hook probe:   hook delivery probe not run"
+  fi
+fi
 # The shim the manifest recorded is the one this install wrote; `command -v`
 # would happily report an older shim of the same name on PATH.
 if [ -z "$RECORDED_SHIM" ]; then

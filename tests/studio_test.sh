@@ -569,6 +569,37 @@ test_execute_gate_repair() {
   assert_not_contains "$E" '`/game-dev:execute --land`, in the story.s worktree' "§9 names the checkout the runner starts it in"
 }
 
+# section_count FILE HEADING_RE PATTERN — matches of PATTERN between the
+# `## ` heading matching HEADING_RE and the next `## ` heading.
+section_count() {
+  awk -v h="$2" -v p="$3" '/^## / { s = ($0 ~ h) } s && index($0, p) { n++ } END { print n + 0 }' "$1"
+}
+
+# Operator messages (#27, AC12): what a unit does with the runner's
+# OPERATOR MESSAGES block, and where each unit kind records it.
+test_execute_operator_messages() {
+  E="$REPO_ROOT/studios/game-dev/skills/execute/SKILL.md"
+  assert_contains "$E" '^### Operator messages (overnight units)$' "the block exists"
+  assert_contains "$E" 'Each message is an instruction from the user' "a message is the user's instruction"
+  assert_contains "$E" "studio-state ledger 'Directive <id>: <text>'" "story scope: the single-quoted record"
+  assert_contains "$E" "in this unit only. Do not record it." "unit scope: not recorded"
+  assert_contains "$E" "studio-state ledger 'Directive <target> retired'" "retire scope: the record"
+  assert_contains "$E" "the \*\*feature checkout's\*\* ledger" "recorded in the feature checkout's ledger"
+  assert_contains "$E" 'never before the fast-forward' "single-plan: after (c), never before the fast-forward"
+  assert_contains "$E" 'docs-sync commit (when there is one) and the `base origin/<Target>` line' "lane: after the docs sync and the base line"
+  assert_contains "$E" 'after their \*\*Enter the feature checkout\*\* step' "§9 and §11: after entering"
+  assert_contains "$E" 'A message that arrives earlier is remembered and recorded at that point' "an early message waits for the point"
+  assert_contains "$E" "committed with the unit's next ledger commit" "commit with the next ledger commit"
+  assert_contains "$E" 'a red stop pushes nothing' "push only what the unit pushes"
+  assert_contains "$E" 'is committed in a `chore(studio): ledger` commit before the unit ends' "the closing ledger commit"
+  assert_contains "$E" 'for what you build, record a `Stop:` with the conflict instead' "the conflict rule"
+  assert_eq 2 "$(section_count "$E" '^## 0[.] ' '(see §8, Operator messages)')" "§0 points at the block twice (lane base line, (c))"
+  assert_eq 1 "$(section_count "$E" '^## 7[.] ' '(see §8, Operator messages)')" "§7 points at the block"
+  assert_eq 1 "$(section_count "$E" '^## 9[.] ' '(see §8, Operator messages)')" "§9 points at the block"
+  assert_eq 1 "$(section_count "$E" '^## 11[.] ' '(see §8, Operator messages)')" "§11 points at the block"
+  assert_eq 1 "$(section_count "$E" '^## 8[.] ' '### Operator messages (overnight units)')" "the block is under §8"
+}
+
 test_plan_brainstorm_lanes() {
   PL="$REPO_ROOT/studios/game-dev/skills/plan/SKILL.md"
   BR="$REPO_ROOT/studios/game-dev/skills/brainstorm/SKILL.md"
@@ -614,5 +645,5 @@ run_tests test_plugin_manifests test_skill_frontmatter test_agent_frontmatter \
   test_stage_chain test_execute_contract test_agent_contracts test_feature_checkout_copies test_next_lines \
   test_review_contract test_on_demand_skills_keep_stage test_playtest_contract test_retro_contract \
   test_no_ship_references test_superpowers_requires_referenced test_no_last_playtest_callers \
-  test_execute_one_contract test_router_overnight_lock test_execute_lanes test_execute_lane_gate_foreground test_execute_land_and_progress test_execute_gate_repair test_final_wave_contracts \
+  test_execute_one_contract test_router_overnight_lock test_execute_lanes test_execute_lane_gate_foreground test_execute_land_and_progress test_execute_gate_repair test_execute_operator_messages test_final_wave_contracts \
   test_plan_brainstorm_lanes

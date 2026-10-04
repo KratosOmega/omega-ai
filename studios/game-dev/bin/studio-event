@@ -1,0 +1,80 @@
+#!/bin/sh
+# studio-event — append one event line to an overnight run's events.jsonl
+# (schema v1, docs/game-dev/overnight-events.md). The runner, the operator
+# verbs and the operator-inbox hook write the log only through this.
+#
+#   studio-event RUN_DIR EVENT [FIELD…]
+#     FIELD  key=text        a JSON string (escaped, cut to 500 characters)
+#            key:=number     a JSON number; anything else ('unknown', '') is null
+#            key[]=a,b,…     a JSON array of strings (empty: [])
+#
+# EVENT and every key match [a-z_]+. The line is {"v":1,"ts":"<UTC>",
+# "run":"<basename RUN_DIR>","event":EVENT,…} and at most 4096 bytes: past
+# that, fields are dropped from the end and "cut":true is added. Uses only
+# sh, date and awk (the runner suites' minimal PATH).
+# Exit: 0 written · 1 RUN_DIR missing or not writable (a line on stderr) ·
+# 2 bad usage.
+set -u
+usage() { echo "usage: studio-event RUN_DIR EVENT [key=text|key:=number|key[]=a,b]…" >&2; exit 2; }
+[ "$#" -ge 2 ] || usage
+_d="${1%/}"; _e="$2"; shift 2
+case "$_e" in ''|*[!a-z_]*) usage ;; esac
+for _f in "$@"; do
+  case "$_f" in *=*) ;; *) usage ;; esac
+  _k="${_f%%=*}"
+  case "$_k" in
+    *'[]') _k="${_k%??}" ;;
+    *:) _k="${_k%:}" ;;
+  esac
+  case "$_k" in ''|*[!a-z_]*) usage ;; esac
+done
+[ -d "$_d" ] || { echo "studio-event: no run dir $_d" >&2; exit 1; }
+_line="$(LC_ALL=C awk -v ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)" -v run="${_d##*/}" -v ev="$_e" '
+  function esc(s,   c) {
+    gsub(/\\/, "&&", s); gsub(/"/, "\\\"", s); gsub(/\t/, "\\t", s); gsub(/\n/, "\\n", s); gsub(/\r/, "\\r", s)
+    for (c = 1; c < 32; c++) if (c != 9 && c != 10 && c != 13) gsub(sprintf("%c", c), "", s)
+    gsub(sprintf("%c", 127), "", s)
+    return s
+  }
+  # cut(s, n) — the first n characters of UTF-8 s: a character starts at any
+  # byte outside 0x80-0xBF, so the cut never splits one.
+  function cut(s, n,   i, c, L, b) {
+    L = length(s); if (L <= n) return s
+    c = 0
+    for (i = 1; i <= L; i++) {
+      b = substr(s, i, 1)
+      if (b < "\200" || b >= "\300") { c++; if (c > n) return substr(s, 1, i - 1) }
+    }
+    return s
+  }
+  function str(s) { return "\"" esc(cut(s, 500)) "\"" }
+  function num(s) { return (s ~ /^-?[0-9]+(\.[0-9]+)?([eE][-+]?[0-9]+)?$/) ? s : "null" }
+  function arr(s,   n, a, i, o) {
+    if (s == "") return "[]"
+    n = split(s, a, ","); o = "["
+    for (i = 1; i <= n; i++) o = o (i > 1 ? "," : "") str(a[i])
+    return o "]"
+  }
+  BEGIN {
+    head = "{\"v\":1,\"ts\":\"" ts "\",\"run\":" str(run) ",\"event\":\"" ev "\""
+    nf = 0
+    for (i = 1; i < ARGC; i++) {
+      f = ARGV[i]; p = index(f, "="); k = substr(f, 1, p - 1); v = substr(f, p + 1)
+      if (k ~ /:$/) { k = substr(k, 1, length(k) - 1); F[++nf] = "\"" k "\":" num(v) }
+      else if (k ~ /\[\]$/) { k = substr(k, 1, length(k) - 2); F[++nf] = "\"" k "\":" arr(v) }
+      else F[++nf] = "\"" k "\":" str(v)
+    }
+    cutflag = ""
+    while (1) {
+      o = head
+      for (i = 1; i <= nf; i++) o = o "," F[i]
+      o = o cutflag "}"
+      if (length(o) <= 4096 || nf == 0) break
+      nf--; cutflag = ",\"cut\":true"
+    }
+    print o
+    exit
+  }' "$@")" || { echo "studio-event: awk failed" >&2; exit 1; }
+{ printf '%s\n' "$_line" >> "$_d/events.jsonl"; } 2>/dev/null \
+  || { echo "studio-event: cannot write $_d/events.jsonl" >&2; exit 1; }
+exit 0

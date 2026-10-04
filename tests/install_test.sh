@@ -372,6 +372,21 @@ fake_cache() {
   done
 }
 
+# AC31: doctor reports the hook delivery probe's last pass, or that it never
+# ran; the line never changes doctor's exit.
+test_doctor_hook_probe_line() {
+  sh "$REPO_ROOT/install.sh" game-dev --target "$TMP/hp" --shim-dir "$TMP/bin-hp" >/dev/null 2>&1
+  mkdir -p "$TMP/hp-home"
+  st0=0; ( HOME="$TMP/hp-home" sh "$REPO_ROOT/doctor.sh" game-dev --target "$TMP/hp" ) > "$TMP/hp0.out" 2>&1 || st0=$?
+  assert_contains "$TMP/hp0.out" "^hook probe:   hook delivery probe not run$" "no record: not run"
+  mkdir -p "$TMP/hp-home/.claude-gamedev/probes"
+  printf '2.1.288 (Claude Code)\n2026-10-03\n' > "$TMP/hp-home/.claude-gamedev/probes/hook_delivery"
+  st1=0; ( HOME="$TMP/hp-home" sh "$REPO_ROOT/doctor.sh" game-dev --target "$TMP/hp" ) > "$TMP/hp1.out" 2>&1 || st1=$?
+  assert_contains "$TMP/hp1.out" "^hook probe:   2\.1\.288 (Claude Code) — passed 2026-10-03$" "the recorded version and date"
+  assert_eq "$st0" "$st1" "the probe line never changes doctor's exit"
+  assert_eq 1 "$(grep -n '^launch:' "$TMP/hp1.out" | cut -d: -f1 | awk -v p="$(grep -n '^hook probe:' "$TMP/hp1.out" | cut -d: -f1)" '{ print ($1 + 1 == p) ? 1 : 0 }')" "the line follows launch:"
+}
+
 test_doctor_delegations() {
   sh "$REPO_ROOT/install.sh" game-dev --target "$TMP/dd" --shim-dir "$TMP/bin-dd" >/dev/null 2>&1
   status=0
@@ -1225,7 +1240,7 @@ run_tests test_studio_contract test_install_unknown_studio test_install_guard \
   test_install_skips_mcp_without_engine test_install_no_mcp_flag_skips_registration \
   test_install_general_has_no_mcp test_reinstall_reregisters_mcp_once test_uninstall_removes_mcp \
   test_uninstall_purge_confirmation_gates_mcp_removal \
-  test_doctor_engine_and_mcp_rows test_doctor_delegations test_settings_backup test_shim \
+  test_doctor_engine_and_mcp_rows test_doctor_delegations test_doctor_hook_probe_line test_settings_backup test_shim \
   test_doctor test_doctor_detects_leak test_doctor_reports_no_plugins \
   test_doctor_plugin_report test_doctor_plugin_name_mismatch \
   test_option_value_required test_uninstall test_uninstall_scopes_manifest_entries \

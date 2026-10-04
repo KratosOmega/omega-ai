@@ -31,6 +31,7 @@ echo "$$" > "$CALLS/$n.pid"
 date +%s > "$CALLS/$n.t0"
 for a in "$@"; do printf '%s\n' "$a"; done > "$CALLS/$n.argv"
 pwd -P > "$CALLS/$n.pwd"
+printf '%s %s\n' "${STUDIO_UNIT_TAG:-unset}" "${STUDIO_RUN_DIR:-unset}" > "$CALLS/$n.chan"
 printf '%s\n' "${OMEGA_AUTOPILOT:-unset}" > "$CALLS/$n.env"
 root="$(sh "$STUB_STATE_BIN" root)"
 cp "$root/.studio/overnight.lock" "$CALLS/$n.lock" 2>/dev/null
@@ -60,6 +61,16 @@ for act in "$@"; do
                   touch "$r/units.tsv"; chmod 444 "$r/units.tsv" ;;
     rmrundir)     r="$(sed -n 's/^run=//p' "$root/.studio/overnight.lock")"; rm -rf "$r" ;;
     "exit "*)     code="${act#exit }" ;;
+    inbox)        printf '{"session_id":"s","hook_event_name":"SessionStart","source":"startup"}' \
+                    | sh "$STUB_PLUGIN/hooks/operator-inbox.sh" > "$CALLS/$n.inbox" ;;
+    "say "*)      sh "$STUB_RUNNER" say - -- "${act#say }" > /dev/null 2>&1 ;;
+    "corruptrq "*) r="$(sed -n 's/^run=//p' "$root/.studio/overnight.lock")"
+                  for f in "$r"/inbox/-/delivered/*/[0-9]*.msg; do
+                    sed "s/^requeues: .*/requeues: ${act#corruptrq }/" "$f" > "$f.t" && mv "$f.t" "$f"
+                  done ;;
+    holdop)       sh "$STUB_RUNNER" hold - > /dev/null 2>&1 ;;
+    stopop)       sh "$STUB_RUNNER" stop - > /dev/null 2>&1 ;;
+    "unsay "*)    sh "$STUB_RUNNER" unsay - "${act#unsay }" > /dev/null 2>&1 ;;
   esac
 done
 printf '{"type":"system","subtype":"init"}\n'
@@ -72,7 +83,9 @@ printf '#!/bin/sh\nexit "${GH_STATUS:-0}"\n' > "$FAKE/gh"
 # A fake caffeinate: records its argv and pid, then lives until the -w pid dies.
 printf '#!/bin/sh\nprintf "%%s\\n" "$*" > "$CALLS/caffeinate.args"\necho "$$" > "$CALLS/caffeinate.pid"\nwhile kill -0 "$3" 2>/dev/null; do sleep 1; done\n' > "$FAKE/caffeinate"
 chmod +x "$FAKE"/*
-export PATH="$FAKE:$PATH" STUB_STATE_BIN="$STATE_BIN"
+export PATH="$FAKE:$PATH" STUB_STATE_BIN="$STATE_BIN" STUB_RUNNER="$RUNNER" STUB_PLUGIN="$REPO_ROOT/studios/game-dev"
+# The suites test today's endings: hold_minutes 0 (spec milestone gate 1).
+STUDIO_OVERNIGHT_HOLD_MINUTES=0; export STUDIO_OVERNIGHT_HOLD_MINUTES
 
 # fixture NAME [CONFIG_JSON] — a committed project at stage plan with an
 # approved spec and plan (with ## Decisions); fresh $CALLS and scenario.
@@ -108,12 +121,75 @@ last_run_dir() { ls -d "$P"/.studio/reports/overnight-* 2>/dev/null | tail -n 1;
 # from exec-ing sleep, which would drop the name from ps).
 live_dummy() { sh -c 'sleep 60; :' studio-overnight >/dev/null 2>&1 & DUMMY=$!; }
 
+# ---- #27: the operator verbs against a fake live run ----
+# fake_run NAME single|manifest [ID=RECORD]… — a live run with no runner in
+# the current fixture $P:
+# - the lock names a live_dummy pid (FR_PID) and run dir FR_DIR
+#   ($P/.studio/reports/NAME);
+# - FR_DIR/channel holds FR_HOLD (default 480) and FR_CHARS (default 4000);
+# - a registry entry exists (root and start $P).
+# manifest also writes:
+# - rows.tsv, and stories/ID = RECORD;
+# - each story's studio state and ledger (`plan approved x`), committed.
+fake_run() {
+  _fr_n="$1"; _fr_m="$2"; shift 2
+  FR_DIR="$P/.studio/reports/$_fr_n"; mkdir -p "$FR_DIR/stories"
+  printf 'hold_minutes=%s\ndirective_chars=%s\n' "${FR_HOLD:-480}" "${FR_CHARS:-4000}" > "$FR_DIR/channel"
+  live_dummy; FR_PID="$DUMMY"
+  printf 'pid=%s\nrun=%s\nstarted=2026-10-03T21:00:00Z\n' "$FR_PID" "$FR_DIR" > "$P/.studio/overnight.lock"
+  mkdir -p "$HOME/.claude-gamedev/runs"
+  printf 'root=%s\nstart=%s\nrun=%s\npid=%s\nstarted=2026-10-03T21:00:00Z\n' "$P" "$P" "$FR_DIR" "$FR_PID" \
+    > "$HOME/.claude-gamedev/runs/$_fr_n-$FR_PID"
+  [ "$_fr_m" = manifest ] || return 0
+  : > "$FR_DIR/rows.tsv"
+  for _fr_r in "$@"; do
+    _fr_id="${_fr_r%%=*}"
+    printf '%s\t%s-b\t%s\t-\t-\t\n' "$_fr_id" "$_fr_id" "$_fr_id" >> "$FR_DIR/rows.tsv"
+    printf '%s\n' "${_fr_r#*=}" > "$FR_DIR/stories/$_fr_id"
+    ( cd "$P" && STUDIO_STORY="$_fr_id" && export STUDIO_STORY \
+        && sh "$STATE_BIN" init && sh "$STATE_BIN" ledger "plan approved x" ) >/dev/null 2>&1
+  done
+  ( cd "$P" && git add -A .studio/ledger && git -c user.name=t -c user.email=t@t commit -qm stories ) >/dev/null 2>&1
+}
+# fake_run_end [PID] — end a fake run (default FR_PID): its dummy, lock and
+# registry entry.
+fake_run_end() {
+  _fe_p="${1:-$FR_PID}"
+  kill "$_fe_p" 2>/dev/null; wait "$_fe_p" 2>/dev/null
+  rm -f "$HOME"/.claude-gamedev/runs/*-"$_fe_p"
+  [ "$(sed -n 's/^pid=//p' "$P/.studio/overnight.lock" 2>/dev/null)" != "$_fe_p" ] || rm -f "$P/.studio/overnight.lock"
+}
+# verb_in DIR ARGS… — `studio-overnight ARGS` in DIR: V_STATUS; V_OUT and
+# V_ERR (file paths). verb ARGS… — the same in $P.
+verb_in() {
+  _vi_d="$1"; shift; V_STATUS=0
+  ( cd "$_vi_d" && sh "$RUNNER" "$@" ) > "$TMP/v.out" 2> "$TMP/v.err" || V_STATUS=$?
+  V_OUT="$TMP/v.out"; V_ERR="$TMP/v.err"
+}
+verb() { verb_in "$P" "$@"; }
+# put_msg DIR ID SCOPE TEXT [TARGET] — a message file DIR/ID.msg, as say writes it.
+put_msg() {
+  mkdir -p "$1"
+  printf 'id: %s\nscope: %s\ntarget: %s\nstory: -\nqueued: 2026-10-03T21:04:00Z\nrequeues: 0\n--\n%s\n' \
+    "$2" "$3" "${5:--}" "$4" > "$1/$2.msg"
+}
+# ledger_add LINE… — single-plan ledger lines in $P, committed.
+ledger_add() {
+  ( cd "$P" && for _la in "$@"; do sh "$STATE_BIN" ledger "$_la"; done \
+      && git add -A .studio/ledger && git -c user.name=t -c user.email=t@t commit -qm ledger ) >/dev/null 2>&1
+}
+# body FILE — a message file's body.
+body() { sed '1,/^--$/d' "$1"; }
+
 test_overnight_help() {
   out="$(sh "$RUNNER" --help 2>&1)"; st=$?
   assert_eq 0 "$st" "--help exits 0"
   printf '%s\n' "$out" > "$TMP/help.txt"
   for w in "start \[--dry-run\]" "status" "stop" "STUDIO_OVERNIGHT_SESSION_SECONDS" "overnight-deny.txt" "report.md" \
-           "run_usd .*0-5000" "max_lanes" "model_task" "model_final" "model_finish" "model_repair" "model_progress" "merge_command" "gate_repairs .*0-3"; do
+           "run_usd .*0-5000" "max_lanes" "model_task" "model_final" "model_finish" "model_repair" "model_progress" "merge_command" "gate_repairs .*0-3" \
+           "say <story>" "said <story>" "unsay <story> <id>" "hold <story>" "resume <story>" "stop <story>" "--run <run>" "hold_minutes .*0-1440" \
+           "directive_chars .*500-16000" "STUDIO_OVERNIGHT_HOLD_MINUTES — test hook" "STUDIO_OVERNIGHT_HOLD_SECONDS — test hook" \
+           "STUDIO_OVERNIGHT_INBOX_WAIT — test hook" "events.jsonl" "next tool call"; do
     assert_contains "$TMP/help.txt" "$w" "help names $w"
   done
   assert_contains "$TMP/help.txt" "$RUNNER" "help names the runner by its absolute path"
@@ -121,6 +197,49 @@ test_overnight_help() {
   assert_contains "$TMP/help.txt" "^The run may: commit, push the feature branch, open a draft PR\.$" "help lists what the run may do"
   assert_contains "$TMP/help.txt" "^The run may not: merge, force-push, delete a remote branch" "help lists what the run may not do"
   assert_contains "$TMP/help.txt" "secrets" "the may-not line names secrets"
+}
+
+# AC30: the contract #28 builds on. Every event the code writes is in the
+# doc's table and every documented event is written; the doc names the
+# envelope, the verbs and exit codes, the files and run discovery.
+test_events_contract_doc() {
+  DOC="${EVENTS_DOC:-$REPO_ROOT/docs/game-dev/overnight-events.md}"   # EVENTS_DOC: a scratch copy, to prove the check fails
+  B="$REPO_ROOT/studios/game-dev/bin"; H="$REPO_ROOT/studios/game-dev/hooks/operator-inbox.sh"
+  assert_file "$DOC" "the contract exists"
+  # every call site, comment lines dropped: `run_event NAME …`, `chan_event
+  # NAME …` and the hook's `"$RD" NAME …`
+  cat "$B/studio-overnight" "$B/overnight-lanes.sh" "$B/overnight-channel.sh" "$H" | grep -v '^[[:space:]]*#' \
+    | grep -oE '(run_event|chan_event|"\$RD") [a-z_]+ ("|[a-z_]+(=|:=|\[\]=)|'"'"')' > "$TMP/ev-calls.txt"
+  cat "$B/studio-overnight" "$B/overnight-lanes.sh" "$B/overnight-channel.sh" "$H" | grep -v '^[[:space:]]*#' \
+    | grep -oE '(run_event|chan_event|"\$RD") [a-z_]+ .*' > "$TMP/ev-lines.txt"
+  for e in run_started story_listed story_state unit_started unit_ended message_queued message_delivered message_requeued control run_ended; do
+    assert_contains "$DOC" "^| \`$e\` |" "the doc's table lists $e"
+    assert_eq 1 "$(awk -v e="$e" '$2 == e { f = 1 } END { print f ? 1 : 0 }' "$TMP/ev-calls.txt")" "the code writes $e"
+    # fields: those at the event's call sites equal those in the doc's fields column
+    awk -v e="$e" '$2 == e' "$TMP/ev-lines.txt" | grep -oE "(^| |\"|')[a-z_]+(:=|\[\]=|=)" \
+      | tr -d " \"'" | sed -e 's/:=$//' -e 's/\[\]=$//' -e 's/=$//' | sort -u > "$TMP/ev-code.txt"
+    grep "^| \`$e\` |" "$DOC" | awk -F'|' '{ print $3 }' | grep -oE '`[a-z_]+`' | tr -d '`' | sort -u > "$TMP/ev-doc.txt"
+    for k in $(cat "$TMP/ev-code.txt"); do
+      assert_eq 1 "$(grep -qx "$k" "$TMP/ev-doc.txt" && echo 1 || echo 0)" "$e: emitted field $k is in the doc's row"
+    done
+    for k in $(cat "$TMP/ev-doc.txt"); do
+      assert_eq 1 "$(grep -qx "$k" "$TMP/ev-code.txt" && echo 1 || echo 0)" "$e: documented field $k is emitted"
+    done
+  done
+  # every event the code writes is documented
+  for e in $(awk '{ print $2 }' "$TMP/ev-calls.txt" | sort -u); do
+    assert_contains "$DOC" "^| \`$e\` |" "$e, written by the code, is documented"
+  done
+  for w in '"v":1' '^## Schema v1' 'never renamed or removed' 'run=<run dir>' 'events.jsonl' 'hook.log' 'inbox/<story>/<id>.msg' \
+           'delivered/<unit tag>/<id>.msg' 'control/<story>.hold' '^requeues: 0$' '^--$' 'hold_minutes=<N>' 'directive_chars=<N>' \
+           'say <story>' 'said <story>' 'unsay <story> <id>' 'hold <story>' 'resume <story>' 'stop <story>' '--run <run>' \
+           '^| 0 | ' '^| 1 | ' '^| 2 | ' 'run <name> is not live'; do
+    assert_contains "$DOC" "$w" "the doc names $w"
+  done
+  assert_contains "$REPO_ROOT/README.md" "studio-overnight say" "README teaches say"
+  assert_contains "$REPO_ROOT/README.md" "hold_minutes" "README names hold_minutes"
+  assert_contains "$REPO_ROOT/README.md" "overnight-events.md" "README links the contract"
+  assert_contains "$REPO_ROOT/README.md" "next tool call" "README states the delivery latency"
 }
 
 test_overnight_session_seconds_refused() {
@@ -200,7 +319,7 @@ test_overnight_deny_file_required() {
   # The runner reads overnight-deny.txt beside itself: run a copy whose
   # sibling deny file holds only comments.
   fixture deny
-  mkdir -p "$TMP/denybin"; cp "$RUNNER" "$STATE_BIN" "$TMP/denybin/"
+  mkdir -p "$TMP/denybin"; cp "$RUNNER" "$STATE_BIN" "$REPO_ROOT/studios/game-dev/bin/overnight-channel.sh" "$TMP/denybin/"
   printf '# only a comment\n\n' > "$TMP/denybin/overnight-deny.txt"
   RS_STATUS=0; ( cd "$P" && sh "$TMP/denybin/studio-overnight" start ) > "$TMP/rs.out" 2> "$TMP/rs.err" || RS_STATUS=$?
   assert_eq 2 "$RS_STATUS" "a deny file with no rules refuses"
@@ -381,6 +500,7 @@ test_overnight_stop_line() {
   assert_eq 1 "$(calls)" "a Stop: line is never retried"
   assert_eq stop "$(awk -F'\t' 'NR == 1 { print $7 }' "$(last_run_dir)/units.tsv")" "the stopped unit's row says stop"
   assert_contains "$(last_run_dir)/report.md" "stop: no Godot binary (studio-test exit 2)" "the reason is printed verbatim"
+  assert_contains "$(last_run_dir)/events.jsonl" '"event":"story_state","story":"-","state":"stopped","why":"stop: no Godot binary (studio-test exit 2)"}$' "the not-done ending is a stopped story_state with its why (R17)"
 }
 
 test_overnight_copied_stop_not_new() {
@@ -443,6 +563,42 @@ start_bg() {
 # wait_for FILE — up to 10 s.
 wait_for() { _i=0; while [ ! -e "$1" ] && [ "$_i" -lt 50 ]; do sleep 0.2; _i=$((_i + 1)); done; }
 bg_status() { BG_STATUS=0; wait "$RPID" || BG_STATUS=$?; }
+# ---- #27: single-plan holds ----
+# holds_on SECS — holds on for the next run: hold_minutes 5, a deadline of
+# SECS seconds, a 1 s poll. holds_off — the suite's default (holds off).
+holds_on() {
+  STUDIO_OVERNIGHT_HOLD_MINUTES=5; STUDIO_OVERNIGHT_HOLD_SECONDS="$1"; STUDIO_OVERNIGHT_POLL_SECONDS=1
+  export STUDIO_OVERNIGHT_HOLD_MINUTES STUDIO_OVERNIGHT_HOLD_SECONDS STUDIO_OVERNIGHT_POLL_SECONDS
+}
+holds_off() { STUDIO_OVERNIGHT_HOLD_MINUTES=0; unset STUDIO_OVERNIGHT_HOLD_SECONDS STUDIO_OVERNIGHT_POLL_SECONDS; }
+# wait_held SECS — up to SECS s for the newest run's control/-.held; R is
+# the run dir.
+wait_held() {
+  _wh_i=0
+  while [ "$_wh_i" -lt $(( $1 * 5 )) ]; do
+    R="$(last_run_dir)"; [ -n "$R" ] && [ -f "$R/control/-.held" ] && return 0
+    sleep 0.2; _wh_i=$((_wh_i + 1))
+  done
+  R="$(last_run_dir)"; return 1
+}
+# bg_alive — the start_bg runner runs and is not a zombie.
+bg_alive() {
+  kill -0 "$RPID" 2>/dev/null || return 1
+  case "$(ps -o stat= -p "$RPID" 2>/dev/null)" in Z*|'') return 1 ;; esac
+}
+# bg_end SECS MSG — passes MSG when the start_bg run ends within SECS (else
+# KILLs it and fails); then bg_status.
+bg_end() {
+  _be_i=0; while bg_alive && [ "$_be_i" -lt "$1" ]; do sleep 1; _be_i=$((_be_i + 1)); done
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if bg_alive; then kill -KILL "$RPID" 2>/dev/null; _fail "$2 (still running after $1 s)"; else _pass "$2"; fi
+  bg_status
+}
+# unit_col N — column N of the newest run's units.tsv, space-joined.
+unit_col() { awk -F'\t' -v c="$1" '{ printf "%s%s", (NR > 1 ? " " : ""), $c }' "$(last_run_dir)/units.tsv"; }
+# ISO1 — one unit's actions that isolate the run (a feature worktree) and
+# finish T1 of 2.
+ISO1="stage execute; branch feat; task 1/2; wtledger T1 complete a..b"
 
 test_overnight_timeout() {
   fixture tmo; scenario "stage execute; sleep 30" "cost 1"
@@ -532,20 +688,27 @@ test_overnight_claim_without_run_dir() {
   if [ $((t1 - t0)) -lt 20 ]; then _pass "the run did not wait out the session's sleep 30 ($((t1 - t0))s)"; else _fail "the run took $((t1 - t0))s: the watchdog did not act"; fi
 }
 
-test_overnight_no_inhibitor() {
-  # A PATH holding only what the runner needs, and no caffeinate or
-  # systemd-inhibit.
-  fixture nocaf; done_scenario
+# make_minbin — $TMP/minbin: only what the runner needs, plus the stubs.
+make_minbin() {
   mkdir -p "$TMP/minbin"
   for u in sh git sed awk grep sort comm date ps pkill kill sleep cat mkdir rm touch \
            head tail tr dirname basename readlink wc uname mktemp cp mv chmod env printf; do
     p="$(command -v "$u" 2>/dev/null)" && case "$p" in /*) ln -sf "$p" "$TMP/minbin/$u" ;; esac
   done
   for f in claude claude-gd gh; do ln -sf "$FAKE/$f" "$TMP/minbin/$f"; done
+}
+
+test_overnight_no_inhibitor() {
+  # A PATH holding only what the runner needs, and no caffeinate or
+  # systemd-inhibit.
+  fixture nocaf; done_scenario
+  make_minbin
   RS_STATUS=0
   ( cd "$P" && PATH="$TMP/minbin" sh "$RUNNER" start ) > "$TMP/rs.out" 2> "$TMP/rs.err" || RS_STATUS=$?
   assert_eq 0 "$RS_STATUS" "the run continues without a sleep inhibitor"
   assert_contains "$TMP/rs.err" "no sleep inhibitor" "one warning names the missing inhibitor"
+  assert_contains "$(last_run_dir)/events.jsonl" '"event":"run_ended","ending":"done"' "studio-event runs under the minimal PATH"
+  assert_not_contains "$TMP/rs.err" "events.jsonl" "no event write failed"
 }
 
 test_overnight_report_done() {
@@ -684,6 +847,755 @@ test_overnight_run_usd_default_uncapped() {
   assert_eq 0 "$RS_STATUS" "run_usd 0 caps nothing: an \$801 run ends done"
 }
 
+test_overnight_hold_config_refused() {
+  fixture hcf '{"overnight": {"hold_minutes": 1441}}'; refuse_case "hold_minutes 1441" "hold_minutes"
+  fixture hcf '{"overnight": {"directive_chars": 499}}'; refuse_case "directive_chars 499" "directive_chars"
+  for bad in abc 1441 -1 1.5; do
+    fixture "hcm$bad"; STUDIO_OVERNIGHT_HOLD_MINUTES="$bad"
+    refuse_case "STUDIO_OVERNIGHT_HOLD_MINUTES=$bad" "STUDIO_OVERNIGHT_HOLD_MINUTES"
+  done
+  STUDIO_OVERNIGHT_HOLD_MINUTES=0
+  fixture hcs; STUDIO_OVERNIGHT_HOLD_SECONDS=1.5; export STUDIO_OVERNIGHT_HOLD_SECONDS
+  refuse_case "STUDIO_OVERNIGHT_HOLD_SECONDS=1.5" "STUDIO_OVERNIGHT_HOLD_SECONDS"
+  unset STUDIO_OVERNIGHT_HOLD_SECONDS
+}
+# run_start_hold VALUE — run_start with STUDIO_OVERNIGHT_HOLD_MINUTES=VALUE, then back to 0.
+run_start_hold() { STUDIO_OVERNIGHT_HOLD_MINUTES="$1"; export STUDIO_OVERNIGHT_HOLD_MINUTES; run_start; STUDIO_OVERNIGHT_HOLD_MINUTES=0; }
+test_overnight_channel_file() {
+  fixture chf; done_scenario; run_start
+  assert_eq "hold_minutes=0|directive_chars=4000" "$(tr '\n' '|' < "$(last_run_dir)/channel" | sed 's/|$//')" "channel: the effective hold_minutes and the default cap"
+  fixture chf2 '{"overnight": {"directive_chars": 800, "hold_minutes": 30}}'; done_scenario; run_start
+  assert_contains "$(last_run_dir)/channel" "^directive_chars=800$" "the configured cap"
+  assert_contains "$(last_run_dir)/channel" "^hold_minutes=0$" "the test override wins over config"
+  fixture chf3; done_scenario; run_start_hold 010
+  assert_contains "$(last_run_dir)/channel" "^hold_minutes=10$" "010 is normalised to 10 (R26)"
+  fixture chf4; done_scenario; run_start_hold 1440
+  assert_contains "$(last_run_dir)/channel" "^hold_minutes=1440$" "1440 is the upper bound and is accepted"
+  fixture chf5; done_scenario; unset STUDIO_OVERNIGHT_HOLD_MINUTES; run_start
+  assert_contains "$(last_run_dir)/channel" "^hold_minutes=480$" "with no override and no config, hold_minutes defaults to 480"
+  STUDIO_OVERNIGHT_HOLD_MINUTES=0; export STUDIO_OVERNIGHT_HOLD_MINUTES
+}
+test_overnight_unit_env() {
+  fixture uenv; done_scenario; run_start
+  _r="$(last_run_dir)"
+  assert_eq "$(basename "$_r")-0-1-T1 $_r" "$(cat "$CALLS/1.chan")" "a unit gets STUDIO_UNIT_TAG and STUDIO_RUN_DIR"
+  fixture uenv2; run_start --dry-run
+  assert_not_contains "$RS_OUT" "STUDIO_RUN_DIR" "the dry-run launch line is unchanged"
+}
+test_overnight_events_two_units() {
+  fixture ev2
+  scenario "stage execute; task 1/1; ledger T1 complete; cost 2" \
+           "ledger final review done; ledger shipped https://github.com/o/r/pull/9; stage idle; task -; cost 1"
+  run_start
+  E="$(last_run_dir)/events.jsonl"; B="$(basename "$(last_run_dir)")"
+  assert_eq "run_started story_listed story_state unit_started unit_ended unit_started unit_ended run_ended" \
+    "$(sed -n 's/.*"event":"\([a-z_]*\)".*/\1/p' "$E" | tr '\n' ' ' | sed 's/ $//')" "the events, in order"
+  assert_eq 8 "$(grep -c "^{\"v\":1,\"ts\":\"[0-9-]*T[0-9:]*Z\",\"run\":\"$B\",\"event\":" "$E")" "every line: v, ts, run"
+  assert_contains "$E" '"event":"run_started","mode":"single","max_lanes":1,"hold_minutes":0}$' "run_started"
+  assert_contains "$E" '"event":"story_listed","story":"-","chain":1,"depends":\[\]}$' "one story_listed: -"
+  assert_contains "$E" '"event":"story_state","story":"-","state":"running"}$' "running"
+  assert_contains "$E" "\"event\":\"unit_started\",\"story\":\"-\",\"unit\":\"$B-0-1-T1\",\"label\":\"T1\",\"model\":\"sonnet\"}\$" "unit_started"
+  assert_contains "$E" "\"event\":\"unit_ended\",\"story\":\"-\",\"unit\":\"$B-0-1-T1\",\"label\":\"T1\",\"outcome\":\"progress\",\"usd\":2}\$" "unit_ended: progress, usd"
+  assert_contains "$E" '"label":"final-review","outcome":"done","usd":1}$' "the second unit ends done"
+  assert_contains "$E" "\"event\":\"run_ended\",\"ending\":\"done\",\"report\":\"$(last_run_dir)/report.md\"}\$" "run_ended names the report"
+}
+
+test_say_writes_message() {
+  fixture sw; fake_run overnight-sw-1 single
+  verb say - 'Use the EventBus, not "signals" — it'\''s $HOME'
+  assert_eq 0 "$V_STATUS" "say exits 0"
+  assert_eq 1 "$(cat "$V_OUT")" "say prints the id"
+  M="$FR_DIR/inbox/-/1.msg"
+  assert_file "$M" "the message is in the story's inbox"
+  assert_eq "id: 1|scope: story|target: -|story: -|requeues: 0|--" \
+    "$(sed '/^--$/q' "$M" | grep -v '^queued: ' | tr '\n' '|' | sed 's/|$//')" "the header, in order"
+  assert_contains "$M" '^queued: 20[0-9-]*T[0-9:]*Z$' "queued is ISO-8601 UTC"
+  assert_eq 'Use the EventBus, not "signals" — it'\''s $HOME' "$(body "$M")" "the body is the text, verbatim"
+  assert_eq "1.msg" "$(ls -A "$FR_DIR/inbox/-")" "no temp file and no lock left"
+  assert_contains "$FR_DIR/events.jsonl" '"event":"message_queued","story":"-","id":1,"scope":"story"}$' "message_queued"
+  assert_not_contains "$FR_DIR/events.jsonl" "EventBus" "message text never reaches the log"
+  fake_run_end
+}
+test_say_dash_text_and_unit() {
+  fixture sd; fake_run overnight-sd-1 single
+  verb say - --unit -- use --force, not '$(x)' "it's"
+  assert_eq 0 "$V_STATUS" "say -- exits 0"
+  assert_eq "use --force, not \$(x) it's" "$(body "$FR_DIR/inbox/-/1.msg")" "every word after -- is text, joined by spaces"
+  assert_contains "$FR_DIR/inbox/-/1.msg" "^scope: unit$" "--unit gives scope unit"
+  verb say - --run overnight-sd-1 -- --run x
+  assert_eq 0 "$V_STATUS" "--run before --, and an option-like word after it"
+  assert_eq "--run x" "$(body "$FR_DIR/inbox/-/2.msg")" "after --, --run is text"
+  verb say - --bogus x;  assert_eq 2 "$V_STATUS" "an unknown option is usage"
+  verb say - a b;        assert_eq 2 "$V_STATUS" "two text words without -- is usage"
+  verb said --unit -;    assert_eq 2 "$V_STATUS" "--unit belongs to say only"
+  verb said - -- x;      assert_eq 2 "$V_STATUS" "-- belongs to say only"
+  verb say --run;        assert_eq 2 "$V_STATUS" "--run needs a value"
+  fake_run_end
+}
+test_say_empty_text_exit_2() {
+  fixture se; fake_run overnight-se-1 single
+  nl='
+'
+  verb say - '';                   assert_eq 2 "$V_STATUS" "say - '': exit 2"
+  assert_contains "$V_ERR" "say: empty text" "it names the reason"
+  verb say - --;                   assert_eq 2 "$V_STATUS" "say - -- with nothing after it: exit 2"
+  verb say - -- '' ' ';            assert_eq 2 "$V_STATUS" "say - -- '' ' ': exit 2"
+  verb say - '   ';                assert_eq 2 "$V_STATUS" "spaces only: exit 2"
+  verb say - " 	$nl ";           assert_eq 2 "$V_STATUS" "blanks, a tab and a newline: exit 2"
+  verb say - --unit --;            assert_eq 2 "$V_STATUS" "--unit with no text: exit 2"
+  verb say -;                      assert_eq 2 "$V_STATUS" "no text at all: exit 2"
+  assert_missing "$FR_DIR/inbox/-/1.msg" "nothing is written"
+  assert_missing "$FR_DIR/events.jsonl" "no event"
+  fake_run_end
+  verb say - '';                   assert_eq 2 "$V_STATUS" "empty text is usage even with no live run"
+}
+test_say_ids_ledger_and_inbox() {
+  fixture si; ledger_add "Directive 7: older run" "Directive 9 retired"
+  fake_run overnight-si-1 single
+  verb say - first;  assert_eq 10 "$(cat "$V_OUT")" "the next id passes the ledger's highest (a retired line counts)"
+  mkdir -p "$FR_DIR/inbox/-/delivered/tagx"; mv "$FR_DIR/inbox/-/10.msg" "$FR_DIR/inbox/-/delivered/tagx/"
+  verb say - second; assert_eq 11 "$(cat "$V_OUT")" "a delivered message's id counts"
+  verb say - third;  assert_eq 12 "$(cat "$V_OUT")" "a pending message's id counts"
+  assert_missing "$FR_DIR/inbox/-/.lock" "the inbox lock is released"
+  fake_run_end
+}
+test_say_cap() {
+  fixture sc; ledger_add "Directive 1: $(printf '%200s' '' | tr ' ' a)"
+  FR_CHARS=500; fake_run overnight-sc-1 single; unset FR_CHARS
+  verb say - "$(printf '%200s' '' | tr ' ' b)";              assert_eq 0 "$V_STATUS" "400 of 500"
+  verb say - --unit -- "$(printf '%400s' '' | tr ' ' u)";    assert_eq 0 "$V_STATUS" "a unit message is not capped"
+  verb say - "$(printf '%101s' '' | tr ' ' c)"
+  assert_eq 1 "$V_STATUS" "501 characters exceed directive_chars 500"
+  assert_contains "$V_ERR" "directive_chars 500" "the refusal names the cap"
+  assert_contains "$V_ERR" "^  1  active  aaaa" "it lists the active directive with its id"
+  assert_contains "$V_ERR" "^  2  pending  bbbb" "and the pending one"
+  assert_not_contains "$V_ERR" "uuuu" "and not the unit message"
+  assert_missing "$FR_DIR/inbox/-/4.msg" "nothing is written"
+  verb say - "$(printf '%100s' '' | tr ' ' c)";              assert_eq 0 "$V_STATUS" "exactly 500 fits"
+  fake_run_end
+}
+test_say_cap_counts_characters() {
+  fixture scc; FR_CHARS=500; fake_run overnight-scc-1 single; unset FR_CHARS
+  verb say - "$(printf '%300s' '' | sed 's/ /é/g')"; assert_eq 0 "$V_STATUS" "300 two-byte characters"
+  verb say - "$(printf '%200s' '' | sed 's/ /é/g')"; assert_eq 0 "$V_STATUS" "500 characters (1000 bytes) fit a 500-character cap"
+  verb say - "é";                                     assert_eq 1 "$V_STATUS" "the 501st character does not"
+  fake_run_end
+}
+test_say_bad_directive_chars_defaults() {
+  fixture sbc; FR_CHARS=abc; fake_run overnight-sbc-1 single; unset FR_CHARS
+  verb say - short; assert_eq 0 "$V_STATUS" "a malformed directive_chars does not break say"
+  verb say - "$(printf '%4000s' '' | tr ' ' x)"
+  assert_eq 1 "$V_STATUS" "the cap falls back to the default 4000"
+  assert_contains "$V_ERR" "directive_chars 4000" "and the refusal names it"
+  fake_run_end
+  fixture sbc2; FR_CHARS=100; fake_run overnight-sbc2-1 single; unset FR_CHARS
+  verb say - "$(printf '%200s' '' | tr ' ' x)"; assert_eq 0 "$V_STATUS" "a value below the 500 range also falls back to 4000"
+  fake_run_end
+}
+test_inbox_lock_failures() {
+  [ "$(id -u)" != 0 ] || return 0
+  fixture il; fake_run overnight-il-1 single
+  chmod 555 "$FR_DIR"
+  verb say - x; _il_st="$V_STATUS"
+  chmod 755 "$FR_DIR"
+  assert_eq 1 "$_il_st" "an inbox that cannot be created refuses"
+  assert_contains "$V_ERR" "^studio-overnight: cannot create .*/inbox/-$" "it names the real failure, not a busy inbox"
+  assert_eq 1 "$(grep -c . "$V_ERR")" "one stderr line"
+  mkdir -p "$FR_DIR/inbox/-/.lock"; touch -t 200001010000 "$FR_DIR/inbox/-/.lock"
+  chmod 555 "$FR_DIR/inbox/-"
+  STUDIO_OVERNIGHT_INBOX_WAIT=2; export STUDIO_OVERNIGHT_INBOX_WAIT
+  verb say - x; _il_st="$V_STATUS"
+  unset STUDIO_OVERNIGHT_INBOX_WAIT
+  chmod 755 "$FR_DIR/inbox/-"
+  assert_eq 1 "$_il_st" "a stale lock that cannot be broken gives up after WAIT instead of spinning"
+  assert_contains "$V_ERR" "inbox busy" "and says busy"
+  fake_run_end
+}
+test_said_lists_states() {
+  fixture sl; ledger_add "Directive 1: one" "Directive 2: two" "Directive 2 retired"
+  fake_run overnight-sl-1 single
+  verb said -; assert_eq "1  active  one" "$(cat "$V_OUT")" "an active directive; a retired one is not listed"
+  verb say - three; verb say - --unit four; verb say - five
+  mkdir -p "$FR_DIR/inbox/-/delivered/tg"; mv "$FR_DIR/inbox/-/5.msg" "$FR_DIR/inbox/-/delivered/tg/"
+  verb unsay - 1; assert_eq "retire queued: message 6 retires directive 1" "$(cat "$V_OUT")" "unsay of an active directive"
+  verb said -
+  assert_eq 0 "$V_STATUS" "said exits 0"
+  assert_eq "1  retiring  one|3  pending  three|4  pending (unit)  four|5  delivered  five" \
+    "$(tr '\n' '|' < "$V_OUT" | sed 's/|$//')" "every state, in id order; the retire message is not listed"
+  fake_run_end
+  fixture sl2; fake_run overnight-sl2-1 single
+  verb said -; assert_eq "(no directives)" "$(cat "$V_OUT")" "none"
+  fake_run_end
+}
+test_unsay_pending_active_delivered() {
+  fixture us; ledger_add "Directive 1: one" "Directive 2: two" "Directive 2 retired"
+  fake_run overnight-us-1 single; IB="$FR_DIR/inbox/-"
+  verb say - three; verb unsay - 3
+  assert_eq "removed message 3 (it was not delivered)" "$(cat "$V_OUT")" "a pending story message is removed"
+  assert_missing "$IB/3.msg" "its file is gone"
+  # a removed highest id is free again, so each id is read from say's output
+  verb say - --unit four; U4="$(cat "$V_OUT")"
+  assert_eq 3 "$U4" "unsay of the newest pending id frees it: the next say reuses 3 (R11 gap ruling)"
+  verb unsay - "$U4"; assert_eq 0 "$V_STATUS" "a pending unit message is removed"
+  verb say - five; F5="$(cat "$V_OUT")"; mkdir -p "$IB/delivered/tg"; mv "$IB/$F5.msg" "$IB/delivered/tg/"
+  verb unsay - "$F5"; R6=$((F5 + 1))
+  assert_eq "retire queued: message $R6 retires directive $F5" "$(cat "$V_OUT")" "delivered, not recorded: a retire"
+  assert_contains "$IB/$R6.msg" "^scope: retire$" "the retire's scope"
+  assert_contains "$IB/$R6.msg" "^target: $F5$" "and target"
+  verb unsay - "$F5"; assert_eq 1 "$V_STATUS" "a retiring directive: exit 1"
+  assert_contains "$V_ERR" "already retiring" "named"
+  verb unsay - "$R6"; assert_eq 1 "$V_STATUS" "a retire message: exit 1"
+  verb unsay - 2; assert_eq 1 "$V_STATUS" "a retired id: exit 1"
+  assert_contains "$V_ERR" "already retired" "named"
+  verb unsay - 99; assert_eq 1 "$V_STATUS" "an unknown id: exit 1"
+  assert_eq 1 "$(grep -c . "$V_ERR")" "a refusal is one stderr line"
+  verb say - --unit seven; U7="$(cat "$V_OUT")"; mv "$IB/$U7.msg" "$IB/delivered/tg/"
+  verb unsay - "$U7"; assert_eq 1 "$V_STATUS" "a delivered unit message is spent: exit 1"
+  for bad in 01 x '' 1x; do verb unsay - "$bad"; assert_eq 2 "$V_STATUS" "id '$bad' is usage"; done
+  fake_run_end
+}
+test_unsay_loses_race_to_hook() {
+  fixture ur; fake_run overnight-ur-1 single; IB="$FR_DIR/inbox/-"
+  put_msg "$IB" 1 story one
+  # a stub rm claims the message into delivered/ (as the hook's mv does), then fails as rm of a gone file does
+  mkdir -p "$TMP/urbin"
+  printf '#!/bin/sh\ncase "$*" in *1.msg*) mkdir -p "%s/delivered/tagx"; mv "%s/1.msg" "%s/delivered/tagx/"; exit 1 ;; esac\nexec /bin/rm "$@"\n' "$IB" "$IB" "$IB" > "$TMP/urbin/rm"
+  chmod +x "$TMP/urbin/rm"
+  _ur_path="$PATH"; PATH="$TMP/urbin:$PATH"; verb unsay - 1; PATH="$_ur_path"
+  assert_eq 1 "$V_STATUS" "unsay loses the race: exit 1"
+  assert_eq "studio-overnight: unsay: message 1 was just delivered; run unsay 1 again to retire it" "$(cat "$V_ERR")" "one stderr line names the cause"
+  assert_not_contains "$V_OUT" "removed message" "it does not claim a withdrawal"
+  assert_missing "$IB/.lock" "the inbox lock is released"
+  fake_run_end
+}
+test_unsay_id_prefix() {
+  fixture up; ledger_add "Directive 10: ten"
+  fake_run overnight-up-1 single; IB="$FR_DIR/inbox/-"
+  put_msg "$IB" 1 story one
+  verb unsay - 1
+  assert_eq "removed message 1 (it was not delivered)" "$(cat "$V_OUT")" "unsay 1 removes message 1"
+  assert_missing "$IB/1.msg" "1.msg is gone"
+  assert_eq "" "$(ls "$IB" | grep -v '^delivered$')" "no retire was queued for directive 10"
+  verb said -; assert_eq "10  active  ten" "$(cat "$V_OUT")" "directive 10 is still active"
+  verb unsay - 1; assert_eq 1 "$V_STATUS" "a second unsay 1 is unknown"
+  fake_run_end
+}
+test_hold_resume_stop_table() {
+  fixture tb
+  fake_run overnight-tb-1 manifest Q=queued W=waiting R=running G=gate-repair \
+    H="held stop: need art until 2026-10-04T05:00:00Z" L=landing P=repair
+  C="$FR_DIR/control"
+  for id in Q W R G H L P; do cp "$FR_DIR/stories/$id" "$TMP/rec-$id"; done
+  for id in Q W; do verb hold "$id"; assert_eq "hold requested: $id holds when it would start" "$(cat "$V_OUT")" "hold $id"; done
+  for id in R G; do verb hold "$id"; assert_eq "hold requested: $id holds at its next unit boundary" "$(cat "$V_OUT")" "hold $id"; done
+  for id in Q W R G; do assert_file "$C/$id.hold" "hold $id writes control/$id.hold"; done
+  verb hold H; assert_eq 1 "$V_STATUS" "hold on a held story"; assert_contains "$V_ERR" "already held" "named"
+  for id in L P; do
+    verb hold "$id"; assert_eq 1 "$V_STATUS" "hold $id (landing)"; assert_contains "$V_ERR" "land lock" "named"
+    verb resume "$id"; assert_eq 1 "$V_STATUS" "resume $id (landing)"
+    verb stop "$id"; assert_eq 1 "$V_STATUS" "stop $id (landing)"; assert_contains "$V_ERR" "land lock" "named"
+    verb say "$id" note; assert_eq 0 "$V_STATUS" "say $id still queues"
+  done
+  for id in Q W R G; do verb resume "$id"; assert_eq 1 "$V_STATUS" "resume $id: not held"; assert_contains "$V_ERR" "is not held" "named"; done
+  verb resume H; assert_eq "resume requested: H resumes within one poll" "$(cat "$V_OUT")" "resume H"
+  assert_file "$C/H.resume" "control/H.resume"
+  for id in Q W; do verb stop "$id"; assert_eq "stop requested: $id stops when its lane reaches it" "$(cat "$V_OUT")" "stop $id"; done
+  for id in R G; do verb stop "$id"; assert_eq "stop requested: $id stops after its running unit" "$(cat "$V_OUT")" "stop $id"; done
+  verb stop H; assert_eq "stop requested: H stops within one poll" "$(cat "$V_OUT")" "stop H"
+  for id in Q W R G H; do assert_file "$C/$id.stop" "control/$id.stop"; done
+  for id in L P; do assert_missing "$C/$id.hold" "no control file for $id"; assert_missing "$C/$id.stop" "nor a stop"; done
+  for id in Q W R G H L P; do assert_eq "$(cat "$TMP/rec-$id")" "$(cat "$FR_DIR/stories/$id")" "the verbs never write $id's record"; done
+  verb hold Q; assert_eq "hold requested: Q holds when it would start" "$(cat "$V_OUT")" "hold again: the same line (R22)"
+  assert_contains "$FR_DIR/events.jsonl" '"event":"control","story":"Q","action":"hold"}$' "a control event for hold"
+  assert_contains "$FR_DIR/events.jsonl" '"event":"control","story":"H","action":"resume"}$' "for resume"
+  assert_contains "$FR_DIR/events.jsonl" '"event":"control","story":"R","action":"stop"}$' "for stop"
+  assert_eq "" "$(ls -A "$C" | grep '^\.')" "no temp control file left"
+  fake_run_end
+}
+test_hold_resume_stop_usage_and_unwritable() {
+  fixture hu
+  for bad in "hold" "hold a b" "hold --unit a" "resume" "resume a b" "stop a b" "stop --unit a" "hold a --"; do
+    verb $bad; assert_eq 2 "$V_STATUS" "'$bad' is usage, even with no live run"
+  done
+  fake_run overnight-hu-1 manifest S=running
+  verb stop S; assert_eq "stop requested: S stops after its running unit" "$(cat "$V_OUT")" "stop"
+  verb stop S; assert_eq 0 "$V_STATUS" "a repeat stop exits 0 (R22)"
+  assert_eq "stop requested: S stops after its running unit" "$(cat "$V_OUT")" "and prints the same line"
+  if [ "$(id -u)" != 0 ]; then
+    rm -rf "$FR_DIR/control"; mkdir "$FR_DIR/control"; chmod 555 "$FR_DIR/control"
+    verb hold S; _hu_st="$V_STATUS"; chmod 755 "$FR_DIR/control"
+    assert_eq 1 "$_hu_st" "an unwritable control dir refuses hold"
+    assert_eq 1 "$(grep -c . "$V_ERR")" "the refusal is one stderr line (R27)"
+    assert_contains "$V_ERR" "^studio-overnight: cannot write .*/control/S.hold$" "and names the file"
+  fi
+  fake_run_end
+}
+test_hold_minutes_zero() {
+  fixture hz; FR_HOLD=0; fake_run overnight-hz-1 manifest S1=running S2="held stop: x until 2026-10-04T05:00:00Z"; unset FR_HOLD
+  verb hold S1;   assert_eq 1 "$V_STATUS" "hold with hold_minutes 0"
+  assert_eq "studio-overnight: holds are off: hold_minutes 0" "$(cat "$V_ERR")" "the exact line"
+  verb resume S2; assert_eq 1 "$V_STATUS" "resume with hold_minutes 0"
+  assert_contains "$V_ERR" "holds are off: hold_minutes 0" "named"
+  verb say S1 x;  assert_eq 0 "$V_STATUS" "say works"
+  verb said S1;   assert_eq 0 "$V_STATUS" "said works"
+  verb unsay S1 1; assert_eq 0 "$V_STATUS" "unsay works"
+  verb stop S1;   assert_eq 0 "$V_STATUS" "stop <story> works"
+  fake_run_end
+}
+test_single_plan_verbs() {
+  fixture spv; fake_run overnight-spv-1 single; C="$FR_DIR/control"
+  verb hold -;   assert_eq "hold requested: - holds at its next unit boundary" "$(cat "$V_OUT")" "hold - on the running story"
+  verb resume -; assert_eq 1 "$V_STATUS" "resume -: not held"
+  verb hold S1;  assert_eq 1 "$V_STATUS" "a story id in a single-plan run"
+  mkdir -p "$C"; printf 'held stop: x until 2026-10-04T05:00:00Z\n' > "$C/-.held"
+  verb hold -;   assert_eq 1 "$V_STATUS" "control/-.held: already held"
+  verb resume -; assert_eq 0 "$V_STATUS" "resume - on a held story"
+  assert_file "$C/-.resume" "control/-.resume"
+  verb stop -;   assert_eq "stop requested: - stops within one poll" "$(cat "$V_OUT")" "stop - on a held story"
+  rm -f "$C/-.held"
+  verb stop -;   assert_eq "stop requested: - stops after its running unit" "$(cat "$V_OUT")" "stop - on the running story"
+  assert_missing "$P/.studio/overnight.stop" "stop - never writes the run's stop file"
+  fake_run_end
+}
+test_resume_refused_dirty_ledger() {
+  fixture rd; fake_run overnight-rd-1 manifest H="held stop: x until 2026-10-04T05:00:00Z"
+  printf -- '- 2026-10-03 hand edit\n' >> "$P/.studio/ledger/H.md"
+  verb resume H; assert_eq 1 "$V_STATUS" "a dirty start ledger refuses resume"
+  assert_contains "$V_ERR" "\.studio/ledger/H\.md" "it names the file"
+  assert_missing "$FR_DIR/control/H.resume" "no control file"
+  fake_run_end
+  fixture rd2; ledger_add "Directive 1: x"; fake_run overnight-rd2-1 single
+  mkdir -p "$FR_DIR/control"; printf 'held stop: x until 2026-10-04T05:00:00Z\n' > "$FR_DIR/control/-.held"
+  printf -- '- 2026-10-03 hand edit\n' >> "$P/.studio/ledger/spec.md"
+  verb resume -; assert_eq 1 "$V_STATUS" "single-plan: a dirty .studio/ledger refuses resume"
+  assert_contains "$V_ERR" "\.studio/ledger/spec\.md" "it names the file"
+  fake_run_end
+}
+test_resume_from_feature_worktree() {
+  fixture rw; fake_run overnight-rw-1 manifest H="held stop: x until 2026-10-04T05:00:00Z"
+  git -C "$P" worktree add -q -b feat-h "$TMP/wt-rw" >/dev/null 2>&1
+  printf -- '- 2026-10-03 feature-side edit\n' >> "$TMP/wt-rw/.studio/ledger/H.md"
+  verb_in "$TMP/wt-rw" said H; assert_eq 0 "$V_STATUS" "a verb inside a feature worktree finds the run"
+  verb_in "$TMP/wt-rw" resume H
+  assert_eq 0 "$V_STATUS" "the dirty check reads the run's start checkout, not the cwd"
+  assert_file "$FR_DIR/control/H.resume" "the control file is the run's"
+  rm -f "$FR_DIR/control/H.resume"
+  printf -- '- 2026-10-03 start-side edit\n' >> "$P/.studio/ledger/H.md"
+  verb_in "$TMP/wt-rw" resume H; assert_eq 1 "$V_STATUS" "a dirty start ledger refuses, from the worktree too"
+  fake_run_end
+}
+test_verbs_refusals() {
+  fixture rf
+  verb say - x; assert_eq 1 "$V_STATUS" "no live run: exit 1"
+  assert_contains "$V_ERR" "no live run" "named"
+  fake_run overnight-rf-1 manifest S1=running S2="landed abc1234" S3="stopped stop: x" S4="skipped S2"
+  verb say S9 x; assert_eq 1 "$V_STATUS" "a story not in the run"; assert_contains "$V_ERR" "S9 is not in run overnight-rf-1" "named"
+  verb say - x;  assert_eq 1 "$V_STATUS" "- in a manifest run"
+  for id in S2 S3 S4; do
+    verb said "$id"; assert_eq 1 "$V_STATUS" "$id has ended: exit 1"
+    assert_contains "$V_ERR" "story $id has ended" "named"
+    assert_eq 1 "$(grep -c . "$V_ERR")" "one line"
+  done
+  verb said;          assert_eq 2 "$V_STATUS" "said with no story"
+  verb unsay S1;      assert_eq 2 "$V_STATUS" "unsay with no id"
+  verb said S1 S1 S1; assert_eq 2 "$V_STATUS" "too many words"
+  rm -f "$FR_DIR/channel"
+  verb said S1; assert_eq 1 "$V_STATUS" "a run without a channel file"
+  assert_contains "$V_ERR" "predates the operator channel" "named"
+  fake_run_end
+  fixture rf2; fake_run overnight-rf2-1 single
+  verb say S1 x; assert_eq 1 "$V_STATUS" "a story id in a single-plan run"
+  assert_contains "$V_ERR" "single-plan run: its story is -" "named"
+  fake_run_end
+}
+test_verbs_run_pinning() {
+  fixture pa; fake_run overnight-pa-1 single; PA="$P"; PA_PID="$FR_PID"
+  verb say --run overnight-pa-1 - x; assert_eq 0 "$V_STATUS" "--run naming this project's run"
+  verb say - --run overnight-pa-1 -- y; assert_eq 0 "$V_STATUS" "--run anywhere before --"
+  verb say --run overnight-pa - x; assert_eq 1 "$V_STATUS" "a prefix is not a match"
+  assert_contains "$V_ERR" "run overnight-pa is not live" "named"
+  fixture pb; fake_run overnight-pb-1 manifest S1=running; PB="$P"; PB_PID="$FR_PID"
+  verb_in "$PA" say --run overnight-pb-1 - x
+  assert_eq 1 "$V_STATUS" "inside a project, only that project's run"
+  assert_contains "$V_ERR" "run overnight-pb-1 is not live" "never a fallback to another project's run"
+  assert_missing "$PB/.studio/reports/overnight-pb-1/inbox" "nothing reached the other run"
+  mkdir -p "$TMP/outside"
+  verb_in "$TMP/outside" said -; assert_eq 1 "$V_STATUS" "two live runs outside a project and no --run"
+  assert_contains "$V_ERR" "overnight-pa-1" "names the first"; assert_contains "$V_ERR" "overnight-pb-1" "and the second"
+  verb_in "$TMP/outside" said --run overnight-pb-1 S1; assert_eq 0 "$V_STATUS" "--run picks one"
+  assert_eq "(no directives)" "$(cat "$V_OUT")" "from the named run"
+  verb_in "$TMP/outside" say --run overnight-zz - x; assert_eq 1 "$V_STATUS" "an unknown run"
+  assert_contains "$V_ERR" "run overnight-zz is not live" "named"
+  # bare stop with --run
+  P="$PA"; verb stop --run overnight-pb-1; assert_eq 1 "$V_STATUS" "stop --run of another project's run"
+  assert_missing "$PA/.studio/overnight.stop" "no stop file here"
+  assert_missing "$PB/.studio/overnight.stop" "nor there"
+  verb_in "$TMP/outside" stop --run overnight-pb-1; assert_eq 0 "$V_STATUS" "stop --run from outside"
+  assert_contains "$V_OUT" "^stop requested: the run ends after its running unit (pid $PB_PID)$" "today's line"
+  assert_file "$PB/.studio/overnight.stop" "the named run's stop file"
+  P="$PB"; fake_run_end "$PB_PID"
+  # an ended run is never live
+  printf 'root=%s\nstart=%s\nrun=%s\npid=1\nended=x\n' "$PB" "$PB" "$PB/.studio/reports/overnight-pb-1" > "$HOME/.claude-gamedev/runs/last"
+  verb_in "$TMP/outside" said --run overnight-pb-1 S1; assert_eq 1 "$V_STATUS" "the last ended run is not live"
+  rm -f "$HOME/.claude-gamedev/runs/last"
+  P="$PA"; verb stop --run overnight-pa-1; assert_eq 0 "$V_STATUS" "stop --run of this project's run"
+  assert_file "$PA/.studio/overnight.stop" "writes its stop file"
+  fake_run_end "$PA_PID"
+}
+test_inbox_lock_stale_broken() {
+  fixture lk; fake_run overnight-lk-1 single
+  mkdir -p "$FR_DIR/inbox/-/.lock"; touch -t 202001010000 "$FR_DIR/inbox/-/.lock"
+  verb say - x
+  assert_eq 0 "$V_STATUS" "a stale lock is broken"
+  assert_eq 1 "$(cat "$V_OUT")" "and the message written"
+  assert_eq "1.msg" "$(ls -A "$FR_DIR/inbox/-")" "no lock and no renamed stale lock left"
+  fake_run_end
+}
+test_inbox_lock_busy() {
+  fixture lb; fake_run overnight-lb-1 single
+  mkdir -p "$FR_DIR/inbox/-/.lock"
+  STUDIO_OVERNIGHT_INBOX_WAIT=2; export STUDIO_OVERNIGHT_INBOX_WAIT
+  t0="$(date +%s)"; verb say - x; t1="$(date +%s)"
+  unset STUDIO_OVERNIGHT_INBOX_WAIT
+  assert_eq 1 "$V_STATUS" "a fresh lock held past the wait: exit 1"
+  assert_contains "$V_ERR" "inbox busy" "named"
+  assert_eq 1 "$([ $((t1 - t0)) -ge 2 ] && [ $((t1 - t0)) -lt 10 ] && echo 1 || echo 0)" "it waited about STUDIO_OVERNIGHT_INBOX_WAIT seconds"
+  assert_missing "$FR_DIR/inbox/-/1.msg" "nothing written"
+  assert_eq 1 "$([ -d "$FR_DIR/inbox/-/.lock" ] && echo 1 || echo 0)" "a fresh lock is never broken"
+  fake_run_end
+}
+# a verb killed (INT, TERM) while it holds the inbox lock releases it
+test_inbox_lock_released_on_signal() {
+  for sig in TERM INT; do
+    D="$TMP/lsig-$sig"; mkdir -p "$D"; rm -f "$D/held"
+    ( SELF_DIR="$REPO_ROOT/studios/game-dev/bin"; . "$SELF_DIR/overnight-channel.sh"
+      CH_IB="$D/inbox"; CH_STORY=-; trap - INT TERM
+      chan_lock; : > "$D/held"; sleep 30 & wait ) > /dev/null 2>&1 &
+    LP=$!
+    wait_for "$D/held"
+    assert_file "$D/held" "$sig: the verb took the lock"
+    assert_eq 1 "$([ -d "$D/inbox/.lock" ] && echo 1 || echo 0)" "$sig: the lock is held"
+    kill -$sig "$LP" 2>/dev/null; wait "$LP" 2>/dev/null
+    assert_eq 0 "$([ -d "$D/inbox/.lock" ] && echo 1 || echo 0)" "$sig: the lock is gone after the signal"
+  done
+}
+test_inbox_unlock_after_release_keeps_foreign_lock() {
+  D="$TMP/lfor"; rm -rf "$D"; mkdir -p "$D/inbox"
+  # a verb that unlocks explicitly, then a concurrent locker is mid-acquire
+  # (mkdir done, owner not yet written), then the verb exits (EXIT trap)
+  ( SELF_DIR="$REPO_ROOT/studios/game-dev/bin"; . "$SELF_DIR/overnight-channel.sh"
+    CH_IB="$D/inbox"; CH_STORY=-
+    chan_lock; inbox_unlock "$CH_IB"; mkdir "$D/inbox/.lock"; exit 0 ) > /dev/null 2>&1
+  assert_eq 1 "$([ -d "$D/inbox/.lock" ] && echo 1 || echo 0)" "a foreign lock without an owner survives the verb's exit"
+  for sg in "INT 130" "TERM 143" "HUP 129"; do
+    set -- $sg
+    sh -c 'SELF_DIR="$1"; . "$1/overnight-channel.sh"; CH_IB="$2"; CH_STORY=-; chan_lock; kill -$3 $$' x \
+      "$REPO_ROOT/studios/game-dev/bin" "$D/in2" "$1" > /dev/null 2>&1
+    assert_eq "$2" "$?" "$1 exits $2"
+  done
+}
+test_channel_sourced_only() {
+  assert_status 2 "overnight-channel.sh refuses to run on its own" -- sh "$REPO_ROOT/studios/game-dev/bin/overnight-channel.sh"
+  assert_eq "overnight-channel.sh: sourced by studio-overnight" \
+    "$(sh "$REPO_ROOT/studios/game-dev/bin/overnight-channel.sh" 2>&1)" "and says why"
+}
+
+test_overnight_hold_on_feature_stop() {
+  fixture hof; holds_on 60
+  scenario "$ISO1" "wtledger Stop: need art"
+  start_bg
+  wait_held 20; assert_file "$R/control/-.held" "a feature-ledger Stop: after isolation holds the story"
+  assert_contains "$R/control/-.held" "^held stop: need art until 20[0-9-]*T[0-9:]*Z$" "the held record: why, then the deadline"
+  sleep 2; assert_eq 2 "$(calls)" "no session runs while held"
+  assert_contains "$R/events.jsonl" '"event":"story_state","story":"-","state":"held","why":"stop: need art","until":"20' "a held story_state event"
+  verb status
+  assert_contains "$V_OUT" "^held — stop: need art — until [0-9][0-9]:[0-9][0-9] — say / resume / stop -$" "status shows the held line"
+  verb stop -; assert_eq "stop requested: - stops within one poll" "$(cat "$V_OUT")" "stop - on the held story"
+  bg_end 20 "the run ends within a poll"
+  assert_eq 1 "$BG_STATUS" "a stopped run exits 1"
+  assert_contains "$R/report.md" "^Ending: stop: need art$" "stop on a held story ends it with its why (AC23)"
+  assert_eq "" "$(ls -A "$R/control")" "no control file is left (R25)"
+  assert_missing "$P/.studio/overnight.lock" "the lock is released"
+  holds_off
+}
+test_overnight_start_ledger_stop_ends_at_once() {
+  holds_on 60
+  fixture sls; scenario "stage execute; branch feat; task 1/2; ledger Stop: from the start checkout"; run_start
+  assert_contains "$(last_run_dir)/report.md" "^Ending: stop: from the start checkout$" "a Stop: in the start ledger after isolation ends at once"
+  assert_missing "$(last_run_dir)/control/-.held" "never held"
+  fixture sls2; scenario "stage execute; task 1/2; ledger Stop: before isolation"; run_start
+  assert_contains "$(last_run_dir)/report.md" "^Ending: stop: before isolation$" "a Stop: before isolation ends at once"
+  fixture sls3; scenario "stage execute; branch feat; wtledger Stop: both; ledger Stop: both"; run_start
+  assert_contains "$(last_run_dir)/report.md" "^Ending: stop: both$" "the same Stop: in both ledgers ends at once (AC18's tie)"
+  assert_not_contains "$(last_run_dir)/events.jsonl" '"state":"held"' "no held event"
+  holds_off
+}
+test_overnight_resume_runs_next_unit() {
+  fixture rnu; holds_on 60
+  scenario "$ISO1" "wtledger Stop: need art" "inbox; task 2/2; wtledger T2 complete b..c" \
+           "wtledger final review done" "wtledger shipped https://x/pull/3; stage idle; task -"
+  start_bg; wait_held 20
+  verb say - "use the bus"; assert_eq 1 "$(cat "$V_OUT")" "say on the held story: id 1"
+  verb say - --unit "skip polish"
+  verb resume -; assert_eq "resume requested: - resumes within one poll" "$(cat "$V_OUT")" "resume -"
+  bg_end 60 "the resumed run finishes"
+  assert_eq 0 "$BG_STATUS" "it ends done"
+  assert_eq "1 2 3 4 5" "$(unit_col 1)" "unit numbers run on after the hold"
+  assert_contains "$CALLS/3.inbox" '^\[1, story\] use the bus$' "the next unit got the directive at startup"
+  assert_contains "$CALLS/3.inbox" '^\[2, unit\] skip polish$' "and the unit message"
+  assert_contains "$R/events.jsonl" '"event":"message_requeued","story":"-","id":1,"unit":"[^"]*-0-3-T2","requeues":1}$' "the unrecorded directive was requeued (AC13)"
+  assert_contains "$R/inbox/-/1.msg" "^requeues: 1$" "back in pending with requeues 1"
+  assert_missing "$R/inbox/-/2.msg" "a unit message is never requeued"
+  assert_contains "$R/report.md" "^## Operator messages left$" "the report lists the messages left (AC14)"
+  assert_contains "$R/report.md" "^- 1 (story, requeues 1): use the bus$" "id, scope, requeues, text"
+  assert_contains "$R/events.jsonl" '"state":"running"}$' "a running event after the resume"
+  holds_off
+}
+test_overnight_new_stop_holds_again() {
+  fixture nsh; holds_on 60
+  scenario "$ISO1" "wtledger Stop: need art" "wtledger Stop: still need art"
+  start_bg; wait_held 20
+  verb resume -
+  _i=0; while [ "$(calls)" -lt 3 ] && [ "$_i" -lt 50 ]; do sleep 0.2; _i=$((_i + 1)); done
+  wait_held 20
+  _j=0; until grep -q 'still need art' "$R/control/-.held" 2>/dev/null || [ "$_j" -ge 50 ]; do sleep 0.2; _j=$((_j + 1)); done
+  assert_contains "$R/control/-.held" "^held stop: still need art until " "a new stop after a resume holds again (AC20)"
+  verb stop -; bg_end 20 "the run ends"
+  assert_contains "$R/report.md" "^Ending: stop: still need art$" "with the new why"
+  holds_off
+}
+test_overnight_hold_deadline() {
+  fixture hdl; holds_on 2
+  scenario "$ISO1" "wtledger Stop: need art"
+  t0="$(date +%s)"; run_start; t1="$(date +%s)"
+  assert_eq 1 "$RS_STATUS" "the run ends 1"
+  assert_contains "$(last_run_dir)/report.md" "^Ending: stop: need art (held 0h0m, no reply)$" "the deadline appends the hold's length (AC24)"
+  assert_eq 1 "$([ $((t1 - t0)) -ge 2 ] && echo 1 || echo 0)" "it waited out the deadline"
+  assert_eq 2 "$(calls)" "no unit ran while held"
+  holds_off
+}
+test_overnight_stop_beats_resume() {
+  fixture sbr; holds_on 60; STUDIO_OVERNIGHT_POLL_SECONDS=3
+  scenario "$ISO1" "wtledger Stop: need art" "wtledger final review done"
+  start_bg; wait_held 20; sleep 1
+  # Both files land between two polls: the runner is paused while they are written.
+  kill -STOP "$RPID"; : > "$R/control/-.stop"; : > "$R/control/-.resume"; kill -CONT "$RPID"
+  bg_end 20 "the run ends"
+  assert_contains "$R/report.md" "^Ending: stop: need art$" ".stop beats .resume in one poll (AC22)"
+  assert_eq 2 "$(calls)" "no unit ran"
+  holds_off
+}
+test_overnight_resume_wins_at_deadline() {
+  fixture rwd; holds_on 2; STUDIO_OVERNIGHT_POLL_SECONDS=4
+  scenario "$ISO1" "wtledger Stop: need art" "wtledger final review done" \
+           "wtledger shipped https://x/pull/7; stage idle; task -"
+  start_bg; wait_held 20; sleep 1
+  verb resume -
+  bg_end 60 "the run ends"
+  assert_eq 0 "$BG_STATUS" "a resume seen at the poll after the deadline still resumes (AC22)"
+  assert_contains "$R/report.md" "^Ending: done$" "and the run finishes"
+  holds_off
+}
+test_overnight_requeue_then_hold() {
+  fixture rth; holds_on 60
+  scenario "stage execute; branch feat; task 1/3; wtledger T1 complete a..b; say use the bus" \
+           "inbox; task 2/3; wtledger T2 complete b..c" \
+           "inbox; task 3/3; wtledger T3 complete c..d"
+  start_bg; wait_held 20
+  assert_contains "$R/control/-.held" "^held directive 1 not recorded until " "requeued retries + 1 times: the story holds (AC14)"
+  assert_eq "progress progress progress" "$(unit_col 7)" "the unit's own outcome is kept in its row"
+  verb stop -; bg_end 20 "the run ends"
+  assert_contains "$R/report.md" "^Ending: directive 1 not recorded$" "stop ends it with that why"
+  assert_contains "$R/report.md" "^- 1 (story, requeues 2): use the bus$" "the message is listed"
+  holds_off
+}
+test_overnight_recorded_directive_stays_delivered() {
+  fixture rds
+  scenario "stage execute; branch feat; task 1/2; wtledger T1 complete a..b; say use the bus" \
+           "inbox; wtledger Directive 1: use the bus; task 2/2; wtledger T2 complete b..c" \
+           "wtledger final review done" "wtledger shipped https://x/pull/4; stage idle; task -"
+  run_start
+  assert_eq 0 "$RS_STATUS" "done"
+  R="$(last_run_dir)"
+  assert_eq 1 "$(ls "$R"/inbox/-/delivered/*/1.msg 2>/dev/null | wc -l | tr -d ' ')" "a recorded directive stays delivered"
+  assert_not_contains "$R/events.jsonl" '"event":"message_requeued"' "and is not requeued"
+  assert_not_contains "$R/report.md" "Operator messages left" "nothing left"
+}
+test_overnight_requeue_id_prefix() {
+  fixture rip
+  scenario "stage execute; branch feat; task 1/2; wtledger T1 complete a..b; say one" \
+           "inbox; wtledger Directive 10: not one; task 2/2; wtledger T2 complete b..c" \
+           "wtledger final review done" "wtledger shipped https://x/pull/8; stage idle; task -"
+  run_start; R="$(last_run_dir)"
+  assert_contains "$R/events.jsonl" '"event":"message_requeued","story":"-","id":1,' "Directive 10: does not record message 1"
+  assert_contains "$R/report.md" "^- 1 (story, requeues 1): one$" "message 1 is left"
+}
+test_overnight_requeue_done_no_hold() {
+  fixture rdn '{"overnight": {"retries": 0}}'; holds_on 60
+  scenario "stage execute; branch feat; task 1/1; wtledger T1 complete a..b; say use the bus" \
+           "inbox; wtledger final review done; wtledger shipped https://x/pull/5; stage idle; task -"
+  run_start; R="$(last_run_dir)"
+  assert_eq 0 "$RS_STATUS" "a unit that ships is done, whatever it left unrecorded (AC14)"
+  assert_contains "$R/report.md" "^Ending: done$" "done"
+  assert_not_contains "$R/events.jsonl" '"state":"held"' "never held"
+  assert_contains "$R/report.md" "^- 1 (story, requeues 1): use the bus$" "the message is listed"
+  holds_off
+}
+# a hand-edited `requeues:` header ("1x", "08") counts as 0: the runner lives
+test_overnight_requeue_corrupt_header() {
+  for bad in 1x 08; do
+    want=1; [ "$bad" != 08 ] || want=9   # 08 is decimal 8: requeued to 9
+    fixture rch$bad '{"overnight": {"retries": 0}}'; holds_on 60
+    scenario "stage execute; branch feat; task 1/1; wtledger T1 complete a..b; say use the bus" \
+             "inbox; corruptrq $bad; wtledger final review done; wtledger shipped https://x/pull/5; stage idle; task -"
+    run_start; R="$(last_run_dir)"
+    assert_eq 0 "$RS_STATUS" "requeues: $bad does not kill the runner"
+    assert_contains "$R/report.md" "^Ending: done$" "$bad: done"
+    assert_contains "$R/events.jsonl" '"event":"message_requeued".*"requeues":'"$want" "$bad: counted as $((want - 1)), requeued to $want"
+    holds_off
+  done
+}
+test_overnight_prestop_and_limit_end_at_once() {
+  holds_on 60
+  fixture pli '{"overnight": {"retries": 0}}'
+  scenario "stage execute; task 1/2; ledger T1 complete a..b; say x" \
+           "inbox; task 2/2; ledger T2 complete b..c" "ledger final review done" \
+           "ledger shipped https://x/pull/6; stage idle; task -"
+  run_start
+  assert_eq 0 "$RS_STATUS" "before isolation the limit never holds; the story goes on (R6)"
+  assert_contains "$(last_run_dir)/events.jsonl" '"event":"message_requeued"' "the message was still requeued"
+  fixture pl2 '{"overnight": {"retries": 0}}'
+  scenario "stage execute; branch feat; task 1/2; wtledger T1 complete a..b; say x" \
+           "inbox; ledger Stop: start side"
+  run_start
+  assert_contains "$(last_run_dir)/report.md" "^Ending: stop: start side$" "a start-ledger Stop: in the same unit as the limit ends at once (AC18)"
+  assert_missing "$(last_run_dir)/control/-.held" "never held"
+  holds_off
+}
+test_overnight_stop_story_running() {
+  fixture ssr
+  scenario "stage execute; task 1/3; stopop" "task 2/3"
+  run_start
+  assert_eq 1 "$(calls)" "stop - on the running story ends it after its unit"
+  assert_contains "$(last_run_dir)/report.md" "^Ending: stopped by operator$" "stopped by operator (AC23)"
+  assert_eq "" "$(ls -A "$(last_run_dir)/control" 2>/dev/null)" "no control file left"
+  assert_contains "$(last_run_dir)/events.jsonl" '"event":"story_state".*"state":"stopped","why":"by operator"' "the story_state why is by operator, as in lanes (R5)"
+  assert_not_contains "$(last_run_dir)/events.jsonl" '"why":"stopped by operator"' "never the doubled form"
+}
+test_overnight_hold_story_running() {
+  fixture hsr; holds_on 60
+  scenario "$ISO1; holdop" "wtledger final review done" "wtledger shipped https://x/pull/9; stage idle; task -"
+  start_bg; wait_held 20
+  assert_contains "$R/control/-.held" "^held held by operator until " "hold - holds at the next unit boundary"
+  assert_eq 1 "$(calls)" "before the next unit"
+  verb resume -; bg_end 60 "the run goes on"
+  assert_eq 0 "$BG_STATUS" "and finishes"
+  assert_eq 3 "$(calls)" "the remaining units ran"
+  holds_off
+}
+test_overnight_hold_last_unit_done_finishes() {
+  fixture hld; holds_on 60
+  scenario "stage execute; task 1/1; ledger T1 complete a..b" "ledger final review done" \
+           "holdop; ledger shipped https://x/pull/6; stage idle; task -"
+  run_start
+  assert_eq 0 "$RS_STATUS" "a hold sent during the last unit: the run still finishes done"
+  assert_not_contains "$(last_run_dir)/events.jsonl" '"state":"held"' "never held"
+  assert_eq "" "$(ls -A "$(last_run_dir)/control" 2>/dev/null)" "the .hold is cleared"
+  holds_off
+}
+test_overnight_run_stop_while_held() {
+  fixture rsh; holds_on 60
+  scenario "$ISO1" "wtledger Stop: need art"
+  start_bg; wait_held 20
+  verb stop; assert_contains "$V_OUT" "^stop requested: the run ends after its running unit" "bare stop, as today"
+  bg_end 20 "the run ends"
+  assert_contains "$R/report.md" "^Ending: stopped by user (was held: stop: need art)$" "the halt's reason, then the hold's (AC25)"
+  holds_off
+}
+test_overnight_hold_minutes_zero_ends_at_once() {
+  fixture hmz
+  scenario "$ISO1; holdop" "wtledger Stop: need art"
+  run_start
+  assert_eq 2 "$(calls)" "hold_minutes 0: a hold is refused, nothing waits"
+  assert_contains "$(last_run_dir)/report.md" "^Ending: stop: need art$" "a feature Stop: ends at once, as today (AC26)"
+  assert_missing "$(last_run_dir)/control/-.held" "never held"
+}
+test_overnight_requeue_minimal_path() {
+  fixture rmp; make_minbin
+  scenario "stage execute; branch feat; task 1/2; wtledger T1 complete a..b; say use the bus" \
+           "inbox; task 2/2; wtledger T2 complete b..c" "wtledger final review done" \
+           "wtledger shipped https://x/pull/2; stage idle; task -"
+  RS_STATUS=0
+  ( cd "$P" && PATH="$TMP/minbin" sh "$RUNNER" start ) > "$TMP/rs.out" 2> "$TMP/rs.err" || RS_STATUS=$?
+  assert_eq 0 "$RS_STATUS" "the channel works under the minimal PATH"
+  assert_not_contains "$TMP/rs.err" "not found" "no missing command"
+  assert_contains "$CALLS/2.inbox" '^\[1, story\] use the bus$' "say, the hook and the claim ran"
+  assert_contains "$(last_run_dir)/events.jsonl" '"event":"message_requeued"' "and the requeue check"
+  assert_contains "$(last_run_dir)/report.md" "^- 1 (story, requeues 1): use the bus$" "and the report"
+}
+test_overnight_orphaned_holds_after_isolation() {
+  fixture oho; holds_on 2
+  scenario "$ISO1" "cost 1" "cost 1; orphan"
+  run_start; R="$(last_run_dir)"
+  assert_eq 3 "$(calls)" "the orphaned no-progress ending comes after the retry"
+  assert_contains "$R/events.jsonl" '"state":"held","why":"no progress on T2 (orphaned: ' "an orphaned no-progress ending holds after isolation, like any no-progress ending"
+  assert_contains "$R/report.md" "^Ending: no progress on T2 (orphaned: .*) (held 0h0m, no reply)$" "the deadline then ends it with the cause kept"
+  fixture oho2; holds_on 2
+  scenario "stage execute; task 1/2" "cost 1" "cost 1; orphan"
+  run_start; R="$(last_run_dir)"
+  assert_contains "$R/report.md" "^Ending: no progress on T2 (orphaned: .*)$" "before isolation it ends at once"
+  assert_not_contains "$R/events.jsonl" '"state":"held"' "never held"
+  holds_off
+}
+
+test_overnight_stop_held_by_operator() {
+  fixture sho; holds_on 60
+  scenario "$ISO1; holdop" "wtledger final review done"
+  start_bg; wait_held 20
+  assert_contains "$R/control/-.held" "^held held by operator until " "held by the operator"
+  verb stop -; bg_end 20 "the run ends within a poll"
+  assert_contains "$R/report.md" "^Ending: stopped by operator$" "a stop on an operator-held story is stopped by operator (R5)"
+  assert_eq 1 "$(calls)" "no unit ran"
+  holds_off
+}
+test_overnight_stop_pending_never_holds() {
+  fixture spn; holds_on 60
+  scenario "$ISO1; wtledger Stop: need art; stopop" "wtledger final review done"
+  run_start; R="$(last_run_dir)"
+  assert_contains "$R/report.md" "^Ending: stopped by operator$" "a stop sent during the unit that ends holdable ends the story (R5)"
+  assert_not_contains "$R/events.jsonl" '"state":"held"' "no held event for a hold that never waited"
+  assert_missing "$R/control/-.held" "no held record"
+  assert_eq 1 "$(calls)" "no unit ran"
+  holds_off
+}
+test_overnight_sighup_while_held() {
+  fixture shh; holds_on 60
+  scenario "$ISO1" "wtledger Stop: need art"
+  start_bg; wait_held 20
+  kill -HUP "$RPID"; bg_status
+  assert_eq 1 "$BG_STATUS" "a closed terminal exits 1"
+  assert_contains "$R/report.md" "^Ending: stop: terminal closed (SIGHUP) (was held: stop: need art)$" "the closed terminal keeps the hold's why (AC25)"
+  assert_eq "" "$(ls -A "$R/control" 2>/dev/null)" "no held record is left once a report is written (R25)"
+  holds_off
+}
+# retire_case NAME LEDGERED — a ledgered Directive 1 is retired by `unsay 1`
+# in unit 1; unit 2 gets the retire message and records it when LEDGERED=1.
+retire_case() {
+  fixture "$1"; ledger_add "Directive 1: use the bus"
+  if [ "$2" = 1 ]; then _rc_rec="wtledger Directive 1 retired; "; else _rc_rec=""; fi
+  scenario "$ISO1; unsay 1" "inbox; ${_rc_rec}task 2/2; wtledger T2 complete b..c" \
+           "wtledger final review done" "wtledger shipped https://x/pull/11; stage idle; task -"
+  run_start; R="$(last_run_dir)"
+}
+test_overnight_requeue_retire() {
+  retire_case rtr1 1
+  assert_not_contains "$R/events.jsonl" '"event":"message_requeued"' "a recorded retire is not requeued"
+  assert_not_contains "$R/report.md" "Operator messages left" "nothing left"
+  retire_case rtr2 0
+  assert_contains "$R/events.jsonl" '"event":"message_requeued","story":"-","id":2,' "an unrecorded retire is requeued"
+  assert_contains "$R/report.md" "^- 2 (retire, requeues 1): " "and left, as a retire message"
+}
+
 run_tests test_overnight_report_done test_overnight_report_not_done \
   test_overnight_report_anchors test_overnight_resume_quote test_overnight_label_t1 \
   test_overnight_session_seconds_refused test_overnight_claim_without_run_dir \
@@ -691,7 +1603,7 @@ run_tests test_overnight_report_done test_overnight_report_not_done \
   test_overnight_timeout test_overnight_kill_after_grace \
   test_overnight_stop_file test_overnight_sigterm test_overnight_sigint test_overnight_sighup \
   test_overnight_stop_no_run test_overnight_inhibitor test_overnight_no_inhibitor \
-  test_overnight_help test_overnight_dry_run \
+  test_overnight_help test_events_contract_doc test_overnight_dry_run \
   test_overnight_preflight_refusals test_overnight_preflight_all_failures \
   test_overnight_config_refusals test_overnight_deny_file_required \
   test_overnight_lock test_overnight_first_use_ignores \
@@ -703,4 +1615,52 @@ run_tests test_overnight_report_done test_overnight_report_not_done \
   test_overnight_overhead test_overnight_unknown_label_stops \
   test_overnight_models_by_unit test_overnight_config_refusals_v2 \
   test_overnight_default_branch_required test_overnight_deny_merge_basename \
-  test_overnight_run_usd_default_uncapped
+  test_overnight_run_usd_default_uncapped \
+  test_overnight_hold_config_refused test_overnight_channel_file test_overnight_unit_env \
+  test_overnight_events_two_units \
+  test_say_writes_message \
+  test_say_dash_text_and_unit \
+  test_say_empty_text_exit_2 \
+  test_say_ids_ledger_and_inbox \
+  test_say_cap \
+  test_say_cap_counts_characters test_say_bad_directive_chars_defaults test_inbox_lock_failures \
+  test_said_lists_states \
+  test_unsay_pending_active_delivered \
+  test_unsay_id_prefix \
+  test_unsay_loses_race_to_hook \
+  test_hold_resume_stop_table \
+  test_hold_resume_stop_usage_and_unwritable test_hold_minutes_zero \
+  test_single_plan_verbs \
+  test_resume_refused_dirty_ledger \
+  test_resume_from_feature_worktree \
+  test_verbs_refusals \
+  test_verbs_run_pinning \
+  test_inbox_lock_stale_broken \
+  test_inbox_lock_busy \
+  test_inbox_lock_released_on_signal \
+  test_inbox_unlock_after_release_keeps_foreign_lock \
+  test_channel_sourced_only \
+  test_overnight_hold_on_feature_stop \
+  test_overnight_start_ledger_stop_ends_at_once \
+  test_overnight_resume_runs_next_unit \
+  test_overnight_new_stop_holds_again \
+  test_overnight_hold_deadline \
+  test_overnight_stop_beats_resume \
+  test_overnight_resume_wins_at_deadline \
+  test_overnight_requeue_then_hold \
+  test_overnight_recorded_directive_stays_delivered \
+  test_overnight_requeue_id_prefix \
+  test_overnight_requeue_done_no_hold \
+  test_overnight_requeue_corrupt_header \
+  test_overnight_prestop_and_limit_end_at_once \
+  test_overnight_stop_story_running \
+  test_overnight_hold_story_running \
+  test_overnight_hold_last_unit_done_finishes \
+  test_overnight_run_stop_while_held \
+  test_overnight_hold_minutes_zero_ends_at_once \
+  test_overnight_requeue_minimal_path \
+  test_overnight_orphaned_holds_after_isolation \
+  test_overnight_stop_held_by_operator \
+  test_overnight_stop_pending_never_holds \
+  test_overnight_sighup_while_held \
+  test_overnight_requeue_retire

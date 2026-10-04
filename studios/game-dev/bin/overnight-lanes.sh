@@ -250,7 +250,8 @@ lanes_dry_run() {
 # so a reader never sees half a line. Only the lane holding ID writes it,
 # plus the parent before the lanes start and in its sweep.
 story_write() {
-  printf '%s\n' "$2" > "$RUN_DIR/stories/.$1.tmp" && mv -f "$RUN_DIR/stories/.$1.tmp" "$RUN_DIR/stories/$1"
+  printf '%s\n' "$2" > "$RUN_DIR/stories/.$1.tmp" && mv -f "$RUN_DIR/stories/.$1.tmp" "$RUN_DIR/stories/$1" \
+    && state_event "$1" "$2"
 }
 # story_get ID — the story's record line (empty when none).
 story_get() { cat "$RUN_DIR/stories/$1" 2>/dev/null; }
@@ -538,9 +539,9 @@ gate_repair() {
   n=$((${n:-0} + 1)); run_unit "$n" gate-repair
   PROMPT="$_gr_p"; LAUNCH_ENV="$_gr_e"
   snapshot "$UNIT_DIR/stops.after"
-  _gr_new="$(new_stop "$UNIT_DIR/stops.before" "$UNIT_DIR/stops.after")"
+  take_new_stop "$UNIT_DIR/stops.before" "$UNIT_DIR/stops.after"
   _gr_a="$(ledger_of "$FEATURE_DIR" | grep -c '^- [0-9-]* Repair: ')"
-  if [ -n "$_gr_new" ]; then row "$n" gate-repair stop; ENDING="stop: ${_gr_new#*Stop: }"; return 1; fi
+  if [ -n "$NEW_STOP" ]; then row "$n" gate-repair stop; ENDING="$STOP_ENDING"; return 1; fi
   if [ "$_gr_a" -gt "$_gr_b" ]; then row "$n" gate-repair progress; story_write "$1" running; return 0; fi
   _gr_o="$(unit_outcome)"
   if [ "$_gr_o" != "timed out" ]; then row "$n" gate-repair "$_gr_o"; ENDING="gate repair made no progress$(orphan_note "$_gr_o")"
@@ -616,6 +617,15 @@ lane_halt_reason() {
   elif [ "${LANE_BUDGET:-0}" = 1 ]; then echo "stop: run budget"
   else echo "stopped by user"; fi
 }
+# Holds in manifest mode (#27): a halt is the lane's (R28), and the held
+# record is the story's record, stories/<id> (R4).
+halt_reason() { lane_halt_reason; }
+hold_record() { story_write "$1" "$2"; }
+# last_stop_gate_red — the feature ledger's latest Stop: line is a red finish
+# gate, `Stop: gate red — …` (the resume's precondition; AC20, R29).
+last_stop_gate_red() {
+  ledger_of "$FEATURE_DIR" | grep '^- [0-9-]* Stop: ' | tail -n 1 | grep -q '^- [0-9-]* Stop: gate red — '
+}
 # lane_stopflag — a signal to a lane requests the run's stop; it never
 # truncates a stop file that already carries the runner's reason.
 lane_stopflag() { [ -e "$STOP_FILE" ] || : > "$STOP_FILE"; }
@@ -657,12 +667,13 @@ dep_landed() { awk -F'\t' -v id="$1" '$1 == id { f = 1 } END { exit !f }' "$RECO
 # wait_deps ID DEPS — the WAITING state of a chain's first story (spec 500-516):
 # stories/ID = waiting, then a poll every STUDIO_OVERNIGHT_POLL_SECONDS (D20,
 # default 5) s. Returns 0 when every dependency in DEPS (comma-separated) has
-# landed; 2 on lane_halt; 1 with BLOCKER=<dep> when a dependency ended
+# landed; 2 on lane_halt; 3 when the operator stopped ID (control/ID.stop); 1 with BLOCKER=<dep> when a dependency ended
 # stopped or skipped, or its chain's claiming lane is dead without its landing.
 wait_deps() {
   story_write "$1" waiting
   while :; do
     lane_halt && return 2
+    [ ! -f "$RUN_DIR/control/$1.stop" ] || return 3
     _wd_all=1
     for _wd_d in $(printf '%s\n' "$2" | tr ',' ' '); do
       dep_landed "$_wd_d" && continue
@@ -708,28 +719,54 @@ run_chain() {
   for _rc_id in $(chain_members "$1"); do
     # Landed already (lanes_resume confirmed it): nothing to run or wait for.
     case "$(story_get "$_rc_id")" in landed*) _rc_first=0; continue ;; esac
-    if [ -n "$_rc_skip" ]; then story_write "$_rc_id" "$_rc_skip"; continue; fi
+    if [ -n "$_rc_skip" ]; then story_write "$_rc_id" "$_rc_skip"; ctl_clear "$_rc_id"; continue; fi
     if [ "$_rc_first" = 1 ] && [ "$_rc_w" != - ]; then
       CUR_ID="$_rc_id"   # a lane that dies while waiting still ends the story
       wait_deps "$_rc_id" "$_rc_w"; _rc_wd=$?
       CUR_ID=""
       case "$_rc_wd" in
-        1) story_write "$_rc_id" "skipped $BLOCKER"; _rc_skip="skipped $_rc_id"; continue ;;
-        2) story_write "$_rc_id" "skipped: run stopped"; _rc_skip="skipped: run stopped"; continue ;;
+        1) story_write "$_rc_id" "skipped $BLOCKER"; ctl_clear "$_rc_id"; _rc_skip="skipped $_rc_id"; continue ;;
+        2) story_write "$_rc_id" "skipped: run stopped"; ctl_clear "$_rc_id"; _rc_skip="skipped: run stopped"; continue ;;
+        3) story_write "$_rc_id" "stopped by operator"; ctl_clear "$_rc_id"; _rc_skip="skipped $_rc_id"; continue ;;
       esac
     fi
     _rc_first=0
+    # An operator stop that reached a queued story (AC7, R7): it never starts.
+    if ctl_take "$_rc_id" stop; then
+      story_write "$_rc_id" "stopped by operator"; ctl_clear "$_rc_id"; _rc_skip="skipped $_rc_id"; continue
+    fi
     run_story "$_rc_id"
     case "$(story_get "$_rc_id")" in landed*) ;; *) _rc_skip="skipped $_rc_id" ;; esac
   done
 }
 
+# story_gate_loop ID — the red-finish repair loop: a `stop: gate red — <line>`
+# ending gets a gate-repair unit and the unit loop again, up to gate_repairs
+# repairs in all (_rs_rep counts every repair unit of the story, those after
+# a resume included); past that, `gate red after <k> repairs — <line>`
+# (gate_repairs 0 keeps `stop: gate red — <line>`). The operator boundary
+# (R8) runs before each repair unit.
+story_gate_loop() {
+  while :; do
+    case "$ENDING" in "stop: gate red — "*) ;; *) break ;; esac
+    if [ "$_rs_rep" -ge "$GATE_REPAIRS" ]; then
+      [ "$_rs_rep" -eq 0 ] || ENDING="gate red after $_rs_rep repairs — ${ENDING#stop: gate red — }"
+      break
+    fi
+    op_boundary "$1" || break
+    _rs_rep=$((_rs_rep + 1))
+    gate_repair "$1" || break
+    story_units
+  done
+}
 # run_story ID — bundle 2's unit loop for one story, one fresh session per
 # unit, under the story's env; then its landing. A red finish gate (`stop:
 # gate red — <line>`, the one repairable stop) gets a gate-repair unit and
 # then the unit loop again (a fresh finish: the full gate), up to
 # gate_repairs times; past that the story ends `stopped gate red after <k>
-# repairs — <line>` (gate_repairs 0: `stopped stop: gate red — <line>`).
+# repairs — <line>` (gate_repairs 0: `stopped stop: gate red — <line>`). A
+# holdable ending enters the hold loop (hold_wait) instead; an operator stop
+# is `stopped by operator`; a story's control files go when it ends.
 run_story() {
   CUR_ID="$1"
   STUDIO_STORY="$1"; STUDIO_RUN="$RUN_DIR/manifest.md"; STUDIO_DOCS_REV="$MF_DOCS"
@@ -741,29 +778,40 @@ run_story() {
   # A story already shipped (stage idle, a shipped line) only lands: no
   # unit, straight to land_story (resume, AC24). n is the story's unit
   # counter (story_units'); a landing repair takes the next number.
-  n=0
+  n=0; STOP_ENDING=""; STOP_SRC=""
   snapshot "$UNIT_DIR/stops.before"
   if [ "$SIG_STAGE" = idle ] && [ "$SIG_SHIPPED" -gt 0 ]; then ENDING=done; else story_units; fi
   _rs_rep=0
+  # Hold loop (AC17-25): a holdable ending waits for the operator; a resume
+  # runs one gate repair first when the latest Stop is gate red (AC20), then
+  # the unit loop, and the post-loop handling again.
   while :; do
-    case "$ENDING" in "stop: gate red — "*) ;; *) break ;; esac
-    if [ "$_rs_rep" -ge "$GATE_REPAIRS" ]; then
-      [ "$_rs_rep" -eq 0 ] || ENDING="gate red after $_rs_rep repairs — ${ENDING#stop: gate red — }"
-      break
+    story_gate_loop "$1"
+    # story_units says `stopped by user` for any halt; name the real one.
+    [ "$ENDING" != "stopped by user" ] || ENDING="$(lane_halt_reason)"
+    holdable || break
+    hold_wait "$1" || break
+    if last_stop_gate_red; then
+      op_boundary "$1" || continue
+      _rs_rep=$((_rs_rep + 1))
+      gate_repair "$1" || continue
     fi
-    _rs_rep=$((_rs_rep + 1))
-    gate_repair "$1" || break
     story_units
   done
-  # story_units says `stopped by user` for any halt; name the real one. A
-  # halt also holds back the landing (spec 124-127).
-  [ "$ENDING" != "stopped by user" ] || ENDING="$(lane_halt_reason)"
+  # A halt that raced the operator's hold keeps the halt's reason (hold_wait
+  # maps an operator stop of a held story itself).
+  [ "$ENDING" != "held by operator" ] || ENDING="$(lane_halt_reason)"
+  # A halt also holds back the landing (spec 124-127); so does an operator
+  # stop that arrived during the last unit (R5).
   [ "$ENDING" != done ] || ! lane_halt || ENDING="$(lane_halt_reason)"
+  [ "$ENDING" != done ] || ! ctl_take "$1" stop || ENDING="stopped by operator"
   case "$ENDING" in
     done) story_write "$1" landing; land_story "$1" ;;
+    "stopped by operator") story_write "$1" "$ENDING" ;;
     *) story_write "$1" "stopped $ENDING"
        [ "$ENDING" != "stop: run budget" ] || LANE_BUDGET=1 ;;
   esac
+  ctl_clear "$1"
   CUR_ID=""; LAUNCH_ENV=""
 }
 
@@ -1021,6 +1069,8 @@ lanes_report() {
       printf '\n'; story_units_table "$_r_id"
       _r_l="$(story_ledger_lines "$_r_id")"
       [ -z "$_r_l" ] || printf '\n%s\n' "$_r_l"
+      _r_m="$(msgs_left "$_r_id")"
+      [ -z "$_r_m" ] || printf '\nOperator messages left:\n%s\n' "$_r_m"
     done
     if [ "$MF_MODE" != direct ]; then
       printf '\n## Open bundle-2 PRs\n\n'
@@ -1051,6 +1101,7 @@ lanes_report() {
     printf '\n## Cleanup\n\nRun this after the final PR is landed; the run itself never deletes a remote branch.\n\n'
     printf 'cd %s && git push origin --delete %s\n' "$(sq "$START_DIR")" "$_r_del"
   } > "$RUN_DIR/report.md"
+  run_event run_ended "ending=$1" "report=$RUN_DIR/report.md"
 }
 # lanes_finish ENDING — report; RECORD/done on `done` (removed on any other
 # ending); unlock; exit 0 only for done.
@@ -1104,6 +1155,7 @@ lanes_live_lanes() {
 lanes_reap() {
   LR_LIVE="$(lanes_live_lanes)"
   [ -z "$LR_LIVE" ] || return 1
+  EV_ON=1
   SWEEP_WHY="stopped: runner gone"
   lanes_sweep
   SWEEP_WHY=""
@@ -1138,10 +1190,13 @@ lanes_status_lines() {
     fi
     _st_t="$(story_state "$_st_id" get task 2>/dev/null)"; [ -n "$_st_t" ] || _st_t=-
     printf '%s  lane %s  %s  unit %s  task %s\n' "$_st_id" "$_st_k" "$_st_s" "$_st_u" "$_st_t"
-    if [ "$_st_u" != - ]; then
-      _st_n="$(unit_now_line "$RUN_DIR/lanes/$_st_k")"
-      [ -z "$_st_n" ] || printf '    %s\n' "$_st_n"
-    fi
+    case "$_st_r" in
+      "held "*) printf '    %s\n' "$(held_line "$_st_r" "$_st_id")" ;;
+      *) if [ "$_st_u" != - ]; then
+           _st_n="$(unit_now_line "$RUN_DIR/lanes/$_st_k")"
+           [ -z "$_st_n" ] || printf '    %s\n' "$_st_n"
+         fi ;;
+    esac
   done
   _st_n="$(unit_now_line "$RUN_DIR/final")"; [ -z "$_st_n" ] || printf 'final: %s\n' "$_st_n"
   gate_line "$RUN_DIR"
@@ -1534,6 +1589,12 @@ lanes_run() {
   _nch="$(wc -l < "$CHAINS" | tr -d ' ')"
   _L="$_nch"
   [ "$MAX_LANES" -eq 0 ] || [ "$MAX_LANES" -ge "$_nch" ] || _L="$MAX_LANES"
+  run_event run_started "mode=$MF_MODE" "max_lanes:=$_L" "hold_minutes:=$HOLD_MINUTES"
+  for _id in $(awk -F'\t' '!seen[$1]++ { print $1 }' "$MF_ROWS"); do
+    run_event story_listed "story=$_id" "chain:=$(chain_of "$_id")" "depends[]=$(row_field "$_id" deps)"
+  done
+  EV_ON=1
+  for _id in $(awk -F'\t' '!seen[$1]++ { print $1 }' "$MF_ROWS"); do state_event "$_id" "$(story_get "$_id")"; done
   _k=1
   while [ "$_k" -le "$_L" ]; do
     ( lane_main "$_k" ) &
