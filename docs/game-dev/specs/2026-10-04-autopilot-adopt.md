@@ -1,7 +1,7 @@
 # Autopilot adopts outside work — Spec
 
 Date: 2026-10-04
-Status: Draft (awaiting approval; spec falsifier findings folded in)
+Status: Approved (operator, 2026-10-04; spec falsifier findings folded in)
 Milestone: Plan 3 — Content (studio tooling; follows overnight lanes, #19, the operator channel, #27, and Multica, #28)
 Classification: architectural
 
