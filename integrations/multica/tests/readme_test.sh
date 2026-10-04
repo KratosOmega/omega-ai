@@ -97,7 +97,8 @@ test_readme_commands_match_code() {
     if grep -q -F -- "\`/$c" "$R" 2>/dev/null; then _pass "command documented: /$c"
     else _fail "command not in README: /$c"; fi
   done < "$TMP/cmds"
-  grep -o '`/[a-z][a-z]*' "$R" 2>/dev/null | cut -c3- | sort -u > "$TMP/rcmds"
+  # Claude Code commands are not bridge commands: namespaced skills (`/ns:name`) and `/clear`.
+  grep -o '`/[a-z][a-z-]*:\{0,1\}' "$R" 2>/dev/null | cut -c3- | grep -v ':$' | grep -v -x clear | sort -u > "$TMP/rcmds"
   while IFS= read -r c; do
     TESTS_RUN=$((TESTS_RUN + 1))
     if grep -q -x -F -- "$c" "$TMP/cmds"; then _pass "README command exists: /$c"
