@@ -14,7 +14,10 @@
 # Exit: start 0 done · 1 any other ending · 2 refused. status 0 this
 # project's run is live · 1 no run · 3 (outside a project) live elsewhere.
 # watch 0. stop 0 stop requested · 1 no run.
-# Self-contained on purpose (copy mode); calls its sibling studio-state.
+# Self-contained on purpose (copy mode); calls its siblings studio-state,
+# studio-event and studio-env, and sources overnight-lanes.sh, -channel.sh and
+# -progress.sh. status prints a progress bar with a rough finish time, then the
+# resource readout (studio-env).
 set -u
 
 # Manifest mode's per-unit words, set only by overnight-lanes.sh: never taken
@@ -446,12 +449,12 @@ preflight() {
   if lock_live; then
     refuse "a run is live (pid $(lock_pid)) — $(sq "$SELF_ABS") status"
   fi
-  env_line >&2
+  env_line
   [ -n "$_pf_mf" ] || [ "$FAILED" -eq 0 ] || exit 2
 }
 # env_line [RUN_PID] — studio-env's readout on stdout: a summary line, and a
 # warning block when the machine is short of something. Never fails, never
-# blocks. The preflight sends it to stderr, with the refusals.
+# blocks. The preflight prints it on stdout too (stderr is the refusals').
 env_line() {
   sh "$SELF_DIR/studio-env" --dir "${START_DIR:-.}" ${1:+--run-pid "$1"} || true
 }
@@ -1372,6 +1375,7 @@ project_status() {
   fi
   if lock_live; then
     RUN_DIR="$(sed -n 's/^run=//p' "$LOCK" | head -n 1)"
+    progress_compute single 1 && { progress_overall; progress_done; }
     printf 'run: %s\nunit: %s\ntask: %s\nspent: $%s\npid: %s\n' "$RUN_DIR" \
       "$(cat "$RUN_DIR/current" 2>/dev/null)" "$(state get task 2>/dev/null)" "$(spent)" "$(lock_pid)"
     if [ -f "$RUN_DIR/control/-.held" ]; then held_line "$(cat "$RUN_DIR/control/-.held")" -
@@ -1383,10 +1387,12 @@ project_status() {
   if [ -n "$_sd" ] && [ -f "$_sd/report.md" ]; then
     printf 'no run — the last run: %s\n' "$_sd"
     ended_line "$_sd/report.md"
+    RUN_DIR="$_sd"; progress_compute single 0 && { progress_overall; progress_done; }
     return 1
   fi
   if [ -n "$_sd" ] && [ -d "$_sd" ]; then
     printf 'no run — the last run: %s has no report (its runner died before writing one; units.tsv and the unit logs are there)\n' "$_sd"
+    RUN_DIR="$_sd"; progress_compute single 0 && { progress_overall; progress_done; }
     return 1
   fi
   printf 'no run in %s — no live run lock (%s) and no run under %s\n' "$STATE_ROOT" "$LOCK" "$REPORTS"
@@ -1469,6 +1475,8 @@ cmd_watch() {
 # The operator channel's verbs (#27): say, said, unsay, hold, resume,
 # stop <story> and stop --run; and the message helpers the runner uses.
 . "$SELF_DIR/overnight-channel.sh"
+# The progress bar and rough finish time of `status` (#37).
+. "$SELF_DIR/overnight-progress.sh"
 
 case "$1" in
   start)  shift; cmd_start "$@" ;;

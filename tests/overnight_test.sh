@@ -263,7 +263,7 @@ test_overnight_dry_run() {
   assert_missing "$P/.studio/overnight.lock" "dry run takes no lock"
   assert_missing "$P/.studio/reports" "dry run makes no run directory"
   assert_eq 0 "$(calls)" "dry run launches no session"
-  assert_contains "$RS_ERR" "^env: cpu " "the preflight prints the resource readout"
+  assert_contains "$RS_OUT" "^env: cpu " "the preflight prints the resource readout"
 }
 # A machine short of memory warns in the preflight and blocks nothing (#37).
 test_overnight_preflight_env_warns_not_blocks() {
@@ -277,9 +277,9 @@ test_overnight_preflight_env_warns_not_blocks() {
   run_start --dry-run
   unset STUDIO_ENV_FIXTURE
   assert_eq 0 "$RS_STATUS" "a memory warning does not refuse the start"
-  assert_contains "$RS_ERR" "^env: cpu 0.5/4 · memory critical (swap 0.0 GB) · disk 182 GB free$" "the summary line"
-  assert_contains "$RS_ERR" "^⚠ memory critically low (3% available) — close something; top by memory:$" "the warning block"
-  assert_contains "$RS_ERR" "^    firefox 2.9 GB$" "and the top list"
+  assert_contains "$RS_OUT" "^env: cpu 0.5/4 · memory critical (swap 0.0 GB) · disk 182 GB free$" "the summary line"
+  assert_contains "$RS_OUT" "^⚠ memory critically low (3% available) — close something; top by memory:$" "the warning block"
+  assert_contains "$RS_OUT" "^    firefox 2.9 GB$" "and the top list"
 }
 
 # refuse_case NAME MESSAGE-PATTERN — run start in the current fixture and
@@ -339,7 +339,7 @@ test_overnight_deny_file_required() {
   # The runner reads overnight-deny.txt beside itself: run a copy whose
   # sibling deny file holds only comments.
   fixture deny
-  mkdir -p "$TMP/denybin"; cp "$RUNNER" "$STATE_BIN" "$REPO_ROOT/studios/game-dev/bin/overnight-channel.sh" "$TMP/denybin/"
+  mkdir -p "$TMP/denybin"; cp "$RUNNER" "$STATE_BIN" "$REPO_ROOT/studios/game-dev/bin/overnight-channel.sh" "$REPO_ROOT/studios/game-dev/bin/overnight-progress.sh" "$REPO_ROOT/studios/game-dev/bin/studio-env" "$TMP/denybin/"
   printf '# only a comment\n\n' > "$TMP/denybin/overnight-deny.txt"
   RS_STATUS=0; ( cd "$P" && sh "$TMP/denybin/studio-overnight" start ) > "$TMP/rs.out" 2> "$TMP/rs.err" || RS_STATUS=$?
   assert_eq 2 "$RS_STATUS" "a deny file with no rules refuses"
