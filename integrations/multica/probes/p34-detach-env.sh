@@ -27,7 +27,7 @@ rm -f "$P3/pid" "$P3/heartbeat.log" "$P3/registry-entry"
 cp "$PROBE_DIR/p3-detach.sh" "$P3/p3-detach.sh" && chmod 755 "$P3/p3-detach.sh" || die "cannot copy p3-detach.sh"
 
 ID="$(printf 'Run exactly `sh %s/p3-detach.sh launch`, post its output, then finish.' "$P3" \
-  | mc issue create --title "[probe] P3 detach" --assignee-id "$AID" --description-stdin --output json | pj get identifier)"
+  | mc issue create --title "[probe] P3 detach" --allow-duplicate --assignee-id "$AID" --description-stdin --output json | pj get identifier)"
 [ -n "$ID" ] || die "issue create returned no identifier"
 cleanup_add issue "$ID"
 echo "created $ID; waiting up to 15 min for the run"

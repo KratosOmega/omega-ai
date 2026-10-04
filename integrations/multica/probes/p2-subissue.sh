@@ -12,7 +12,7 @@
 need_agent
 
 PID_="$(printf '%s' 'Reply `ok` and finish. Do nothing else.' \
-  | mc issue create --title "[probe] P2 parent" --assignee-id "$AID" --description-stdin --output json | pj get identifier)"
+  | mc issue create --title "[probe] P2 parent" --allow-duplicate --assignee-id "$AID" --description-stdin --output json | pj get identifier)"
 [ -n "$PID_" ] || die "parent create returned no identifier"
 cleanup_add issue "$PID_"
 

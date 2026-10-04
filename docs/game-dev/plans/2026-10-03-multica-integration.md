@@ -395,22 +395,18 @@ implementers. Task 1 appends its probe results as D1a–D1g.
   tool and the daemon's process tree. The real chain is pinned by T2's
   `test_lanes_origin_detach` and the live gate step 4.2 (Final gate,
   manual check 2). Spec 1f2c1b4 adopts this (P4, spec 204-209).
-- **D1a. P1 (agent session).** Pending: the operator's run is in progress.
-  Default in use: the file-flag form, `--append-system-prompt-file <ctx>` in
-  `bin/omega-multica-agent`. If P1 shows the flag is not honoured, the swap is the
-  one `eval "set -- ..."` line (the commented inline form) plus one assertion in
-  `wrappers_test.sh`. Runtime profiles use the bare command names (R50); if P1
-  shows the daemon needs an absolute path, change `command-names.sh`
-  (uninstall matches on the basename).
+- **D1a. P1 (agent session): pass** (2026-10-04). The file-flag form stays;
+  no swap. Bare command names stay (R50): the daemon's PATH includes
+  `~/.local/bin`. A per-machine `runtime profile set-path` override beats the
+  command name, and changes need a daemon restart; README and install say so.
 - **D1b. P2 (sub-issue under an agent-assigned issue): pass.** No run starts.
   Side finding: `issue assign --unassign` takes no `--no-start`; the adapter and
   the stub never send the pair.
-- **D1c. P3 (detached runner outlives the task).** Pending (the operator's run).
-  Default in use: the core's `--detach` re-exec stays as built. A fail goes to
-  the user as a spec ruling.
-- **D1d. P4 (origin survives the Bash tool and the re-exec).** Pending (the
-  operator's run). Default in use: the primary design with the no-origin path as
-  the fallback (R55, R56). The live gate step 4.2 checks the real chain.
+- **D1c. P3 (detached runner outlives the task): pass** (2026-10-04). The
+  core's `--detach` re-exec stays as built.
+- **D1d. P4 (origin survives the Bash tool and the re-exec): pass**
+  (2026-10-04). The primary design stays, with the no-origin path as the
+  fallback (R55, R56). The live gate step 4.2 checks the real chain.
 - **D1e. P5 (Multica.app `~/Documents` prompt).** Not run: the operator's
   projects are under `~/GameDev/proj`, outside `~/Documents`. Default in use:
   `install.sh`'s `P5_TEXT`; the README quotes it (readme_test compares them) and

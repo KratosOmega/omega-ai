@@ -59,7 +59,7 @@ RT="$(mc runtime list --output json | pj find profile_id "$RP" status)"
 record "P5 runtime status" "${RT:-no row for profile $RP} after the wrapper moved under ~/Documents"
 
 ID="$(printf '%s' 'Run `ls` and `git status --porcelain`, post the output.' \
-  | mc issue create --title "[probe] P5 documents" --assignee-id "$AID" --description-stdin --output json | pj get identifier)"
+  | mc issue create --title "[probe] P5 documents" --allow-duplicate --assignee-id "$AID" --description-stdin --output json | pj get identifier)"
 [ -n "$ID" ] || die "issue create returned no identifier"
 cleanup_add issue "$ID"
 echo "created $ID. Watch for a macOS file-access prompt now."

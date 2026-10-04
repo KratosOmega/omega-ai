@@ -839,12 +839,24 @@ did not run in this build (see each item). Where a probe has not run the plan's
 default is in use and the swap is small; the live gate (step 4) is the check that
 stands in for them.
 
-17. **P1 (agent session follows its instructions; `git status` stays clean):**
-    pending. The operator's run is in progress; the probe launches a
-    bypassPermissions agent session in the real workspace, which the build
-    session was not allowed to start. Default in use: D1a, the file-flag form
-    (`--append-system-prompt-file`). If P1 fails, the swap is one line in
-    `bin/omega-multica-agent` (the inline `--append-system-prompt` form).
+17. **P1 (agent session follows its instructions; `git status` stays clean):
+    pass** (operator run 2026-10-04, Multica CLI 0.6.1, Claude Code 2.1.289).
+    The session ran in `OMEGA_PROJECT`, posted its comment from a file with
+    `issue comment add --content-file`, started that comment with the canary
+    from the appended context, and left the project clean. D1a, the file-flag
+    form (`--append-system-prompt-file`), stays; no swap. The wrapper's argv log
+    shows Multica adds only `-p --output-format stream-json --input-format
+    stream-json --verbose --permission-mode bypassPermissions --disallowedTools
+    AskUserQuestion`: no system-prompt flag of its own. Side findings:
+    - The daemon posted no separate final reply when the agent had already
+      posted a comment (one agent comment; the runtime advertises
+      `coalesced-comments-v1`). Nothing in the design depends on that reply.
+    - A per-machine override (`multica runtime profile set-path`) beats the
+      profile's command name, and a command or path change reaches the daemon
+      only after a daemon restart (Multica.app, Settings, Daemon, Restart). The
+      Desktop-managed daemon keeps running when the app quits unless "Auto-stop
+      on quit" is on. The first two probe runs hit a stale planning-phase
+      override, so their P1 and P4 results were void and were re-run.
 18. **P2 (a sub-issue under an agent-assigned issue starts no run): pass.**
     The agent-assigned parent had one run before and one after two sub-issues
     were created, one while the parent's run was active and one while it was
@@ -852,15 +864,14 @@ stands in for them.
     finding: `issue assign <id> --unassign --no-start` is refused (`--no-start
     cannot be used with --unassign`); `--unassign` alone starts no run. The
     bridge therefore never combines the two flags.
-19. **P3 (a `start --detach` runner outlives its Multica task):** pending, with
-    P4 (operator run in progress). Default in use: the runner is detached
-    (`nohup` and `setsid` through the core's `--detach`) and is assumed to
-    survive; the live gate step 4 checks it.
-20. **P4 (`STUDIO_RUN_ORIGIN` survives the Bash tool and a detached re-exec):**
-    pending, with P3 (operator run in progress). Default in use: the primary
-    design (the wrapper exports `STUDIO_RUN_ORIGIN`, the core writes `origin=`).
-    The no-origin path (no request issue; Run issue at top level after 5
-    minutes) is built and tested, so a failed P4 degrades, not breaks.
+19. **P3 (a `start --detach` runner outlives its Multica task): pass.** The
+    stand-in runner, launched by the agent from a Multica task the way `start
+    --detach` launches (`nohup` and `setsid`), was alive 60 s after the run's
+    `completed_at`, with 6 heartbeats after it (three runs, all pass).
+20. **P4 (`STUDIO_RUN_ORIGIN` survives the Bash tool and a detached re-exec):
+    pass.** The probe wrapper exported `STUDIO_RUN_ORIGIN=multica:$MULTICA_TASK_ID`
+    and the detached stand-in recorded `origin=multica:<that run's id>`. The
+    primary design stays; the no-origin path remains the fallback.
 21. **P5 (Multica.app's daemon raises a file-access prompt for `~/Documents`):**
     not run. The operator's projects live outside `~/Documents` (they are under
     `~/GameDev/proj`), where macOS asks for nothing. Default in use: D1e, the
