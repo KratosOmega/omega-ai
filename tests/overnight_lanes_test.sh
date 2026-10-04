@@ -2308,6 +2308,7 @@ test_lanes_final_step_no_delivery() {
   run_lanes start "$MFP"
   use_gate true
   _n="$(prompt_calls '/omega:integration repair demo')"
+  assert_file "$CALLS/$_n.inbox" "the final repair unit ran, and ran the hook"
   assert_eq "" "$(cat "$CALLS/$_n.inbox" 2>/dev/null)" "the final step's unit (no STUDIO_STORY) gets no delivery (AC9)"
   assert_file "$(last_lanes_dir)/inbox/A/1.msg" "the message stays pending"
   assert_contains "$(last_lanes_dir)/report.md" "^Operator messages left:$" "the report lists A's messages left (AC14)"
@@ -2321,6 +2322,83 @@ test_lanes_deadline() {
   assert_eq "stopped stop: need art (held 0h0m, no reply)" "$(rec A)" "the deadline ends the story (AC24)"
   assert_eq "skipped A" "$(rec B)" "and skips its chain"
   assert_eq "" "$(ls -A "$(last_lanes_dir)/control" 2>/dev/null)" "no control file left"
+  lholds_off
+}
+
+test_lanes_stop_at_done_never_lands() {
+  lanes_fixture sdn integration A:-
+  printf 'auto\nauto\nsleep 5; auto\n' > "$SCEN/A"
+  lanes_bg
+  wait_for '[ "$(calls)" -ge 3 ] && [ "$(rec A)" = running ]' 40
+  lverb stop A; assert_eq "stop requested: A stops after its running unit" "$(cat "$LV_OUT")" "stop during the last unit"
+  wait_pid_or_fail "$RPID" 60 "the run ends"
+  assert_eq "stopped by operator" "$(rec A)" "a .stop at done stops before landing (R5)"
+  assert_eq "1 A-T1 progress,2 A-final-review progress,3 A-finish done," "$(story_rows A)" "the last unit was done"
+  assert_eq "" "$(ls -A "$(last_lanes_dir)/control" 2>/dev/null)" "no control file left"
+}
+test_lanes_stop_held_by_operator() {
+  lanes_fixture sho integration A:-
+  lholds_on 120
+  printf 'sleep 4; auto\nauto\nauto\n' > "$SCEN/A"
+  lanes_bg
+  wait_for '[ "$(calls)" -ge 1 ] && [ "$(rec A)" = running ]' 30
+  lverb hold A
+  wait_for 'is_held A' 30
+  lverb stop A; assert_eq "stop requested: A stops within one poll" "$(cat "$LV_OUT")" "stop on an operator-held story"
+  wait_pid_or_fail "$RPID" 60 "the run ends"
+  assert_eq "stopped by operator" "$(rec A)" "stopped by operator, not stopped held by operator (R5)"
+  lholds_off
+}
+test_lanes_stop_pending_never_holds() {
+  lanes_fixture spn integration A:-
+  lholds_on 120
+  printf 'auto\nsleep 4; stop need art\n' > "$SCEN/A"
+  lanes_bg
+  wait_for '[ "$(calls)" -ge 2 ] && [ "$(rec A)" = running ]' 30
+  lverb stop A
+  wait_pid_or_fail "$RPID" 60 "the run ends"
+  assert_eq "stopped by operator" "$(rec A)" "a stop sent during the unit that ends holdable ends the story (R5)"
+  assert_not_contains "$(last_lanes_dir)/events.jsonl" '"state":"held"' "no held event for a hold that never waited"
+  lholds_off
+}
+test_lanes_gate_repair_own_stop_holds() {
+  LANES_CONFIG='{"overnight": {"gate_repairs": 1}}'; export LANES_CONFIG
+  lanes_fixture gro integration A:-
+  lholds_on 120
+  printf 'auto\nauto\nstop gate red — x\n' > "$SCEN/A"
+  printf 'stop gate repair red — y\n' > "$SCEN/A.gate"
+  lanes_bg
+  wait_for 'is_held A' 60
+  assert_contains "$(last_lanes_dir)/stories/A" "^held stop: gate repair red — y until " "a gate-repair unit's own feature Stop holds (AC17)"
+  lverb stop A
+  wait_pid_or_fail "$RPID" 60 "the run ends"
+  assert_eq "stopped stop: gate repair red — y" "$(rec A)" "stop on the held story ends it with its why (AC23)"
+  lholds_off
+}
+test_lanes_directive_cap_holds() {
+  LANES_CONFIG='{"overnight": {"retries": 0}}'; export LANES_CONFIG
+  lanes_fixture dch integration A:-
+  lholds_on 120
+  printf 'say keep to the plan\ninbox\nauto\nauto\n' > "$SCEN/A"
+  lanes_bg
+  wait_for 'is_held A' 60
+  assert_contains "$(last_lanes_dir)/stories/A" "^held directive 1 not recorded until " "an unrecorded directive past the limit holds the lane story (AC14)"
+  lverb stop A
+  wait_pid_or_fail "$RPID" 60 "the run ends"
+  assert_eq "stopped directive 1 not recorded" "$(rec A)" "stop ends it with that why"
+  lholds_off
+}
+test_lanes_hold_during_last_unit_lands_and_clears() {
+  lanes_fixture hlu integration A:-
+  lholds_on 120
+  printf 'auto\nauto\nsleep 5; auto\n' > "$SCEN/A"
+  lanes_bg
+  wait_for '[ "$(calls)" -ge 3 ] && [ "$(rec A)" = running ]' 40
+  lverb hold A
+  wait_pid_or_fail "$RPID" 60 "the run ends"
+  assert_contains "$(last_lanes_dir)/stories/A" "^landed " "a hold sent during the last unit: the story still lands"
+  assert_not_contains "$(last_lanes_dir)/events.jsonl" '"state":"held"' "never held"
+  assert_eq "" "$(ls -A "$(last_lanes_dir)/control" 2>/dev/null)" "the .hold is cleared when the story ends (R25)"
   lholds_off
 }
 
@@ -2362,4 +2440,6 @@ run_tests test_lanes_chain_rule test_lanes_manifest_refusals test_lanes_prefligh
   test_lanes_stop_queued_story test_lanes_stop_running_story test_lanes_stop_waiting_story \
   test_lanes_hold_waiting_story_holds_at_start test_lanes_hold_running_then_resume test_lanes_run_stop_held_was_held \
   test_lanes_final_step_no_delivery test_lanes_deadline \
+  test_lanes_stop_at_done_never_lands test_lanes_stop_held_by_operator test_lanes_stop_pending_never_holds \
+  test_lanes_gate_repair_own_stop_holds test_lanes_directive_cap_holds test_lanes_hold_during_last_unit_lands_and_clears \
   test_lanes_no_orphans

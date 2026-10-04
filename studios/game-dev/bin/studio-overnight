@@ -574,16 +574,24 @@ hm() { printf '%dh%dm' $(( $1 / 3600 )) $(( $1 % 3600 / 60 )); }
 # STUDIO_OVERNIGHT_POLL_SECONDS (default 5), no session running. A poll checks
 # the halt, then .stop, then .resume, then the deadline (AC22). Returns 0 on
 # resume (record running, ENDING cleared; n is kept, so units run on);
-# else 1 with ENDING set.
+# else 1 with ENDING set (an operator stop of an operator hold is `stopped by
+# operator`).
 hold_wait() {
   _hw_why="$ENDING"
+  # A halt or an operator stop already pending ends the story at once: no held
+  # record, no held event, for a hold that never waited (R5).
+  if stop_requested; then ENDING="$(halt_reason)"; return 1; fi
+  if ctl_take "$1" stop; then ENDING="stopped by operator"; return 1; fi
   rm -f "$RUN_DIR/control/$1.hold" "$RUN_DIR/control/$1.resume"
   _hw_dl=$(( $(date +%s) + HOLD_SECS ))
   hold_record "$1" "held $_hw_why until $(iso_utc "$_hw_dl")"
   say "${CUR_ID:+$CUR_ID }held: $_hw_why — say / resume / stop ${CUR_ID:--}"
   while :; do
     if stop_requested; then ENDING="$(halt_reason) (was held: $_hw_why)"; return 1; fi
-    if ctl_take "$1" stop; then ENDING="$_hw_why"; return 1; fi
+    if ctl_take "$1" stop; then
+      case "$_hw_why" in "held by operator") ENDING="stopped by operator" ;; *) ENDING="$_hw_why" ;; esac
+      return 1
+    fi
     if ctl_take "$1" resume; then hold_record "$1" running; ENDING=""; return 0; fi
     if [ "$(date +%s)" -ge "$_hw_dl" ]; then ENDING="$_hw_why (held $(hm "$HOLD_SECS"), no reply)"; return 1; fi
     sleep "${STUDIO_OVERNIGHT_POLL_SECONDS:-5}"
@@ -960,11 +968,19 @@ on_exit() {
   [ "$REPORTED" = 1 ] && return 0
   trap '' HUP INT TERM
   end_session
-  if [ "$HUP_REQ" = 1 ]; then
-    write_report "stop: terminal closed (SIGHUP)"
-  else
-    write_report "stop: runner error (exit $1)"
+  # A story held when the runner died keeps its why (AC25); its report is
+  # written, so the held record goes (R25).
+  _oe_h=""
+  if [ -f "$RUN_DIR/control/-.held" ]; then
+    _oe_r="$(cat "$RUN_DIR/control/-.held" 2>/dev/null)"; _oe_r="${_oe_r#held }"
+    _oe_h=" (was held: ${_oe_r% until *})"
   fi
+  if [ "$HUP_REQ" = 1 ]; then
+    write_report "stop: terminal closed (SIGHUP)$_oe_h"
+  else
+    write_report "stop: runner error (exit $1)$_oe_h"
+  fi
+  rm -f "$RUN_DIR/control/-.held"
   unlock
   exit 1
 }
@@ -1131,6 +1147,8 @@ cmd_start() {
     hold_wait - || break
     story_units
   done
+  # A halt that raced the operator's hold keeps the halt's reason.
+  [ "$ENDING" != "held by operator" ] || ENDING="$(halt_reason)"
   ctl_clear -
   finish_run "$ENDING"
 }

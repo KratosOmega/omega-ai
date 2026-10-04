@@ -798,8 +798,9 @@ run_story() {
     fi
     story_units
   done
-  # A held-by-operator story the operator then stops ends `stopped by operator`.
-  [ "$ENDING" != "held by operator" ] || ENDING="stopped by operator"
+  # A halt that raced the operator's hold keeps the halt's reason (hold_wait
+  # maps an operator stop of a held story itself).
+  [ "$ENDING" != "held by operator" ] || ENDING="$(lane_halt_reason)"
   # A halt also holds back the landing (spec 124-127); so does an operator
   # stop that arrived during the last unit (R5).
   [ "$ENDING" != done ] || ! lane_halt || ENDING="$(lane_halt_reason)"

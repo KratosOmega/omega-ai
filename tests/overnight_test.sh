@@ -66,6 +66,7 @@ for act in "$@"; do
     "say "*)      sh "$STUB_RUNNER" say - -- "${act#say }" > /dev/null 2>&1 ;;
     holdop)       sh "$STUB_RUNNER" hold - > /dev/null 2>&1 ;;
     stopop)       sh "$STUB_RUNNER" stop - > /dev/null 2>&1 ;;
+    "unsay "*)    sh "$STUB_RUNNER" unsay - "${act#unsay }" > /dev/null 2>&1 ;;
   esac
 done
 printf '{"type":"system","subtype":"init"}\n'
@@ -1308,7 +1309,7 @@ test_overnight_resume_wins_at_deadline() {
   fixture rwd; holds_on 2; STUDIO_OVERNIGHT_POLL_SECONDS=4
   scenario "$ISO1" "wtledger Stop: need art" "wtledger final review done" \
            "wtledger shipped https://x/pull/7; stage idle; task -"
-  start_bg; wait_held 20
+  start_bg; wait_held 20; sleep 1
   verb resume -
   bg_end 60 "the run ends"
   assert_eq 0 "$BG_STATUS" "a resume seen at the poll after the deadline still resumes (AC22)"
@@ -1451,6 +1452,54 @@ test_overnight_orphaned_holds_after_isolation() {
   holds_off
 }
 
+test_overnight_stop_held_by_operator() {
+  fixture sho; holds_on 60
+  scenario "$ISO1; holdop" "wtledger final review done"
+  start_bg; wait_held 20
+  assert_contains "$R/control/-.held" "^held held by operator until " "held by the operator"
+  verb stop -; bg_end 20 "the run ends within a poll"
+  assert_contains "$R/report.md" "^Ending: stopped by operator$" "a stop on an operator-held story is stopped by operator (R5)"
+  assert_eq 1 "$(calls)" "no unit ran"
+  holds_off
+}
+test_overnight_stop_pending_never_holds() {
+  fixture spn; holds_on 60
+  scenario "$ISO1; wtledger Stop: need art; stopop" "wtledger final review done"
+  run_start; R="$(last_run_dir)"
+  assert_contains "$R/report.md" "^Ending: stopped by operator$" "a stop sent during the unit that ends holdable ends the story (R5)"
+  assert_not_contains "$R/events.jsonl" '"state":"held"' "no held event for a hold that never waited"
+  assert_missing "$R/control/-.held" "no held record"
+  assert_eq 1 "$(calls)" "no unit ran"
+  holds_off
+}
+test_overnight_sighup_while_held() {
+  fixture shh; holds_on 60
+  scenario "$ISO1" "wtledger Stop: need art"
+  start_bg; wait_held 20
+  kill -HUP "$RPID"; bg_status
+  assert_eq 1 "$BG_STATUS" "a closed terminal exits 1"
+  assert_contains "$R/report.md" "^Ending: stop: terminal closed (SIGHUP) (was held: stop: need art)$" "the closed terminal keeps the hold's why (AC25)"
+  assert_eq "" "$(ls -A "$R/control" 2>/dev/null)" "no held record is left once a report is written (R25)"
+  holds_off
+}
+# retire_case NAME LEDGERED — a ledgered Directive 1 is retired by `unsay 1`
+# in unit 1; unit 2 gets the retire message and records it when LEDGERED=1.
+retire_case() {
+  fixture "$1"; ledger_add "Directive 1: use the bus"
+  if [ "$2" = 1 ]; then _rc_rec="wtledger Directive 1 retired; "; else _rc_rec=""; fi
+  scenario "$ISO1; unsay 1" "inbox; ${_rc_rec}task 2/2; wtledger T2 complete b..c" \
+           "wtledger final review done" "wtledger shipped https://x/pull/11; stage idle; task -"
+  run_start; R="$(last_run_dir)"
+}
+test_overnight_requeue_retire() {
+  retire_case rtr1 1
+  assert_not_contains "$R/events.jsonl" '"event":"message_requeued"' "a recorded retire is not requeued"
+  assert_not_contains "$R/report.md" "Operator messages left" "nothing left"
+  retire_case rtr2 0
+  assert_contains "$R/events.jsonl" '"event":"message_requeued","story":"-","id":2,' "an unrecorded retire is requeued"
+  assert_contains "$R/report.md" "^- 2 (retire, requeues 1): " "and left, as a retire message"
+}
+
 run_tests test_overnight_report_done test_overnight_report_not_done \
   test_overnight_report_anchors test_overnight_resume_quote test_overnight_label_t1 \
   test_overnight_session_seconds_refused test_overnight_claim_without_run_dir \
@@ -1511,4 +1560,8 @@ run_tests test_overnight_report_done test_overnight_report_not_done \
   test_overnight_run_stop_while_held \
   test_overnight_hold_minutes_zero_ends_at_once \
   test_overnight_requeue_minimal_path \
-  test_overnight_orphaned_holds_after_isolation
+  test_overnight_orphaned_holds_after_isolation \
+  test_overnight_stop_held_by_operator \
+  test_overnight_stop_pending_never_holds \
+  test_overnight_sighup_while_held \
+  test_overnight_requeue_retire
