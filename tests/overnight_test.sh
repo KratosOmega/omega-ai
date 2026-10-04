@@ -915,6 +915,20 @@ test_unsay_pending_active_delivered() {
   for bad in 01 x '' 1x; do verb unsay - "$bad"; assert_eq 2 "$V_STATUS" "id '$bad' is usage"; done
   fake_run_end
 }
+test_unsay_loses_race_to_hook() {
+  fixture ur; fake_run overnight-ur-1 single; IB="$FR_DIR/inbox/-"
+  put_msg "$IB" 1 story one
+  # a stub rm claims the message into delivered/ (as the hook's mv does), then fails as rm of a gone file does
+  mkdir -p "$TMP/urbin"
+  printf '#!/bin/sh\ncase "$*" in *1.msg*) mkdir -p "%s/delivered/tagx"; mv "%s/1.msg" "%s/delivered/tagx/"; exit 1 ;; esac\nexec /bin/rm "$@"\n' "$IB" "$IB" "$IB" > "$TMP/urbin/rm"
+  chmod +x "$TMP/urbin/rm"
+  _ur_path="$PATH"; PATH="$TMP/urbin:$PATH"; verb unsay - 1; PATH="$_ur_path"
+  assert_eq 1 "$V_STATUS" "unsay loses the race: exit 1"
+  assert_eq "studio-overnight: unsay: message 1 was just delivered; run unsay 1 again to retire it" "$(cat "$V_ERR")" "one stderr line names the cause"
+  assert_not_contains "$V_OUT" "removed message" "it does not claim a withdrawal"
+  assert_missing "$IB/.lock" "the inbox lock is released"
+  fake_run_end
+}
 test_unsay_id_prefix() {
   fixture up; ledger_add "Directive 10: ten"
   fake_run overnight-up-1 single; IB="$FR_DIR/inbox/-"
@@ -1044,6 +1058,7 @@ run_tests test_overnight_report_done test_overnight_report_not_done \
   test_said_lists_states \
   test_unsay_pending_active_delivered \
   test_unsay_id_prefix \
+  test_unsay_loses_race_to_hook \
   test_verbs_refusals \
   test_verbs_run_pinning \
   test_inbox_lock_stale_broken \

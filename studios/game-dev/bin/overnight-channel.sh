@@ -250,8 +250,11 @@ chan_unsay() {
   case "$_us_st:$_us_sc" in
     pending:retire) inbox_unlock "$CH_IB"; chan_fail 1 "message $1 is a retire message: unsay retires directives, not retires" ;;
     pending:*)
-      rm -f "$CH_IB/$1.msg"; inbox_unlock "$CH_IB"
-      echo "removed message $1 (it was not delivered)"; return 0 ;;
+      if rm "$CH_IB/$1.msg" 2>/dev/null; then
+        inbox_unlock "$CH_IB"
+        echo "removed message $1 (it was not delivered)"; return 0
+      fi
+      inbox_unlock "$CH_IB"; chan_fail 1 "unsay: message $1 was just delivered; run unsay $1 again to retire it" ;;
     active:story|delivered:story)
       _us_id="$(chan_next_id "$CH_IB")"
       chan_write_msg "$_us_id" retire "$1" "retire directive $1" || { inbox_unlock "$CH_IB"; chan_fail 1 "cannot write $CH_IB/$_us_id.msg"; }
