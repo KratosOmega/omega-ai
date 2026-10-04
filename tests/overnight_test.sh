@@ -1279,6 +1279,21 @@ test_inbox_lock_released_on_signal() {
     assert_eq 0 "$([ -d "$D/inbox/.lock" ] && echo 1 || echo 0)" "$sig: the lock is gone after the signal"
   done
 }
+test_inbox_unlock_after_release_keeps_foreign_lock() {
+  D="$TMP/lfor"; rm -rf "$D"; mkdir -p "$D/inbox"
+  # a verb that unlocks explicitly, then a concurrent locker is mid-acquire
+  # (mkdir done, owner not yet written), then the verb exits (EXIT trap)
+  ( SELF_DIR="$REPO_ROOT/studios/game-dev/bin"; . "$SELF_DIR/overnight-channel.sh"
+    CH_IB="$D/inbox"; CH_STORY=-
+    chan_lock; inbox_unlock "$CH_IB"; mkdir "$D/inbox/.lock"; exit 0 ) > /dev/null 2>&1
+  assert_eq 1 "$([ -d "$D/inbox/.lock" ] && echo 1 || echo 0)" "a foreign lock without an owner survives the verb's exit"
+  for sg in "INT 130" "TERM 143" "HUP 129"; do
+    set -- $sg
+    sh -c 'SELF_DIR="$1"; . "$1/overnight-channel.sh"; CH_IB="$2"; CH_STORY=-; chan_lock; kill -$3 $$' x \
+      "$REPO_ROOT/studios/game-dev/bin" "$D/in2" "$1" > /dev/null 2>&1
+    assert_eq "$2" "$?" "$1 exits $2"
+  done
+}
 test_channel_sourced_only() {
   assert_status 2 "overnight-channel.sh refuses to run on its own" -- sh "$REPO_ROOT/studios/game-dev/bin/overnight-channel.sh"
   assert_eq "overnight-channel.sh: sourced by studio-overnight" \
@@ -1623,6 +1638,7 @@ run_tests test_overnight_report_done test_overnight_report_not_done \
   test_inbox_lock_stale_broken \
   test_inbox_lock_busy \
   test_inbox_lock_released_on_signal \
+  test_inbox_unlock_after_release_keeps_foreign_lock \
   test_channel_sourced_only \
   test_overnight_hold_on_feature_stop \
   test_overnight_start_ledger_stop_ends_at_once \

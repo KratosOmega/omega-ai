@@ -216,8 +216,8 @@ Talking to a live run (<story> is - in a single-plan run; every verb takes
   resume <story>     a held story goes on with its next unit (lanes: after a
                      red gate, one gate-repair unit first); refused while the
                      start checkout's ledger has uncommitted changes
-  stop <story>       end the story (stopped by operator; a held story: stopped
-                     <why>); its chain is skipped
+  stop <story>       end the story (stopped by operator; a story held by a rule:
+                     stopped <rule's why>); its chain is skipped
   A stop rule after isolation holds the story for hold_minutes instead of
   ending it; say + resume, or stop, ends the hold, else the deadline does.
   A hold fixes what a session can be told; a red landing, the run budget,

@@ -50,6 +50,7 @@ inbox_lock() {
 }
 # inbox_unlock DIR — release DIR/.lock when this process holds it.
 inbox_unlock() {
+  [ -n "${IL_TOKEN:-}" ] || return 0
   [ "$(cat "$1/.lock/owner" 2>/dev/null)" != "${IL_TOKEN:-}" ] || rm -rf "$1/.lock"
   IL_TOKEN=""
 }
@@ -64,7 +65,7 @@ chan_lock() {
     # a verb is its own process: a signal or an exit releases the lock (the
     # runner never breaks a lock, so a stale one would skip its checks all night)
     trap 'inbox_unlock "$CH_IB"' EXIT
-    trap 'exit 130' INT TERM HUP
+    trap 'exit 130' INT; trap 'exit 143' TERM; trap 'exit 129' HUP
     return 0
   fi
   if [ "$_cl_rc" = 2 ]; then chan_fail 1 "cannot create $CH_IB"; fi
