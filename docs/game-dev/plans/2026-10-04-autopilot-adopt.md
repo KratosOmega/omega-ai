@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-Status: Draft — awaiting user review
+Status: Approved (operator, 2026-10-04, with D4 and D27)
 
 **Goal:** Let `/omega:autopilot` adopt a story that was planned, and maybe partly
 built, outside the studio. The original plan is kept and converted 1:1 into a

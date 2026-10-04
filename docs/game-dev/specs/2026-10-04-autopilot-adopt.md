@@ -266,7 +266,7 @@ Report and Multica
 ### Files
 
 - `studios/game-dev/bin/studio-adopt` (new): `inspect`, `seed`, `sync`.
-- `studios/game-dev/bin/studio-setup` (new): runs `worktree_setup`, with the marker.
+- `studios/game-dev/bin/studio-setup` (new): runs `worktree_setup`, with the marker; `studio-setup gate` runs `gate_command` (plan D4).
 - `studios/game-dev/bin/studio-brief`: the `final` acceptance-criteria fallback, the `check` verb, the `Context:` appendix.
 - `studios/game-dev/bin/studio-state`: `T<n> complete` lines before the last `adopt reset` are ignored by `check` and `check --rebuild`.
 - `studios/game-dev/bin/studio-gate`: the `gate.times` window kept per `who`.
@@ -291,7 +291,7 @@ Report and Multica
 
 ```
 studio-adopt inspect <id> --branch <Branch> --plan <original> [--base <sha>]
-studio-adopt seed    <id> [--reset]        # in the story checkout
+studio-adopt seed    <id> [--base <sha>] [--reset]   # in the story checkout (plan D27)
 studio-adopt sync    <id>                  # in a checkout of the story branch
 Exit: 0 clean / in sync · 1 a mismatch or a refused precondition (one stderr line naming it) · 2 usage
 ```
