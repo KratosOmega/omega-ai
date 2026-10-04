@@ -14,6 +14,33 @@ approval page in `artifacts/`.
 
 ## Log
 
+### 2026-10-04 — Overnight operator channel (#27)
+
+- An operator can talk to a live overnight run. `studio-overnight say <story>
+  -- <text>` queues a message, `said` lists messages and their states, and
+  `unsay` retires one. `hold`, `resume` and `stop <story>` control a story.
+  Every verb takes `--run <run>`; outside a project, `--run` is required.
+- `hooks/operator-inbox.sh` (SessionStart and PostToolUse) delivers a queued
+  message into the running unit's session at its next tool call. A message
+  scoped to a story becomes a `Directive <n>:` line in the feature ledger, and
+  `studio-brief` prints the story's active directives.
+- A no-progress ending, a rule stop after isolation, or the directive cap now
+  holds the story for up to `hold_minutes` (default 480) instead of ending it.
+  The held line reads `held <why> until <UTC>`; `resume` runs the next unit,
+  and a resume after a red finish gate runs a gate repair first. Lanes hold
+  per story, and dependents wait while a dependency is held. Landing never
+  holds, and a `stop` written during the last unit stops the story before it
+  lands.
+- Every run writes `events.jsonl` (schema v1, ten events).
+  `docs/game-dev/overnight-events.md` is the contract #28's Multica bridge
+  reads: fields and enum values may be added within v1, never renamed or
+  removed.
+- `tests/probes/hook_delivery_probe.sh` re-checks the three hook-delivery
+  behaviours the channel relies on, using two haiku sessions. `doctor.sh`
+  prints the last pass: 2026-10-04 on Claude Code 2.1.289.
+- Still for the operator: a live Godot run with two stories, one held and
+  resumed with a directive (plan M3–M5).
+
 ### 2026-10-03 — overnight: no background subagents in a -p unit
 
 - Two phoenix `mob-composer-parity` units (4-S3-T3, 6-S3-T4) ended `noprog`
