@@ -446,7 +446,14 @@ preflight() {
   if lock_live; then
     refuse "a run is live (pid $(lock_pid)) — $(sq "$SELF_ABS") status"
   fi
+  env_line >&2
   [ -n "$_pf_mf" ] || [ "$FAILED" -eq 0 ] || exit 2
+}
+# env_line [RUN_PID] — studio-env's readout on stdout: a summary line, and a
+# warning block when the machine is short of something. Never fails, never
+# blocks. The preflight sends it to stderr, with the refusals.
+env_line() {
+  sh "$SELF_DIR/studio-env" --dir "${START_DIR:-.}" ${1:+--run-pid "$1"} || true
 }
 
 # gate_room_check — a warning (never a refusal) when the slowest of the last
@@ -1370,6 +1377,7 @@ project_status() {
     if [ -f "$RUN_DIR/control/-.held" ]; then held_line "$(cat "$RUN_DIR/control/-.held")" -
     else _ps_now="$(unit_now_line "$RUN_DIR")"; [ -z "$_ps_now" ] || printf 'now: %s\n' "$_ps_now"; fi
     gate_line "$RUN_DIR"
+    env_line "$(lock_pid)"
     return 0
   fi
   if [ -n "$_sd" ] && [ -f "$_sd/report.md" ]; then

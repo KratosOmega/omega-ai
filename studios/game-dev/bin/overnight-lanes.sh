@@ -1212,6 +1212,7 @@ lanes_status() {
   if [ "${2:-}" = live ]; then
     lanes_status_lines
     printf 'pid: %s\nrun: %s\n' "$(lock_pid)" "$RUN_DIR"
+    env_line "$(lock_pid)"
     return 0
   fi
   LR_LIVE=""

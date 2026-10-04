@@ -1693,6 +1693,8 @@ test_lanes_status_per_story() {
   assert_contains "$TMP/st.out" "^gate: " "the gate line"
   assert_contains "$TMP/st.out" "^spent: \\$" "the spend line"
   assert_contains "$TMP/st.out" "^pid: $RPID$" "the runner pid"
+  assert_contains "$TMP/st.out" "^env: cpu " "the resource readout"
+  assert_eq 1 "$(awk '/^pid:/ { p = NR } /^env:/ { e = NR } END { print (p && e > p) ? 1 : 0 }' "$TMP/st.out")" "the readout comes after the existing lines"
 }
 test_lanes_report_every_ending() {
   lanes_fixture rep integration A:- B:A C:-
@@ -1843,6 +1845,7 @@ test_lanes_detach_strips_env() {
       sh "$RUNNER" start --detach "$MFP" ) > "$TMP/det.out" 2>&1 || st=$?
   assert_eq 0 "$st" "detach reports success once status answers"
   assert_contains "$TMP/det.out" "^detached: pid [0-9]*, log " "it prints the pid and the log"
+  assert_contains "$TMP/det.out" "^env: cpu " "the foreground preflight prints the resource readout"
   wait_for "[ -f '$CALLS/1.fullenv' ]" 60
   detach_stop
   assert_not_contains "$CALLS/1.fullenv" "^CLAUDECODE=" "CLAUDECODE stripped"

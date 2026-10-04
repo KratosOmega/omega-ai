@@ -263,6 +263,23 @@ test_overnight_dry_run() {
   assert_missing "$P/.studio/overnight.lock" "dry run takes no lock"
   assert_missing "$P/.studio/reports" "dry run makes no run directory"
   assert_eq 0 "$(calls)" "dry run launches no session"
+  assert_contains "$RS_ERR" "^env: cpu " "the preflight prints the resource readout"
+}
+# A machine short of memory warns in the preflight and blocks nothing (#37).
+test_overnight_preflight_env_warns_not_blocks() {
+  fixture envw
+  _fx="$TMP/envw-fx"; rm -rf "$_fx"; mkdir -p "$_fx"
+  echo Linux > "$_fx/uname"; echo "0.5 0.5 0.5 1/9 1" > "$_fx/proc.loadavg"; echo 4 > "$_fx/nproc"
+  printf 'MemTotal: 8388608 kB\nMemAvailable: 300000 kB\nSwapTotal: 0 kB\nSwapFree: 0 kB\n' > "$_fx/proc.meminfo"
+  printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/sda1 100 1 190840000 1%% /\n' > "$_fx/df"
+  printf '  PID  PPID   RSS %%CPU COMMAND\n 10 1 3000000 1.0 firefox\n' > "$_fx/ps"
+  STUDIO_ENV_FIXTURE="$_fx"; export STUDIO_ENV_FIXTURE
+  run_start --dry-run
+  unset STUDIO_ENV_FIXTURE
+  assert_eq 0 "$RS_STATUS" "a memory warning does not refuse the start"
+  assert_contains "$RS_ERR" "^env: cpu 0.5/4 · memory critical (swap 0.0 GB) · disk 182 GB free$" "the summary line"
+  assert_contains "$RS_ERR" "^⚠ memory critically low (3% available) — close something; top by memory:$" "the warning block"
+  assert_contains "$RS_ERR" "^    firefox 2.9 GB$" "and the top list"
 }
 
 # refuse_case NAME MESSAGE-PATTERN — run start in the current fixture and
@@ -802,6 +819,8 @@ test_overnight_status() {
   assert_contains "$TMP/st.out" "^pid: $RPID$" "status: the lock pid"
   assert_contains "$TMP/st.out" "^now: 2-T2 · [0-9]*[sm] · " "status: the running unit's elapsed time and activity"
   assert_contains "$TMP/st.out" "^gate: free$" "status: the gate lock"
+  assert_contains "$TMP/st.out" "^env: cpu " "status: the resource readout"
+  assert_eq 1 "$(awk '/^gate:/ { g = NR } /^env:/ { e = NR } END { print (g && e > g) ? 1 : 0 }' "$TMP/st.out")" "status: the readout comes after the existing lines"
   ( cd "$P" && sh "$RUNNER" stop ) >/dev/null; bg_status
   assert_status 1 "status with no run exits 1" -- sh -c "cd '$P' && sh '$RUNNER' status"
   ( cd "$P" && sh "$RUNNER" status ) > "$TMP/st.out" 2>&1
@@ -1710,7 +1729,7 @@ test_overnight_requeue_retire() {
   assert_contains "$R/report.md" "^- 2 (retire, requeues 1): " "and left, as a retire message"
 }
 
-run_tests test_overnight_report_done test_overnight_report_not_done \
+run_tests test_overnight_report_done test_overnight_report_not_done test_overnight_preflight_env_warns_not_blocks \
   test_overnight_report_anchors test_overnight_resume_quote test_overnight_label_t1 \
   test_overnight_session_seconds_refused test_overnight_claim_without_run_dir \
   test_overnight_report_runner_error test_overnight_crash_resume test_overnight_status \
