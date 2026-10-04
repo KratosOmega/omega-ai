@@ -1,0 +1,32 @@
+{
+  "assignee_id": null,
+  "assignee_type": null,
+  "created_at": "2026-10-02T17:19:43Z",
+  "creator_id": "00000000-0000-4000-8000-000000000001",
+  "creator_type": "member",
+  "description": "synthetic",
+  "due_date": null,
+  "duplicate_of": null,
+  "id": "00000000-0000-4000-8000-000000000101",
+  "identifier": "OMEG-1",
+  "labels": [],
+  "last_activity_at": "2026-10-02T17:19:43Z",
+  "metadata": {},
+  "number": 1,
+  "parent_issue_id": null,
+  "position": 1.0,
+  "priority": "none",
+  "project_id": null,
+  "properties": {
+    "00000000-0000-4000-8000-000000000010": "probe-fixture"
+  },
+  "revision": 1,
+  "stage": null,
+  "start_date": null,
+  "status": "todo",
+  "status_category": "todo",
+  "status_name": "",
+  "title": "[probe] fixture run",
+  "updated_at": "2026-10-02T17:19:43Z",
+  "workspace_id": "00000000-0000-4000-8000-0000000000aa"
+}

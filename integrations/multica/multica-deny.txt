@@ -1,0 +1,20 @@
+# Multica deny rules — appended (as --disallowedTools) to the studio core's
+# overnight deny rules by claude-multica and omega-multica-agent.
+# One Claude Code permission rule per line; blank lines and # lines are
+# ignored. This is a deterrent, not a sandbox: it stops an agent from
+# wandering into Multica's credentials and profile switching by accident, not
+# a determined one (spec Risks).
+Read(~/.multica/**)
+Bash(*.multica/profiles*)
+Bash(*multica*--profile*)
+Bash(*multica login*)
+Bash(*multica auth*)
+Bash(*multica setup*)
+Bash(*multica config*)
+Bash(*multica workspace switch*)
+Bash(*MULTICA_TOKEN=*)
+Bash(*multica*--server-url*)
+Bash(*~/.multica*)
+Bash(*$HOME/.multica*)
+Bash(*${HOME}/.multica*)
+Bash(*/Users/*/.multica*)

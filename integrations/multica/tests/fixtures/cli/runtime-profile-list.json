@@ -1,0 +1,17 @@
+[
+  {
+    "command_name": "claude",
+    "created_at": "2026-10-02T17:19:43Z",
+    "created_by": "00000000-0000-4000-8000-000000000001",
+    "description": "",
+    "display_name": "Claude (host.example.lan)",
+    "enabled": true,
+    "fixed_args": [],
+    "id": "00000000-0000-4000-8000-000000000005",
+    "protocol_family": "acp",
+    "runtime_type": "custom",
+    "updated_at": "2026-10-02T17:19:43Z",
+    "visibility": "workspace",
+    "workspace_id": "00000000-0000-4000-8000-0000000000aa"
+  }
+]

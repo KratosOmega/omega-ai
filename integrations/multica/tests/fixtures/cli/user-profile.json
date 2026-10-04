@@ -1,0 +1,14 @@
+{
+  "avatar_url": null,
+  "created_at": "2026-10-01T00:00:00Z",
+  "email": "operator@example.com",
+  "id": "00000000-0000-4000-8000-000000000001",
+  "language": "en",
+  "name": "Operator",
+  "onboarded_at": null,
+  "onboarding_questionnaire": {},
+  "profile_description": "",
+  "starter_content_state": null,
+  "timezone": "UTC",
+  "updated_at": "2026-10-01T00:00:00Z"
+}

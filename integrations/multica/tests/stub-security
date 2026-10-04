@@ -1,0 +1,34 @@
+#!/bin/sh
+# stub-security: offline stand-in for /usr/bin/security (#28 tests).
+# find-generic-password -s S -a A -w : prints $STUB_SECURITY_DIR/<S>-<A>, exit 44 when absent
+# find-generic-password -s S -a A    : (no -w) prints nothing; exit 0 when the item exists, 44 when not
+# add-generic-password -s S -a A -U -w : with no value, reads one line from stdin into the file
+# delete-generic-password -s S -a A : removes it (44 when absent)
+# A file named `locked` in the directory makes every call exit 36.
+d=${STUB_SECURITY_DIR:?STUB_SECURITY_DIR is not set}
+printf '%s\n' "$*" >> "$d/calls"
+verb=$1
+[ $# -gt 0 ] && shift
+s= a= w=
+while [ $# -gt 0 ]; do
+    case $1 in
+        -s) s=$2; shift ;;
+        -a) a=$2; shift ;;
+        -w) w=1 ;;
+    esac
+    shift
+done
+[ -e "$d/locked" ] && exit 36
+f=$d/$s-$a
+case $verb in
+    find-generic-password)
+        [ -f "$f" ] || exit 44
+        [ -z "$w" ] || cat "$f" ;;
+    add-generic-password)
+        IFS= read -r line
+        printf '%s\n' "$line" > "$f" ;;
+    delete-generic-password)
+        [ -f "$f" ] || exit 44
+        rm -f "$f" ;;
+    *) exit 2 ;;
+esac

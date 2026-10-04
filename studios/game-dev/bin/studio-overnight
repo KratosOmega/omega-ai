@@ -93,15 +93,50 @@ cfg_str() {
 sub_escape() { printf '%s' "$1" | sed 's/[\\&|]/\\&/g'; }
 # deny_rules — the deny file's rules, one per line: comments and blanks
 # dropped, {default_branch} and {merge_basename} expanded; a line needing an
-# empty {merge_basename} is dropped.
+# empty {default_branch} or {merge_basename} is dropped.
 deny_rules() {
   _db="$(sub_escape "${DEFAULT_BRANCH:-}")"; _mb="$(sub_escape "${MERGE_BASENAME:-}")"
   while IFS= read -r _r || [ -n "$_r" ]; do
     _r="$(printf '%s' "$_r" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
     case "$_r" in ''|'#'*) continue ;; esac
+    case "$_r" in *'{default_branch}'*) [ -n "${DEFAULT_BRANCH:-}" ] || continue ;; esac
     case "$_r" in *'{merge_basename}'*) [ -n "${MERGE_BASENAME:-}" ] || continue ;; esac
     printf '%s\n' "$_r" | sed "s|{default_branch}|$_db|g; s|{merge_basename}|$_mb|g"
   done < "$DENY_FILE"
+}
+# cmd_deny_rules [--dir PATH] — the deny rules a unit would get for the
+# project at PATH (default: here), one per line (AC1 of #28). Reads no run
+# state; works outside git. Notes for dropped placeholders go to stderr.
+cmd_deny_rules() {
+  _dd="."
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --dir) [ "$#" -ge 2 ] || { usage >&2; exit 2; }; _dd="$2"; shift 2 ;;
+      --dir=*) _dd="${1#--dir=}"; shift ;;
+      *) usage >&2; exit 2 ;;
+    esac
+  done
+  [ -n "$_dd" ] && [ -d "$_dd" ] || { say "deny-rules: not a directory: $_dd"; exit 2; }
+  if [ ! -f "$DENY_FILE" ] || ! grep -Evq '^[[:space:]]*(#|$)' "$DENY_FILE"; then
+    say "deny-rules: $DENY_FILE: no deny rules"; exit 1
+  fi
+  _dw="$(cd "$_dd" && sh "$STATE_BIN" root --work 2>/dev/null)" || _dw=""
+  [ -n "$_dw" ] || _dw="$(cd "$_dd" && pwd -P)"
+  DEFAULT_BRANCH="$(git -C "$_dw" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null)" || DEFAULT_BRANCH=""
+  DEFAULT_BRANCH="${DEFAULT_BRANCH#origin/}"
+  CONFIG="$_dw/.studio/config.json"
+  MERGE_COMMAND=""; cfg_str merge_command '' '.*'
+  MERGE_BASENAME=""
+  [ -z "$MERGE_COMMAND" ] || MERGE_BASENAME="$(basename "${MERGE_COMMAND%% *}")"
+  _live="$(grep -Ev '^[[:space:]]*#' "$DENY_FILE")"
+  if [ -z "$DEFAULT_BRANCH" ] && printf '%s\n' "$_live" | grep -q '{default_branch}'; then
+    say "deny-rules: no origin/HEAD in $_dw — rules using {default_branch} dropped"
+  fi
+  if [ -z "$MERGE_BASENAME" ] && printf '%s\n' "$_live" | grep -q '{merge_basename}'; then
+    say "deny-rules: no merge_command in $CONFIG — rules using {merge_basename} dropped"
+  fi
+  deny_rules
+  exit 0
 }
 # model_for LABEL — sets UNIT_MODEL for a unit kind (D23); a -retry keeps its
 # kind's. It runs in the current shell: an unknown label's exit 3 ends the
@@ -156,7 +191,7 @@ take_lock() {
 
 usage() {
   cat <<EOF
-usage: $SELF_ABS start [--dry-run | --detach] [<manifest>] | status [--follow] | watch [<seconds>] | stop [--run <run>] | next [<manifest>] | activity <unit.jsonl>
+usage: $SELF_ABS start [--dry-run | --detach] [<manifest>] | status [--follow] | watch [<seconds>] | stop [--run <run>] | next [<manifest>] | activity <unit.jsonl> | deny-rules [--dir <path>]
        $SELF_ABS say|said|unsay|hold|resume|stop <story> [--run <run>] … (talking to a live run; below)
 
   start [--dry-run]  preflight, then run the approved plan one unit per fresh
@@ -176,6 +211,10 @@ usage: $SELF_ABS start [--dry-run | --detach] [<manifest>] | status [--follow] |
                      test hooks below included); CLAUDE_CONFIG_DIR and PATH stay.
                      Exit 0 printing "detached: pid <p>, log <path>" once
                      status answers within 10 s; else it prints the plain command.
+  deny-rules [--dir <path>]
+                     print the deny rules a unit would get for the project at
+                     <path> (default: here), one per line; notes on stderr for
+                     placeholders with no value; reads no run state
   next [<manifest>]  the planning loop: classify each manifest row (brainstorm,
                      plan, planned) and print the one next command; no argument
                      reads .studio/run. Reads files and ledger lines only.
@@ -275,6 +314,12 @@ Deny rules: $DENY_FILE
 The morning report is written to .studio/reports/overnight-<ts>/report.md on
 every ending (manifest mode: overnight-<slug>-<ts>/report.md, a section per
 story, the resume command and the cleanup command).
+
+Environment:
+  STUDIO_RUN_ORIGIN — optional tag (1-200 characters from A-Z a-z 0-9 . _ : -)
+                     written as origin= in this run's registry entry; the
+                     runner never interprets it and does not pass it to unit
+                     sessions
 
 Test hooks (tests only; never set them for a real run; --detach strips them):
   STUDIO_OVERNIGHT_POLL_SECONDS — test hook: a whole number of seconds between
@@ -817,6 +862,24 @@ unit_reap() {
 # symlink (GameDev -> GameDev.nosync) is one project.
 REGISTRY="$HOME/.claude-gamedev/runs"
 reg_get() { sed -n "s/^$1=//p" "$2" 2>/dev/null | head -n 1; }
+# origin_ok VALUE — AC1a's rule for the registry's origin= value: 1-200 bytes
+# of A-Z a-z 0-9 . _ : - and no newline. The core never interprets it.
+origin_ok() {
+  case "$1" in *'
+'*) return 1 ;; esac
+  printf '%s\n' "$1" | LC_ALL=C grep -Eq '^[A-Za-z0-9._:-]{1,200}$'
+}
+# origin_take — STUDIO_RUN_ORIGIN, read once, into RUN_ORIGIN (cleared with
+# one warning when it fails origin_ok), then dropped from the environment so
+# no unit session inherits it.
+origin_take() {
+  RUN_ORIGIN="${STUDIO_RUN_ORIGIN:-}"
+  unset STUDIO_RUN_ORIGIN 2>/dev/null || true
+  if [ -n "$RUN_ORIGIN" ] && ! origin_ok "$RUN_ORIGIN"; then
+    say "STUDIO_RUN_ORIGIN ignored — use 1-200 characters from A-Z a-z 0-9 . _ : -"
+    RUN_ORIGIN=""
+  fi
+}
 # reg_live FILE — the entry's runner is alive and is a studio-overnight.
 reg_live() {
   _rl_p="$(reg_get pid "$1")"
@@ -830,8 +893,9 @@ reg_write() {
     [ -f "$_rw" ] && [ "$(reg_get root "$_rw")" = "$STATE_ROOT" ] && rm -f "$_rw"
   done
   REG_ENTRY="$REGISTRY/$(basename "$RUN_DIR")-$$"
-  printf 'root=%s\nstart=%s\nrun=%s\npid=%s\nstarted=%s\n' "$STATE_ROOT" "$START_DIR" "$RUN_DIR" "$$" \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$REG_ENTRY" 2>/dev/null || REG_ENTRY=""
+  { printf 'root=%s\nstart=%s\nrun=%s\npid=%s\nstarted=%s\n' "$STATE_ROOT" "$START_DIR" "$RUN_DIR" "$$" \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    [ -z "${RUN_ORIGIN:-}" ] || printf 'origin=%s\n' "$RUN_ORIGIN"; } > "$REG_ENTRY" 2>/dev/null || REG_ENTRY=""
 }
 # reg_end — this run's entry becomes REGISTRY/last (the newest ended run).
 reg_end() {
@@ -1079,7 +1143,8 @@ detach_start() {
   _dhs="${STUDIO_OVERNIGHT_DETACH_STATUS_CMD:-}"; _dhc="${STUDIO_OVERNIGHT_DETACH_CHILD_CMD:-}"
   # The chat's variables go first, so the foreground preflight and the child
   # both see the clean environment (a stray STUDIO_STORY would aim state at a
-  # story file). PATH and CLAUDE_CONFIG_DIR stay.
+  # story file). PATH and CLAUDE_CONFIG_DIR stay, and a valid STUDIO_RUN_ORIGIN
+  # is passed on explicitly below (AC1a): origin_take already took it.
   for _dn in $(env | sed -nE 's/^(CLAUDECODE|CLAUDE_[A-Za-z0-9_]*|AI_AGENT|OMEGA_[A-Za-z0-9_]*|STUDIO_[A-Za-z0-9_]*)=.*/\1/p' | grep -vx CLAUDE_CONFIG_DIR); do
     unset "$_dn" 2>/dev/null || true
   done
@@ -1097,9 +1162,9 @@ detach_start() {
   mkdir -p "$REPORTS" || { say "cannot create $REPORTS"; exit 2; }
   _dlog="$REPORTS/overnight-$_dslug-detached-$(date +%Y%m%d-%H%M%S).log"
   if [ -n "$_dhc" ]; then
-    nohup perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV' sh -c "$_dhc" </dev/null >"$_dlog" 2>&1 &
+    nohup env ${RUN_ORIGIN:+"STUDIO_RUN_ORIGIN=$RUN_ORIGIN"} perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV' sh -c "$_dhc" </dev/null >"$_dlog" 2>&1 &
   else
-    nohup perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV' sh "$SELF_ABS" start "$_dm" </dev/null >"$_dlog" 2>&1 &
+    nohup env ${RUN_ORIGIN:+"STUDIO_RUN_ORIGIN=$RUN_ORIGIN"} perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV' sh "$SELF_ABS" start "$_dm" </dev/null >"$_dlog" 2>&1 &
   fi
   _dpid=$!
   _di=0
@@ -1138,6 +1203,7 @@ detach_start() {
 }
 
 cmd_start() {
+  origin_take
   # Manifest mode: the first non-flag argument names the manifest (D18).
   _mf=""; _dt=0; _dr=0
   for _a in "$@"; do
@@ -1409,6 +1475,7 @@ case "$1" in
   activity)
     [ "$#" -eq 2 ] && [ -f "$2" ] || { usage >&2; exit 2; }
     unit_activity "$2"; exit 0 ;;
+  deny-rules) shift; cmd_deny_rules "$@" ;;
   next)
     shift
     [ "$#" -le 1 ] || { usage >&2; exit 2; }

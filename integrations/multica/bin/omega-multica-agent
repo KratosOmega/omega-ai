@@ -1,0 +1,86 @@
+#!/bin/sh
+# omega-multica-agent — the "omega game-dev" runtime (mode 3): claude-gd in
+# OMEGA_PROJECT with Multica's context appended and the deny rules.
+self="$0"
+while [ -L "$self" ]; do
+  link="$(readlink "$self")"
+  case "$link" in /*) self="$link" ;; *) self="$(dirname "$self")/$link" ;; esac
+done
+WRAPPER=omega-multica-agent
+unset CDPATH
+. "$(cd "$(dirname "$self")" && pwd -P)/wrapper-lib.sh"
+[ "${1:-}" = "--version" ] && exec claude-gd --version
+[ -n "${OMEGA_PROJECT:-}" ] || die "OMEGA_PROJECT is not set — set it in the Multica agent's environment"
+[ -d "$OMEGA_PROJECT" ] || die "OMEGA_PROJECT is not a directory: $OMEGA_PROJECT"
+PROJECT_ROOT="$( { cd "$OMEGA_PROJECT" && sh "$STATE_BIN" root; } 2>/dev/null )"
+[ -n "$PROJECT_ROOT" ] && [ -d "$PROJECT_ROOT/.studio" ] \
+  || die "no .studio/ at the studio root of $OMEGA_PROJECT — run studio-state init there"
+WORKDIR="$(pwd -P)"
+words="$(deny_words "$OMEGA_PROJECT")" || exit 1
+# The session's origin comes from this task alone, never an inherited value.
+unset STUDIO_RUN_ORIGIN
+_nl='
+'
+_cr="$(printf '\r')"
+# A line break in a value would inject a line into the link file.
+_aid="$(printf '%s' "${MULTICA_AGENT_ID:-}" | tr -d '\n\r')"
+LINKS="$HOME/.claude-gamedev/multica/links"
+if [ -n "${MULTICA_TASK_ID:-}" ]; then
+  _link_ok=1
+  case "$MULTICA_TASK_ID" in
+    *[!A-Za-z0-9-]*)
+      _link_ok=0
+      printf '%s: warning: MULTICA_TASK_ID has unexpected characters; no link file\n' "$WRAPPER" >&2 ;;
+    *)
+      STUDIO_RUN_ORIGIN="multica:$MULTICA_TASK_ID"; export STUDIO_RUN_ORIGIN   # AC3.6 → AC1a
+      case "$PROJECT_ROOT$WORKDIR" in
+        *"$_nl"*|*"$_cr"*)
+          _link_ok=0
+          printf '%s: warning: the project root or workdir has a line break; no link file\n' "$WRAPPER" >&2 ;;
+      esac ;;
+  esac
+  if [ "$_link_ok" = 1 ]; then
+    _lt="$LINKS/.$MULTICA_TASK_ID.$$"
+    if { mkdir -p "$LINKS" \
+         && printf 'root=%s\ntask=%s\nagent=%s\nworkdir=%s\nwritten=%s\n' "$PROJECT_ROOT" "$MULTICA_TASK_ID" \
+              "$_aid" "$WORKDIR" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$_lt" \
+         && mv -f "$_lt" "$LINKS/$MULTICA_TASK_ID"; } 2>/dev/null; then :; else
+      rm -f "$_lt" 2>/dev/null
+      printf '%s: warning: could not write the link file %s\n' "$WRAPPER" "$LINKS/$MULTICA_TASK_ID" >&2
+    fi
+  fi
+fi
+CTX="$WORKDIR/.omega-context.md"
+_use_md=0
+if [ -L "$WORKDIR/CLAUDE.md" ]; then
+  # A planted link could name any file the user can read; a real CLAUDE.md is a plain file.
+  printf '%s: warning: %s is a symlink; not copied into the context\n' "$WRAPPER" "$WORKDIR/CLAUDE.md" >&2
+elif [ -f "$WORKDIR/CLAUDE.md" ]; then
+  _md_links="$(ls -ld "$WORKDIR/CLAUDE.md" | sed 's/^[^ ]* *\([0-9]*\).*/\1/')"
+  _md_real="$(resolve_path "$WORKDIR/CLAUDE.md")" || _md_real=""
+  if [ "${_md_links:-1}" -gt 1 ]; then
+    printf '%s: warning: %s has several hard links; not copied into the context\n' "$WRAPPER" "$WORKDIR/CLAUDE.md" >&2
+  else
+    case "$_md_real" in
+      "$WORKDIR"/*) _use_md=1 ;;
+      *) printf '%s: warning: %s resolves outside the workdir; not copied into the context\n' "$WRAPPER" "$WORKDIR/CLAUDE.md" >&2 ;;
+    esac
+  fi
+fi
+[ -r "$AGENT_CONTEXT" ] || die "cannot read $AGENT_CONTEXT"
+[ "$_use_md" = 0 ] || [ -r "$WORKDIR/CLAUDE.md" ] || die "cannot read $WORKDIR/CLAUDE.md"
+# A planted symlink or directory at the context path is replaced, never followed.
+if [ -d "$CTX" ] && [ ! -L "$CTX" ]; then die "cannot write $CTX: it is a directory"; fi
+rm -f "$CTX" 2>/dev/null
+_ctx_tmp="$(mktemp "$WORKDIR/.omega-context.XXXXXX" 2>/dev/null)" || die "cannot write $CTX"   # unpredictable name
+{ { if [ "$_use_md" = 1 ]; then cat "$WORKDIR/CLAUDE.md" && printf '\n'; fi \
+    && cat "$AGENT_CONTEXT" \
+    && printf '\nMultica workdir: %s\n' "$WORKDIR"
+  } > "$_ctx_tmp" && mv -f "$_ctx_tmp" "$CTX"
+} 2>/dev/null || { rm -f "$_ctx_tmp" 2>/dev/null; die "cannot write $CTX"; }
+cd "$OMEGA_PROJECT" 2>/dev/null || die "cannot cd to $OMEGA_PROJECT"
+# D1a primary form. The inline fallback (if probe P1 rules out the file flag)
+# is a one-line change here: replace `--append-system-prompt-file $(sq "$CTX")`
+# with `--append-system-prompt $(sq "$(cat "$CTX")")`.
+eval "set -- $words --append-system-prompt-file $(sq "$CTX") --add-dir $(sq "$WORKDIR") \"\$@\""
+exec claude-gd "$@"

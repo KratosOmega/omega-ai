@@ -1,0 +1,13 @@
+#!/usr/bin/env python3
+"""multica-bridge run|once|selftest|status — the omega-ai Multica bridge (#28)."""
+import os
+import sys
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+for _p in (HERE, os.path.dirname(HERE)):           # lib/ copy, or the repo checkout
+    if os.path.isdir(os.path.join(_p, "bridge")):
+        sys.path.insert(0, _p)
+        break
+from bridge import service  # noqa: E402
+
+sys.exit(service.main(sys.argv[1:]))

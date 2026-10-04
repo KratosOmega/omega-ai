@@ -14,6 +14,41 @@ approval page in `artifacts/`.
 
 ## Log
 
+### 2026-10-04 — Multica integration (#28)
+
+- A bridge service mirrors live overnight runs onto a Multica board, so a run can
+  be watched and steered from a phone browser. It reads the core's public files
+  (`events.jsonl` and the run registry) and calls its public verbs; the core never
+  names Multica. A "Run" issue (under the request issue that asked for the run) and
+  one sub-issue per manifest story carry statuses and `studio: ` comments. The bridge
+  stays hands-off on an issue while an agent is assigned and posts one catch-up
+  comment afterward.
+- The operator posts commands as comments: `/say`, `/unit`, `/hold`, `/resume`,
+  `/stop`, `/unsay`, `/said` (and `/stop run`). Only the operator's own comments
+  count. The bridge replies in a threaded comment starting with a check mark, a
+  cross or a warning sign.
+- `integrations/multica/` holds the installer (`install.sh`, `uninstall.sh`), the
+  launchd service, the README, and two wrappers: `claude-multica` (mode 2: normal
+  `claude` plus the deny list) and `omega-multica-agent` (mode 3: `claude-gd` in the
+  project with Multica's context). Install keeps the API token in the Keychain only,
+  links `claude-multica`, `omega-multica-agent` and `multica-bridge` into
+  `~/.local/bin`, and fails visibly when macOS blocks the bridge from the project's
+  files.
+- Core changes, all small: `studio-overnight deny-rules` prints the rules for a
+  project, and a run's registry entry may carry an `origin=` line (from
+  `STUDIO_RUN_ORIGIN`) that ties it to its request issue.
+- The final review's fixes landed: one run's failure (a file-access block, a
+  malformed row) no longer stops mirroring the others, and a run that keeps failing
+  gets one note; a skipped event still sets its status; CLAUDE.md that is a symlink
+  or hard link is not copied into the agent context.
+- Probe results are in the spec ("References (continued)", items 17-23) and
+  D1a-D1g in the plan: P2 and P7 ran and passed. Still pending for the operator:
+  P1, P3 and P4 (an operator run is in progress); P5 and P6 were not run because
+  the projects live outside `~/Documents`, so the plan's defaults are in use. The
+  live gate (spec milestone gate step 4) has not run yet.
+- The operator items (probes P1, P3 and P4, and the live install check) are tracked
+  in #30.
+
 ### 2026-10-04 — Overnight operator channel (#27)
 
 - An operator can talk to a live overnight run. `studio-overnight say <story>
