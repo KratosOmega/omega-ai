@@ -169,6 +169,11 @@ listing the status changes and unit events it held back.
   service will not start at all.
 - A file-access error in the self-test means a grant is missing. See File-access grants.
 - A token or Keychain error: run `install.sh --new-token`.
+- An agent runs an old command instead of `omega-multica-agent` (its sessions miss
+  the omega context): a per-machine path pinned with `multica runtime profile set-path`
+  beats the profile's command. Remove it with `multica runtime profile unset-path
+  <profile id>`, then restart the daemon: Multica.app, Settings, Daemon, Restart.
+  Quitting the app does not restart the daemon unless "Auto-stop on quit" is on.
 - A command got no reply: check the poll time (15 seconds by default), that you posted
   as yourself, that the issue is not assigned to an agent, and that it is under 10 minutes old.
 - Do not run `multica-bridge once` while the service is running if you can avoid it: both write

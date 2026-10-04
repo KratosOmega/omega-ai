@@ -42,12 +42,13 @@ approval page in `artifacts/`.
   gets one note; a skipped event still sets its status; CLAUDE.md that is a symlink
   or hard link is not copied into the agent context.
 - Probe results are in the spec ("References (continued)", items 17-23) and
-  D1a-D1g in the plan: P2 and P7 ran and passed. Still pending for the operator:
-  P1, P3 and P4 (an operator run is in progress); P5 and P6 were not run because
-  the projects live outside `~/Documents`, so the plan's defaults are in use. The
-  live gate (spec milestone gate step 4) has not run yet.
-- The operator items (probes P1, P3 and P4, and the live install check) are tracked
-  in #30.
+  D1a-D1g in the plan: P1, P2, P3, P4 and P7 ran and passed. P5 and P6 were not
+  run because the projects live outside `~/Documents`, so the plan's defaults are
+  in use. Finding from P1: a per-machine `runtime profile set-path` override beats
+  the profile's command, and command changes need a daemon restart (Settings,
+  Daemon, Restart); README and install now say so.
+- The live install check (spec milestone gate step 4) is still open for the
+  operator, tracked in #30.
 
 ### 2026-10-04 — Overnight operator channel (#27)
 

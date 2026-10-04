@@ -43,11 +43,11 @@ mc runtime profile list --output json | grep -q omega-probe-agent || {
 }
 printf '{"OMEGA_PROJECT": "%s"}' "$P1" | unverified "agent env set --custom-env-stdin" \
   mc agent env set "$AID" --custom-env-stdin
-echo "waiting 30 s for the daemon's profile refresh"
+echo "waiting 30 s for the daemon's profile refresh (a changed command or a pinned set-path needs a daemon restart: Multica.app, Settings, Daemon, Restart)"
 sleep 30
 
 ID="$(printf '%s' 'Run `pwd` and `git status --porcelain`. Write both outputs to a file under your Multica workdir and post it with `multica issue comment add <this issue> --content-file <file> --allow-external-file`. Then finish.' \
-  | mc issue create --title "[probe] P1 session" --assignee-id "$AID" --description-stdin --output json | pj get identifier)"
+  | mc issue create --title "[probe] P1 session" --allow-duplicate --assignee-id "$AID" --description-stdin --output json | pj get identifier)"
 [ -n "$ID" ] || die "issue create returned no identifier"
 cleanup_add issue "$ID"
 echo "created $ID; waiting up to 15 min for the run"
@@ -61,11 +61,11 @@ n="$(printf '%s' "$C" | pj where author_type agent | pj contains content "$P1")"
 if [ -z "$(git -C "$P1" status --porcelain)" ]; then record "P1 project clean" "pass"
 else record "P1 project clean" "fail: $(git -C "$P1" status --porcelain | tr '\n' ';')"; fi
 n="$(printf '%s' "$C" | pj where author_type agent | pj count)"
-[ "$n" -ge 2 ] && record "P1 final comment" "pass: $n agent comments (file post + daemon final)" || record "P1 final comment" "fail: $n agent comment(s), expected 2+"
+record "P1 final comment" "info: $n agent comment(s); the daemon may fold its final reply into the agent's comment (spec item 17)"
 printf '%s' "$C" | pj redact | head -c 4000
 echo
 echo "argv/cwd log: $RES/p1-calls.log"
-if confirm "Human check: did the agent post with 'issue comment add --content-file' (see the run transcript in the web UI)?"; then
+if confirm "Human check: did the agent post with 'issue comment add --content-file' (run transcript: web UI, or ~/.claude-gamedev/projects/*omega-probe-p1/)?"; then
   record "P1 workflow" "pass: content-file post seen in the transcript"
 else
   record "P1 workflow" "fail or unseen: content-file post not confirmed"
