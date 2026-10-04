@@ -1417,6 +1417,8 @@ test_overnight_stop_story_running() {
   assert_eq 1 "$(calls)" "stop - on the running story ends it after its unit"
   assert_contains "$(last_run_dir)/report.md" "^Ending: stopped by operator$" "stopped by operator (AC23)"
   assert_eq "" "$(ls -A "$(last_run_dir)/control" 2>/dev/null)" "no control file left"
+  assert_contains "$(last_run_dir)/events.jsonl" '"event":"story_state".*"state":"stopped","why":"by operator"' "the story_state why is by operator, as in lanes (R5)"
+  assert_not_contains "$(last_run_dir)/events.jsonl" '"why":"stopped by operator"' "never the doubled form"
 }
 test_overnight_hold_story_running() {
   fixture hsr; holds_on 60

@@ -216,7 +216,8 @@ Talking to a live run (<story> is - in a single-plan run; every verb takes
   resume <story>     a held story goes on with its next unit (lanes: after a
                      red gate, one gate-repair unit first); refused while the
                      start checkout's ledger has uncommitted changes
-  stop <story>       end the story (stopped by operator); its chain is skipped
+  stop <story>       end the story (stopped by operator; a held story: stopped
+                     <why>); its chain is skipped
   A stop rule after isolation holds the story for hold_minutes instead of
   ending it; say + resume, or stop, ends the hold, else the deadline does.
   A hold fixes what a session can be told; a red landing, the run budget,
@@ -960,7 +961,11 @@ write_report() {
       printf '\n## Resume\n\ncd %s && %s start\n' "$(sq "$START_DIR")" "$(sq "$SELF_ABS")"
     fi
   } > "$RUN_DIR/report.md"
-  [ "$1" = done ] || state_event - "stopped $1"
+  case "$1" in
+    done) ;;
+    "stopped "*) state_event - "$1" ;;
+    *) state_event - "stopped $1" ;;
+  esac
   run_event run_ended "ending=$1" "report=$RUN_DIR/report.md"
 }
 unlock() {
