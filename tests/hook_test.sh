@@ -586,12 +586,33 @@ test_inbox_post_tool_use_json() {
   inbox_run S1 "$(cat "$TMP/ptu-ml.json")"
   assert_contains "$TMP/ib.out" '\[3, story\] three' "pretty-printed hook input is read too"
 }
+# No-jq stand-in for `jq -r .hookSpecificOutput.additionalContext`: take the string after
+# "additionalContext":" up to the closing "}} and decode its JSON escapes (sh/awk only).
+ctx_decode() {
+  awk '{
+    key = "\"additionalContext\":\""
+    i = index($0, key)
+    if (!i) next
+    s = substr($0, i + length(key))
+    sub(/"\}\}[ \t]*$/, "", s)
+    out = ""; n = length(s)
+    for (k = 1; k <= n; k++) {
+      c = substr(s, k, 1)
+      if (c == "\\" && k < n) {
+        k++; c = substr(s, k, 1)
+        if (c == "n") c = "\n"; else if (c == "t") c = "\t"; else if (c == "r") c = "\r"
+      }
+      out = out c
+    }
+    print out
+  }' "$1"
+}
 test_inbox_claim_moves_to_delivered() {
   ib_fresh single
   put_msg "$IS" 10 story ten; put_msg "$IS" 2 story two; put_msg "$IS" 1 retire "retire directive 7" 7
   : > "$IS/.say.123"
   inbox_run none "$PTU"
-  if command -v jq >/dev/null 2>&1; then jq -r '.hookSpecificOutput.additionalContext' "$TMP/ib.out" > "$TMP/ib.ctx"; else cp "$TMP/ib.out" "$TMP/ib.ctx"; fi
+  if command -v jq >/dev/null 2>&1; then jq -r '.hookSpecificOutput.additionalContext' "$TMP/ib.out" > "$TMP/ib.ctx"; else ctx_decode "$TMP/ib.out" > "$TMP/ib.ctx"; fi
   l1="$(grep -n '^\[retire 7\]' "$TMP/ib.ctx" | cut -d: -f1)"; l2="$(grep -n '^\[2, story\]' "$TMP/ib.ctx" | cut -d: -f1)"; l10="$(grep -n '^\[10, story\]' "$TMP/ib.ctx" | cut -d: -f1)"
   assert_eq 1 "$([ -n "$l1" ] && [ -n "$l2" ] && [ -n "$l10" ] && [ "$l1" -lt "$l2" ] && [ "$l2" -lt "$l10" ] && echo 1 || echo 0)" "oldest (lowest id) first: 1, 2, 10"
   assert_contains "$TMP/ib.ctx" "^  → Stop following directive 7\. Record, the same way:$" "the retire instruction"
