@@ -87,13 +87,23 @@ test_event_usage() {
   assert_status 2 "a field with no key" -- sh "$EV" "$R" ok =x
   assert_status 2 "an upper-case key" -- sh "$EV" "$R" ok Key=x
   assert_status 2 "a field with no =" -- sh "$EV" "$R" ok noeq
+  assert_status 2 "a [] key with a : too" -- sh "$EV" "$R" ok 'a[]:=1'
+  assert_status 2 "a digit in a key" -- sh "$EV" "$R" ok a1=x
+  assert_status 2 "a bracket inside a key" -- sh "$EV" "$R" ok 'a[b]=x'
   assert_missing "$R/events.jsonl" "bad usage writes nothing"
+  assert_status 0 "a key may start with _" -- sh "$EV" "$R" ok _k=x _n:=1 '_a[]=p'
+  assert_contains "$R/events.jsonl" '"_k":"x","_n":1,"_a":\["p"\]}$' "and the line carries it"
+  assert_status 0 "a value may hold = and []=" -- sh "$EV" "$R" ok 'v=a[]=b=c'
+  rm -f "$R/events.jsonl"
   assert_status 1 "a missing run dir" -- sh "$EV" "$R/nope" ok
   sh "$EV" "$R/nope" ok 2> "$TMP/ev.err"
   assert_contains "$TMP/ev.err" "^studio-event: no run dir " "a missing run dir is named on stderr"
   if [ "$(id -u)" != 0 ]; then
     chmod 555 "$R"
     assert_status 1 "an unwritable run dir" -- sh "$EV" "$R" ok
+    sh "$EV" "$R" ok 2> "$TMP/ev.err"
+    assert_eq 1 "$(wc -l < "$TMP/ev.err" | tr -d ' ')" "a failed write prints one stderr line (R27)"
+    assert_contains "$TMP/ev.err" "^studio-event: cannot write " "and it names the write"
     chmod 755 "$R"
   fi
 }

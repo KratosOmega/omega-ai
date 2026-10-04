@@ -20,11 +20,13 @@ usage() { echo "usage: studio-event RUN_DIR EVENT [key=text|key:=number|key[]=a,
 _d="${1%/}"; _e="$2"; shift 2
 case "$_e" in ''|*[!a-z_]*) usage ;; esac
 for _f in "$@"; do
-  case "$_f" in
-    [a-z]*=*) _k="${_f%%=*}"; _k="${_k%:}"; _k="${_k%\[\]}"
-              case "$_k" in ''|*[!a-z_]*) usage ;; esac ;;
-    *) usage ;;
+  case "$_f" in *=*) ;; *) usage ;; esac
+  _k="${_f%%=*}"
+  case "$_k" in
+    *'[]') _k="${_k%??}" ;;
+    *:) _k="${_k%:}" ;;
   esac
+  case "$_k" in ''|*[!a-z_]*) usage ;; esac
 done
 [ -d "$_d" ] || { echo "studio-event: no run dir $_d" >&2; exit 1; }
 _line="$(LC_ALL=C awk -v ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)" -v run="${_d##*/}" -v ev="$_e" '
@@ -73,6 +75,6 @@ _line="$(LC_ALL=C awk -v ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)" -v run="${_d##*/}" 
     print o
     exit
   }' "$@")" || { echo "studio-event: awk failed" >&2; exit 1; }
-printf '%s\n' "$_line" >> "$_d/events.jsonl" 2>/dev/null \
+{ printf '%s\n' "$_line" >> "$_d/events.jsonl"; } 2>/dev/null \
   || { echo "studio-event: cannot write $_d/events.jsonl" >&2; exit 1; }
 exit 0
