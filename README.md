@@ -97,7 +97,7 @@ The shim puts `studios/game-dev/bin/` on `PATH`. From a Godot project root:
 | `studio-run [--scene S] [--seconds N] [--windowed]` | Boots the project for N seconds and scans the log for script errors | 0 clean · 1 errors or a failed import · 2 no Godot |
 | `studio-lint [PATH]` | `gdlint` and `gdformat --check` when gdtoolkit is installed | 0 clean · 1 findings · 3 not installed |
 | `studio-state …` | Reads and writes `.studio/STATE.md` | 0 · 1 |
-| `studio-overnight start [<manifest>] \| status \| watch \| stop \| next` | Runs approved plans unattended, one fresh headless session per unit; see below | start: 0 done · 1 other ending · 2 refused |
+| `studio-overnight start [<manifest>] \| status \| watch \| stop \| next \| say \| said \| unsay \| hold \| resume` | Runs approved plans unattended, one fresh headless session per unit, and takes messages and holds while it runs; see below | start: 0 done · 1 other ending · 2 refused; the channel verbs: 0 · 1 refused · 2 usage |
 
 The verbs never name Godot; `studios/game-dev/engines/godot/` does. Godot is
 found through `GODOT_PATH`, then `/Applications/Godot*.app`, then `godot` on
@@ -160,6 +160,19 @@ stories as parallel lanes of dependency chains:
   resume command. `watch [SECONDS]` (or `status --follow`) repeats it; a
   foreground `start` prints a heartbeat line about once a minute. The installer
   puts `studio-overnight` on `PATH` beside `claude-gd`.
+- Talking to a live run: `studio-overnight say <story> '<text>'` queues a
+  message (`--unit` for this unit only; `said`, `unsay <story> <id>`), and
+  `hold`, `resume` and `stop <story>` steer one story (`-` in a single-plan
+  run; `--run <run>` names the run from anywhere). A message reaches the
+  story's session at its start or its next tool call, so a session waiting
+  on a subagent or a long gate reads it when that returns. With
+  `overnight.hold_minutes` above 0 (default 480), a story that hits a stop
+  rule after isolation holds instead of ending: reply with `say` then
+  `resume`, or `stop` it; with no reply it ends at the deadline. A hold fixes
+  what a session can be told (a missing decision, a wrong approach); a red
+  landing, a run budget or a dead runner still end at once. Tools read
+  `events.jsonl` in the run dir; the contract is
+  `docs/game-dev/overnight-events.md`.
 - `report.md` in the run's reports directory is written on every ending; its
   `## Cleanup` section holds the one command that deletes the run's remote
   branches, to run after the final PR lands.

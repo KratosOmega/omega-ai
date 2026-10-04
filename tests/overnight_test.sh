@@ -182,7 +182,10 @@ test_overnight_help() {
   assert_eq 0 "$st" "--help exits 0"
   printf '%s\n' "$out" > "$TMP/help.txt"
   for w in "start \[--dry-run\]" "status" "stop" "STUDIO_OVERNIGHT_SESSION_SECONDS" "overnight-deny.txt" "report.md" \
-           "run_usd .*0-5000" "max_lanes" "model_task" "model_final" "model_finish" "model_repair" "model_progress" "merge_command" "gate_repairs .*0-3"; do
+           "run_usd .*0-5000" "max_lanes" "model_task" "model_final" "model_finish" "model_repair" "model_progress" "merge_command" "gate_repairs .*0-3" \
+           "say <story>" "said <story>" "unsay <story> <id>" "hold <story>" "resume <story>" "stop <story>" "--run <run>" "hold_minutes .*0-1440" \
+           "directive_chars .*500-16000" "STUDIO_OVERNIGHT_HOLD_MINUTES — test hook" "STUDIO_OVERNIGHT_HOLD_SECONDS — test hook" \
+           "STUDIO_OVERNIGHT_INBOX_WAIT — test hook" "events.jsonl" "next tool call"; do
     assert_contains "$TMP/help.txt" "$w" "help names $w"
   done
   assert_contains "$TMP/help.txt" "$RUNNER" "help names the runner by its absolute path"
@@ -190,6 +193,35 @@ test_overnight_help() {
   assert_contains "$TMP/help.txt" "^The run may: commit, push the feature branch, open a draft PR\.$" "help lists what the run may do"
   assert_contains "$TMP/help.txt" "^The run may not: merge, force-push, delete a remote branch" "help lists what the run may not do"
   assert_contains "$TMP/help.txt" "secrets" "the may-not line names secrets"
+}
+
+# AC30: the contract #28 builds on. Every event the code writes is in the
+# doc's table and every documented event is written; the doc names the
+# envelope, the verbs and exit codes, the files and run discovery.
+test_events_contract_doc() {
+  DOC="$REPO_ROOT/docs/game-dev/overnight-events.md"
+  B="$REPO_ROOT/studios/game-dev/bin"; H="$REPO_ROOT/studios/game-dev/hooks/operator-inbox.sh"
+  assert_file "$DOC" "the contract exists"
+  for e in run_started story_listed story_state unit_started unit_ended message_queued message_delivered message_requeued control run_ended; do
+    assert_contains "$DOC" "^| \`$e\` |" "the doc's table lists $e"
+    assert_eq 1 "$(cat "$B/studio-overnight" "$B/overnight-lanes.sh" "$B/overnight-channel.sh" "$H" | grep -qE "(run_event|chan_event|\"\\\$RD\") $e " && echo 1 || echo 0)" "the code writes $e"
+  done
+  # a call site is `run_event NAME "` or `run_event NAME key=` (comments
+  # such as "run_event EVENT FIELD…" do not match)
+  for e in $( { cat "$B/studio-overnight" "$B/overnight-lanes.sh" "$B/overnight-channel.sh" | grep -oE '(run_event|chan_event) [a-z_]+ ("|[a-z_]+(=|:=|\[\]=))'
+               grep -oE '"\$RD" [a-z_]+ "' "$H"; } | awk '{ print $2 }' | sort -u); do
+    assert_contains "$DOC" "^| \`$e\` |" "$e, written by the code, is documented"
+  done
+  for w in '"v":1' '^## Schema v1' 'never renamed or removed' 'run=<run dir>' 'events.jsonl' 'hook.log' 'inbox/<story>/<id>.msg' \
+           'delivered/<unit tag>/<id>.msg' 'control/<story>.hold' '^requeues: 0$' '^--$' 'hold_minutes=<N>' 'directive_chars=<N>' \
+           'say <story>' 'said <story>' 'unsay <story> <id>' 'hold <story>' 'resume <story>' 'stop <story>' '--run <run>' \
+           '^| 0 | ' '^| 1 | ' '^| 2 | ' 'run <name> is not live'; do
+    assert_contains "$DOC" "$w" "the doc names $w"
+  done
+  assert_contains "$REPO_ROOT/README.md" "studio-overnight say" "README teaches say"
+  assert_contains "$REPO_ROOT/README.md" "hold_minutes" "README names hold_minutes"
+  assert_contains "$REPO_ROOT/README.md" "overnight-events.md" "README links the contract"
+  assert_contains "$REPO_ROOT/README.md" "next tool call" "README states the delivery latency"
 }
 
 test_overnight_session_seconds_refused() {
@@ -1507,7 +1539,7 @@ run_tests test_overnight_report_done test_overnight_report_not_done \
   test_overnight_timeout test_overnight_kill_after_grace \
   test_overnight_stop_file test_overnight_sigterm test_overnight_sigint test_overnight_sighup \
   test_overnight_stop_no_run test_overnight_inhibitor test_overnight_no_inhibitor \
-  test_overnight_help test_overnight_dry_run \
+  test_overnight_help test_events_contract_doc test_overnight_dry_run \
   test_overnight_preflight_refusals test_overnight_preflight_all_failures \
   test_overnight_config_refusals test_overnight_deny_file_required \
   test_overnight_lock test_overnight_first_use_ignores \

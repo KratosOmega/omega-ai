@@ -156,7 +156,8 @@ take_lock() {
 
 usage() {
   cat <<EOF
-usage: $SELF_ABS start [--dry-run | --detach] [<manifest>] | status [--follow] | watch [<seconds>] | stop | next [<manifest>] | activity <unit.jsonl>
+usage: $SELF_ABS start [--dry-run | --detach] [<manifest>] | status [--follow] | watch [<seconds>] | stop [--run <run>] | next [<manifest>] | activity <unit.jsonl>
+       $SELF_ABS say|said|unsay|hold|resume|stop <story> [--run <run>] … (talking to a live run; below)
 
   start [--dry-run]  preflight, then run the approved plan one unit per fresh
                      claude-gd session until it ships or a stop rule fires.
@@ -199,6 +200,30 @@ usage: $SELF_ABS start [--dry-run | --detach] [<manifest>] | status [--follow] |
   activity <unit.jsonl>
                      one unit log's last activity in one line, as status shows it
 
+Talking to a live run (<story> is - in a single-plan run; every verb takes
+--run <run>, a run dir basename, and then acts only on that live run):
+  say <story> [--unit] '<text>' | say <story> [--unit] -- <text>
+                     queue a message for the story's sessions; prints its id.
+                     A story message is followed for the rest of the story and
+                     recorded as a Directive ledger line; --unit: this unit
+                     only. It arrives at the session's start or at its
+                     next tool call (a session waiting on a subagent or a
+                     long gate reads it when that returns). Empty text exits 2.
+  said <story>       the story's directives: id, state, text
+  unsay <story> <id> remove a pending message, or retire a directive
+  hold <story>       hold the story at its next unit boundary (queued or
+                     waiting: when it would start)
+  resume <story>     a held story goes on with its next unit (lanes: after a
+                     red gate, one gate-repair unit first); refused while the
+                     start checkout's ledger has uncommitted changes
+  stop <story>       end the story (stopped by operator); its chain is skipped
+  A stop rule after isolation holds the story for hold_minutes instead of
+  ending it; say + resume, or stop, ends the hold, else the deadline does.
+  A hold fixes what a session can be told; a red landing, the run budget,
+  a whole-run stop or a dead runner still end at once.
+  Exit: 0 done (stdout), 1 refused (one stderr line), 2 usage.
+  Events: <run dir>/events.jsonl, schema v1 (docs/game-dev/overnight-events.md).
+
 Exit: start 0 done, 1 any other ending, 2 refused.
 
 The run may: commit, push the feature branch, open a draft PR.
@@ -235,6 +260,9 @@ Config: .studio/config.json "overnight" (defaults, ranges):
   model_finish         sonnet   model for the finish
   model_repair         opus     model for a repair
   model_progress       sonnet   model for the progress unit
+  hold_minutes         480   0-1440   minutes a held story waits for say/resume/stop;
+                                    0 = a stop rule ends the story at once (no holds)
+  directive_chars      4000  500-16000 cap on a story's active + pending directive text
 A value present but out of range or not a number is a refusal.
 Top level of config.json: "merge_command" — a command line containing <pr>,
 its first word an executable file under the checkout.
@@ -267,6 +295,12 @@ Test hooks (tests only; never set them for a real run; --detach strips them):
                      detached child's start (read before the strip)
   STUDIO_OVERNIGHT_RACE_HOOK — test hook: shell text evaluated between reading
                      a stale lock's pid and reclaiming it (the reclaim-race test)
+  STUDIO_OVERNIGHT_HOLD_MINUTES — test hook: overrides hold_minutes; a whole
+                     number 0-1440, else start refuses (the suites set 0)
+  STUDIO_OVERNIGHT_HOLD_SECONDS — test hook: a hold's length in seconds, in
+                     place of hold_minutes x 60; a whole number
+  STUDIO_OVERNIGHT_INBOX_WAIT — test hook: seconds a verb waits for the
+                     inbox lock (default 15)
 EOF
 }
 
