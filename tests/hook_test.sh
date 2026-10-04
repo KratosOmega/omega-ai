@@ -698,6 +698,78 @@ test_inbox_hook_never_fails() {
   fi
 }
 
+PROBE="$REPO_ROOT/tests/probes/hook_delivery_probe.sh"
+
+# AC31: the probe parses, refuses bad usage with 2, records nothing without a
+# pass, and is never part of the gate.
+test_inbox_probe_usage() {
+  assert_file "$PROBE" "the probe exists"
+  assert_eq 1 "$([ -x "$PROBE" ] && echo 1 || echo 0)" "the probe is executable"
+  assert_status 0 "the probe parses" -- sh -n "$PROBE"
+  mkdir -p "$TMP/ph"
+  st=0; HOME="$TMP/ph" sh "$PROBE" a b >/dev/null 2>&1 || st=$?
+  assert_eq 2 "$st" "two arguments: usage, exit 2"
+  st=0; HOME="$TMP/ph" sh "$PROBE" --help >/dev/null 2>&1 || st=$?
+  assert_eq 2 "$st" "an option for a launcher: usage, exit 2"
+  st=0; HOME="$TMP/ph" sh "$PROBE" "$TMP/no-such-claude" >/dev/null 2>"$TMP/ph.err" || st=$?
+  assert_eq 2 "$st" "a missing launcher: exit 2"
+  assert_contains "$TMP/ph.err" "not on PATH" "it names the missing launcher"
+  assert_missing "$TMP/ph/.claude-gamedev" "nothing is recorded without a pass"
+  assert_not_contains "$REPO_ROOT/tests/run_all.sh" "probes" "run_all.sh never runs a probe (it spends model calls)"
+}
+
+# fake_claude FILE — a launcher that runs the --settings hooks the way the
+# spike saw Claude Code run them, and answers with stream-json. FAKE_MODE:
+# ok | no_ss (the model never saw the SessionStart marker) | no_agent_id
+# (the subagent's hook input lacks agent_id).
+fake_claude() {
+  cat > "$1" <<'EOF'
+#!/bin/sh
+[ "${1:-}" = --version ] && { echo "9.9.9 (Fake Code)"; exit 0; }
+P=""; S=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in -p) P="$2"; shift 2 ;; --settings) S="$2"; shift 2 ;; *) shift ;; esac
+done
+hook() { sed -n "s/.*\"$1\".*\"command\": \"\\([^\"]*\\)\".*/\\1/p" "$S" | head -n 1; }
+SS="$(hook SessionStart)"; PT="$(hook PostToolUse)"
+ssm="$(echo '{"hook_event_name":"SessionStart","source":"startup"}' | eval "$SS" | sed 's/.*: //')"
+case "$P" in
+  *probe-main*)
+    echo '{"tool_name":"Bash","tool_input":{"command":"echo probe-main"}}' | eval "$PT" >/dev/null
+    if [ "${FAKE_MODE:-ok}" = no_agent_id ]; then a=''; else a='"agent_id":"a3cc","agent_type":"general-purpose",'; fi
+    echo "{${a}\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"echo probe-sub\"}}" | eval "$PT" >/dev/null
+    echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"echo probe-main"}}]}}'
+    echo '{"type":"result","subtype":"success","result":"OK"}' ;;
+  *)
+    ptm="$(echo '{"tool_name":"Bash","tool_input":{"command":"echo probe-a"}}' | eval "$PT" | sed 's/.*Tool marker: \([A-Za-z0-9_]*\).*/\1/')"
+    [ "${FAKE_MODE:-ok}" = no_ss ] && ssm=NONE
+    echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"echo probe-a"}}]}}'
+    echo "{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"SS=$ssm PT=$ptm\"}" ;;
+esac
+EOF
+  chmod 755 "$1"
+}
+
+# AC31: the probe's own logic, on a fake launcher — PASS records the version
+# and the date; each failed check is exit 1 and records nothing.
+test_inbox_probe_fake_launcher() {
+  fake_claude "$TMP/fake-claude"
+  mkdir -p "$TMP/pf-home"
+  st=0; HOME="$TMP/pf-home" PROBE_DIR="$TMP/pf-ok" sh "$PROBE" "$TMP/fake-claude" > "$TMP/pf.out" 2>&1 || st=$?
+  assert_eq 0 "$st" "all three checks pass: exit 0"
+  assert_contains "$TMP/pf.out" "^PASS$" "it says PASS"
+  R="$TMP/pf-home/.claude-gamedev/probes/hook_delivery"
+  assert_eq "9.9.9 (Fake Code)" "$(sed -n 1p "$R" 2>/dev/null)" "line 1: the launcher's version"
+  assert_eq "$(date -u +%Y-%m-%d)" "$(sed -n 2p "$R" 2>/dev/null)" "line 2: the UTC date"
+  for mode in no_ss no_agent_id; do
+    rm -f "$R"
+    st=0; FAKE_MODE=$mode HOME="$TMP/pf-home" PROBE_DIR="$TMP/pf-$mode" sh "$PROBE" "$TMP/fake-claude" > "$TMP/pf.out" 2>&1 || st=$?
+    assert_eq 1 "$st" "$mode: exit 1"
+    assert_contains "$TMP/pf.out" "^FAIL$" "$mode: it says FAIL"
+    assert_missing "$R" "$mode: nothing is recorded"
+  done
+}
+
 run_tests test_hook_files test_hook_output_shape test_hook_defaults_from_studio_json \
   test_hook_reads_project_config test_hook_partial_config_falls_back test_hook_escapes_json \
   test_hook_fills_config_value_with_metacharacters test_guard_state_blocks_direct_writes \
@@ -715,4 +787,5 @@ run_tests test_hook_files test_hook_output_shape test_hook_defaults_from_studio_
   test_inbox_hook_skips_storyless_manifest_unit test_inbox_hook_skips_subagent \
   test_inbox_session_start_plain test_inbox_post_tool_use_json test_inbox_claim_moves_to_delivered \
   test_inbox_one_claim_under_two_hooks test_inbox_compact_reshows \
-  test_inbox_escapes_quotes_dollar_backticks_newlines test_inbox_hook_never_fails
+  test_inbox_escapes_quotes_dollar_backticks_newlines test_inbox_hook_never_fails \
+  test_inbox_probe_usage test_inbox_probe_fake_launcher
