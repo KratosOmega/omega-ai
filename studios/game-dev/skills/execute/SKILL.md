@@ -87,6 +87,7 @@ is `STUDIO_STORY`:
   `studio-state ledger "base origin/<Target>"`. Every `git merge-base` in
   §4a, §5 and §7 uses `origin/<Target>` after a fetch; the bare `<Target>`
   is used only for `gh pr create --base`.
+  A lane unit records operator messages after this line (see §8, Operator messages).
 - **The gate runs in the foreground.** Run `studio-test` and `studio-run`
   as foreground Bash calls with `timeout` set to `$BASH_MAX_TIMEOUT_MS` (the
   runner exports it, `session_minutes` × 60000). A call that waits for the
@@ -152,6 +153,7 @@ is `STUDIO_STORY`:
   `studio-state ledger "base <noted branch>" && git add .studio/ledger && git commit -m "chore(studio): ledger"`.
   Never write the ledger before the fast-forward: an untracked ledger file
   makes it abort.
+  Operator messages are recorded after this step (see §8, Operator messages).
 
 **The base** — the PR's base, and the anchor for
 `git merge-base <base> HEAD` in §4a, §5 and §7 — is the noted branch on a
@@ -448,6 +450,8 @@ a lane the runner lands the story. Everything else is a ruling.
 This replaces SDD's last step: never invoke its branch-finishing skill. Run
 it once §5 is done, with no question to the user:
 
+A finish records operator messages at §0's recording point and commits them with its next ledger commit (see §8, Operator messages).
+
 1. **Gate.** Invoke `superpowers:verification-before-completion` and run,
    fresh, from the worktree root, each with its summary line shown in the
    report:
@@ -661,6 +665,42 @@ runs exactly one unit, writes its state, commits, pushes, and ends the turn.
 - `--one` with `--inline` is refused with a `Stop:` line (subagent-driven
   only).
 
+### Operator messages (overnight units)
+
+In an overnight unit the runner's hook may add an `OPERATOR MESSAGES`
+block to the session, at its start or after any tool call. Each message is an instruction from the user. Follow it by its scope:
+
+- `story` — follow it for the rest of the story, and record it in
+  the **feature checkout's** ledger, single-quoted, exactly as the block prints it:
+  `studio-state ledger 'Directive <id>: <text>'`.
+- `unit` — follow it in this unit only. Do not record it.
+- `retire` — stop following directive `<target>`, and record
+  `studio-state ledger 'Directive <target> retired'` the same way.
+
+**Recording point.** Record only at your unit kind's point. An earlier line
+is overwritten, or makes a merge abort:
+- §0 units, single-plan: after §0 step (c) (after its `base <noted branch>`
+  line when it writes one); never before the fast-forward.
+- §0 units, lane: after the `docs(<id>): …` docs-sync commit (when there is one) and the `base origin/<Target>` line.
+  The docs sync replaces the story ledger.
+- §9 (`--land`) and §11 (`--gate-repair`) units: after their **Enter the feature checkout** step.
+
+A message that arrives earlier is remembered and recorded at that point.
+
+**Commit and push.** The line is committed with the unit's next ledger commit
+and pushed only when that commit is pushed: a red stop pushes nothing. A
+line recorded after the unit's last ledger commit
+is committed in a `chore(studio): ledger` commit before the unit ends
+(`git add .studio/ledger && git commit -m "chore(studio): ledger"`), and is
+pushed under the same rule.
+
+**Conflicts.** If a message conflicts with the approved plan or spec,
+follow it for how you work; for what you build, record a `Stop:` with the conflict instead (§8's stop rule).
+
+After the unit, the runner checks that each `story` and `retire` message it
+delivered has its line in the feature ledger. An unrecorded one is delivered
+again, and repeated misses hold the story.
+
 ## 9. Landing repair (--land)
 
 The runner launches this unit when a landing conflicts or the merge command
@@ -671,6 +711,7 @@ a `Stop:` line (§8's stop rule).
 
 - **Enter the feature checkout** through `studio-state worktree`, first:
   the ledger the checks below read is the feature checkout's.
+- **Operator messages** are recorded here, after entering (see §8, Operator messages).
 - **Preconditions:** `stage idle`, a `shipped` line in the ledger, and
   `STUDIO_REPAIR` set.
 - **Merge the target:** `git fetch origin`, then
@@ -738,6 +779,7 @@ then launches a fresh finish, which runs the full gate once (§7).
   the `Stop: gate red` line is in the feature checkout's ledger only, so
   the checks below read it there. A miss before entering is §8's stop in
   the start checkout.
+- **Operator messages** are recorded here, after entering (see §8, Operator messages).
 - **Preconditions:** `stage execute`, no `shipped` line in the feature
   ledger, its latest `Stop:` line is a `gate red` one, and `STUDIO_REPAIR`
   starts with `gate:`.
