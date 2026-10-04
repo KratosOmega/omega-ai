@@ -111,6 +111,66 @@ last_run_dir() { ls -d "$P"/.studio/reports/overnight-* 2>/dev/null | tail -n 1;
 # from exec-ing sleep, which would drop the name from ps).
 live_dummy() { sh -c 'sleep 60; :' studio-overnight >/dev/null 2>&1 & DUMMY=$!; }
 
+# ---- #27: the operator verbs against a fake live run ----
+# fake_run NAME single|manifest [ID=RECORD]… — a live run with no runner in
+# the current fixture $P:
+# - the lock names a live_dummy pid (FR_PID) and run dir FR_DIR
+#   ($P/.studio/reports/NAME);
+# - FR_DIR/channel holds FR_HOLD (default 480) and FR_CHARS (default 4000);
+# - a registry entry exists (root and start $P).
+# manifest also writes:
+# - rows.tsv, and stories/ID = RECORD;
+# - each story's studio state and ledger (`plan approved x`), committed.
+fake_run() {
+  _fr_n="$1"; _fr_m="$2"; shift 2
+  FR_DIR="$P/.studio/reports/$_fr_n"; mkdir -p "$FR_DIR/stories"
+  printf 'hold_minutes=%s\ndirective_chars=%s\n' "${FR_HOLD:-480}" "${FR_CHARS:-4000}" > "$FR_DIR/channel"
+  live_dummy; FR_PID="$DUMMY"
+  printf 'pid=%s\nrun=%s\nstarted=2026-10-03T21:00:00Z\n' "$FR_PID" "$FR_DIR" > "$P/.studio/overnight.lock"
+  mkdir -p "$HOME/.claude-gamedev/runs"
+  printf 'root=%s\nstart=%s\nrun=%s\npid=%s\nstarted=2026-10-03T21:00:00Z\n' "$P" "$P" "$FR_DIR" "$FR_PID" \
+    > "$HOME/.claude-gamedev/runs/$_fr_n-$FR_PID"
+  [ "$_fr_m" = manifest ] || return 0
+  : > "$FR_DIR/rows.tsv"
+  for _fr_r in "$@"; do
+    _fr_id="${_fr_r%%=*}"
+    printf '%s\t%s-b\t%s\t-\t-\t\n' "$_fr_id" "$_fr_id" "$_fr_id" >> "$FR_DIR/rows.tsv"
+    printf '%s\n' "${_fr_r#*=}" > "$FR_DIR/stories/$_fr_id"
+    ( cd "$P" && STUDIO_STORY="$_fr_id" && export STUDIO_STORY \
+        && sh "$STATE_BIN" init && sh "$STATE_BIN" ledger "plan approved x" ) >/dev/null 2>&1
+  done
+  ( cd "$P" && git add -A .studio/stories .studio/ledger && git -c user.name=t -c user.email=t@t commit -qm stories ) >/dev/null 2>&1
+}
+# fake_run_end [PID] — end a fake run (default FR_PID): its dummy, lock and
+# registry entry.
+fake_run_end() {
+  _fe_p="${1:-$FR_PID}"
+  kill "$_fe_p" 2>/dev/null; wait "$_fe_p" 2>/dev/null
+  rm -f "$HOME"/.claude-gamedev/runs/*-"$_fe_p"
+  [ "$(sed -n 's/^pid=//p' "$P/.studio/overnight.lock" 2>/dev/null)" != "$_fe_p" ] || rm -f "$P/.studio/overnight.lock"
+}
+# verb_in DIR ARGS… — `studio-overnight ARGS` in DIR: V_STATUS; V_OUT and
+# V_ERR (file paths). verb ARGS… — the same in $P.
+verb_in() {
+  _vi_d="$1"; shift; V_STATUS=0
+  ( cd "$_vi_d" && sh "$RUNNER" "$@" ) > "$TMP/v.out" 2> "$TMP/v.err" || V_STATUS=$?
+  V_OUT="$TMP/v.out"; V_ERR="$TMP/v.err"
+}
+verb() { verb_in "$P" "$@"; }
+# put_msg DIR ID SCOPE TEXT [TARGET] — a message file DIR/ID.msg, as say writes it.
+put_msg() {
+  mkdir -p "$1"
+  printf 'id: %s\nscope: %s\ntarget: %s\nstory: -\nqueued: 2026-10-03T21:04:00Z\nrequeues: 0\n--\n%s\n' \
+    "$2" "$3" "${5:--}" "$4" > "$1/$2.msg"
+}
+# ledger_add LINE… — single-plan ledger lines in $P, committed.
+ledger_add() {
+  ( cd "$P" && for _la in "$@"; do sh "$STATE_BIN" ledger "$_la"; done \
+      && git add -A .studio/ledger && git -c user.name=t -c user.email=t@t commit -qm ledger ) >/dev/null 2>&1
+}
+# body FILE — a message file's body.
+body() { sed '1,/^--$/d' "$1"; }
+
 test_overnight_help() {
   out="$(sh "$RUNNER" --help 2>&1)"; st=$?
   assert_eq 0 "$st" "--help exits 0"
@@ -203,7 +263,7 @@ test_overnight_deny_file_required() {
   # The runner reads overnight-deny.txt beside itself: run a copy whose
   # sibling deny file holds only comments.
   fixture deny
-  mkdir -p "$TMP/denybin"; cp "$RUNNER" "$STATE_BIN" "$TMP/denybin/"
+  mkdir -p "$TMP/denybin"; cp "$RUNNER" "$STATE_BIN" "$REPO_ROOT/studios/game-dev/bin/overnight-channel.sh" "$TMP/denybin/"
   printf '# only a comment\n\n' > "$TMP/denybin/overnight-deny.txt"
   RS_STATUS=0; ( cd "$P" && sh "$TMP/denybin/studio-overnight" start ) > "$TMP/rs.out" 2> "$TMP/rs.err" || RS_STATUS=$?
   assert_eq 2 "$RS_STATUS" "a deny file with no rules refuses"
@@ -733,6 +793,226 @@ test_overnight_events_two_units() {
   assert_contains "$E" "\"event\":\"run_ended\",\"ending\":\"done\",\"report\":\"$(last_run_dir)/report.md\"}\$" "run_ended names the report"
 }
 
+test_say_writes_message() {
+  fixture sw; fake_run overnight-sw-1 single
+  verb say - 'Use the EventBus, not "signals" — it'\''s $HOME'
+  assert_eq 0 "$V_STATUS" "say exits 0"
+  assert_eq 1 "$(cat "$V_OUT")" "say prints the id"
+  M="$FR_DIR/inbox/-/1.msg"
+  assert_file "$M" "the message is in the story's inbox"
+  assert_eq "id: 1|scope: story|target: -|story: -|requeues: 0|--" \
+    "$(sed '/^--$/q' "$M" | grep -v '^queued: ' | tr '\n' '|' | sed 's/|$//')" "the header, in order"
+  assert_contains "$M" '^queued: 20[0-9-]*T[0-9:]*Z$' "queued is ISO-8601 UTC"
+  assert_eq 'Use the EventBus, not "signals" — it'\''s $HOME' "$(body "$M")" "the body is the text, verbatim"
+  assert_eq "1.msg" "$(ls -A "$FR_DIR/inbox/-")" "no temp file and no lock left"
+  assert_contains "$FR_DIR/events.jsonl" '"event":"message_queued","story":"-","id":1,"scope":"story"}$' "message_queued"
+  assert_not_contains "$FR_DIR/events.jsonl" "EventBus" "message text never reaches the log"
+  fake_run_end
+}
+test_say_dash_text_and_unit() {
+  fixture sd; fake_run overnight-sd-1 single
+  verb say - --unit -- use --force, not '$(x)' "it's"
+  assert_eq 0 "$V_STATUS" "say -- exits 0"
+  assert_eq "use --force, not \$(x) it's" "$(body "$FR_DIR/inbox/-/1.msg")" "every word after -- is text, joined by spaces"
+  assert_contains "$FR_DIR/inbox/-/1.msg" "^scope: unit$" "--unit gives scope unit"
+  verb say - --run overnight-sd-1 -- --run x
+  assert_eq 0 "$V_STATUS" "--run before --, and an option-like word after it"
+  assert_eq "--run x" "$(body "$FR_DIR/inbox/-/2.msg")" "after --, --run is text"
+  verb say - --bogus x;  assert_eq 2 "$V_STATUS" "an unknown option is usage"
+  verb say - a b;        assert_eq 2 "$V_STATUS" "two text words without -- is usage"
+  verb said --unit -;    assert_eq 2 "$V_STATUS" "--unit belongs to say only"
+  verb said - -- x;      assert_eq 2 "$V_STATUS" "-- belongs to say only"
+  verb say --run;        assert_eq 2 "$V_STATUS" "--run needs a value"
+  fake_run_end
+}
+test_say_empty_text_exit_2() {
+  fixture se; fake_run overnight-se-1 single
+  nl='
+'
+  verb say - '';                   assert_eq 2 "$V_STATUS" "say - '': exit 2"
+  assert_contains "$V_ERR" "say: empty text" "it names the reason"
+  verb say - --;                   assert_eq 2 "$V_STATUS" "say - -- with nothing after it: exit 2"
+  verb say - -- '' ' ';            assert_eq 2 "$V_STATUS" "say - -- '' ' ': exit 2"
+  verb say - '   ';                assert_eq 2 "$V_STATUS" "spaces only: exit 2"
+  verb say - " 	$nl ";           assert_eq 2 "$V_STATUS" "blanks, a tab and a newline: exit 2"
+  verb say - --unit --;            assert_eq 2 "$V_STATUS" "--unit with no text: exit 2"
+  verb say -;                      assert_eq 2 "$V_STATUS" "no text at all: exit 2"
+  assert_missing "$FR_DIR/inbox/-/1.msg" "nothing is written"
+  assert_missing "$FR_DIR/events.jsonl" "no event"
+  fake_run_end
+  verb say - '';                   assert_eq 2 "$V_STATUS" "empty text is usage even with no live run"
+}
+test_say_ids_ledger_and_inbox() {
+  fixture si; ledger_add "Directive 7: older run" "Directive 9 retired"
+  fake_run overnight-si-1 single
+  verb say - first;  assert_eq 10 "$(cat "$V_OUT")" "the next id passes the ledger's highest (a retired line counts)"
+  mkdir -p "$FR_DIR/inbox/-/delivered/tagx"; mv "$FR_DIR/inbox/-/10.msg" "$FR_DIR/inbox/-/delivered/tagx/"
+  verb say - second; assert_eq 11 "$(cat "$V_OUT")" "a delivered message's id counts"
+  verb say - third;  assert_eq 12 "$(cat "$V_OUT")" "a pending message's id counts"
+  assert_missing "$FR_DIR/inbox/-/.lock" "the inbox lock is released"
+  fake_run_end
+}
+test_say_cap() {
+  fixture sc; ledger_add "Directive 1: $(printf '%200s' '' | tr ' ' a)"
+  FR_CHARS=500; fake_run overnight-sc-1 single; unset FR_CHARS
+  verb say - "$(printf '%200s' '' | tr ' ' b)";              assert_eq 0 "$V_STATUS" "400 of 500"
+  verb say - --unit -- "$(printf '%400s' '' | tr ' ' u)";    assert_eq 0 "$V_STATUS" "a unit message is not capped"
+  verb say - "$(printf '%101s' '' | tr ' ' c)"
+  assert_eq 1 "$V_STATUS" "501 characters exceed directive_chars 500"
+  assert_contains "$V_ERR" "directive_chars 500" "the refusal names the cap"
+  assert_contains "$V_ERR" "^  1  active  aaaa" "it lists the active directive with its id"
+  assert_contains "$V_ERR" "^  2  pending  bbbb" "and the pending one"
+  assert_not_contains "$V_ERR" "uuuu" "and not the unit message"
+  assert_missing "$FR_DIR/inbox/-/4.msg" "nothing is written"
+  verb say - "$(printf '%100s' '' | tr ' ' c)";              assert_eq 0 "$V_STATUS" "exactly 500 fits"
+  fake_run_end
+}
+test_say_cap_counts_characters() {
+  fixture scc; FR_CHARS=500; fake_run overnight-scc-1 single; unset FR_CHARS
+  verb say - "$(printf '%300s' '' | sed 's/ /é/g')"; assert_eq 0 "$V_STATUS" "300 two-byte characters"
+  verb say - "$(printf '%200s' '' | sed 's/ /é/g')"; assert_eq 0 "$V_STATUS" "500 characters (1000 bytes) fit a 500-character cap"
+  verb say - "é";                                     assert_eq 1 "$V_STATUS" "the 501st character does not"
+  fake_run_end
+}
+test_said_lists_states() {
+  fixture sl; ledger_add "Directive 1: one" "Directive 2: two" "Directive 2 retired"
+  fake_run overnight-sl-1 single
+  verb said -; assert_eq "1  active  one" "$(cat "$V_OUT")" "an active directive; a retired one is not listed"
+  verb say - three; verb say - --unit four; verb say - five
+  mkdir -p "$FR_DIR/inbox/-/delivered/tg"; mv "$FR_DIR/inbox/-/5.msg" "$FR_DIR/inbox/-/delivered/tg/"
+  verb unsay - 1; assert_eq "retire queued: message 6 retires directive 1" "$(cat "$V_OUT")" "unsay of an active directive"
+  verb said -
+  assert_eq 0 "$V_STATUS" "said exits 0"
+  assert_eq "1  retiring  one|3  pending  three|4  pending (unit)  four|5  delivered  five" \
+    "$(tr '\n' '|' < "$V_OUT" | sed 's/|$//')" "every state, in id order; the retire message is not listed"
+  fake_run_end
+  fixture sl2; fake_run overnight-sl2-1 single
+  verb said -; assert_eq "(no directives)" "$(cat "$V_OUT")" "none"
+  fake_run_end
+}
+test_unsay_pending_active_delivered() {
+  fixture us; ledger_add "Directive 1: one" "Directive 2: two" "Directive 2 retired"
+  fake_run overnight-us-1 single; IB="$FR_DIR/inbox/-"
+  verb say - three; verb unsay - 3
+  assert_eq "removed message 3 (it was not delivered)" "$(cat "$V_OUT")" "a pending story message is removed"
+  assert_missing "$IB/3.msg" "its file is gone"
+  # a removed highest id is free again, so each id is read from say's output
+  verb say - --unit four; U4="$(cat "$V_OUT")"; verb unsay - "$U4"; assert_eq 0 "$V_STATUS" "a pending unit message is removed"
+  verb say - five; F5="$(cat "$V_OUT")"; mkdir -p "$IB/delivered/tg"; mv "$IB/$F5.msg" "$IB/delivered/tg/"
+  verb unsay - "$F5"; R6=$((F5 + 1))
+  assert_eq "retire queued: message $R6 retires directive $F5" "$(cat "$V_OUT")" "delivered, not recorded: a retire"
+  assert_contains "$IB/$R6.msg" "^scope: retire$" "the retire's scope"
+  assert_contains "$IB/$R6.msg" "^target: $F5$" "and target"
+  verb unsay - "$F5"; assert_eq 1 "$V_STATUS" "a retiring directive: exit 1"
+  assert_contains "$V_ERR" "already retiring" "named"
+  verb unsay - "$R6"; assert_eq 1 "$V_STATUS" "a retire message: exit 1"
+  verb unsay - 2; assert_eq 1 "$V_STATUS" "a retired id: exit 1"
+  assert_contains "$V_ERR" "already retired" "named"
+  verb unsay - 99; assert_eq 1 "$V_STATUS" "an unknown id: exit 1"
+  assert_eq 1 "$(grep -c . "$V_ERR")" "a refusal is one stderr line"
+  verb say - --unit seven; U7="$(cat "$V_OUT")"; mv "$IB/$U7.msg" "$IB/delivered/tg/"
+  verb unsay - "$U7"; assert_eq 1 "$V_STATUS" "a delivered unit message is spent: exit 1"
+  for bad in 01 x '' 1x; do verb unsay - "$bad"; assert_eq 2 "$V_STATUS" "id '$bad' is usage"; done
+  fake_run_end
+}
+test_unsay_id_prefix() {
+  fixture up; ledger_add "Directive 10: ten"
+  fake_run overnight-up-1 single; IB="$FR_DIR/inbox/-"
+  put_msg "$IB" 1 story one
+  verb unsay - 1
+  assert_eq "removed message 1 (it was not delivered)" "$(cat "$V_OUT")" "unsay 1 removes message 1"
+  assert_missing "$IB/1.msg" "1.msg is gone"
+  assert_eq "" "$(ls "$IB" | grep -v '^delivered$')" "no retire was queued for directive 10"
+  verb said -; assert_eq "10  active  ten" "$(cat "$V_OUT")" "directive 10 is still active"
+  verb unsay - 1; assert_eq 1 "$V_STATUS" "a second unsay 1 is unknown"
+  fake_run_end
+}
+test_verbs_refusals() {
+  fixture rf
+  verb say - x; assert_eq 1 "$V_STATUS" "no live run: exit 1"
+  assert_contains "$V_ERR" "no live run" "named"
+  fake_run overnight-rf-1 manifest S1=running S2="landed abc1234" S3="stopped stop: x" S4="skipped S2"
+  verb say S9 x; assert_eq 1 "$V_STATUS" "a story not in the run"; assert_contains "$V_ERR" "S9 is not in run overnight-rf-1" "named"
+  verb say - x;  assert_eq 1 "$V_STATUS" "- in a manifest run"
+  for id in S2 S3 S4; do
+    verb said "$id"; assert_eq 1 "$V_STATUS" "$id has ended: exit 1"
+    assert_contains "$V_ERR" "story $id has ended" "named"
+    assert_eq 1 "$(grep -c . "$V_ERR")" "one line"
+  done
+  verb said;          assert_eq 2 "$V_STATUS" "said with no story"
+  verb unsay S1;      assert_eq 2 "$V_STATUS" "unsay with no id"
+  verb said S1 S1 S1; assert_eq 2 "$V_STATUS" "too many words"
+  rm -f "$FR_DIR/channel"
+  verb said S1; assert_eq 1 "$V_STATUS" "a run without a channel file"
+  assert_contains "$V_ERR" "predates the operator channel" "named"
+  fake_run_end
+  fixture rf2; fake_run overnight-rf2-1 single
+  verb say S1 x; assert_eq 1 "$V_STATUS" "a story id in a single-plan run"
+  assert_contains "$V_ERR" "single-plan run: its story is -" "named"
+  fake_run_end
+}
+test_verbs_run_pinning() {
+  fixture pa; fake_run overnight-pa-1 single; PA="$P"; PA_PID="$FR_PID"
+  verb say --run overnight-pa-1 - x; assert_eq 0 "$V_STATUS" "--run naming this project's run"
+  verb say - --run overnight-pa-1 -- y; assert_eq 0 "$V_STATUS" "--run anywhere before --"
+  verb say --run overnight-pa - x; assert_eq 1 "$V_STATUS" "a prefix is not a match"
+  assert_contains "$V_ERR" "run overnight-pa is not live" "named"
+  fixture pb; fake_run overnight-pb-1 manifest S1=running; PB="$P"; PB_PID="$FR_PID"
+  verb_in "$PA" say --run overnight-pb-1 - x
+  assert_eq 1 "$V_STATUS" "inside a project, only that project's run"
+  assert_contains "$V_ERR" "run overnight-pb-1 is not live" "never a fallback to another project's run"
+  assert_missing "$PB/.studio/reports/overnight-pb-1/inbox" "nothing reached the other run"
+  mkdir -p "$TMP/outside"
+  verb_in "$TMP/outside" said -; assert_eq 1 "$V_STATUS" "two live runs outside a project and no --run"
+  assert_contains "$V_ERR" "overnight-pa-1" "names the first"; assert_contains "$V_ERR" "overnight-pb-1" "and the second"
+  verb_in "$TMP/outside" said --run overnight-pb-1 S1; assert_eq 0 "$V_STATUS" "--run picks one"
+  assert_eq "(no directives)" "$(cat "$V_OUT")" "from the named run"
+  verb_in "$TMP/outside" say --run overnight-zz - x; assert_eq 1 "$V_STATUS" "an unknown run"
+  assert_contains "$V_ERR" "run overnight-zz is not live" "named"
+  # bare stop with --run
+  P="$PA"; verb stop --run overnight-pb-1; assert_eq 1 "$V_STATUS" "stop --run of another project's run"
+  assert_missing "$PA/.studio/overnight.stop" "no stop file here"
+  assert_missing "$PB/.studio/overnight.stop" "nor there"
+  verb_in "$TMP/outside" stop --run overnight-pb-1; assert_eq 0 "$V_STATUS" "stop --run from outside"
+  assert_contains "$V_OUT" "^stop requested: the run ends after its running unit (pid $PB_PID)$" "today's line"
+  assert_file "$PB/.studio/overnight.stop" "the named run's stop file"
+  P="$PB"; fake_run_end "$PB_PID"
+  # an ended run is never live
+  printf 'root=%s\nstart=%s\nrun=%s\npid=1\nended=x\n' "$PB" "$PB" "$PB/.studio/reports/overnight-pb-1" > "$HOME/.claude-gamedev/runs/last"
+  verb_in "$TMP/outside" said --run overnight-pb-1 S1; assert_eq 1 "$V_STATUS" "the last ended run is not live"
+  rm -f "$HOME/.claude-gamedev/runs/last"
+  P="$PA"; verb stop --run overnight-pa-1; assert_eq 0 "$V_STATUS" "stop --run of this project's run"
+  assert_file "$PA/.studio/overnight.stop" "writes its stop file"
+  fake_run_end "$PA_PID"
+}
+test_inbox_lock_stale_broken() {
+  fixture lk; fake_run overnight-lk-1 single
+  mkdir -p "$FR_DIR/inbox/-/.lock"; touch -t 202001010000 "$FR_DIR/inbox/-/.lock"
+  verb say - x
+  assert_eq 0 "$V_STATUS" "a stale lock is broken"
+  assert_eq 1 "$(cat "$V_OUT")" "and the message written"
+  assert_eq "1.msg" "$(ls -A "$FR_DIR/inbox/-")" "no lock and no renamed stale lock left"
+  fake_run_end
+}
+test_inbox_lock_busy() {
+  fixture lb; fake_run overnight-lb-1 single
+  mkdir -p "$FR_DIR/inbox/-/.lock"
+  STUDIO_OVERNIGHT_INBOX_WAIT=2; export STUDIO_OVERNIGHT_INBOX_WAIT
+  t0="$(date +%s)"; verb say - x; t1="$(date +%s)"
+  unset STUDIO_OVERNIGHT_INBOX_WAIT
+  assert_eq 1 "$V_STATUS" "a fresh lock held past the wait: exit 1"
+  assert_contains "$V_ERR" "inbox busy" "named"
+  assert_eq 1 "$([ $((t1 - t0)) -ge 2 ] && [ $((t1 - t0)) -lt 10 ] && echo 1 || echo 0)" "it waited about STUDIO_OVERNIGHT_INBOX_WAIT seconds"
+  assert_missing "$FR_DIR/inbox/-/1.msg" "nothing written"
+  assert_eq 1 "$([ -d "$FR_DIR/inbox/-/.lock" ] && echo 1 || echo 0)" "a fresh lock is never broken"
+  fake_run_end
+}
+test_channel_sourced_only() {
+  assert_status 2 "overnight-channel.sh refuses to run on its own" -- sh "$REPO_ROOT/studios/game-dev/bin/overnight-channel.sh"
+  assert_eq "overnight-channel.sh: sourced by studio-overnight" \
+    "$(sh "$REPO_ROOT/studios/game-dev/bin/overnight-channel.sh" 2>&1)" "and says why"
+}
+
 run_tests test_overnight_report_done test_overnight_report_not_done \
   test_overnight_report_anchors test_overnight_resume_quote test_overnight_label_t1 \
   test_overnight_session_seconds_refused test_overnight_claim_without_run_dir \
@@ -754,4 +1034,18 @@ run_tests test_overnight_report_done test_overnight_report_not_done \
   test_overnight_default_branch_required test_overnight_deny_merge_basename \
   test_overnight_run_usd_default_uncapped \
   test_overnight_hold_config_refused test_overnight_channel_file test_overnight_unit_env \
-  test_overnight_events_two_units
+  test_overnight_events_two_units \
+  test_say_writes_message \
+  test_say_dash_text_and_unit \
+  test_say_empty_text_exit_2 \
+  test_say_ids_ledger_and_inbox \
+  test_say_cap \
+  test_say_cap_counts_characters \
+  test_said_lists_states \
+  test_unsay_pending_active_delivered \
+  test_unsay_id_prefix \
+  test_verbs_refusals \
+  test_verbs_run_pinning \
+  test_inbox_lock_stale_broken \
+  test_inbox_lock_busy \
+  test_channel_sourced_only

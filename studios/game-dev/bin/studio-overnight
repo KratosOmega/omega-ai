@@ -1156,6 +1156,10 @@ cmd_watch() {
   done
 }
 
+# The operator channel's verbs (#27): say, said, unsay, hold, resume,
+# stop <story> and stop --run; and the message helpers the runner uses.
+. "$SELF_DIR/overnight-channel.sh"
+
 case "$1" in
   start)  shift; cmd_start "$@" ;;
   status)
@@ -1180,7 +1184,9 @@ case "$1" in
     . "$SELF_DIR/overnight-lanes.sh"
     lanes_next "$_nx"
     exit $? ;;
+  say|said|unsay) chan_main "$@" ;;
   stop)
+    [ "$#" -eq 1 ] || chan_main "$@"
     if lock_live; then
       : > "$STOP_FILE"
       echo "stop requested: the run ends after its running unit (pid $(lock_pid))"
