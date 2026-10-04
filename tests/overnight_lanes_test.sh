@@ -1796,6 +1796,8 @@ test_lanes_status_reaps_dead_runner() {
   for id in A B C; do assert_contains "$R/report.md" "^## $id$" "the report names $id"; done
   assert_contains "$R/report.md" "^Not landed: stopped — stop: runner gone$" "A's outcome"
   assert_contains "$R/report.md" "^Not landed: skipped — run stopped$" "C's outcome"
+  assert_contains "$R/events.jsonl" '"event":"story_state","story":"A","state":"stopped","why":"stop: runner gone"}$' "the reap's stopped story_state carries its why"
+  assert_contains "$R/events.jsonl" '"event":"story_state","story":"C","state":"skipped","why":"run stopped"}$' "and the skipped one"
   # A resume after a SIGKILLed runner: the stale run gets its report too.
   lanes_fixture reap2 integration A:-
   printf 'sleep 3\n' > "$SCEN/A"

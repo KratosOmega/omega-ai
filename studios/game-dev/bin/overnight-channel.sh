@@ -20,14 +20,17 @@ mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null; }
 # for up to WAIT seconds, the owner token "<pid> <epoch>" (IL_TOKEN) in
 # DIR/.lock/owner. With `break`, a lock whose dir is over 10 s old is renamed
 # to a unique name, then removed, or put back when the renamed dir is fresh
-# (it was a waiter's new lock). Returns 1 on timeout. The runner calls it
-# without `break`, so it needs no stat (the minimal PATH).
+# (it was a waiter's new lock). Returns 1 on timeout, 2 when DIR cannot be
+# created. A stale lock that cannot be renamed counts against WAIT like any
+# other wait. The runner calls it without `break`, so it needs no stat (the
+# minimal PATH).
 inbox_lock() {
-  mkdir -p "$1" 2>/dev/null || return 1
-  _il_t=0
+  mkdir -p "$1" 2>/dev/null || return 2
+  _il_t=0; _il_c=0
   while ! mkdir "$1/.lock" 2>/dev/null; do
-    if [ "${3:-}" = break ] && _il_m="$(mtime "$1/.lock")" && [ -n "$_il_m" ] \
+    if [ "${3:-}" = break ] && [ "$_il_c" -lt 20 ] && _il_m="$(mtime "$1/.lock")" && [ -n "$_il_m" ] \
        && [ $(( $(date +%s) - _il_m )) -gt 10 ]; then
+      _il_c=$((_il_c + 1))
       _il_s="$1/.lock.stale.$$.$(date +%s)"
       if mv "$1/.lock" "$_il_s" 2>/dev/null; then
         _il_m="$(mtime "$_il_s")"
@@ -36,8 +39,8 @@ inbox_lock() {
         else
           rm -rf "$_il_s"
         fi
+        continue
       fi
-      continue
     fi
     [ "$_il_t" -lt "$2" ] || return 1
     sleep 1; _il_t=$((_il_t + 1))
@@ -53,6 +56,13 @@ inbox_unlock() {
 
 # chan_fail CODE TEXT — one stderr line, exit CODE.
 chan_fail() { say "$2"; exit "$1"; }
+# chan_lock — take CH_IB's lock (waiting up to the inbox wait) or fail with
+# the real reason: busy, or the inbox dir cannot be created.
+chan_lock() {
+  inbox_lock "$CH_IB" "${STUDIO_OVERNIGHT_INBOX_WAIT:-15}" break && return 0
+  if [ "$?" = 2 ]; then chan_fail 1 "cannot create $CH_IB"; fi
+  chan_fail 1 "inbox busy: story $CH_STORY (try again)"
+}
 chan_usage() {
   {
     echo "usage: studio-overnight say <story> [--unit] [--run <run>] '<text>' | say <story> [--unit] [--run <run>] -- <text>"
@@ -118,6 +128,9 @@ chan_open() {
   [ -f "$CH_RUN/channel" ] || chan_fail 1 "run $CH_NAME predates the operator channel (restart it to use $1)"
   CH_HOLD_MIN="$(sed -n 's/^hold_minutes=//p' "$CH_RUN/channel" | head -n 1)"
   CH_DCHARS="$(sed -n 's/^directive_chars=//p' "$CH_RUN/channel" | head -n 1)"
+  # a malformed value falls back to the default (config range 500-16000)
+  case "$CH_DCHARS" in ''|*[!0-9]*) CH_DCHARS=4000 ;; esac
+  { [ "$CH_DCHARS" -ge 500 ] && [ "$CH_DCHARS" -le 16000 ]; } || CH_DCHARS=4000
   if [ -f "$CH_RUN/rows.tsv" ]; then
     CH_MODE=manifest
     awk -F'\t' -v id="$2" '$1 == id { f = 1 } END { exit !f }' "$CH_RUN/rows.tsv" \
@@ -201,7 +214,7 @@ chan_next_id() {
 chan_write_msg() {
   _wm_t="$CH_IB/.say.$$"
   printf 'id: %s\nscope: %s\ntarget: %s\nstory: %s\nqueued: %s\nrequeues: 0\n--\n%s\n' \
-    "$1" "$2" "$3" "$CH_STORY" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$4" > "$_wm_t" \
+    "$1" "$2" "$3" "$CH_STORY" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$4" 2>/dev/null > "$_wm_t" \
     && mv -f "$_wm_t" "$CH_IB/$1.msg" && return 0
   rm -f "$_wm_t"; return 1
 }
@@ -216,7 +229,7 @@ chan_chars() { LC_ALL=C tr -d '\200-\277' | wc -c | tr -d ' '; }
 chan_say() {
   _cs_sc=story; [ "$A_UNIT" = 0 ] || _cs_sc=unit
   CH_LEDGER="$(chan_ledger)"; export CH_LEDGER
-  inbox_lock "$CH_IB" "${STUDIO_OVERNIGHT_INBOX_WAIT:-15}" break || chan_fail 1 "inbox busy: story $CH_STORY (try again)"
+  chan_lock
   if [ "$_cs_sc" = story ]; then
     _cs_l="$(chan_list "$CH_IB")"
     _cs_used="$(printf '%s\n' "$_cs_l" | awk -F'\t' '$3 == "story" { printf "%s", $4 }' | chan_chars)"
@@ -244,7 +257,7 @@ chan_said() {
 # chan_unsay ID — AC2, R12.
 chan_unsay() {
   CH_LEDGER="$(chan_ledger)"; export CH_LEDGER
-  inbox_lock "$CH_IB" "${STUDIO_OVERNIGHT_INBOX_WAIT:-15}" break || chan_fail 1 "inbox busy: story $CH_STORY (try again)"
+  chan_lock
   _us="$(chan_list "$CH_IB" | awk -F'\t' -v id="$1" '$1 == id { print $2 "\t" $3; exit }')"
   _us_st="${_us%%"$CH_TAB"*}"; _us_sc="${_us#*"$CH_TAB"}"
   case "$_us_st:$_us_sc" in
@@ -273,7 +286,7 @@ chan_unsay() {
 }
 # chan_stop_run — bare `stop --run <run>`: today's stop, aimed by --run.
 chan_stop_run() {
-  : > "$CH_ROOT/.studio/overnight.stop" 2>/dev/null || chan_fail 1 "cannot write $CH_ROOT/.studio/overnight.stop"
+  { : > "$CH_ROOT/.studio/overnight.stop"; } 2>/dev/null || chan_fail 1 "cannot write $CH_ROOT/.studio/overnight.stop"
   echo "stop requested: the run ends after its running unit (pid $CH_PID)"
 }
 
@@ -282,7 +295,7 @@ chan_stop_run() {
 chan_ctl_write() {
   mkdir -p "$CH_CTL" 2>/dev/null
   _cw_t="$CH_CTL/.$CH_STORY.$1.$$"
-  if date -u +%Y-%m-%dT%H:%M:%SZ > "$_cw_t" && mv -f "$_cw_t" "$CH_CTL/$CH_STORY.$1"; then
+  if { date -u +%Y-%m-%dT%H:%M:%SZ > "$_cw_t"; } 2>/dev/null && mv -f "$_cw_t" "$CH_CTL/$CH_STORY.$1"; then
     chan_event control "story=$CH_STORY" "action=$1"; return 0
   fi
   rm -f "$_cw_t"; chan_fail 1 "cannot write $CH_CTL/$CH_STORY.$1"

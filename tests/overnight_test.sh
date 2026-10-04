@@ -449,6 +449,7 @@ test_overnight_stop_line() {
   assert_eq 1 "$(calls)" "a Stop: line is never retried"
   assert_eq stop "$(awk -F'\t' 'NR == 1 { print $7 }' "$(last_run_dir)/units.tsv")" "the stopped unit's row says stop"
   assert_contains "$(last_run_dir)/report.md" "stop: no Godot binary (studio-test exit 2)" "the reason is printed verbatim"
+  assert_contains "$(last_run_dir)/events.jsonl" '"event":"story_state","story":"-","state":"stopped","why":"stop: no Godot binary (studio-test exit 2)"}$' "the not-done ending is a stopped story_state with its why (R17)"
 }
 
 test_overnight_copied_stop_not_new() {
@@ -807,12 +808,21 @@ test_overnight_hold_config_refused() {
   refuse_case "STUDIO_OVERNIGHT_HOLD_SECONDS=1.5" "STUDIO_OVERNIGHT_HOLD_SECONDS"
   unset STUDIO_OVERNIGHT_HOLD_SECONDS
 }
+# run_start_hold VALUE — run_start with STUDIO_OVERNIGHT_HOLD_MINUTES=VALUE, then back to 0.
+run_start_hold() { STUDIO_OVERNIGHT_HOLD_MINUTES="$1"; export STUDIO_OVERNIGHT_HOLD_MINUTES; run_start; STUDIO_OVERNIGHT_HOLD_MINUTES=0; }
 test_overnight_channel_file() {
   fixture chf; done_scenario; run_start
   assert_eq "hold_minutes=0|directive_chars=4000" "$(tr '\n' '|' < "$(last_run_dir)/channel" | sed 's/|$//')" "channel: the effective hold_minutes and the default cap"
   fixture chf2 '{"overnight": {"directive_chars": 800, "hold_minutes": 30}}'; done_scenario; run_start
   assert_contains "$(last_run_dir)/channel" "^directive_chars=800$" "the configured cap"
   assert_contains "$(last_run_dir)/channel" "^hold_minutes=0$" "the test override wins over config"
+  fixture chf3; done_scenario; run_start_hold 010
+  assert_contains "$(last_run_dir)/channel" "^hold_minutes=10$" "010 is normalised to 10 (R26)"
+  fixture chf4; done_scenario; run_start_hold 1440
+  assert_contains "$(last_run_dir)/channel" "^hold_minutes=1440$" "1440 is the upper bound and is accepted"
+  fixture chf5; done_scenario; unset STUDIO_OVERNIGHT_HOLD_MINUTES; run_start
+  assert_contains "$(last_run_dir)/channel" "^hold_minutes=480$" "with no override and no config, hold_minutes defaults to 480"
+  STUDIO_OVERNIGHT_HOLD_MINUTES=0; export STUDIO_OVERNIGHT_HOLD_MINUTES
 }
 test_overnight_unit_env() {
   fixture uenv; done_scenario; run_start
@@ -920,6 +930,36 @@ test_say_cap_counts_characters() {
   verb say - "é";                                     assert_eq 1 "$V_STATUS" "the 501st character does not"
   fake_run_end
 }
+test_say_bad_directive_chars_defaults() {
+  fixture sbc; FR_CHARS=abc; fake_run overnight-sbc-1 single; unset FR_CHARS
+  verb say - short; assert_eq 0 "$V_STATUS" "a malformed directive_chars does not break say"
+  verb say - "$(printf '%4000s' '' | tr ' ' x)"
+  assert_eq 1 "$V_STATUS" "the cap falls back to the default 4000"
+  assert_contains "$V_ERR" "directive_chars 4000" "and the refusal names it"
+  fake_run_end
+  fixture sbc2; FR_CHARS=100; fake_run overnight-sbc2-1 single; unset FR_CHARS
+  verb say - "$(printf '%200s' '' | tr ' ' x)"; assert_eq 0 "$V_STATUS" "a value below the 500 range also falls back to 4000"
+  fake_run_end
+}
+test_inbox_lock_failures() {
+  [ "$(id -u)" != 0 ] || return 0
+  fixture il; fake_run overnight-il-1 single
+  chmod 555 "$FR_DIR"
+  verb say - x; _il_st="$V_STATUS"
+  chmod 755 "$FR_DIR"
+  assert_eq 1 "$_il_st" "an inbox that cannot be created refuses"
+  assert_contains "$V_ERR" "^studio-overnight: cannot create .*/inbox/-$" "it names the real failure, not a busy inbox"
+  assert_eq 1 "$(grep -c . "$V_ERR")" "one stderr line"
+  mkdir -p "$FR_DIR/inbox/-/.lock"; touch -t 200001010000 "$FR_DIR/inbox/-/.lock"
+  chmod 555 "$FR_DIR/inbox/-"
+  STUDIO_OVERNIGHT_INBOX_WAIT=2; export STUDIO_OVERNIGHT_INBOX_WAIT
+  verb say - x; _il_st="$V_STATUS"
+  unset STUDIO_OVERNIGHT_INBOX_WAIT
+  chmod 755 "$FR_DIR/inbox/-"
+  assert_eq 1 "$_il_st" "a stale lock that cannot be broken gives up after WAIT instead of spinning"
+  assert_contains "$V_ERR" "inbox busy" "and says busy"
+  fake_run_end
+}
 test_said_lists_states() {
   fixture sl; ledger_add "Directive 1: one" "Directive 2: two" "Directive 2 retired"
   fake_run overnight-sl-1 single
@@ -943,7 +983,9 @@ test_unsay_pending_active_delivered() {
   assert_eq "removed message 3 (it was not delivered)" "$(cat "$V_OUT")" "a pending story message is removed"
   assert_missing "$IB/3.msg" "its file is gone"
   # a removed highest id is free again, so each id is read from say's output
-  verb say - --unit four; U4="$(cat "$V_OUT")"; verb unsay - "$U4"; assert_eq 0 "$V_STATUS" "a pending unit message is removed"
+  verb say - --unit four; U4="$(cat "$V_OUT")"
+  assert_eq 3 "$U4" "unsay of the newest pending id frees it: the next say reuses 3 (R11 gap ruling)"
+  verb unsay - "$U4"; assert_eq 0 "$V_STATUS" "a pending unit message is removed"
   verb say - five; F5="$(cat "$V_OUT")"; mkdir -p "$IB/delivered/tg"; mv "$IB/$F5.msg" "$IB/delivered/tg/"
   verb unsay - "$F5"; R6=$((F5 + 1))
   assert_eq "retire queued: message $R6 retires directive $F5" "$(cat "$V_OUT")" "delivered, not recorded: a retire"
@@ -1017,6 +1059,24 @@ test_hold_resume_stop_table() {
   assert_contains "$FR_DIR/events.jsonl" '"event":"control","story":"H","action":"resume"}$' "for resume"
   assert_contains "$FR_DIR/events.jsonl" '"event":"control","story":"R","action":"stop"}$' "for stop"
   assert_eq "" "$(ls -A "$C" | grep '^\.')" "no temp control file left"
+  fake_run_end
+}
+test_hold_resume_stop_usage_and_unwritable() {
+  fixture hu
+  for bad in "hold" "hold a b" "hold --unit a" "resume" "resume a b" "stop a b" "stop --unit a" "hold a --"; do
+    verb $bad; assert_eq 2 "$V_STATUS" "'$bad' is usage, even with no live run"
+  done
+  fake_run overnight-hu-1 manifest S=running
+  verb stop S; assert_eq "stop requested: S stops after its running unit" "$(cat "$V_OUT")" "stop"
+  verb stop S; assert_eq 0 "$V_STATUS" "a repeat stop exits 0 (R22)"
+  assert_eq "stop requested: S stops after its running unit" "$(cat "$V_OUT")" "and prints the same line"
+  if [ "$(id -u)" != 0 ]; then
+    rm -rf "$FR_DIR/control"; mkdir "$FR_DIR/control"; chmod 555 "$FR_DIR/control"
+    verb hold S; _hu_st="$V_STATUS"; chmod 755 "$FR_DIR/control"
+    assert_eq 1 "$_hu_st" "an unwritable control dir refuses hold"
+    assert_eq 1 "$(grep -c . "$V_ERR")" "the refusal is one stderr line (R27)"
+    assert_contains "$V_ERR" "^studio-overnight: cannot write .*/control/S.hold$" "and names the file"
+  fi
   fake_run_end
 }
 test_hold_minutes_zero() {
@@ -1418,13 +1478,13 @@ run_tests test_overnight_report_done test_overnight_report_not_done \
   test_say_empty_text_exit_2 \
   test_say_ids_ledger_and_inbox \
   test_say_cap \
-  test_say_cap_counts_characters \
+  test_say_cap_counts_characters test_say_bad_directive_chars_defaults test_inbox_lock_failures \
   test_said_lists_states \
   test_unsay_pending_active_delivered \
   test_unsay_id_prefix \
   test_unsay_loses_race_to_hook \
   test_hold_resume_stop_table \
-  test_hold_minutes_zero \
+  test_hold_resume_stop_usage_and_unwritable test_hold_minutes_zero \
   test_single_plan_verbs \
   test_resume_refused_dirty_ledger \
   test_resume_from_feature_worktree \
