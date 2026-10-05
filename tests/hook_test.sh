@@ -169,7 +169,7 @@ test_hook_defaults_from_studio_json() {
   assert_contains "$TMP/ctx.txt" "Godot 4.x · 2D · GDScript · GUT" "identity line uses the studio defaults"
   assert_contains "$TMP/ctx.txt" "stage skills own the workflow" "context carries the precedence rule"
   assert_contains "$TMP/ctx.txt" "/game-dev:brainstorm" "context lists the stages"
-  assert_contains "$TMP/ctx.txt" ".studio/STATE.md" "context carries the state instruction"
+  assert_contains "$TMP/ctx.txt" "studio-state get stage" "context carries the state instruction"
 }
 
 test_hook_reads_project_config() {
@@ -213,7 +213,7 @@ test_hook_fills_config_value_with_metacharacters() {
   assert_contains "$TMP/ctx5.txt" "godot4/mono&x · 2D · GDScript · GUT" \
     "a value with sed metacharacters is filled in literally"
   assert_contains "$TMP/ctx5.txt" "stage skills own the workflow" "the rest of the bootstrap survives"
-  assert_contains "$TMP/ctx5.txt" ".studio/STATE.md" "the state instruction survives"
+  assert_contains "$TMP/ctx5.txt" "studio-state get stage" "the state instruction survives"
   assert_not_contains "$TMP/hook.out" '"additionalContext":""' "the context is not emptied"
   if command -v jq >/dev/null 2>&1; then
     assert_status 0 "output is still valid JSON" -- jq -e . "$TMP/hook.out"
