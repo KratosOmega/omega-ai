@@ -238,6 +238,7 @@ test_adopt_check_done_on_branch_ledger() {
 test_adopt_workspaces_status() {
   adopt_repo wsx 6 3
   mkdir -p "$W/.superpowers/sdd/zz-other"; printf 'docs/other.md\n' > "$W/.superpowers/sdd/zz-other/plan-path"
+  # the sourced copy's $0 is the test shell, so point SELF_DIR at the real bin dir
   sed -e '$d' -e "s|^SELF_DIR=.*|SELF_DIR=\"$(dirname "$ADOPT")\"|" "$ADOPT" > "$TMP/adopt.lib"
   ( cd "$P" && . "$TMP/adopt.lib" && TMPD="$TMP/wsd" && workspaces "$ORIG" > "$TMP/ws.out"; echo "$?" > "$TMP/ws.st" ) 2>/dev/null
   assert_eq 0 "$(cat "$TMP/ws.st")" "a matching workspace printed: status 0 though the last scanned names another plan"
@@ -599,8 +600,9 @@ test_adopt_start_checkout_from_run_worktree() {
   adopt "$W" sync S1
   assert_eq 0 "$AD_STATUS" "sync exits 0"
   assert_eq "Landed: integration/demo at abc1234 — continue dependent stories from there" "$(tail -n 1 "$W/$WS/progress.md")" "manifest found in the run worktree"
+  move_adoption_lines "$P" "$TMP/run-alpha"
   adopt "$W" seed S1
-  assert_eq 0 "$AD_STATUS" "seed exits 0 with the run worktree resolved"
+  assert_eq 0 "$AD_STATUS" "seed exits 0, reading the adopted line from the run worktree"
 }
 
 test_adopt_start_checkout_two_listings_refuse() {
@@ -623,6 +625,47 @@ test_adopt_start_checkout_none_falls_back() {
   adopt "$W" sync S1
   assert_eq 0 "$AD_STATUS" "sync exits 0"
   assert_eq "Landed: integration/demo at abc1234 — continue dependent stories from there" "$(tail -n 1 "$W/$WS/progress.md")" "state root manifest used"
+}
+
+# move_adoption_lines FROMDIR TODIR — the adopted/source ledger lines of S1 move
+# from one checkout's ledger to the other (studio-state keeps them at WORK_ROOT).
+move_adoption_lines() {
+  mkdir -p "$2/.studio/ledger"
+  grep -E '^- [0-9-]+ (adopted|source) ' "$1/.studio/ledger/S1.md" >> "$2/.studio/ledger/S1.md"
+  grep -vE '^- [0-9-]+ (adopted|source) ' "$1/.studio/ledger/S1.md" > "$TMP/mv.led"; cp "$TMP/mv.led" "$1/.studio/ledger/S1.md"
+}
+
+test_adopt_seed_reads_ledger_from_run_worktree() {
+  adopt_repo sl 6 3
+  run_wt run-sl run/alpha
+  move_adoption_lines "$P" "$TMP/run-sl"
+  adopt "$W" seed S1
+  assert_eq 0 "$AD_STATUS" "seed finds the adopted line in the run worktree's ledger"
+  assert_eq "seeded: 6 lines" "$(cat "$TMP/ad.out")" "seeded count"
+}
+
+test_adopt_seed_start_dir_wins() {
+  adopt_repo sd 6 3
+  run_wt run-sd run/alpha
+  mkdir -p "$TMP/sd-start"; move_adoption_lines "$P" "$TMP/sd-start"
+  STUDIO_START_DIR="$TMP/sd-start"; export STUDIO_START_DIR
+  adopt "$W" seed S1
+  unset STUDIO_START_DIR
+  assert_eq 0 "$AD_STATUS" "STUDIO_START_DIR holds the ledger; the run worktree has none"
+  assert_eq "seeded: 6 lines" "$(cat "$TMP/ad.out")" "seeded count"
+}
+
+test_adopt_run_target_from_start_checkout() {
+  adopt_repo rt 6 3
+  printf '# Run: demo\nTarget: integration/demo\n' > "$P/docs-demo.md"
+  printf 'docs-demo.md\n' > "$P/.studio/run"
+  run_wt run-rt run/alpha
+  sed 's|^Target:.*|Target: integration/alpha-only|' "$TMP/run-rt/docs/runs/alpha.md" > "$TMP/alpha.md"; cp "$TMP/alpha.md" "$TMP/run-rt/docs/runs/alpha.md"
+  sed -e '$d' -e "s|^SELF_DIR=.*|SELF_DIR=\"$(dirname "$ADOPT")\"|" "$ADOPT" > "$TMP/adopt.lib"
+  ( cd "$P" && . "$TMP/adopt.lib" && TMPD="$TMP/rtd" && start_checkout S1 > "$TMP/rt.sc"; run_target S1 > "$TMP/rt.out"; run_target > "$TMP/rt.none" ) 2>/dev/null
+  assert_eq "$TMP/run-rt" "$(cat "$TMP/rt.sc")" "start_checkout names the run worktree"
+  assert_eq "integration/alpha-only" "$(cat "$TMP/rt.out")" "run_target S1 reads the run worktree's manifest"
+  assert_eq "integration/demo" "$(cat "$TMP/rt.none")" "no id: the state root's manifest"
 }
 
 # per_run_lock STATE — a live per-run lock .studio/runs/alpha/lock holding S1.
@@ -853,7 +896,7 @@ test_sync_view_write_failure_commits_nothing() {
   assert_eq "$_o" "$(git -C "$W" rev-parse origin/S1-b)" "nothing pushed"
 }
 
-run_tests test_adopt_start_checkout_from_run_worktree test_adopt_start_checkout_two_listings_refuse test_adopt_start_checkout_none_falls_back test_adopt_live_run_check_per_run_lock test_adopt_part_done_ignores_sync test_adopt_seed_short_sha_line_same_range test_sync_short_sha_truth_line test_sync_view_collision_counter test_sync_view_write_failure_commits_nothing test_sync_failed_commit_restores test_sync_bad_new_claim_is_plain_mismatch test_adopt_from_subdirectory test_sync_already_in_sync test_sync_accepts_claims test_sync_all_or_nothing test_sync_claim_end_differs \
+run_tests test_adopt_seed_reads_ledger_from_run_worktree test_adopt_seed_start_dir_wins test_adopt_run_target_from_start_checkout test_adopt_start_checkout_from_run_worktree test_adopt_start_checkout_two_listings_refuse test_adopt_start_checkout_none_falls_back test_adopt_live_run_check_per_run_lock test_adopt_part_done_ignores_sync test_adopt_seed_short_sha_line_same_range test_sync_short_sha_truth_line test_sync_view_collision_counter test_sync_view_write_failure_commits_nothing test_sync_failed_commit_restores test_sync_bad_new_claim_is_plain_mismatch test_adopt_from_subdirectory test_sync_already_in_sync test_sync_accepts_claims test_sync_all_or_nothing test_sync_claim_end_differs \
   test_sync_truth_mismatches test_sync_ambiguous_short_sha test_sync_rewrite_message test_sync_views_keep_other_lines \
   test_sync_carries_rulings_once test_sync_landed_note test_sync_live_run_refusal test_sync_own_unit_exempt \
   test_sync_diverged_and_behind test_sync_preconditions test_adopt_workspace_lookup_two_trees test_sync_push_failure_warns \

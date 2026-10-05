@@ -87,18 +87,26 @@ start_checkout() {
   for _sc_w in $(git worktree list --porcelain 2>/dev/null | awk '/^worktree /{ w = substr($0, 10) } /^branch refs\/heads\/run\//{ print w }'); do
     _sc_m="$(head -n 1 "$_sc_w/.studio/run" 2>/dev/null)"; [ -n "$_sc_m" ] || continue
     case "$_sc_m" in /*) ;; *) _sc_m="$_sc_w/$_sc_m" ;; esac
-    grep -q "^|[[:blank:]]*$_sc_id[[:blank:]]*|" "$_sc_m" 2>/dev/null && _sc_hits="$_sc_hits $_sc_w"
+    [ -n "$(manifest_branch "$_sc_m" "$_sc_id")" ] && _sc_hits="$_sc_hits $_sc_w"
   done
   set -- $_sc_hits
   if [ "$#" -gt 1 ]; then echo "story $_sc_id is listed by two run worktrees: $*" >&2; return 1; fi
   if [ "$#" = 1 ]; then printf '%s\n' "$1"; else state_root; fi
 }
 
+# start_root ID — AC20's start checkout: $STUDIO_START_DIR when set, else
+# start_checkout. Callers cache it in START_ROOT.
+START_ROOT=""
+start_root() {
+  if [ -n "${STUDIO_START_DIR:-}" ]; then printf '%s\n' "$STUDIO_START_DIR"; return 0; fi
+  start_checkout "$1"
+}
+
 # plan_file PATH — the plan's file: in the current tree, else in the start
 # checkout (D25).
 plan_file() {
   _pf_w="${TOPLEVEL:-$(git rev-parse --show-toplevel 2>/dev/null || true)}"
-  _pf_r="$(state_root)"
+  _pf_r="${START_ROOT:-$(state_root)}"
   # $2 = root: the start checkout first (the converted plan's approved copy).
   if [ "${2:-}" = root ] && [ -n "$_pf_r" ] && [ -f "$_pf_r/$1" ]; then printf '%s\n' "$_pf_r/$1"; return 0; fi
   if [ -n "$_pf_w" ] && [ -f "$_pf_w/$1" ]; then printf '%s\n' "$_pf_w/$1"; return 0; fi
@@ -264,7 +272,7 @@ truth_lines() {
 # the converted plan, the spec, and the converted plan's `Context:` paths,
 # from `adopted`/`source` lines of the start checkout's story ledger.
 docs_paths() {
-  _dp_r="$(state_root)"
+  _dp_r="${START_ROOT:-$(state_root)}"
   _dp_l="$_dp_r/.studio/ledger/$1.md"
   _dp_t="$TMPD/sd.truth"   # the current tree's truth lines (sync, seed), dates stripped
   [ -f "$_dp_t" ] || _dp_t=/dev/null
@@ -426,7 +434,8 @@ cmd_seed() {
   TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null || true)"
   [ -n "$TOPLEVEL" ] || { echo "not in a git checkout" >&2; return 1; }
   cd "$TOPLEVEL" || return 1
-  _sd_src="$STATE_ROOT/.studio/ledger/$ID.md"
+  START_ROOT="$(start_root "$ID")" || return 1
+  _sd_src="$START_ROOT/.studio/ledger/$ID.md"
   _sd_adopted=""; _sd_source=""
   if [ -f "$_sd_src" ]; then
     _sd_adopted="$(sed -n 's/^- [0-9-]* \(adopted .* -> .*\)$/\1/p' "$_sd_src" | tail -n 1)"
@@ -658,6 +667,7 @@ cmd_sync() {
   ID="${1:-}"; [ -n "$ID" ] && valid_id "$ID" && [ "$#" -eq 1 ] || usage
   IN_STORY="${STUDIO_STORY:-}"; IN_RUN="${STUDIO_RUN:-}"; IN_RUN_DIR="${STUDIO_RUN_DIR:-}"
   STATE_ROOT="$(state_root)"
+  START_ROOT="$(start_root "$ID")" || return 1
   TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null || true)"
   [ -n "$TOPLEVEL" ] || { echo "not in a git checkout" >&2; return 1; }
   cd "$TOPLEVEL" || return 1
@@ -774,7 +784,7 @@ cmd_sync() {
 
   # D32-D33: the views, and the landed note.
   _sy_landed=""
-  _sy_mf="$(run_manifest)" || return 1
+  _sy_mf="$(run_manifest)" || { sy_unwrite; echo "nothing committed" >&2; return 1; }
   if [ -n "$_sy_mf" ]; then
     _sy_slug="$(sed -n 's/^# Run:[ 	]*//p' "$_sy_mf" | head -n 1 | sed -e 's/[ 	]#.*$//' -e 's/[ 	]*$//')"
     _sy_tsv="$STATE_ROOT/.studio/runs/$_sy_slug/landed.tsv"
