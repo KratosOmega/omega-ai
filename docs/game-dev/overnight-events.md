@@ -52,7 +52,8 @@ envelope, in this order:
   know the value (for example a unit's `usd`). Single-plan runs use
   `"story":"-"`; the final step's units do too.
 - Optional fields: `why` appears only for `held`, `stopped` and `skipped`;
-  `until` only for `held`. No other field is optional, except that a line
+  `until` only for `held`. `story_synced` carries either `refs` and `sha`,
+  or `skipped`, or `failed`. No other field is optional, except that a line
   carrying `"cut":true` may be missing any trailing field, so a reader
   tolerates that.
 - `why` is free display text taken from the story's record. Never match on
@@ -69,7 +70,8 @@ envelope, in this order:
 |---|---|---|
 | `run_started` | `mode`, `max_lanes`, `hold_minutes` | `mode`: `single`, `integration`, `direct`; `max_lanes` and `hold_minutes` are numbers |
 | `story_listed` | `story`, `chain`, `depends` | `chain` is a number; `depends` is an array of story ids; one per story, right after `run_started`; together they are the queue |
-| `story_state` | `story`, `state`, `why`, `until` | `state`: `queued`, `waiting`, `running`, `repair`, `gate-repair`, `held`, `landing`, `landed`, `stopped`, `skipped`; `why` only for held, stopped, skipped; `until` only for held (ISO-8601 UTC) |
+| `story_state` | `story`, `state`, `why`, `until` | `state`: `queued`, `waiting`, `running`, `repair`, `gate-repair`, `sync-repair`, `held`, `landing`, `landed`, `stopped`, `skipped`; `why` only for held, stopped, skipped; `until` only for held (ISO-8601 UTC) |
+| `story_synced` | `story`, `refs`, `sha`, `skipped`, `failed` | merged: `refs` (array, in merge order) and `sha` (the new head); `skipped`: `no-worktree`, `dirty`, `ahead`; `failed`: `fetch`, `merge-tree`, `merge`, `push`; no event when every ref is already merged; a merged line comes before a later `failed` one |
 | `unit_started` | `story`, `unit`, `label`, `model` | `unit` is the unit tag; `label` is for example `repair`, without the story id |
 | `unit_ended` | `story`, `unit`, `label`, `outcome`, `usd` | `outcome`: `progress`, `done`, `stop`, `noprog`, `timed out`, `orphaned`; `usd` is a number or `null` |
 | `session_wait` | `lane`, `story`, `since` | `lane` is the lane number or `final`; `story` is `-` for a final-step unit; `since` is ISO-8601 UTC; once per wait, when the first slot request fails; the unit's own `unit_started` follows when it gets a slot |

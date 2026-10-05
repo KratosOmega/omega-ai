@@ -40,13 +40,15 @@ export GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
 # - Live count (#39): $CALLS/live/<pid> while a call runs; $CALLS/max holds
 #   the most calls seen running at once.
 # - Scenario: line m of $SCEN/<id> (unit prompts), $SCEN/<id>.land
-#   (`--land`), $SCEN/<id>.gate (`--gate-repair`), $SCEN/progress
+#   (`--land`), $SCEN/<id>.sync (`--land` with STUDIO_REPAIR=sync:<ref>),
+#   $SCEN/<id>.gate (`--gate-repair`), $SCEN/progress
 #   (`--progress`) or $SCEN/final-repair
 #   (`/omega:integration repair`). A missing file or line means `auto`.
 # - A line is a `;`-separated list of actions, run in order. `auto` runs
 #   last unless the line names a terminal action (stop, noop, hang, exit,
-#   repair, fakerepair, gaterepair, progress); naming `auto` itself changes
-#   nothing.
+#   repair, fakerepair, gaterepair, syncrepair, progress); naming `auto`
+#   itself changes nothing. Post actions (push_target, push_main, dirty,
+#   localcommit, rmwt) run after auto or the terminal action, in order.
 # - Actions:
 #   auto            one well-behaved unit, as execute §0/§8 would: §0 adds
 #                   the story worktree $TMP_WT/<Branch> (--no-track; from
@@ -110,6 +112,22 @@ export GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
 #   the unit. A ledger with `check requested` and no `check done` is a check
 #   unit: it ledgers `check done none`, commits and pushes. A task commit's
 #   ledger line is `T<k> complete <a>..<b>` (full shas).
+#   syncrepair      terminal (`--land`, STUDIO_REPAIR=sync:<ref>): in the
+#                   story worktree, fetch, merge <ref> (a conflict resolved
+#                   with --theirs), commit `fix(sync): resolve <ref>`, ledger
+#                   `Synced: merged <ref>` (committed), push
+#   push_target <f> post: commits <f> (content: the branch name) to
+#                   origin/<Target> through a temp clone
+#   push_main <f>   post: the same on origin/main
+#   dirty <f>       post: an untracked <f> in the story worktree
+#   localcommit     post: an empty commit in the story worktree, not pushed
+#   rmwt            post: removes the story worktree (the branch stays)
+#   mergehook on|off  modifier: adds (on) or removes (off) a pre-merge-commit
+#                   hook that exits 1, in the common git dir
+#   probe           modifier: the story worktree's state now, as key=value
+#                   lines in $CALLS/<n>.probe: head, subject, p2 (HEAD^2 or
+#                   empty), remote (origin's <Branch>, by ls-remote), dirty
+#                   (porcelain line count), mergehead (1 when MERGE_HEAD)
 #   inbox           modifier: the operator-inbox hook as a startup session
 #                   runs it, its output in $CALLS/<n>.inbox
 #   say <text>      modifier: `studio-overnight say <id> -- <text>`
@@ -122,7 +140,7 @@ fi
 id="${STUDIO_STORY:-}"; prompt="${2:-}"
 case "$prompt" in
   *--gate-repair*) kind="$id.gate" ;;
-  *--land*) kind="$id.land" ;;
+  *--land*) case "${STUDIO_REPAIR:-}" in sync:*) kind="$id.sync" ;; *) kind="$id.land" ;; esac ;;
   *--progress*) kind=progress ;;
   *'/omega:integration repair'*) kind=final-repair ;;
   *) kind="$id" ;;
@@ -234,7 +252,14 @@ auto() {
   fi
 }
 
-cost=1; code=0; terminal=0; conflict=""
+# push_to BRANCH FILE — commit FILE (content: BRANCH) to origin's BRANCH via a temp clone.
+push_to() {
+  _pd="$(mktemp -d)"
+  ( git clone -q "$(git remote get-url origin)" "$_pd/c" && cd "$_pd/c" && git checkout -q "$1" \
+    && printf '%s\n' "$1" > "$2" && git add "$2" && git commit -qm "$1 moves: $2" && git push -q origin "$1" ) >&2
+  rm -rf "$_pd"
+}
+cost=1; code=0; terminal=0; conflict=""; post=""
 old_ifs="$IFS"; IFS=';'
 set -f; set -- $line; set +f
 IFS="$old_ifs"
@@ -266,6 +291,21 @@ for act in "$@"; do
                         && st ledger "Repair: merged target" && commit_ledger repair && sg push -q origin "$BRANCH" ) ;;
     fakerepair)       terminal=1; w="$(story_wt)"
                       ( cd "$w" && st ledger "Repair: merged target" && commit_ledger repair ) ;;
+    syncrepair)       terminal=1; w="$(story_wt)"; _ref="${STUDIO_REPAIR#sync:}"
+                      ( cd "$w" && sg fetch -q origin && { git merge -q --no-edit "$_ref" >/dev/null 2>&1 || {
+                          git checkout -q --theirs -- . && git add -A && git -c core.editor=true commit -q --no-edit; }; } \
+                        && git commit -q --allow-empty -m "fix(sync): resolve $_ref" \
+                        && st ledger "Synced: merged $_ref" \
+                        && git add -A && git commit -q -m "docs(ledger): synced" && sg push -q origin HEAD ) >> "$CALLS/$n.log" 2>&1 ;;
+    "push_target "*|"push_main "*|"dirty "*|localcommit|rmwt) post="$post${post:+;}$act" ;;
+    "mergehook "*)    _hd="$(cd "$(git rev-parse --git-common-dir)" && pwd -P)/hooks"; mkdir -p "$_hd"
+                      if [ "${act#mergehook }" = on ]; then printf '#!/bin/sh\nexit 1\n' > "$_hd/pre-merge-commit"; chmod +x "$_hd/pre-merge-commit"
+                      else rm -f "$_hd/pre-merge-commit"; fi ;;
+    probe)            w="$(story_wt)"
+                      ( cd "$w" && printf 'head=%s\nsubject=%s\np2=%s\nremote=%s\ndirty=%s\nmergehead=%s\n' \
+                          "$(git rev-parse HEAD)" "$(git log -1 --format=%s)" "$(git rev-parse -q --verify 'HEAD^2' 2>/dev/null)" \
+                          "$(git ls-remote origin "refs/heads/$BRANCH" | cut -f1)" "$(git status --porcelain | grep -c .)" \
+                          "$(if git rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1; then echo 1; else echo 0; fi)" ) > "$CALLS/$n.probe" ;;
     gaterepair)       terminal=1; w="$(story_wt)"
                       ( cd "$w" && st ledger "Repair: gate — fixed" && commit_ledger gate-repair && sg push -q origin "$BRANCH" ) ;;
     gatelog)          w="$(story_wt)"
@@ -289,6 +329,16 @@ for act in "$@"; do
   esac
 done
 [ "$terminal" = 1 ] || ( auto ) >&2
+IFS=';'; set -f; set -- $post; set +f; IFS="$old_ifs"
+for act in "$@"; do
+  case "$act" in
+    "push_target "*)  push_to "$TARGET" "${act#push_target }" ;;
+    "push_main "*)    push_to main "${act#push_main }" ;;
+    "dirty "*)        w="$(story_wt)"; : > "$w/${act#dirty }" ;;
+    localcommit)      w="$(story_wt)"; git -C "$w" commit -q --allow-empty -m "local: not pushed" ;;
+    rmwt)             w="$(story_wt)"; git worktree remove --force "$w" ;;
+  esac
+done
 printf '{"type":"system","subtype":"init"}\n'
 [ -z "$cost" ] || printf '{"type":"result","subtype":"success","total_cost_usd":%s}\n' "$cost"
 date +%s > "$CALLS/$n.t1"
@@ -460,6 +510,7 @@ last_lanes_dir() { ls -d "$P"/.studio/reports/overnight-demo-* 2>/dev/null | tai
 # on main and pushes it, so origin/main is not in integration/demo until the
 # final step merges it; for MODE direct, an
 # executable scripts/merge.sh (the stub merge program) committed on run/demo.
+# LANES_TASKS=2 gives every plan a Task 2 and sets task 0/2 (default: one task).
 # Exports P, MFP, CALLS, GH,
 # TMP_WT and SCEN (an empty scenario dir: every unit is `auto`); unsets LANES_*.
 lanes_fixture() {
@@ -473,6 +524,7 @@ lanes_fixture() {
   git init -q --bare "$TMP/$_lf_name.git"
   _lf_cfg="${LANES_CONFIG:-}"; [ -n "$_lf_cfg" ] || _lf_cfg='{}'
   _lf_cells="${LANES_CELLS:-}"; _lf_progress="${LANES_PROGRESS:-}"; _lf_moves="${LANES_MAIN_MOVES:-}"
+  _lf_tasks="${LANES_TASKS:-1}"
   _lf_spec=docs/game-dev/specs/2026-10-01-demo.md
   ( set -e
     cd "$P"
@@ -499,13 +551,14 @@ lanes_fixture() {
       _id="${_r%%:*}"; _plan="docs/game-dev/plans/2026-10-01-$_id.md"
       printf '# Plan: %s\n\nStory: %s\n\n## Global Constraints\n\n- none\n\n## Decisions\n\n- none\n\n### Task 1: t\n\nSpec: %s:L1-2\nReview: final\n' \
         "$_id" "$_id" "$_lf_spec" > "$_plan"
+      [ "$_lf_tasks" != 2 ] || printf '\n### Task 2: u\n\nSpec: %s:L1-2\nReview: final\n' "$_lf_spec" >> "$_plan"
       STUDIO_STORY="$_id"; export STUDIO_STORY
       sh "$STATE_BIN" init >/dev/null
       sh "$STATE_BIN" set spec "$_lf_spec"; sh "$STATE_BIN" set plan "$_plan"
       sh "$STATE_BIN" ledger "spec approved $_lf_spec"
       sh "$STATE_BIN" ledger "plan approved $_plan"
       sh "$STATE_BIN" ledger "Decisions swept $_id"
-      sh "$STATE_BIN" set stage plan; sh "$STATE_BIN" set task 0/1
+      sh "$STATE_BIN" set stage plan; sh "$STATE_BIN" set task "0/$_lf_tasks"
       unset STUDIO_STORY
     done
     git add -A && git commit -q -m docs && git push -q origin run/demo
@@ -529,7 +582,7 @@ lanes_fixture() {
         && git commit -q -m "main moves" && git push -q origin main && git checkout -q run/demo
     fi
   ) >/dev/null 2>&1 || { TESTS_RUN=$((TESTS_RUN + 1)); _fail "lanes_fixture $_lf_name: setup failed"; }
-  unset LANES_CONFIG LANES_CELLS LANES_PROGRESS LANES_MAIN_MOVES
+  unset LANES_CONFIG LANES_CELLS LANES_PROGRESS LANES_MAIN_MOVES LANES_TASKS
 }
 
 # run_lanes ARGS — `studio-overnight ARGS` in $P: LS_STATUS, and LS_OUT and
@@ -1464,6 +1517,134 @@ test_lanes_gate_repair_budget() {
   assert_contains "$(last_lanes_dir)/stories/A" "^stopped stop: run budget$" "spent 6 + 25 > 30: the run budget refuses the repair"
   assert_eq 0 "$(gate_calls)" "no gate-repair unit"
 }
+# ---- #39 T13: the sync check before task and final-review units ----
+
+# sync_events ID — ID's story_synced lines in the last run's events.jsonl.
+sync_events() { grep "\"event\":\"story_synced\",\"story\":\"$1\"" "$(last_lanes_dir)/events.jsonl" 2>/dev/null; }
+# sync_skips ID — the skipped values of ID's story_synced lines, comma-joined.
+sync_skips() { sync_events "$1" | sed -n 's/.*"skipped":"\([a-z-]*\)".*/\1/p' | paste -sd, -; }
+# sync_merges ID — the chore(sync) subjects on origin's ID-b, oldest first, `|`-joined.
+sync_merges() { git -C "$P" fetch -q origin; git -C "$P" log --reverse --format=%s "origin/$1-b" 2>/dev/null | grep '^chore(sync): ' | paste -sd'|' -; }
+# nth_call ID K — the global number of ID's K-th stub call (0 when none).
+nth_call() { _nc="$(story_calls "$1" | sort -n | sed -n "${2}p")"; printf '%s\n' "${_nc:-0}"; }
+# probe_get N KEY — KEY from call N's probe file.
+probe_get() { sed -n "s/^$2=//p" "$CALLS/$1.probe" 2>/dev/null; }
+# sync_call — the call number of the (one) sync-repair unit (0 when none).
+sync_call() { _sc="$(grep -l '^STUDIO_REPAIR=sync:' "$CALLS"/*.env 2>/dev/null | sed 's#.*/\([0-9]*\)\.env#\1#' | head -n 1)"; printf '%s\n' "${_sc:-0}"; }
+
+test_lanes_sync_clean_merge_no_session() {
+  LANES_TASKS=2; export LANES_TASKS
+  lanes_fixture syncok integration A:-
+  printf 'push_target other.txt\nprobe\n' > "$SCEN/A"
+  run_lanes start "$MFP"
+  assert_eq 0 "$LS_STATUS" "the story lands"
+  assert_contains "$(last_lanes_dir)/stories/A" "^landed " "A ends landed"
+  n2="$(nth_call A 2)"; _m="$(probe_get "$n2" head)"
+  assert_eq "chore(sync): merge origin/integration/demo into A-b" "$(probe_get "$n2" subject)" "before task 2 the lane merged the moved target"
+  assert_eq "integration/demo moves: other.txt" "$(git -C "$P" log -1 --format=%s "$(probe_get "$n2" p2)" 2>/dev/null)" "the merge's second parent is the moved target"
+  assert_eq "$_m" "$(probe_get "$n2" remote)" "the merge is pushed to origin's A-b (HEAD:refs/heads/A-b)"
+  assert_eq 4 "$(story_calls A | wc -l | tr -d ' ')" "no session for the sync: T1, T2, final review, finish, as with no target move"
+  assert_missing "$CALLS/m-A.sync" "no sync-repair unit"
+  assert_contains "$(last_lanes_dir)/events.jsonl" "\"event\":\"story_synced\",\"story\":\"A\",\"refs\":\[\"origin/integration/demo\"\],\"sha\":\"$_m\"}$" "a story_synced event names the ref and the new head"
+  assert_eq "chore(sync): merge origin/integration/demo into A-b" "$(sync_merges A)" "one sync merge in A-b's history"
+  assert_eq "no-worktree" "$(sync_skips A)" "before task 1 there is no story worktree yet"
+}
+test_lanes_sync_skips() {
+  for _ss in dirty ahead no-worktree; do
+    LANES_TASKS=2; export LANES_TASKS
+    lanes_fixture "sync-$_ss" integration A:-
+    case "$_ss" in
+      dirty) printf 'push_target other.txt; dirty stray.txt\n' > "$SCEN/A" ;;
+      ahead) printf 'push_target other.txt; localcommit\nlocalcommit\n' > "$SCEN/A" ;;
+      no-worktree) printf 'push_target other.txt; rmwt\nrmwt\n' > "$SCEN/A" ;;
+    esac
+    run_lanes start "$MFP"
+    assert_eq "no-worktree,$_ss,$_ss" "$(sync_skips A)" "$_ss: the checks before task 2 and the final review are skipped=$_ss"
+    assert_eq 0 "$(sync_events A | grep -c '"refs"')" "$_ss: no merged event"
+    assert_eq "" "$(sync_merges A)" "$_ss: no sync merge"
+    assert_contains "$(last_lanes_dir)/stories/A" "^landed " "$_ss: a skip never stops the story"
+  done
+}
+test_lanes_sync_integration_two_refs() {
+  LANES_TASKS=2; export LANES_TASKS
+  lanes_fixture sync2 integration A:-
+  printf 'push_target other.txt; push_main main.txt\nprobe\n' > "$SCEN/A"
+  run_lanes start "$MFP"
+  assert_contains "$(last_lanes_dir)/stories/A" "^landed " "A lands"
+  n2="$(nth_call A 2)"; _m="$(probe_get "$n2" head)"
+  assert_eq "chore(sync): merge origin/integration/demo into A-b|chore(sync): merge origin/main into A-b" "$(sync_merges A)" "the target, then the default branch, one merge each"
+  assert_eq "chore(sync): merge origin/main into A-b" "$(probe_get "$n2" subject)" "both merged before task 2"
+  assert_eq 1 "$(sync_events A | grep -c '"refs"')" "one merged event"
+  assert_contains "$(last_lanes_dir)/events.jsonl" "\"story\":\"A\",\"refs\":\[\"origin/integration/demo\",\"origin/main\"\],\"sha\":\"$_m\"}$" "it lists both refs in merge order and the new head"
+}
+test_lanes_sync_failed_merge_aborts() {
+  LANES_TASKS=2; export LANES_TASKS
+  lanes_fixture syncfail integration A:-
+  printf 'mergehook on; push_target other.txt\nprobe; mergehook off\n' > "$SCEN/A"
+  run_lanes start "$MFP"
+  assert_contains "$(last_lanes_dir)/events.jsonl" '"event":"story_synced","story":"A","failed":"merge"}$' "a refused merge is failed=merge"
+  n2="$(nth_call A 2)"
+  assert_eq "ledger(A): T1 complete" "$(probe_get "$n2" subject)" "the head is task 1's"
+  assert_eq "$(probe_get "$n2" head)" "$(probe_get "$n2" remote)" "and nothing new was pushed"
+  assert_eq "0 0" "$(probe_get "$n2" dirty) $(probe_get "$n2" mergehead)" "merge --abort left a clean tree and no MERGE_HEAD"
+  assert_contains "$(last_lanes_dir)/stories/A" "^landed " "a failed sync never stops the story"
+}
+test_lanes_sync_conflict_launches_repair() {
+  LANES_TASKS=2; export LANES_TASKS
+  lanes_fixture synccf integration A:-
+  printf 'push_target A-T1.txt\n' > "$SCEN/A"
+  printf 'syncrepair\n' > "$SCEN/A.sync"
+  run_lanes start "$MFP"
+  assert_eq 1 "$(cat "$CALLS/m-A.sync" 2>/dev/null)" "one sync-repair call"
+  _n="$(sync_call)"
+  assert_contains "$CALLS/$_n.env" "^STUDIO_REPAIR=sync:origin/integration/demo$" "the repair names the ref"
+  assert_contains "$CALLS/$_n.argv" "^/game-dev:execute --land$" "through the landing-repair prompt"
+  assert_eq opus "$(sed -n 4p "$CALLS/$_n.argv" 2>/dev/null)" "on model_repair"
+  _states="$(grep '"event":"story_state","story":"A"' "$(last_lanes_dir)/events.jsonl" | sed -n 's/.*"state":"\([a-z-]*\)".*/\1/p' | paste -sd' ' -)"
+  assert_eq "queued running sync-repair running landing landed" "$_states" "the record goes sync-repair, then running, and the story lands"
+  assert_eq "1 A-T1 progress,2 A-sync-repair progress,3 A-T2 progress,4 A-final-review progress,5 A-finish done," "$(story_rows A)" "the repair's row is sync-repair, and task 2 follows it"
+  assert_eq "" "$(sync_merges A)" "a conflict is never merged by the runner"
+}
+test_lanes_sync_repair_stops() {
+  for _sr in stop noop hang; do
+    LANES_TASKS=2; export LANES_TASKS
+    LANES_CONFIG='{"overnight": {"kill_grace_seconds": 5}}'; export LANES_CONFIG
+    lanes_fixture "syncstop-$_sr" integration A:-
+    printf 'push_target A-T1.txt\n' > "$SCEN/A"
+    case "$_sr" in
+      stop) printf 'stop cannot resolve\n' > "$SCEN/A.sync"; _want="stop: cannot resolve" ;;
+      noop) printf 'noop\n' > "$SCEN/A.sync"; _want="no progress" ;;
+      hang) printf 'hang\n' > "$SCEN/A.sync"; _want="timed out (session_minutes 90)"
+            STUDIO_OVERNIGHT_SESSION_SECONDS=10; export STUDIO_OVERNIGHT_SESSION_SECONDS ;;
+    esac
+    run_lanes start "$MFP"; unset STUDIO_OVERNIGHT_SESSION_SECONDS
+    assert_contains "$(last_lanes_dir)/stories/A" "^stopped sync repair: $_want$" "$_sr: the story ends stopped sync repair: $_want"
+    assert_eq 1 "$(cat "$CALLS/m-A.sync" 2>/dev/null)" "$_sr: no retry"
+    assert_eq 1 "$(cat "$CALLS/m-A" 2>/dev/null)" "$_sr: no unit after it"
+  done
+}
+test_lanes_no_sync_before_repairs() {
+  # A gate repair: the target moves during the red finish.
+  lanes_fixture syncgr integration A:-
+  printf 'auto\nauto\ngatelog; stop gate red — studio-test: 1 failed; push_target other.txt\n' > "$SCEN/A"
+  printf 'gaterepair\n' > "$SCEN/A.gate"
+  run_lanes start "$MFP"
+  assert_eq 1 "$(gate_calls)" "gate repair: one gate-repair unit"
+  assert_contains "$(last_lanes_dir)/stories/A" "^landed " "gate repair: A lands"
+  assert_eq "no-worktree" "$(sync_skips A)" "gate repair: no check after the target moved (task 1's skip only)"
+  assert_eq 1 "$(sync_events A | grep -c .)" "gate repair: no other story_synced event"
+  assert_eq "" "$(sync_merges A)" "gate repair: no sync merge"
+  # A landing repair: A lands during B's finish, so B's landing conflicts.
+  lanes_fixture synclr integration A:- B:-
+  printf 'conflict shared.txt\n' > "$SCEN/A"; printf 'conflict shared.txt\nauto\nsleep 4\n' > "$SCEN/B"
+  printf 'repair\n' > "$SCEN/B.land"
+  run_lanes start "$MFP"
+  assert_eq 1 "$(land_calls)" "landing repair: one repair unit"
+  assert_contains "$(last_lanes_dir)/stories/B" "^landed " "landing repair: B lands"
+  assert_eq "no-worktree" "$(sync_skips B)" "landing repair: no check after the target moved (task 1's skip only)"
+  assert_eq 1 "$(sync_events B | grep -c .)" "landing repair: no other story_synced event"
+  assert_eq "" "$(sync_merges B)" "landing repair: no sync merge"
+}
 # ---- T11: the integration final step and the direct progress landing ----
 
 # prompt_calls PROMPT — the stub call numbers whose prompt is exactly PROMPT.
@@ -1553,10 +1734,11 @@ test_lanes_final_repair_turns_green() {
   assert_status 0 "the repair's commit is pushed" -- git -C "$P" cat-file -e origin/integration/demo:fixed
   assert_contains "$P/.studio/runs/demo/gate" "^$(git -C "$P" rev-parse origin/integration/demo) green$" "the gate record names the repaired head"
 }
+# main moves during A's finish (a unit with no sync check before it, #39
+# D34), so the conflict reaches the final step rather than a sync repair.
 test_lanes_final_conflict() {
-  LANES_MAIN_MOVES=shared.txt; export LANES_MAIN_MOVES
   lanes_fixture fincf integration A:-
-  printf 'conflict shared.txt\n' > "$SCEN/A"; printf 'mergemain\n' > "$SCEN/final-repair"
+  printf 'conflict shared.txt\nauto\npush_main shared.txt\n' > "$SCEN/A"; printf 'mergemain\n' > "$SCEN/final-repair"
   run_lanes start "$MFP"
   _n="$(prompt_calls '/omega:integration repair demo')"
   assert_eq 1 "$(printf '%s' "$_n" | grep -c .)" "one final-repair unit for the conflict"
@@ -1566,9 +1748,8 @@ test_lanes_final_conflict() {
   assert_status 0 "the repaired merge is pushed" -- git -C "$P" merge-base --is-ancestor origin/main origin/integration/demo
   assert_contains "$P/.studio/runs/demo/final" " green$" "a resolved conflict and a green gate: green"
   # The repair cannot resolve it: red, the integration head unmerged.
-  LANES_MAIN_MOVES=shared.txt; export LANES_MAIN_MOVES
   lanes_fixture fincf2 integration A:-
-  printf 'conflict shared.txt\n' > "$SCEN/A"; printf 'noop\n' > "$SCEN/final-repair"
+  printf 'conflict shared.txt\nauto\npush_main shared.txt\n' > "$SCEN/A"; printf 'noop\n' > "$SCEN/final-repair"
   run_lanes start "$MFP"
   git -C "$P" fetch -q origin
   assert_status 1 "the integration head stays unmerged" -- git -C "$P" merge-base --is-ancestor origin/main origin/integration/demo
@@ -1733,9 +1914,8 @@ test_lanes_final_budget() {
 }
 # One final-repair unit in total: after a conflict repair, a red gate is final.
 test_lanes_final_conflict_then_red() {
-  LANES_MAIN_MOVES=shared.txt; export LANES_MAIN_MOVES
   lanes_fixture fincfred integration A:-
-  printf 'conflict shared.txt\n' > "$SCEN/A"; printf 'mergemain\nfixgate\n' > "$SCEN/final-repair"
+  printf 'conflict shared.txt\nauto\npush_main shared.txt\n' > "$SCEN/A"; printf 'mergemain\nfixgate\n' > "$SCEN/final-repair"
   use_gate "echo gate >> '$CALLS/final-gates'; exit 1"
   run_lanes start "$MFP"
   use_gate true
@@ -3406,6 +3586,9 @@ run_tests test_lanes_chain_rule test_lanes_manifest_refusals test_lanes_prefligh
   test_lanes_gate_never_overlaps test_lanes_gate_repair_then_lands test_lanes_gate_repair_cap \
   test_lanes_gate_repair_same_stop_twice test_lanes_gate_repairs_zero test_lanes_gate_hard_stops_no_repair \
   test_lanes_gate_repair_no_progress test_lanes_gate_repair_model_and_no_log test_lanes_gate_repair_budget test_lanes_gate_repair_halt \
+  test_lanes_sync_clean_merge_no_session test_lanes_sync_skips test_lanes_sync_integration_two_refs \
+  test_lanes_sync_failed_merge_aborts test_lanes_sync_conflict_launches_repair test_lanes_sync_repair_stops \
+  test_lanes_no_sync_before_repairs \
   test_lanes_final_step_once test_lanes_final_red_after_repair \
   test_lanes_final_repair_turns_green test_lanes_final_conflict test_lanes_final_resume_edits_pr \
   test_lanes_final_skipped_on_stop_or_nothing_landed test_lanes_final_stop_before_setup test_lanes_final_gate_default test_lanes_direct_progress_landing \

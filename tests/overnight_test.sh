@@ -243,7 +243,7 @@ test_events_contract_doc() {
     | grep -oE '(run_event|chan_event|"\$RD") [a-z_]+ ("|[a-z_]+(=|:=|\[\]=)|'"'"')' > "$TMP/ev-calls.txt"
   cat "$B/studio-overnight" "$B/overnight-lanes.sh" "$B/overnight-channel.sh" "$H" | grep -v '^[[:space:]]*#' \
     | grep -oE '(run_event|chan_event|"\$RD") [a-z_]+ .*' > "$TMP/ev-lines.txt"
-  for e in run_started story_listed story_state unit_started unit_ended session_wait message_queued message_delivered message_requeued control run_ended; do
+  for e in run_started story_listed story_state story_synced unit_started unit_ended session_wait message_queued message_delivered message_requeued control run_ended; do
     assert_contains "$DOC" "^| \`$e\` |" "the doc's table lists $e"
     assert_eq 1 "$(awk -v e="$e" '$2 == e { f = 1 } END { print f ? 1 : 0 }' "$TMP/ev-calls.txt")" "the code writes $e"
     # fields: those at the event's call sites equal those in the doc's fields column

@@ -651,6 +651,99 @@ gate_repair() {
   return 1
 }
 
+# ---- The sync check (#39 AC24-26; D28-D34) ----
+# unit_pre LABEL — the sync check before a task unit and the final-review
+# unit of a story (retries included); never before a repair unit, the
+# finish, landing or the final step (D34), and not once the lane must halt.
+# 1 when the story must end (ENDING set).
+unit_pre() {
+  [ -n "${CUR_ID:-}" ] && [ -n "${LDIR:-}" ] || return 0
+  case "$1" in T[0-9]*|final-review) ;; *) return 0 ;; esac
+  ! lane_halt || return 0
+  sync_check "$CUR_ID"
+}
+# sync_emit ID MERGED — the merged story_synced event (refs in merge order,
+# sha the worktree's new head), when MERGED (comma-joined refs) is not empty.
+sync_emit() { [ -z "$2" ] || run_event story_synced "story=$1" "refs[]=$2" "sha=$(git -C "$SY_W" rev-parse HEAD)"; }
+# sync_check ID — merge each sync ref (origin/<Target>, then origin/<default>
+# when the Target is not the default) that moved past the story branch into
+# the story worktree, one `chore(sync): merge <ref> into <Branch>` each, and
+# push it to origin/<Branch> (AC24-25). It runs only when the story worktree
+# exists on <Branch> (else skipped=no-worktree), is clean (skipped=dirty) and
+# is not ahead of origin/<Branch> (skipped=ahead, also when there is none:
+# D29). A ref that does not resolve is failed=merge-tree (D28); a refused
+# merge is aborted and failed=merge (D31). A skip or failure is a
+# story_synced event and never stops the story; a conflict (merge-tree exit
+# 1) launches one sync repair and ends the check (D33). Writes no studio
+# state. Returns sync_repair's status after a conflict, else 0.
+sync_check() {
+  _sy_b="$(row_field "$1" branch)"
+  SY_W="$(story_state "$1" worktree 2>/dev/null)" && [ -n "$SY_W" ] \
+    && [ "$(git -C "$SY_W" symbolic-ref -q --short HEAD 2>/dev/null)" = "$_sy_b" ] \
+    || { run_event story_synced "story=$1" skipped=no-worktree; return 0; }
+  [ -z "$(git -C "$SY_W" status --porcelain 2>/dev/null)" ] || { run_event story_synced "story=$1" skipped=dirty; return 0; }
+  git_retry -C "$SY_W" fetch -q origin || { run_event story_synced "story=$1" failed=fetch; return 0; }
+  _sy_a="$(git -C "$SY_W" rev-list --count "refs/remotes/origin/$_sy_b..HEAD" 2>/dev/null)" || _sy_a=x
+  [ "$_sy_a" = 0 ] || { run_event story_synced "story=$1" skipped=ahead; return 0; }
+  _sy_refs="origin/$MF_TARGET"; [ "$MF_TARGET" = "$DEFAULT_BRANCH" ] || _sy_refs="$_sy_refs origin/$DEFAULT_BRANCH"
+  _sy_done=""
+  for _sy_r in $_sy_refs; do
+    git -C "$SY_W" rev-parse -q --verify "refs/remotes/$_sy_r^{commit}" >/dev/null \
+      || { sync_emit "$1" "$_sy_done"; run_event story_synced "story=$1" failed=merge-tree; return 0; }
+    ! git -C "$SY_W" merge-base --is-ancestor "refs/remotes/$_sy_r" HEAD || continue
+    _sy_rc=0; git -C "$SY_W" merge-tree --write-tree HEAD "refs/remotes/$_sy_r" >/dev/null 2>&1 || _sy_rc=$?
+    case "$_sy_rc" in
+      0) if ! git -C "$SY_W" merge -q --no-ff --no-edit -m "chore(sync): merge $_sy_r into $_sy_b" "refs/remotes/$_sy_r" >/dev/null 2>&1; then
+           git -C "$SY_W" merge --abort >/dev/null 2>&1
+           [ -z "$(git -C "$SY_W" status --porcelain 2>/dev/null)" ] \
+             || say "sync: $SY_W is not clean after merge --abort — left as is for the next unit"
+           sync_emit "$1" "$_sy_done"; run_event story_synced "story=$1" failed=merge; return 0
+         fi
+         _sy_done="$_sy_done${_sy_done:+,}$_sy_r"
+         git_retry -C "$SY_W" push -q origin "HEAD:refs/heads/$_sy_b" \
+           || { sync_emit "$1" "$_sy_done"; run_event story_synced "story=$1" failed=push; return 0; } ;;
+      1) sync_emit "$1" "$_sy_done"; sync_repair "$1" "$_sy_r"; return $? ;;
+      *) sync_emit "$1" "$_sy_done"; run_event story_synced "story=$1" failed=merge-tree; return 0 ;;
+    esac
+  done
+  sync_emit "$1" "$_sy_done"
+  return 0
+}
+# sync_repair ID REF — one sync-repair unit (AC26) through the landing-repair
+# path: stories/ID = sync-repair, then `/game-dev:execute --land` (label
+# sync-repair, model_repair) with STUDIO_REPAIR=sync:REF added to the story's
+# env words. Returns 0 when the feature ledger gained a `Synced:` line: the
+# record goes back to running, stops.before is taken again, and the story's
+# next unit runs. Else returns 1 with ENDING set, and the story stops at once
+# (no retry, no hold): the halt reason; `stop: run budget`; `sync repair:
+# stop: <reason>` for a new Stop: line; `sync repair: no progress [(orphaned:
+# …)]`; `sync repair: timed out (session_minutes N)` (D32).
+sync_repair() {
+  if lane_halt; then ENDING="$(lane_halt_reason)"; return 1; fi
+  if run_budget_out; then ENDING="stop: run budget"; return 1; fi
+  story_write "$1" sync-repair
+  snapshot "$UNIT_DIR/sync.before"
+  _sr_b="$(ledger_of "$FEATURE_DIR" | grep -c '^- [0-9-]* Synced: ')"
+  _sr_p="$PROMPT"; _sr_e="$LAUNCH_ENV"
+  PROMPT="/game-dev:execute --land"; LAUNCH_ENV="$LAUNCH_ENV STUDIO_REPAIR=$(sq "sync:$2")"
+  n=$((${n:-0} + 1)); run_unit "$n" sync-repair
+  PROMPT="$_sr_p"; LAUNCH_ENV="$_sr_e"
+  if [ "$UNIT_HALTED" != 0 ]; then ENDING="$(lane_halt_reason)"; return 1; fi   # D22
+  snapshot "$UNIT_DIR/sync.after"
+  take_new_stop "$UNIT_DIR/sync.before" "$UNIT_DIR/sync.after"
+  _sr_a="$(ledger_of "$FEATURE_DIR" | grep -c '^- [0-9-]* Synced: ')"
+  if [ -n "$NEW_STOP" ]; then row "$n" sync-repair stop; ENDING="sync repair: $STOP_ENDING"; return 1; fi
+  if [ "$_sr_a" -gt "$_sr_b" ]; then
+    row "$n" sync-repair progress; story_write "$1" running; snapshot "$UNIT_DIR/stops.before"; return 0
+  fi
+  _sr_o="$(unit_outcome)"
+  if [ "$_sr_o" != "timed out" ]; then row "$n" sync-repair "$_sr_o"; ENDING="sync repair: no progress$(orphan_note "$_sr_o")"
+  else row "$n" sync-repair "timed out"; ENDING="sync repair: timed out (session_minutes $SESSION_MINUTES)"; fi
+  # A halt that ended the unit (or arrived while it ran) names the story's end.
+  ! lane_halt || ENDING="$(lane_halt_reason)"
+  return 1
+}
+
 # land_story ID — land shipped story ID: take the land lock (polled every
 # STUDIO_OVERNIGHT_POLL_SECONDS s; a halt ends the story with its reason),
 # land_once, and on a first conflict or red one repair unit and one retry;
@@ -1151,7 +1244,7 @@ story_ledger_lines() { story_ledger_text "$1" | grep -E '^- [0-9-]+ (([^ ]+ )?Ru
 # `<id>-<unit label>`) as a markdown table; `(no units)` when none ran.
 story_units_table() {
   cat "$RUN_DIR"/lanes/*/units.tsv 2>/dev/null | awk -F'\t' -v p="$1-" '
-    index($2, p) == 1 && substr($2, length(p) + 1) ~ /^(T[0-9]+|check|final-review|finish|repair|gate-repair)(-retry)?$/ {
+    index($2, p) == 1 && substr($2, length(p) + 1) ~ /^(T[0-9]+|check|final-review|finish|repair|gate-repair|sync-repair)(-retry)?$/ {
       if (!n++) print "| # | Unit | Exit | Cost | Minutes | Timed out | Outcome |\n|---|------|------|------|---------|-----------|---------|"
       printf "| %s | %s | %s | %s | %s | %s | %s |\n", $1, $2, $3, $4, $5, $6, $7 }
     END { if (!n) print "(no units)" }'

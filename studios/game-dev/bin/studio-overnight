@@ -158,7 +158,7 @@ model_for() {
     T*) UNIT_MODEL="$MODEL_TASK" ;;
     final-review|check) UNIT_MODEL="$MODEL_FINAL" ;;
     finish) UNIT_MODEL="$MODEL_FINISH" ;;
-    repair|final-repair|gate-repair) UNIT_MODEL="$MODEL_REPAIR" ;;
+    repair|final-repair|gate-repair|sync-repair) UNIT_MODEL="$MODEL_REPAIR" ;;
     progress) UNIT_MODEL="$MODEL_PROGRESS" ;;
     *) say "no model for unit $1"; exit 3 ;;
   esac
@@ -1016,6 +1016,10 @@ start_session() {
 session_acquire() { :; }
 session_started() { :; }
 session_release() { :; }
+# unit_pre LABEL — the hook story_units runs before a unit (#39 D34): a
+# no-op here; overnight-lanes.sh redefines it as the sync check. 1 ends the
+# story with ENDING set.
+unit_pre() { return 0; }
 # run_unit N LABEL — one session, waited for; sets UNIT_* (D7's wait loop).
 # It first takes a session slot (session_acquire, D23): a halt while it waits
 # sets UNIT_HALTED=1 and returns at once, with no row, event or session; the
@@ -1200,7 +1204,8 @@ on_exit() {
 # ENDING set: done · stopped by user · stopped by operator · held by
 # operator · directive <id> not recorded · stop: <reason> · stop: run budget ·
 # no progress on <label> [(orphaned: …)] · timed out on <label> (…) ·
-# stop: unexpected stage <s>. Its scratch files
+# stop: unexpected stage <s> · unit_pre's (lanes: sync repair: <reason>, or
+# the halt reason). Its scratch files
 # live in UNIT_DIR (the run dir; a lane's own dir in manifest mode). Unit
 # numbers run on from the caller's n (0 when unset), so a second call for the
 # same story (after a gate repair) never reuses a unit's file names.
@@ -1215,7 +1220,9 @@ story_units() {
     _stage="$SIG_STAGE"
     case "$_stage" in plan|execute) ;; *) ENDING="stop: unexpected stage $_stage"; return 0 ;; esac
     if run_budget_out; then ENDING="stop: run budget"; return 0; fi
-    _before="$SIG"; _base="${STUDIO_OVERNIGHT_LABEL:-$(label_for)}"
+    _base="${STUDIO_OVERNIGHT_LABEL:-$(label_for)}"
+    unit_pre "$_base" || return 0
+    _before="$SIG"
     n=$((n + 1)); run_unit "$n" "$_base$suffix"
     [ "$UNIT_HALTED" = 0 ] || { ENDING="$(halt_reason)"; return 0; }   # halted waiting for a slot (D22)
     snapshot "$UNIT_DIR/stops.after"
