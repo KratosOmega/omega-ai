@@ -100,14 +100,16 @@ is `STUDIO_STORY`:
   unset or already done). On exit 1:
   `studio-state ledger "Stop: worktree setup failed — exit <n> — log <path>"`
   (the path from its stderr line), committed as §8's stops are committed; end the turn.
+  On exit 2 (usage or bad config) the same Stop with the tool's stderr line:
+  `studio-state ledger "Stop: worktree setup — <its stderr line>"`.
 - Then, for a story whose feature ledger has an `adopted` line, run
   `studio-adopt sync <id>` after the worktree is entered and set up, and
-  before *Where to start* reads `task`. On exit 1:
+  before *Where to start* reads `task`. On exit 1 or exit 2 (usage):
   `studio-state ledger "Stop: adopt sync — <its stderr line>"`, committed the same way;
   under a lane the runner holds the story. Keep its report: a
   `T<k+1> in progress: <first>..<last>` line feeds the task brief (§8, Inputs).
 - **The gate runs in the foreground.** Run `studio-test` and `studio-run`
-  as foreground Bash calls with `timeout` set to `$BASH_MAX_TIMEOUT_MS` (the
+  (and `studio-setup` and `studio-setup gate`, the same way) as foreground Bash calls with `timeout` set to `$BASH_MAX_TIMEOUT_MS` (the
   runner exports it, `session_minutes` × 60000). A call that waits for the
   gate lock behind another lane's test or a merge command just blocks until
   it gets the lock. Never run either in the background: no
@@ -174,10 +176,10 @@ is `STUDIO_STORY`:
   Operator messages are recorded after this step (see §8, Operator messages).
   Then, on a new run and on every resume that has entered the feature checkout,
   run `studio-setup` from the worktree root (`worktree_setup`; a no-op when unset or
-  already done); on exit 1 stop with
-  `Stop: worktree setup failed — exit <n> — log <path>` as above. A story whose
-  feature ledger has an `adopted` line then runs `studio-adopt sync <id>` as above,
-  before *Where to start* reads `task`.
+  already done); on exit 1 or exit 2 stop
+  as above. A story whose feature ledger has an `adopted` line (`<id>` is the story
+  that ledger names; with no such line, single-plan runs no sync) then runs
+  `studio-adopt sync <id>` as above, before *Where to start* reads `task`.
 
 **The base** — the PR's base, and the anchor for
 `git merge-base <base> HEAD` in §4a, §5 and §7 — is the noted branch on a
@@ -453,7 +455,7 @@ the last task's review. Under `--one`, see §8: a task unit never starts it.
 
 - When a task is complete (§4a rule 6): `studio-state set task n/N` and
   `studio-state ledger "T<n> complete <full sha>..<full sha>"` (`git rev-parse` of HEAD
-  before the task, and of its last commit). Older short-sha lines still parse.
+  before the task, captured before the implementer is dispatched, and of its last commit). Older short-sha lines still parse.
 - Every judgment call: `studio-state ledger "T<n> Ruling: <decision> — <why> — <cost if wrong>"`.
   The SDD ledger under `.superpowers/sdd/` remains the recovery map for the
   loop; the feature ledger (`.studio/ledger/<feature>.md`) carries the rulings
@@ -597,6 +599,7 @@ runner's (`STUDIO_RUN`'s header), and the base is `origin/<Target>`:
 
 - **Integration:** step 1 runs once, the story's one test run;
   `studio-test` and `studio-run` each run as a foreground Bash call with `timeout` set to `$BASH_MAX_TIMEOUT_MS`, never in the background (§0, The gate runs in the foreground: a call waits on the gate lock by blocking).
+  `studio-setup` and `studio-setup gate` run the same way.
   A gate call that outlives its `timeout` and is moved to the background is a timed-out gate: the finish runs
   `studio-state ledger "Stop: gate timed out — <command> ran past <n> min"`, a hard stop like those below.
   Step 1's red-gate loop does not run under a lane:
@@ -649,7 +652,8 @@ runs exactly one unit, writes its state, commits, pushes, and ends the turn.
   - for a single-plan plan with no `## Global Constraints` or a task with no
     `Spec:`, `studio-brief` prints a one-line note and exits 0: use it all
     the same.
-- **Which unit:** exactly the one §0's *Where to start* picks.
+- **Which unit:** exactly the one §0's *Where to start* picks (the check unit
+  first when `check requested` stands, else the task, review or finish case).
   - `check requested` without `check done` in the feature ledger: the check unit
     (below), before any task, final review or finish.
   - `task k/N` with k < N: one SDD task, `T<k+1>`.
@@ -664,7 +668,12 @@ runs exactly one unit, writes its state, commits, pushes, and ends the turn.
      `studio-brief check <k>` against tasks 1..k;
   3. fixes in this unit, each committed `fix(check): <summary>` with
      `studio-state ledger "check Ruling: <decision> — <why> — <cost if wrong>"`;
-  4. then `studio-state ledger "check done <range of its fix commits, or none>"`, commit, push.
+  4. then `studio-state ledger "check done <full sha>..<full sha>"` (`git rev-parse` of
+     HEAD before the first fix, captured before any fix is made, and of the last fix
+     commit), or `check done none` when it made no fix commit; commit, push.
+
+  `check 0` means no finished range: run the gates only, then `check done none`.
+  A `studio-brief check <k>` exit 1 is a Stop (`Stop: check — <its stderr line>`), held.
 
   A finding it cannot fix, or a red gate it cannot make green:
   `studio-state ledger "Stop: check — <reason>"`, committed as stops are. `k` never changes.
@@ -815,7 +824,7 @@ story's env (`STUDIO_STORY`, `STUDIO_RUN`, `STUDIO_DOCS_REV`,
 `OMEGA_AUTOPILOT=1`, `BASH_DEFAULT_TIMEOUT_MS`, `BASH_MAX_TIMEOUT_MS`) and
 `STUDIO_REPAIR=gate:<log>` set. `<log>` is the newest `studio-test` log of
 the feature checkout (`.studio/reports/test-<stamp>.log`), or `-` when there
-is none. It bypasses §0's stage gate: these preconditions replace it, and
+is none; a `gate_command` Stop names its own log in the Stop line, and that is `<log>`. It bypasses §0's stage gate: these preconditions replace it, and
 any miss is a `Stop:` line (§8's stop rule).
 
 A full gate can take most of a session, so this unit never runs it: it
@@ -832,7 +841,8 @@ then launches a fresh finish, which runs the full gate once (§7).
   starts with `gate:`.
 - **Read the failure:** the `Stop: gate red — <failing command and line>`
   line names the red command. For `studio-test`, read the failing tests'
-  names and output from the log at `<log>`; when `<log>` is `-` or shows no
+  names and output from the log at `<log>` (for `gate_command`, the log the Stop
+  line names); when `<log>` is `-` or shows no
   failure, the Stop line's failing line is the failure.
 - **Fix:** dispatch one fresh fixer (§5 step 5's owning role) with the
   failing output. It commits `fix(gate): <summary>`.
