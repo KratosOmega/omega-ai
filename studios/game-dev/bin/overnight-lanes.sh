@@ -1182,7 +1182,8 @@ lanes_reap_stale() {
 lanes_status_lines() {
   # $1 is 1 for a live run: the progress line (first) then has an ETA, and
   # each story line ends with its own bar (progress_story, #37).
-  progress_compute manifest "${1:-0}" && progress_overall
+  progress_compute manifest "${1:-0}" || true
+  progress_overall
   for _st_id in $(cut -f1 "$MF_ROWS" | awk '!seen[$0]++'); do
     _st_k="$(cat "$RUN_DIR/claims/$(chain_of "$_st_id")/lane" 2>/dev/null)"; [ -n "$_st_k" ] || _st_k=-
     _st_r="$(story_get "$_st_id")"; _st_s="${_st_r%% *}"; _st_s="${_st_s%:}"; [ -n "$_st_s" ] || _st_s=-
@@ -1191,7 +1192,8 @@ lanes_status_lines() {
       _st_c="$(cat "$RUN_DIR/lanes/$_st_k/current" 2>/dev/null)"
       case "$_st_c" in "$_st_id "*) _st_u="$_st_c" ;; esac
     fi
-    _st_t="$(story_state "$_st_id" get task 2>/dev/null)"; [ -n "$_st_t" ] || _st_t=-
+    _st_t="$(progress_task "$_st_id" 2>/dev/null)" || _st_t="$(story_state "$_st_id" get task 2>/dev/null)"
+    [ -n "$_st_t" ] || _st_t=-
     printf '%s  lane %s  %s  unit %s  task %s%s\n' "$_st_id" "$_st_k" "$_st_s" "$_st_u" "$_st_t" "$(progress_story "$_st_id")"
     case "$_st_r" in
       "held "*) printf '    %s\n' "$(held_line "$_st_r" "$_st_id")" ;;

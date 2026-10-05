@@ -221,7 +221,9 @@ usage: $SELF_ABS start [--dry-run | --detach] [<manifest>] | status [--follow] |
   next [<manifest>]  the planning loop: classify each manifest row (brainstorm,
                      plan, planned) and print the one next command; no argument
                      reads .studio/run. Reads files and ledger lines only.
-  status             the live run: dir, unit, task k/N, spend, pid (exit 1: no run)
+  status             the live run: a progress bar with a rough finish time, dir, unit,
+                     task k/N, spend, pid, and the machine readout (studio-env)
+                     (exit 1: no run)
                      A manifest run: one line per story (lane, state, unit,
                      task k/N), the gate holder, spend, pid; with no live run,
                      the last manifest run (a SIGKILLed one is swept and its
@@ -351,6 +353,8 @@ Test hooks (tests only; never set them for a real run; --detach strips them):
                      place of hold_minutes x 60; a whole number
   STUDIO_OVERNIGHT_INBOX_WAIT — test hook: seconds a verb waits for the
                      inbox lock (default 15)
+  STUDIO_ENV_FIXTURE — test hook: a directory of canned outputs studio-env reads
+                     in place of uname, sysctl, /proc, nproc, df, pmset and ps
 EOF
 }
 
@@ -1375,7 +1379,7 @@ project_status() {
   fi
   if lock_live; then
     RUN_DIR="$(sed -n 's/^run=//p' "$LOCK" | head -n 1)"
-    progress_compute single 1 && { progress_overall; progress_done; }
+    { progress_compute single 1 || true; progress_overall; progress_done; }
     printf 'run: %s\nunit: %s\ntask: %s\nspent: $%s\npid: %s\n' "$RUN_DIR" \
       "$(cat "$RUN_DIR/current" 2>/dev/null)" "$(state get task 2>/dev/null)" "$(spent)" "$(lock_pid)"
     if [ -f "$RUN_DIR/control/-.held" ]; then held_line "$(cat "$RUN_DIR/control/-.held")" -
@@ -1387,12 +1391,12 @@ project_status() {
   if [ -n "$_sd" ] && [ -f "$_sd/report.md" ]; then
     printf 'no run — the last run: %s\n' "$_sd"
     ended_line "$_sd/report.md"
-    RUN_DIR="$_sd"; progress_compute single 0 && { progress_overall; progress_done; }
+    RUN_DIR="$_sd"; { progress_compute single 0 || true; progress_overall; progress_done; }
     return 1
   fi
   if [ -n "$_sd" ] && [ -d "$_sd" ]; then
     printf 'no run — the last run: %s has no report (its runner died before writing one; units.tsv and the unit logs are there)\n' "$_sd"
-    RUN_DIR="$_sd"; progress_compute single 0 && { progress_overall; progress_done; }
+    RUN_DIR="$_sd"; { progress_compute single 0 || true; progress_overall; progress_done; }
     return 1
   fi
   printf 'no run in %s — no live run lock (%s) and no run under %s\n' "$STATE_ROOT" "$LOCK" "$REPORTS"

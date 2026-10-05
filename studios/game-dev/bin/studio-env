@@ -27,12 +27,12 @@ FIX="${STUDIO_ENV_FIXTURE:-}"
 RUN_PID=""; DIR="."
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --run-pid) RUN_PID="${2:-}" ;;
+    --run-pid) RUN_PID="${2:-}"; [ "$#" -lt 2 ] || shift ;;
     --run-pid=*) RUN_PID="${1#--run-pid=}" ;;
-    --dir) DIR="${2:-.}" ;;
+    --dir) DIR="${2:-.}"; [ "$#" -lt 2 ] || shift ;;
     --dir=*) DIR="${1#--dir=}" ;;
   esac
-  [ "$#" -eq 0 ] || shift
+  shift
 done
 [ -n "$DIR" ] || DIR="."
 
@@ -115,7 +115,8 @@ if [ "$OS" = Darwin ]; then
 fi
 
 # ps_top MODE — the top 5 processes by `mem` or `cpu`, aggregated by command
-# name, ` · `-joined; `(this run)` on a name with a process under RUN_PID.
+# name, ` · `-joined; `(this run)` on a name with a process under RUN_PID
+# (the name is aggregated, so any one such process marks the whole name).
 ps_top() {
   if [ "$OS" = Darwin ]; then _pt="$(src ps ps -Ao pid,ppid,rss,pcpu,comm)"; else _pt="$(src ps ps -eo pid,ppid,rss,pcpu,comm)"; fi
   printf '%s\n' "$_pt" | awk -v mode="$1" -v rp="$RUN_PID" '

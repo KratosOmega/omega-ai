@@ -153,6 +153,16 @@ test_env_real_machine() {
   assert_contains "$TMP/real.out" "^env: cpu " "a summary line"
 }
 
+test_env_option_values_consumed() {
+  # An option's value is consumed with it, whatever the value looks like.
+  linux 0.5 4000000
+  env_run --run-pid 99 --dir "$TMP"
+  assert_contains "$TMP/env.out" "^env: cpu 0.5/4 · .* · disk 182 GB free" "both separate-value options read"
+  env_run --dir --run-pid
+  assert_eq 0 "$ENV_RC" "an option missing its value still exits 0"
+}
+
 run_tests test_env_mac_normal test_env_mac_pressure test_env_mac_top_five_only test_env_mac_swap_alone \
   test_env_mac_battery test_env_mac_cpu test_env_linux test_env_disk test_env_unknowns test_env_this_run \
-  test_env_args test_env_real_machine
+  test_env_args test_env_real_machine \
+  test_env_option_values_consumed

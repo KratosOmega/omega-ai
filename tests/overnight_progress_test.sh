@@ -162,6 +162,59 @@ test_progress_retry_and_unit_kinds() {
   assert_contains "$TMP/st.out" "rough: 1 units timed" "unfinished units are not timed"
 }
 
+test_progress_scale_with_past_rows() {
+  # The past median is computed once per kind and only the newest 20 runs are read:
+  # many past rows and many stories must not make status slow.
+  proj scale; _i=1
+  while [ "$_i" -le 10 ]; do story "S$_i" - running "0/4"; chain "$_i" - "S$_i"; _i=$((_i + 1)); done
+  live
+  _t0=$(date +%s); st; _tb=$(( $(date +%s) - _t0 ))   # the baseline on this machine, no history
+  _r=1
+  while [ "$_r" -le 30 ]; do
+    _pd="$P/.studio/reports/overnight-old-$_r/lanes/1"; mkdir -p "$_pd"
+    awk -v r="$_r" 'BEGIN { for (i = 1; i <= 100; i++) printf "%d\tS1-T%d\t0\t1.00\t%d\t0\tprogress\n", i, i, 5 + (i * r) % 17 }' > "$_pd/units.tsv"
+    touch -t "2026010100$(printf '%02d' "$_r")" "$P/.studio/reports/overnight-old-$_r"
+    _r=$((_r + 1))
+  done
+  _t0=$(date +%s); st; _t1=$(date +%s)
+  _fast=fast; [ $(( _t1 - _t0 )) -le $(( _tb + 3 )) ] || _fast="slow ($(( _t1 - _t0 )) s vs $_tb s)"
+  assert_eq fast "$_fast" "3000 past rows add under 3 s to status over the same 10 stories with none"
+  assert_contains "$TMP/st.out" "rough: 2000 past units" "only the newest 20 runs' rows are read"
+}
+test_progress_held_single_plan_no_eta() {
+  proj sheld; rm -rf "$RD"; RD="$P/.studio/reports/overnight-20261004-010000"; mkdir -p "$RD/control"
+  printf '# Studio State\n\nstage: execute\nspec: -\nplan: -\ntask: 1/3\nbranch: -\nmilestone: prototype\n\n## Ledger\n\n' > "$P/.studio/STATE.md"
+  units "$RD" T1 progress 10; echo "held by operator until 2026-10-04T12:00:00Z" > "$RD/control/-.held"
+  live; st
+  assert_contains "$TMP/st.out" "^progress: .* 1/5 units · held (no ETA)$" "a held single-plan run shows no ETA"
+}
+test_progress_ended_single_plan_ignores_project_task() {
+  proj send; rm -rf "$RD"; RD="$P/.studio/reports/overnight-20261004-010000"; mkdir -p "$RD"
+  printf '# Studio State\n\nstage: execute\nspec: -\nplan: -\ntask: 1/9\nbranch: -\nmilestone: prototype\n\n## Ledger\n\n' > "$P/.studio/STATE.md"
+  units "$RD" T1 progress 10
+  printf '# Overnight run\nEnding: stopped\n' > "$RD/report.md"
+  st
+  assert_not_contains "$TMP/st.out" "^progress:" "an ended run that did not finish shows no bar (a newer plan's task would skew it)"
+}
+test_progress_resume_review_not_double_counted() {
+  proj resume; story A - running "2/2"; chain 1 - A; live
+  printf -- '- 2026-10-03 final review done\n' >> "$P/.studio/stories/A.md"
+  st
+  # No units done; no task left, review done earlier, finish left: 1 + the final step.
+  assert_contains "$TMP/st.out" "^progress: .* 0/2 units" "a final review done in an earlier run is not planned again"
+}
+test_progress_symlinked_run_not_past() {
+  proj sym; story A - running "0/1"; chain 1 - A
+  units "$RD/lanes/1" A-T1 progress 10
+  ln -s "$P" "$TMP/symp"; live
+  printf 'pid=%s\nrun=%s\nstarted=x\n' "$DUMMY" "$TMP/symp/.studio/reports/overnight-demo-1" > "$P/.studio/overnight.lock"
+  st
+  assert_not_contains "$TMP/st.out" "past units" "the current run, spelled through a symlink, is not a past run"
+}
+
 run_tests test_progress_fresh_no_data test_progress_mid_run_eta test_progress_past_run_median \
   test_progress_repair_adds_a_unit test_progress_chains_waits_and_held test_progress_ended_run_no_eta \
-  test_progress_single_plan test_progress_retry_and_unit_kinds
+  test_progress_single_plan test_progress_retry_and_unit_kinds \
+  test_progress_scale_with_past_rows test_progress_held_single_plan_no_eta \
+  test_progress_ended_single_plan_ignores_project_task test_progress_resume_review_not_double_counted \
+  test_progress_symlinked_run_not_past
