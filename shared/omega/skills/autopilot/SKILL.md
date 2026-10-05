@@ -15,8 +15,9 @@ In a studio, no session-mode `autopilot` is ever set, no keep-awake is started, 
 the stories run in `studio-overnight`'s fresh headless sessions, one unit per session.
 Work that does not fit stops with a stated reason (*Does not fit*, below).
 
-`off`: `omega-mode clear autopilot`; then, when `studio-overnight status`
-exits 0 (a run is live), `studio-overnight stop`; then stop. `omega-mode`
+`off`: `omega-mode clear autopilot`; then a bare `studio-overnight stop`; then stop.
+With one live run, the bare stop ends it. With several, it stops none and lists them:
+name `stop --run <slug>` (one run) and `stop --all` (every run) to the user. `omega-mode`
 and `studio-overnight` are on `PATH` in a studio (see *In a studio*); the
 session-start line names `omega-mode`'s path otherwise.
 
@@ -49,14 +50,18 @@ so; phase 2 governs the session.
 
 `<default>` is the default branch (`git symbolic-ref --short
 refs/remotes/origin/HEAD`, without `origin/`); `<dir>` is
-`studio-state root --work`; `<abs>` is `command -v studio-overnight` from this
+the run worktree (see *The run worktree*); `<abs>` is `command -v studio-overnight` from this
 session (it is on `PATH` only inside a `claude-gd` session).
 
-1. **Discovery.** First, when `studio-overnight status` exits 0, a run is live: stop and say so — watch it with `studio-overnight status`, end it with `studio-overnight stop`; nothing is written. Then read `.studio/run`: one line, the manifest's path.
-   - It names `docs/runs/<slug>.md` and `.studio/runs/<slug>/done` does not exist: that run is not done.
-     When `.studio/runs/<slug>/` exists, the run was started: skip to step 4 (readiness, then how to start) — it is never planned or seeded again, and the runner resumes it from its record.
-     Otherwise resume it at step 2.
-   - No pointer, or a pointer whose `.studio/runs/<slug>/done` exists (a done run's pointer is ignored): a new run.
+1. **Discovery.** A live run never stops discovery. With no slug, list:
+   - the **runs being planned**: run worktrees (`git worktree list --porcelain`, `branch refs/heads/run/*`) whose `.studio/run` names a manifest with no `<root>/.studio/runs/<slug>/landed.tsv`;
+   - the **started runs**: records under `<root>/.studio/runs/` without `done`, live or not, as `studio-overnight status` prints them.
+
+   Ask one `AskUserQuestion` with each run, and "new run". `/omega:autopilot <slug>` skips the question.
+   - A run being planned resumes at step 2, from its run worktree.
+   - A started run: when `.studio/runs/<slug>/` exists, the run was started: skip to step 4 (readiness, then how to start), from its run worktree. It is never planned or seeded again, and the runner resumes it from its record.
+   - A run whose `.studio/runs/<slug>/done` exists is not listed (a done run's pointer is ignored).
+   - "new run", or no run listed: a new run.
 
    A new run:
    - Ask one `AskUserQuestion` with two questions, each option with its one-line consequence:
@@ -64,13 +69,19 @@ session (it is on `PATH` only inside a `claude-gd` session).
        An `integration slug=<slug>` line in `omega-mode show` pre-selects integration with that slug.
      - **how many lanes** — lanes are parallel dependency chains, while tests still run one at a time. The answer is `.studio/config.json`'s `overnight.max_lanes` (`0` = one lane per chain).
         It must be an integer from 0 to 8 (the runner's range); refuse any other answer and ask again.
-        Write it only after the switch to `run/<slug>` below (a tracked `config.json` that differs from `origin/<default>` would block `git switch -c`): merge it into the existing file, so every other key is kept (`merge_command` included): `python3 -c 'import json,sys; p=".studio/config.json"; c=json.load(open(p)); c.setdefault("overnight", {})["max_lanes"]=int(sys.argv[1]); open(p,"w").write(json.dumps(c, indent=2)+"\n")' <n>`; with no `.studio/config.json`, write `{"overnight": {"max_lanes": <n>}}`.
-   - Then ask the story list: each story's id, branch, ticket (`-` when none) and the earlier rows it depends on. A story whose branch already exists (local or `origin/<Branch>`) is half-done.
+        Write it only in the run worktree (see *The run worktree*), never in the main checkout: merge it into the existing file, so every other key is kept (`merge_command` included): `python3 -c 'import json,sys; p=".studio/config.json"; c=json.load(open(p)); c.setdefault("overnight", {})["max_lanes"]=int(sys.argv[1]); open(p,"w").write(json.dumps(c, indent=2)+"\n")' <n>`; with no `.studio/config.json`, write `{"overnight": {"max_lanes": <n>}}`.
+   - Then ask the story list: each story's id, branch, ticket (`-` when none) and the earlier rows it depends on. Refuse and re-ask an id or branch that another run uses (AC8: a live or stopped run's story id or branch). A story whose branch already exists (local or `origin/<Branch>`) is half-done.
      In the same question, ask each story's **source plan** and **source spec** (a path, or `-` for none): a story with source plan `-` is a fresh story, unchanged. Refuse and re-ask a path that is not repo-relative, not normalized (no `./`, no `..`) or not tracked (`git ls-files --error-unmatch`).
-     For a story with a source plan, after the switch to `run/<slug>`: `STUDIO_STORY=<id> studio-state init` (the ledger refuses a story with no pointer), then `studio-state ledger "source <plan> spec <spec or ->"` with `STUDIO_STORY=<id>`. These facts survive `/clear` and step 3; they are committed on `run/<slug>` with the manifest.
-   - **The run branch (before any planning stage).** The checkout must be on `<default>` or already on `run/<slug>`; otherwise stop with "switch this checkout to `<default>` first".
-     From `<default>`: `git fetch origin`, then `git switch -c run/<slug> origin/<default>` (`git switch run/<slug>` when it already exists locally), so every brainstorm and plan commit lands on `run/<slug>` and the user's `main` never diverges.
-     Then, on `run/<slug>`, write the lane count into `.studio/config.json` as above.
+     For a story with a source plan, in the run worktree: `STUDIO_STORY=<id> studio-state init` (the ledger refuses a story with no pointer), then `studio-state ledger "source <plan> spec <spec or ->"` with `STUDIO_STORY=<id>`. These facts survive `/clear` and step 3; they are committed on `run/<slug>` with the manifest.
+   - **The run worktree (before any planning stage).** The main checkout's branch is never switched. In order:
+     1. Check the slug: not `off`, not all digits, not used by a live or stopped run. A done record is archived: `mv <root>/.studio/runs/<slug> <root>/.studio/runs/<slug>.$(date -u +%Y%m%dT%H%M%SZ)`.
+     2. `git fetch origin`, then `git worktree add --no-track -b run/<slug> <root>/.claude/worktrees/run-<slug> origin/<default>`, or `git worktree add <path> run/<slug>` when the branch exists.
+     3. Enter it with **Enter the feature checkout** (`EnterWorktree path:`, else `cd`) and check it with `git rev-parse --show-toplevel`.
+     4. Print the path.
+     5. Run `studio-state init --local`, then `worktree_setup` when configured.
+     6. Every later phase-1 step runs there: the lane count, the manifest, `.studio/run` and the commits. Paths are absolute under the run worktree, except half-done story worktrees (`<root>/.claude/worktrees/…`). So every brainstorm and plan commit lands on `run/<slug>`.
+
+     Then, in the run worktree, write the lane count into `.studio/config.json` as above.
    - Write the run manifest `docs/runs/<slug>.md` (Spec and Plan are `-` while planning; `Docs:` is written in step 3):
 
      ```
@@ -96,7 +107,7 @@ session (it is on `PATH` only inside a `claude-gd` session).
         - a `TBD`, `TODO`, open question or undecided option;
         - no spec, and the plan's tasks name no authority for their requirements;
         - no acceptance criteria can be gathered from the source spec or the tasks' acceptance checks (the final review needs them).
-     3. A `plan` story: with a source spec, approve that spec through `/game-dev:plan`'s one-word gate (it records `spec approved <spec>` and sets the spec's `Status:`, committed on `run/<slug>`), then run `/game-dev:plan <id>`; with none, run `/game-dev:brainstorm <id>`. Seed either with the original plan and inspect's output, and tell the planner: tasks 1..k keep the original's titles and boundaries, unchanged and marked finished; planning covers task k+1 onward. The branch and its finished work are kept. After planning, step 3 ledgers `adopted <original> -> <new plan>` into `<id>.md`.
+     3. A `plan` story: with a source spec, approve that spec through `/game-dev:plan`'s one-word gate (it records `spec approved <spec>` and sets the spec's `Status:`, committed on `run/<slug>`), then print `/game-dev:plan <slug>/<id>`; with none, print `/game-dev:brainstorm <slug>/<id>`. Seed either with the original plan and inspect's output, and tell the planner: tasks 1..k keep the original's titles and boundaries, unchanged and marked finished; planning covers task k+1 onward. The branch and its finished work are kept. After planning, step 3 ledgers `adopted <original> -> <new plan>` into `<id>.md`.
      4. An `adopt` story is converted: the session writes `docs/game-dev/plans/<date>-<id>.md` and never edits the original. The converted plan has:
         - `Story: <id>`, `Source: <original plan path>` and `Status: Draft (awaiting approval)`;
         - `## Global Constraints`, carried over from the original, plus this rule: heavy commands a task runs (a test-tag run, a store write) are wrapped as `studio-gate <who> -- <cmd>`;
@@ -120,18 +131,18 @@ session (it is on `PATH` only inside a `claude-gd` session).
      superpowers 6.4.1's sdd-workspace rule (the ledger lives in `<worktree root>/.superpowers/sdd/<plan basename>/`, git-ignored) is why inspect looks in every worktree of the original.
 2. **Planning loop — one stage per session.** Run `studio-overnight next <manifest>`.
    It classifies every row as `brainstorm`, `plan` or `planned` from files and ledger lines alone and prints `next: <command>`.
-   - `next: /game-dev:brainstorm <id>` — the epic's spec does not exist yet.
-   - `next: /game-dev:plan <id>` — when that row's spec is already approved, set `STATE.md` for it first: `studio-state set stage plan`, then `studio-state set spec <spec>`.
+   - `next: /game-dev:brainstorm <slug>/<id>` — the epic's spec does not exist yet.
+   - `next: /game-dev:plan <slug>/<id>` — when that row's spec is already approved, set `STATE.md` for it first: `studio-state set stage plan`, then `studio-state set spec <spec>`.
    - Either way: Print `/clear`, then the command, and stop. The stage runs in its own session and ends by printing `next`'s command; `/omega:autopilot` resumes here through `.studio/run`, so the loop survives `/clear`.
-   - `next: /omega:autopilot` — every row is `planned`: go to step 3.
+   - `next: /omega:autopilot <slug>` — every row is `planned`: go to step 3.
    - When `next` exits non-zero: show its message, fix what it names (the manifest, a missing or ambiguous spec or plan), and stop; nothing is seeded.
 
    The question sweep for manifest stories belongs to `/game-dev:plan` (it writes `## Decisions` and ledgers `Decisions swept <id>`); this skill does not repeat it.
 3. **Seed every story** once every row is `planned`, in manifest order. Every `studio-state` call below runs with `STUDIO_STORY=<id>`.
    - A `plan` story that was adopted (its `<id>.md` holds `verdict plan`): first, with `STUDIO_STORY=<id>`, `studio-state ledger "adopted <original> -> <new plan>"` (`<new plan>` from `next`'s `plan=`), before the seeding below.
-   - Each story, not-started and half-done alike, in this checkout (on `run/<slug>`), never in a story worktree: `studio-state init`; `set spec <spec>`; `set plan <plan>` (from `next`'s `spec=` and `plan=`); `set task 0/<N>` (`N` = `awk '/^## Backlog/ { exit } /^### Task [0-9]/ { n++ } END { print n + 0 }' <plan>` — the tasks above `## Backlog` only, since a task the producer cut keeps its heading there — run here where the plan exists — a story worktree's `check --rebuild` then takes `N` from the story file and never needs the plan); then the spec-slug ledger's `spec approved <spec>`, `plan approved <plan>` and `Decisions swept <id>` lines are re-ledgered through `studio-state ledger "<text after the date>"`, so each carries today's date.
-     They land in this checkout's `.studio/ledger/<id>.md` — the file the runner's preflight reads, and the one it requires clean — and are committed on `run/<slug>` below.
-   - **Not started** (no branch): in this checkout, `set stage plan`, `set branch -`.
+   - Each story, not-started and half-done alike, in the run worktree (on `run/<slug>`), never in a story worktree: `studio-state init`; `set spec <spec>`; `set plan <plan>` (from `next`'s `spec=` and `plan=`); `set task 0/<N>` (`N` = `awk '/^## Backlog/ { exit } /^### Task [0-9]/ { n++ } END { print n + 0 }' <plan>` — the tasks above `## Backlog` only, since a task the producer cut keeps its heading there — run here where the plan exists — a story worktree's `check --rebuild` then takes `N` from the story file and never needs the plan); then the spec-slug ledger's `spec approved <spec>`, `plan approved <plan>` and `Decisions swept <id>` lines are re-ledgered through `studio-state ledger "<text after the date>"`, so each carries today's date.
+     They land in the run worktree's `.studio/ledger/<id>.md` — the file the runner's preflight reads, and the one it requires clean — and are committed on `run/<slug>` below.
+   - **Not started** (no branch): in the run worktree, `set stage plan`, `set branch -`.
    - **Half-done** (an existing branch, `T<n> complete` lines, possibly `final review done`, `shipped`, or already merged):
      1. Create the story's worktree at the path execute §0 uses, `<STATE_ROOT>/.claude/worktrees/<Branch with / → ->`: `git worktree add --no-track <path> <Branch>` (only on origin: `git worktree add --no-track -b <Branch> <path> origin/<Branch>`); an existing worktree of that branch is used as it is.
         When another checkout holds `<Branch>`, stop with "switch that checkout off <Branch> first".
@@ -147,23 +158,24 @@ session (it is on `PATH` only inside a `claude-gd` session).
      Write that commit's sha (`git rev-parse HEAD`) as `Docs:`, then commit `docs(run): <slug> docs <short sha>` and push `run/<slug>` again.
 4. **Readiness checklist.** Print it; every line must pass:
    - `studio-overnight start --dry-run <manifest>` exits 0 (the runner's own preflight: the manifest, `Docs:` on `origin/run/<slug>`, each plan's `Story:`, `Spec:` lines and `## Decisions`, each story's state and ledger, `claude-gd`, `gh auth status`, the deny list, config, `merge_command` in direct mode, no live run);
-   - the baseline test run is green — `studio-test`, exit 0;
+   - the baseline test run is green — `studio-test`, exit 0, run in the run worktree after `worktree_setup`;
    - the engine binary resolves — `studio-test` or `GODOT_PATH`;
    - for each adopted story: `studio-adopt sync <id>` from its worktree exits 0 (a not-started story is skipped, with a note).
 
    A failed line stops here; fix it and print the checklist again.
 5. **Ask how to start** — one `AskUserQuestion`:
    - **autopilot starts it** — detached from the chat: no terminal, no Ctrl-C; watch with `studio-overnight status`.
-     Run `cd '<dir>' && '<abs>' start --detach <manifest>`. It runs the preflight in the foreground, starts the runner in its own session, and waits for `studio-overnight status` to answer; exit 0 means the run is live — report success only then.
+     Run `cd '<run worktree>' && '<abs>' start --detach <manifest>`. It runs the preflight in the foreground, starts the runner in its own session, and waits for `studio-overnight status` to answer; exit 0 means the run is live — report success only then.
      The launch may need one permission approval and runs outside the Bash sandbox when one is on (the run needs the network).
      On any non-zero exit, show its message (and the log it names), print the command below, and stop; autopilot never retries in this session.
-   - **print the command** — paste it into a plain terminal: live output, and Ctrl-C stops after the running units. The command, with absolute paths: `cd '<dir>' && '<abs>' start <manifest>`.
+   - **print the command** — paste it into a plain terminal: live output, and Ctrl-C stops after the running units. The command, with absolute paths: `cd '<run worktree>' && '<abs>' start <manifest>`.
 
    Either way, say in the same message:
    - what the run may merge in the chosen mode — integration: the runner merges stories into `integration/<slug>`, nothing is merged into `main`, and the morning brings one draft PR integration → `main`; direct: the runner merges each story into `main` only through `merge_command`, each dependent after its dependency;
    - what it may not do: no session merges anything; no force-push; no remote branch deleted; no destructive or security-sensitive operation; no reading or writing of secrets;
    - how to watch and end it: `studio-overnight status` (from any directory) or `studio-overnight watch`, and `studio-overnight stop` (from the project);
    - that the morning `report.md` lands in `.studio/reports/overnight-<slug>-<ts>/`;
+   - the run worktree: `git worktree remove <path>` once the run is `done`; nothing removes the worktree automatically;
    - that this chat can now close, and to keep the laptop on power with the lid open.
 
 ### Does not fit
