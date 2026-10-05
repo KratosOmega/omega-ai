@@ -1291,7 +1291,7 @@ detach_start() {
         _drun="$(sed -n 's/^run=//p' "$LOCK" 2>/dev/null | head -n 1)"
         [ -z "$_drun" ] || ln -sf "$_dlog" "$_drun/runner.log" 2>/dev/null || true
         echo "detached: pid $_dpid, log $_dlog"
-        echo "watch: $(sq "$SELF_ABS") watch --run $_dslug · status: $(sq "$SELF_ABS") status --run $_dslug (from any directory)"
+        echo "watch: $(sq "$SELF_ABS") watch --run $_dslug · status: $(sq "$SELF_ABS") status --run $_dslug (from the project; plain status from anywhere)"
         return 0
       fi
     else

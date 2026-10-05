@@ -32,10 +32,14 @@ Story #27 defines it; #28 (the Multica bridge) builds on it. Spec:
   moves to `runs/last`; the core never interprets it.
 
   The run dir's basename is the run's name. Every verb's `--run <run>` takes
-  it, and also the run's slug (`status --run`, `watch --run`, `stop --run`
-  take `<slug|run dir basename>`). A name that is not live is refused:
-  `run <name> is not live`. `last` is the newest ended run (it also has
-  `ended=`) and is never live.
+  it. Inside the run's project, `--run` also takes the run's slug
+  (`<slug|run dir basename>`). Outside a project, the channel verbs and
+  `stop --run` take only the run dir basename, and `status --run` and
+  `watch --run` ignore the selector and show every live run of the registry.
+  A channel verb or `stop --run` refuses a name that is not live:
+  `run <name> is not live`. In the project, `status --run <slug>` with no
+  such live run prints `no live run <slug>` and exits 1. `last` is the
+  newest ended run (it also has `ended=`) and is never live.
 - The channel verbs `say`, `unsay`, `hold`, `resume`, `said` and
   `stop <story>` resolve the run in this order: `--run <slug|run dir
   basename>` when given; otherwise the one live run of the project whose
@@ -125,7 +129,9 @@ envelope, in this order:
 
 `studio-overnight <verb> …`; `<story>` is `-` in a single-plan run. Every verb
 takes `--run <run>` anywhere before `--`: it then acts only on that live run
-and otherwise exits 1 with `run <name> is not live` — never another run.
+and otherwise exits 1 with `run <name> is not live` — never another run
+(`status --run` in a project says `no live run <slug>`; outside one it
+ignores the selector — see the registry above).
 
 | verb | does | stdout on 0 |
 |---|---|---|
