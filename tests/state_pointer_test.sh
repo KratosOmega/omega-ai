@@ -66,7 +66,10 @@ test_state_pointerless_reads_idle() {
   assert_contains "$TMP/show.out" '^stage: idle$' "show prints stage idle"
   assert_contains "$TMP/show.out" '^milestone: prototype$' "show prints main's milestone"
   assert_contains "$TMP/show.out" '^(no story in this checkout)$' "show says there is no story here"
-  assert_not_contains "$TMP/show.out" 'docs/s.md' "show prints nothing of main's story"
+  # AC3/AC28: nothing of main's story but the take hint, which is the last line.
+  sed '$d' "$TMP/show.out" > "$TMP/show.head"
+  assert_not_contains "$TMP/show.head" 'docs/s.md' "show prints nothing of main's story above the hint"
+  assert_contains "$TMP/show.out" "studio-state take docs/s.md continues it here$" "and ends with the take hint"
   assert_eq "check: ok" "$(st "$W" check)" "check prints check: ok"
   st_rc "$W" worktree
   assert_eq 1 "$ST_RC" "worktree exits 1"
@@ -212,6 +215,16 @@ test_state_tracked_pointer_refused() {
   _rc=0; ( cd "$W" && STUDIO_STORY=S1 sh "$STATE_BIN" init && STUDIO_STORY=S1 sh "$STATE_BIN" set task 1/2 ) >/dev/null 2>&1 || _rc=$?
   assert_eq 0 "$_rc" "STUDIO_STORY init and set exit 0 there"
   assert_eq "$_s" "$(sum "$P/.studio/STATE.md")" "the main pointer is unchanged"
+  # AC4: take and handoff into WT refuse the same way.
+  plan_in_p; _s="$(sum "$P/.studio/STATE.md")"
+  st_rc "$P" handoff "$W"
+  assert_eq 1 "$ST_RC" "handoff into WT exits 1"
+  assert_contains "$TMP/st.err" "^studio-state: $W/.studio/STATE.md is tracked by git — .*run git rm --cached .studio/STATE.md on this branch$" "naming git rm --cached"
+  st_rc "$W" take docs/s.md
+  assert_eq 1 "$ST_RC" "take in WT exits 1"
+  assert_contains "$TMP/st.err" "^studio-state: $W/.studio/STATE.md is tracked by git — .*run git rm --cached .studio/STATE.md on this branch$" "naming git rm --cached"
+  assert_eq "$_s" "$(sum "$P/.studio/STATE.md")" "the main pointer is unchanged"
+  assert_contains "$W/.studio/STATE.md" '^stage: execute$' "the tracked file is untouched"
 }
 
 _story_calls() {
@@ -290,6 +303,23 @@ test_state_every_write_holds_mutex() {
     assert_eq 1 "$_s" "write ${_j#*:} exits 1 after the timeout"
     assert_contains "$TMP/e${_j#*:}" "state.mutex is busy (pid $HOLD_PID)" "write ${_j#*:} names the holder"
   done
+  release_mutex
+  # f3-N8: a pending hand-off and a busy mutex never fail a read.
+  proj ewp; plan_in_p; st "$P" set stage execute >/dev/null; wt e feat/e; WE="$W"
+  printf -- '- 2026-10-05 handing\tspec=docs/s.md\tplan=docs/p.md\tbranch=feat/e\tpath=%s\n' "$WE" >> "$P/.studio/STATE.md"
+  _s="$(sum "$P/.studio/STATE.md")"; hold_mutex
+  ( cd "$P" && sh "$STATE_BIN" get stage ) > "$TMP/p1.out" 2> "$TMP/p1.err" & _a=$!
+  ( cd "$P" && sh "$STATE_BIN" show ) > "$TMP/p2.out" 2> "$TMP/p2.err" & _b=$!
+  for _j in "$_a:1" "$_b:2"; do
+    _s2=0; wait "${_j%%:*}" || _s2=$?
+    assert_eq 0 "$_s2" "read ${_j#*:} exits 0 after the wait"
+    assert_eq "studio-state: a hand-off to $WE is pending and $P/.studio/state.mutex is busy (pid $HOLD_PID) — showing unhealed state" \
+      "$(cat "$TMP/p${_j#*:}.err")" "read ${_j#*:} says it shows unhealed state"
+  done
+  assert_eq execute "$(cat "$TMP/p1.out")" "get stage prints the unhealed stage"
+  assert_contains "$TMP/p2.out" '^stage: execute$' "show prints the unhealed pointer"
+  assert_eq "$_s" "$(sum "$P/.studio/STATE.md")" "nothing is healed"
+  assert_missing "$WE/.studio/STATE.md" "nor a target written"
   release_mutex
 }
 
