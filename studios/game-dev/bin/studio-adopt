@@ -1,0 +1,330 @@
+#!/bin/sh
+# studio-adopt — bring a story built outside the studio (with superpowers'
+# subagent-driven-development, "SDD") under autopilot, and keep the two in
+# step. Read-only `inspect` here; `seed` and `sync` are further verbs of the
+# same engine.
+#
+# Usage:
+#   studio-adopt inspect <id> --branch <Branch> --plan <original> [--base <sha>]
+#   studio-adopt seed    <id> [--base <sha>] [--reset]
+#   studio-adopt sync    <id>
+#   studio-adopt --help
+#
+# Exit: 0 clean / in sync · 1 a mismatch or a refused precondition (one stderr
+# line naming it) · 2 usage
+set -u
+
+SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
+TMPD="$(mktemp -d)"
+trap 'rm -rf "$TMPD"' EXIT
+TAB="$(printf '\t')"
+BRANCH=""; DEFAULT=""; TARGET=""; ID=""
+
+usage_text() {
+  cat <<'EOF'
+studio-adopt — adopt a story built outside the studio, and keep it in sync.
+Written against superpowers 6.4.1's SDD workspace format
+(.superpowers/sdd/<plan>/progress.md, plan-path).
+
+  studio-adopt inspect <id> --branch <Branch> --plan <original> [--base <sha>]
+      Print the evidence (base, finished tasks, k/N, part-done commits).
+      Read-only; runs from any checkout of the repo.
+      Example: studio-adopt inspect S1 --branch S1-b --plan docs/superpowers/plans/2026-09-01-demo.md
+
+  studio-adopt seed <id> [--base <sha>] [--reset]
+      In the story checkout: write the adopted truth into the story ledger.
+      Example: studio-adopt seed S1
+
+  studio-adopt sync <id>
+      In a checkout of the story branch: accept new SDD claims, regenerate views.
+      Example: studio-adopt sync S1
+
+Exit: 0 clean / in sync · 1 a mismatch or a refused precondition (one stderr
+line naming it) · 2 usage
+EOF
+}
+
+usage() { usage_text >&2; exit 2; }
+
+s7() { printf '%.7s' "$1"; }
+
+# resolve TOK — TOK's full commit sha when it names exactly one commit; else
+# nothing and status 1 (unknown or ambiguous: D19).
+resolve() { git rev-parse --verify --quiet "$1^{commit}" 2>/dev/null; }
+
+# default_branch — the remote's default branch name.
+default_branch() {
+  _db_r="$(git symbolic-ref --quiet refs/remotes/origin/HEAD 2>/dev/null)" || _db_r=""
+  if [ -n "$_db_r" ]; then printf '%s\n' "${_db_r#refs/remotes/origin/}"; return 0; fi
+  for _db_b in main master; do
+    if git show-ref --verify --quiet "refs/remotes/origin/$_db_b"; then printf '%s\n' "$_db_b"; return 0; fi
+  done
+  echo "cannot tell the default branch: origin/HEAD is not set (run: git remote set-head origin -a)" >&2
+  return 1
+}
+
+# fork_point TIP DEFAULT — the first commit on TIP's first-parent chain that is
+# reachable from origin/DEFAULT (D20). Those not reachable form a prefix.
+fork_point() {
+  _fp_n="$(git rev-list --count --first-parent "$1" --not "origin/$2" 2>/dev/null)" || return 1
+  git rev-list --first-parent --skip="$_fp_n" --max-count=1 "$1" 2>/dev/null | grep . || return 1
+}
+
+# plan_file PATH — the plan's file: in the current tree, else in the start
+# checkout (D25).
+plan_file() {
+  _pf_w="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+  if [ -n "$_pf_w" ] && [ -f "$_pf_w/$1" ]; then printf '%s\n' "$_pf_w/$1"; return 0; fi
+  _pf_r="$(sh "$SELF_DIR/studio-state" root 2>/dev/null || true)"
+  if [ -n "$_pf_r" ] && [ -f "$_pf_r/$1" ]; then printf '%s\n' "$_pf_r/$1"; return 0; fi
+  echo "plan $1 not found in this tree or in the start checkout" >&2
+  return 1
+}
+
+# task_count PLAN — the `### Task <n>` headings above `## Backlog`.
+task_count() {
+  awk '/^## Backlog/ { exit } /^### Task [0-9]/ { n++ } END { print n + 0 }' "$1"
+}
+
+# task_title PLAN N — the title after `### Task N:`.
+task_title() {
+  _tt_t="$(awk -v n="$2" '/^## Backlog/ { exit }
+    $0 ~ "^### Task " n ":" { sub(/^### Task [0-9]+:[ \t]*/, ""); print; exit }' "$1")"
+  [ -n "$_tt_t" ] || { echo "$1 has no Task $2" >&2; return 1; }
+  printf '%s\n' "$_tt_t"
+}
+
+# workspaces PLAN — `<tree>\t<dir>` for every SDD workspace whose plan-path
+# names PLAN, in every worktree. Marker-less workspaces are ignored (D32).
+workspaces() {
+  _ws_p="$1"
+  git worktree list --porcelain | sed -n 's/^worktree //p' | while IFS= read -r t; do
+    for d in "$t"/.superpowers/sdd/*/; do
+      [ -f "$d/plan-path" ] || continue
+      [ "$(cat "$d/plan-path")" = "$_ws_p" ] && printf '%s\t%s\n' "$t" "${d%/}"
+    done
+  done
+}
+
+# claims_of PROGRESS — per `Task <n>: complete (commits …)` line: `<n> <first>
+# <last>` from the first and last 7-40 hex tokens after `commits ` that each
+# resolve to exactly one commit (D19); `<n> - <the line>` when none does.
+claims_of() {
+  grep -E '^Task [0-9]+: complete \(commits ' "$1" 2>/dev/null | while IFS= read -r _co_l; do
+    _co_n="$(printf '%s\n' "$_co_l" | sed 's/^Task \([0-9]*\):.*/\1/')"; _co_f=""; _co_z=""
+    for _co_t in $(printf '%s\n' "${_co_l#*commits }" | tr -c '0-9a-f' ' '); do
+      case "${#_co_t}" in [7-9]|[1-3][0-9]|40) ;; *) continue ;; esac
+      _co_s="$(resolve "$_co_t")" || continue
+      [ -n "$_co_f" ] || _co_f="$_co_s"; _co_z="$_co_s"
+    done
+    if [ -n "$_co_f" ]; then printf '%s %s %s\n' "$_co_n" "$_co_f" "$_co_z"
+    else printf '%s - %s\n' "$_co_n" "$_co_l"; fi
+  done
+}
+
+# merged_claims PLAN — every workspace's claims for PLAN, by task number; one
+# line per task; a claim with no resolvable token, or two ranges for one task,
+# is a mismatch (stderr, status 1). Sets WS_LIST (`<dir> (<n> claims)` lines).
+merged_claims() {
+  : > "$TMPD/claims"; WS_LIST=""
+  workspaces "$1" > "$TMPD/ws"
+  while IFS="$TAB" read -r _mc_t _mc_d; do
+    claims_of "$_mc_d/progress.md" > "$TMPD/c1"
+    WS_LIST="$WS_LIST$_mc_d ($(wc -l < "$TMPD/c1" | tr -d ' ') claims)
+"
+    sed "s|\$| $_mc_d|" "$TMPD/c1" >> "$TMPD/claims"
+  done < "$TMPD/ws"
+  _mc_bad="$(awk '$2 == "-" { sub(/^[0-9]+ - /, ""); print "claim names no commit: " $0; exit }' "$TMPD/claims")"
+  [ -z "$_mc_bad" ] || { printf '%s\n' "$_mc_bad" >&2; return 1; }
+  sort -n -k1,1 "$TMPD/claims" | awk '
+    { if (($1 in a) && (a[$1] != $2 || b[$1] != $3)) { print "two ranges for Task " $1 ": " w[$1] " and " $4 > "/dev/stderr"; bad = 1; exit }
+      if (!($1 in a)) { a[$1] = $2; b[$1] = $3; w[$1] = $4; o[++n] = $1 } }
+    END { if (!bad) for (i = 1; i <= n; i++) print o[i], a[o[i]], b[o[i]]; exit bad }'
+}
+
+# touches_work A B — some commit on B's first-parent chain past A touches a path
+# outside .studio/ (merges diffed against their first parent: D21).
+touches_work() {
+  git log --first-parent --diff-merges=first-parent --name-only --format= "$1..$2" 2>/dev/null \
+    | grep -v '^$' | grep -qv '^\.studio/'
+}
+
+# chain_check FILE PREV START TIP — FILE holds `<n> <a> <b>` (full shas) by n;
+# n must run START, START+1, …; PREV is the adopt-base or T<START-1>'s end.
+# AC10b's rules; the first failure on stderr, status 1.
+chain_check() {
+  _cc_p="$2"; _cc_w="$3"
+  while read -r _cc_n _cc_a _cc_b; do
+    [ "$_cc_n" -eq "$_cc_w" ] || { echo "T$_cc_w has no line (next is T$_cc_n)" >&2; return 1; }
+    [ "$_cc_a" != "$_cc_b" ] || { echo "T$_cc_n: empty range $(s7 "$_cc_a")..$(s7 "$_cc_b")" >&2; return 1; }
+    git merge-base --is-ancestor "$_cc_a" "$_cc_b" 2>/dev/null \
+      || { echo "T$_cc_n: $(s7 "$_cc_a") is not an ancestor of $(s7 "$_cc_b")" >&2; return 1; }
+    git merge-base --is-ancestor "$_cc_b" "$4" 2>/dev/null \
+      || { echo "T$_cc_n: $(s7 "$_cc_b") is not on $BRANCH" >&2; return 1; }
+    git merge-base --is-ancestor "$_cc_p" "$_cc_a" 2>/dev/null \
+      || { echo "T$_cc_n: $(s7 "$_cc_a") does not follow $(s7 "$_cc_p")" >&2; return 1; }
+    touches_work "$_cc_a" "$_cc_b" \
+      || { echo "T$_cc_n: $(s7 "$_cc_a")..$(s7 "$_cc_b") has no commit outside .studio/" >&2; return 1; }
+    _cc_p="$_cc_b"; _cc_w=$((_cc_n + 1))
+  done < "$1"
+}
+
+# part_done FROM TIP DOCS — AC11: the first-parent commits FROM..TIP, oldest
+# first, minus merges of the default or Target branch, commits touching only
+# .studio/ and DOCS paths (D22), commits inside a `check done <a>..<b>` range
+# (the $TMPD/checkset file), and fix(final|gate|review / docs(progress subjects.
+part_done() {
+  git log --first-parent --diff-merges=first-parent --name-only --reverse \
+      --format='C %H %P%x09%s' "$1..$2" 2>/dev/null | awk -v docs="$3" '
+    BEGIN { n = split(docs, d, " "); for (i = 1; i <= n; i++) isdoc[d[i]] = 1 }
+    function flush() { if (h != "" && keep) print h; h = "" }
+    /^C / { flush(); split($0, t, "\t"); h = substr(t[1], 3); keep = 0
+            if (t[2] ~ /^(fix\(final|fix\(gate|fix\(review|docs\(progress)/) h = ""
+            next }
+    NF == 0 { next }
+    h != "" && $0 !~ /^\.studio\// && !($0 in isdoc) { keep = 1 }
+    END { flush() }' | while read -r _pd_c _pd_p1 _pd_p2; do
+      if [ -n "$_pd_p2" ]; then
+        git merge-base --is-ancestor "$_pd_p2" "origin/$DEFAULT" 2>/dev/null && continue
+        [ -z "$TARGET" ] || ! git merge-base --is-ancestor "$_pd_p2" "origin/$TARGET" 2>/dev/null || continue
+      fi
+      grep -qxF "$_pd_c" "$TMPD/checkset" 2>/dev/null && continue
+      printf '%s\n' "$_pd_c"
+    done
+}
+
+# run_target — the live run's Target branch: $STUDIO_RUN's manifest, else the
+# manifest .studio/run names in the start checkout (D23). Nothing when neither.
+run_target() {
+  _rt_m="${STUDIO_RUN:-}"
+  if [ -z "$_rt_m" ]; then
+    _rt_r="$(sh "$SELF_DIR/studio-state" root 2>/dev/null || true)"
+    _rt_m="$(head -n 1 "$_rt_r/.studio/run" 2>/dev/null || true)"
+    case "$_rt_m" in ''|/*) ;; *) _rt_m="$_rt_r/$_rt_m" ;; esac
+  fi
+  [ -n "$_rt_m" ] && [ -f "$_rt_m" ] || return 0
+  sed -n 's/^Target:[[:space:]]*//p' "$_rt_m" | head -n 1
+  return 0
+}
+
+# truth_lines FILE — the truth region of a story ledger (D2): the lines after
+# the last `adopt reset` line.
+truth_lines() {
+  awk '/^- [0-9-]+ adopt reset /{ n = NR } { l[NR] = $0 } END { for (i = n + 1; i <= NR; i++) print l[i] }' "$1"
+}
+
+# docs_paths ID — space-separated docs paths of a story (D22): the original,
+# the converted plan, the spec, and the converted plan's `Context:` paths,
+# from `adopted`/`source` lines of the start checkout's story ledger.
+docs_paths() {
+  _dp_r="$(sh "$SELF_DIR/studio-state" root 2>/dev/null || true)"
+  _dp_l="$_dp_r/.studio/ledger/$1.md"
+  [ -f "$_dp_l" ] || return 0
+  _dp_c=""
+  {
+    sed -n 's/^- [0-9-]* adopted \(.*\) -> \(.*\)$/\1\n\2/p' "$_dp_l"
+    sed -n 's/^- [0-9-]* source \([^ ]*\) spec \([^ ]*\).*$/\1\n\2/p' "$_dp_l"
+  } | grep -v '^-$' | sort -u > "$TMPD/docs"
+  while IFS= read -r _dp_p; do
+    _dp_c="$_dp_c $_dp_p"
+    _dp_f="$(plan_file "$_dp_p" 2>/dev/null)" || continue
+    sed -n '/^## /q; s/^Context:[[:space:]]*//p' "$_dp_f" | tr ',' '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' \
+      | grep . > "$TMPD/ctx" || true
+    while IFS= read -r _dp_x; do _dp_c="$_dp_c $_dp_x"; done < "$TMPD/ctx"
+  done < "$TMPD/docs"
+  printf '%s\n' "${_dp_c# }"
+}
+
+# build_checkset ID — every commit inside a `check done <a>..<b>` range of the
+# story ledger, into $TMPD/checkset.
+build_checkset() {
+  : > "$TMPD/checkset"
+  _bc_r="$(sh "$SELF_DIR/studio-state" root 2>/dev/null || true)"
+  _bc_l="$_bc_r/.studio/ledger/$1.md"
+  [ -f "$_bc_l" ] || return 0
+  sed -n 's/^- [0-9-]* check done \([^ ]*\.\.[^ ]*\).*$/\1/p' "$_bc_l" | while IFS= read -r _bc_g; do
+    git rev-list "$_bc_g" >> "$TMPD/checkset" 2>/dev/null || true
+  done
+  return 0
+}
+
+valid_id() { printf '%s' "$1" | grep -Eq '^[A-Za-z0-9._-]+$'; }
+
+cmd_inspect() {
+  ID="${1:-}"; [ -n "$ID" ] && valid_id "$ID" || usage
+  shift
+  BRANCH=""; _in_plan=""; _in_base=""
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --branch) [ "$#" -ge 2 ] || usage; BRANCH="$2"; shift 2 ;;
+      --plan) [ "$#" -ge 2 ] || usage; _in_plan="$2"; shift 2 ;;
+      --base) [ "$#" -ge 2 ] || usage; _in_base="$2"; shift 2 ;;
+      *) usage ;;
+    esac
+  done
+  [ -n "$BRANCH" ] && [ -n "$_in_plan" ] || usage
+
+  _in_pf="$(plan_file "$_in_plan")" || return 1
+  N="$(task_count "$_in_pf")"
+  [ "$N" -gt 0 ] || { echo "$_in_plan has no tasks" >&2; return 1; }
+  DEFAULT="$(default_branch)" || return 1
+  TARGET="$(run_target)"
+  build_checkset "$ID"
+
+  TIP="$(resolve "refs/heads/$BRANCH")" || TIP="$(resolve "refs/remotes/origin/$BRANCH")" || TIP=""
+  : > "$TMPD/report"
+  if [ -z "$TIP" ]; then
+    merged_claims "$_in_plan" > "$TMPD/chain" || return 1
+    {
+      printf 'story: %s\nbranch: %s (not started)\nbase: -\n' "$ID" "$BRANCH"
+      if [ -n "$WS_LIST" ]; then printf '%s' "$WS_LIST" | sed 's/^/workspace: /'; else echo "workspace: none"; fi
+      printf 'k: 0/%s\n' "$N"
+    }
+    return 0
+  fi
+
+  if [ -n "$_in_base" ]; then
+    BASE_SHA="$(resolve "$_in_base")" || { echo "base $_in_base does not name exactly one commit" >&2; return 1; }
+  else
+    BASE_SHA="$(fork_point "$TIP" "$DEFAULT")" \
+      || { echo "$BRANCH shares no history with origin/$DEFAULT — pass --base <sha>" >&2; return 1; }
+  fi
+
+  merged_claims "$_in_plan" > "$TMPD/chain" || return 1
+  _in_over="$(awk -v n="$N" '$1 + 0 > n { print $1; exit }' "$TMPD/chain")"
+  [ -z "$_in_over" ] || { echo "claim for Task $_in_over but $_in_plan has $N tasks" >&2; return 1; }
+  chain_check "$TMPD/chain" "$BASE_SHA" 1 "$TIP" || return 1
+  K="$(awk 'END { print $1 + 0 }' "$TMPD/chain")"
+  FROM="$BASE_SHA"
+  [ "$K" -eq 0 ] || FROM="$(awk 'END { print $3 }' "$TMPD/chain")"
+
+  DOCS="$_in_plan $(docs_paths "$ID")"
+  part_done "$FROM" "$TIP" "$DOCS" > "$TMPD/pd"
+  if [ -z "$WS_LIST" ] && [ -s "$TMPD/pd" ]; then
+    echo "work on $BRANCH past $(s7 "$BASE_SHA") but no SDD ledger for $_in_plan in any worktree — restore it, or write one in SDD's format, and inspect again" >&2
+    return 1
+  fi
+
+  printf 'story: %s\nbranch: %s\nbase: %s\n' "$ID" "$BRANCH" "$BASE_SHA"
+  if [ -n "$WS_LIST" ]; then printf '%s' "$WS_LIST" | sed 's/^/workspace: /'; else echo "workspace: none"; fi
+  awk '{ print "T" $1 " complete " $2 ".." $3 }' "$TMPD/chain"
+  printf 'k: %s/%s\n' "$K" "$N"
+  if [ -s "$TMPD/pd" ]; then
+    _in_r="$(head -n 1 "$TMPD/pd")..$(tail -n 1 "$TMPD/pd")"
+    if [ "$K" -lt "$N" ]; then printf 'T%s in progress: %s\n' "$((K + 1))" "$_in_r"
+    else printf 'post-task commits: %s\n' "$_in_r"; fi
+  fi
+  return 0
+}
+
+main() {
+  [ "$#" -ge 1 ] || usage
+  case "$1" in
+    --help|-h) usage_text; exit 0 ;;
+    inspect) shift; cmd_inspect "$@"; exit $? ;;
+    seed|sync) echo "studio-adopt: $1 is not available yet" >&2; exit 2 ;;
+    *) usage ;;
+  esac
+}
+
+main "$@"
