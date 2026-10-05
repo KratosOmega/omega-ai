@@ -66,6 +66,8 @@ session (it is on `PATH` only inside a `claude-gd` session).
         It must be an integer from 0 to 8 (the runner's range); refuse any other answer and ask again.
         Write it only after the switch to `run/<slug>` below (a tracked `config.json` that differs from `origin/<default>` would block `git switch -c`): merge it into the existing file, so every other key is kept (`merge_command` included): `python3 -c 'import json,sys; p=".studio/config.json"; c=json.load(open(p)); c.setdefault("overnight", {})["max_lanes"]=int(sys.argv[1]); open(p,"w").write(json.dumps(c, indent=2)+"\n")' <n>`; with no `.studio/config.json`, write `{"overnight": {"max_lanes": <n>}}`.
    - Then ask the story list: each story's id, branch, ticket (`-` when none) and the earlier rows it depends on. A story whose branch already exists (local or `origin/<Branch>`) is half-done.
+     In the same question, ask each story's **source plan** and **source spec** (a path, or `-` for none): a story with source plan `-` is a fresh story, unchanged. Refuse and re-ask a path that is not repo-relative, not normalized (no `./`, no `..`) or not tracked (`git ls-files --error-unmatch`).
+     For a story with a source plan, after the switch to `run/<slug>`: `STUDIO_STORY=<id> studio-state init` (the ledger refuses a story with no pointer), then `studio-state ledger "source <plan> spec <spec or ->"` with `STUDIO_STORY=<id>`. These facts survive `/clear` and step 3; they are committed on `run/<slug>` with the manifest.
    - **The run branch (before any planning stage).** The checkout must be on `<default>` or already on `run/<slug>`; otherwise stop with "switch this checkout to `<default>` first".
      From `<default>`: `git fetch origin`, then `git switch -c run/<slug> origin/<default>` (`git switch run/<slug>` when it already exists locally), so every brainstorm and plan commit lands on `run/<slug>` and the user's `main` never diverges.
      Then, on `run/<slug>`, write the lane count into `.studio/config.json` as above.
@@ -87,6 +89,35 @@ session (it is on `PATH` only inside a `claude-gd` session).
    - Write the pointer: `printf '%s\n' docs/runs/<slug>.md > .studio/run`.
      Commit the manifest and the lane count on `run/<slug>`: `git add docs/runs/<slug>.md .studio/config.json && git commit -m "docs(run): <slug> manifest"` — a dirty `config.json` would stop each story's first unit at execute §0's clean-tree check.
    - Check *Does not fit* now, before any planning stage.
+   - **Adopt (step 1a)** — a story with a source plan was planned outside the studio (for example with superpowers). Each step below says what it does as it runs it, and the plan is converted, never rewritten. In order:
+     1. `studio-adopt inspect <id> --branch <Branch> --plan <original>` reads the evidence (the plan's tasks, the SDD ledger, the commits on the branch) and prints it, changing nothing. A mismatch stops that story with inspect's line.
+     2. The **gap check**: the plan has a gap when it has any of these four. Show `adopt` or `plan: <gaps>` per story, and confirm or override each in one `AskUserQuestion` (at most 4 stories per question). Ledger `verdict adopt` or `verdict plan` into `<id>.md` (`STUDIO_STORY=<id>`).
+        - a task without concrete files or acceptance checks;
+        - a `TBD`, `TODO`, open question or undecided option;
+        - no spec, and the plan's tasks name no authority for their requirements;
+        - no acceptance criteria can be gathered from the source spec or the tasks' acceptance checks (the final review needs them).
+     3. A `plan` story: with a source spec, approve that spec through `/game-dev:plan`'s one-word gate (it records `spec approved <spec>` and sets the spec's `Status:`, committed on `run/<slug>`), then run `/game-dev:plan <id>`; with none, run `/game-dev:brainstorm <id>`. Seed either with the original plan and inspect's output, and tell the planner: tasks 1..k keep the original's titles and boundaries, unchanged and marked finished; planning covers task k+1 onward. The branch and its finished work are kept. After planning, step 3 ledgers `adopted <original> -> <new plan>` into `<id>.md`.
+     4. An `adopt` story is converted: the session writes `docs/game-dev/plans/<date>-<id>.md` and never edits the original. The converted plan has:
+        - `Story: <id>`, `Source: <original plan path>` and `Status: Draft (awaiting approval)`;
+        - `## Global Constraints`, carried over from the original, plus this rule: heavy commands a task runs (a test-tag run, a store write) are wrapped as `studio-gate <who> -- <cmd>`;
+        - `## Decisions`, from the original's rulings, decisions and any rulings file or handoff it links, plus the rulings on the conflict scan below;
+        - `## Acceptance criteria`, from the source spec's acceptance or success criteria, else from the tasks' acceptance checks;
+        - tasks 1:1 with the original (same count, numbers, titles, boundaries and order) above `## Backlog`. Each has a `Spec:` line (`<source spec>:L<a>-<b>` for the spec lines it implements, or with no spec `<original>:L<a>-<b>` for the original task's own block, its heading up to the line before the next `### ` heading) and a `Review:` line by `/game-dev:plan`'s rule (`task` for a new seam, cross-system work, gameplay feel, data or schema, or importer work; `final` for the rest);
+        - an optional `Context:` line.
+
+        Before showing it, run SDD's pre-flight conflict scan (pairs of tasks sharing a file or an interface) over tasks k+1..N, and check that every file those tasks modify exists at the story branch tip (`origin/<default>` for a not-started story). Rule each finding with the operator and write it to `## Decisions`.
+     5. Show the conversion side by side: task count, titles paired 1:1, what was added, and the conflict-scan rulings. The operator approves in one word. Then, per story, in this order:
+        1. `studio-state set spec <spec>`, where `<spec>` is the source spec, or the original plan when there is none;
+        2. the manifest row's Spec and Plan cells are set to `<spec>` and the converted plan, byte-identical to the paths ledgered below;
+        3. commit the converted plan and the manifest on `run/<slug>`, so `next_match` and `Docs:` see the plan;
+        4. without `STUDIO_STORY`, into the spec's slug ledger (the file `next` reads): `spec approved <spec>`, `plan approved <converted plan>`, and `Decisions swept <id>` after asking any question the conversion surfaced;
+        5. with `STUDIO_STORY=<id>`, into `<id>.md`: `adopted <original> -> <converted plan>`.
+
+        `next` then classifies the row as `planned` from its filled cells.
+     6. Git-ignored files the original or its handoff names as required reading (for example SDD carry rules) are listed to the operator; once confirmed, copy them to `docs/game-dev/adopted/<id>/`, commit on `run/<slug>`, and name them in `Context:`.
+     7. When inspect shows k ≥ 1 or part-done commits, ask once per story: **check the built work?** A yes ledgers `check requested` into `<id>.md`.
+
+     superpowers 6.4.1's sdd-workspace rule (the ledger lives in `<worktree root>/.superpowers/sdd/<plan basename>/`, git-ignored) is why inspect looks in every worktree of the original.
 2. **Planning loop — one stage per session.** Run `studio-overnight next <manifest>`.
    It classifies every row as `brainstorm`, `plan` or `planned` from files and ledger lines alone and prints `next: <command>`.
    - `next: /game-dev:brainstorm <id>` — the epic's spec does not exist yet.
@@ -104,6 +135,7 @@ session (it is on `PATH` only inside a `claude-gd` session).
      1. Create the story's worktree at the path execute §0 uses, `<STATE_ROOT>/.claude/worktrees/<Branch with / → ->`: `git worktree add --no-track <path> <Branch>` (only on origin: `git worktree add --no-track -b <Branch> <path> origin/<Branch>`); an existing worktree of that branch is used as it is.
         When another checkout holds `<Branch>`, stop with "switch that checkout off <Branch> first".
      2. When the branch has `.studio/ledger/<spec slug>.md` and no `.studio/ledger/<id>.md`: `git mv` it to `.studio/ledger/<id>.md` and commit `chore(studio): ledger keyed by story`.
+     2a. For an adopted story, after step 3.2's re-key and before `studio-state check --rebuild`: `studio-adopt seed <id>` in the story worktree (add `--base <sha>` when inspect was given one). It writes the story's `T<n> complete` lines from the SDD ledger. A not-started adopted story has no seed: execute §0 records its base.
      3. In that worktree, only: `set branch <Branch>`, `set stage execute`, `studio-state check --rebuild` (the "each story" lines already ran in this checkout) — it keeps `N` from the seeded `task 0/<N>` and sets the longest contiguous run of `T<n> complete` lines.
         A gap exits 1: stop and name the missing task (*Does not fit*).
         `N/N` with `final review done` resumes at the finish; a `shipped` line: `set stage idle` (it waits to land); a merged PR or a head already in `origin/<Target>` is landed — the runner records it at start.
@@ -116,7 +148,8 @@ session (it is on `PATH` only inside a `claude-gd` session).
 4. **Readiness checklist.** Print it; every line must pass:
    - `studio-overnight start --dry-run <manifest>` exits 0 (the runner's own preflight: the manifest, `Docs:` on `origin/run/<slug>`, each plan's `Story:`, `Spec:` lines and `## Decisions`, each story's state and ledger, `claude-gd`, `gh auth status`, the deny list, config, `merge_command` in direct mode, no live run);
    - the baseline test run is green — `studio-test`, exit 0;
-   - the engine binary resolves — `studio-test` or `GODOT_PATH`.
+   - the engine binary resolves — `studio-test` or `GODOT_PATH`;
+   - for each adopted story: `studio-adopt sync <id>` from its worktree exits 0 (a not-started story is skipped, with a note).
 
    A failed line stops here; fix it and print the checklist again.
 5. **Ask how to start** — one `AskUserQuestion`:
