@@ -94,7 +94,7 @@ mf_rows_clash() {
 mf_conflicts() {
   _mc_tab="$(printf '\t')"
   runs_live "$STATE_ROOT" | while IFS="$_mc_tab" read -r _ _mc_s _mc_k _mc_p _mc_d _ _mc_l; do
-    [ "$_mc_l" != "$LOCK" ] || continue
+    [ "$1" = 0 ] || [ "$_mc_l" != "$LOCK" ] || continue   # own lock: only once it is held (re-check)
     [ "$_mc_k" = manifest ] || continue
     _mc_how="live run $_mc_s ($_mc_d, pid $_mc_p) — stop it ($(sq "$SELF_ABS") stop --run $_mc_s) or pick another"
     [ "$_mc_s" != "$MF_SLUG" ] || printf 'slug %s is used by %s slug\n' "$MF_SLUG" "$_mc_how"

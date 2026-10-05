@@ -3064,6 +3064,24 @@ test_lanes_preflight_refuses_live_slug_id_branch() {
   done
   end_alpha
 }
+test_lanes_preflight_refuses_live_old_style_run() {
+  lanes_fixture pfold integration A:-
+  _od="$P/.studio/reports/overnight-old-20261003-210000"; mkdir -p "$_od"
+  printf '# Run: old\n\nMode: integration\nTarget: integration/old\n' > "$_od/manifest.md"
+  printf 'A\tA-b\tA\t-\t-\t\n' > "$_od/rows.tsv"
+  sh -c 'sleep 60; :' studio-overnight >/dev/null 2>&1 & _d=$!
+  printf 'pid=%s\nrun=%s\nstarted=2026-10-03T21:00:00Z\nstart=%s\n' "$_d" "$_od" "$P" > "$P/.studio/overnight.lock"
+  run_lanes start --dry-run "$MFP"
+  _st="$LS_STATUS"; _er="$TMP/pfold1.err"; cp "$LS_ERR" "$_er"
+  sed 's/^# Run: demo/# Run: old/' "$P/$MFP" > "$P/docs/runs/os.md"
+  run_lanes start --dry-run docs/runs/os.md
+  _st2="$LS_STATUS"; _er2="$LS_ERR"
+  kill "$_d"; wait "$_d" 2>/dev/null; rm -f "$P/.studio/overnight.lock"
+  assert_eq 2 "$_st" "a story shared with a live old-style run refuses (AC8, AC31)"
+  assert_contains "$_er" "story A is used by live run old ($_od, pid $_d)" "names the old-style run"
+  assert_eq 2 "$_st2" "a slug shared with a live old-style run refuses"
+  assert_contains "$_er2" "slug old is used by live run old" "names the slug"
+}
 test_lanes_preflight_refuses_stopped_record() {
   lanes_fixture pfs integration S1:-
   mkdir -p "$P/.studio/runs/alpha" "$P/.studio/reports/overnight-alpha-20261004-210000"
@@ -3216,6 +3234,6 @@ run_tests test_lanes_chain_rule test_lanes_manifest_refusals test_lanes_prefligh
   test_lanes_reg_write_keeps_live_sibling test_lanes_detach_with_other_run_live test_lanes_units_get_start_dir \
   test_lanes_reap_resume_line_run_worktree test_lanes_old_lock_counts_live test_lanes_old_lock_reaped_by_start \
   test_lanes_same_slug_live_refused \
-  test_lanes_preflight_refuses_live_slug_id_branch test_lanes_preflight_refuses_stopped_record test_lanes_preflight_done_record_needs_archive \
+  test_lanes_preflight_refuses_live_slug_id_branch test_lanes_preflight_refuses_live_old_style_run test_lanes_preflight_refuses_stopped_record test_lanes_preflight_done_record_needs_archive \
   test_lanes_preflight_branch_forms test_lanes_preflight_slug_off_and_digits test_lanes_preflight_resume_own_record \
   test_lanes_recheck_race_one_wins test_lanes_overlap_warning test_lanes_next_slug_forms test_lanes_no_orphans
