@@ -3545,6 +3545,39 @@ test_lanes_slot_stop_ends_wait() {
   assert_missing "$R/lanes/${_k:-0}/slotwait" "slotwait goes"
   assert_eq "" "$(sess_left)" "the wait entry is gone and no slot is left"
 }
+# A first queueing that fails (here: sessions/wait cannot be created) is said
+# and retried in the wait loop, never taken as a halt (#39 final review,
+# T12-1): once the queue can be written, the story runs and lands.
+test_lanes_slot_enqueue_failure_retried() {
+  LANES_CONFIG='{"overnight": {"max_sessions": 1}}'; export LANES_CONFIG
+  lanes_fixture slenq integration A:-
+  mkdir -p "$P/.studio/sessions"; : > "$P/.studio/sessions/wait"
+  slot_poll
+  bg_lanes x "$P" start "$MFP"
+  unset STUDIO_OVERNIGHT_SLOT_POLL_SECONDS
+  wait_for "grep -q 'sessions: cannot queue' '$TMP/bg-x.out' '$TMP/bg-x.err' 2>/dev/null" 60
+  assert_eq 1 "$(cat "$TMP/bg-x.out" "$TMP/bg-x.err" 2>/dev/null | grep -c 'sessions: cannot queue')" "the failed first queueing is said once"
+  rm -f "$P/.studio/sessions/wait"
+  bg_wait x
+  assert_eq 0 "$BG_STATUS" "the run ends normally"
+  assert_contains "$(last_lanes_dir)/stories/A" "^landed " "A is not ended as stopped by user: its lane queued again and ran"
+  assert_eq "" "$(sess_left)" "no slot or wait entry is left"
+}
+# session_release removes the unit dir's slotwait with the wait entry, so a
+# HUP or runner error mid-wait never leaves a stale `waiting for a session
+# slot` (final/slotwait) behind (#39 final review, T12-3).
+test_lanes_session_release_clears_slotwait() {
+  _rs_out="$( (
+    SELF_DIR="$BIN"; STATE_ROOT="$TMP/srs"; UNIT_DIR="$TMP/srs/final"; mkdir -p "$UNIT_DIR" "$STATE_ROOT/.studio/sessions/wait"
+    . "$BIN/overnight-runs.sh"; . "$BIN/overnight-sessions.sh"; . "$BIN/overnight-lanes.sh"
+    sess_init; SESS_ME=$$; SESS_WAIT="$STATE_ROOT/.studio/sessions/wait/1-$$"; : > "$SESS_WAIT"
+    date +%H:%M > "$UNIT_DIR/slotwait"
+    session_release
+    [ -e "$UNIT_DIR/slotwait" ] && echo "slotwait left"; [ -e "$STATE_ROOT/.studio/sessions/wait/1-$$" ] && echo "wait entry left"
+    echo done
+  ) 2>&1)"
+  assert_eq "done" "$_rs_out" "session_release removes slotwait and the wait entry"
+}
 test_lanes_slot_released_every_exit() {
   LANES_CONFIG='{"overnight": {"max_sessions": 1}}'; export LANES_CONFIG
   lanes_fixture slx1 integration A:-
@@ -3800,7 +3833,7 @@ run_tests test_lanes_chain_rule test_lanes_manifest_refusals test_lanes_branch_d
   test_lanes_preflight_branch_forms test_lanes_preflight_slug_off_and_digits test_lanes_preflight_resume_own_record \
   test_lanes_recheck_race_one_wins test_lanes_overlap_warning test_lanes_next_slug_forms \
   test_lanes_slot_cap_two_across_runs test_lanes_slot_cap_one_alternates test_lanes_slot_kill9_lane_reclaimed \
-  test_lanes_slot_stop_ends_wait test_lanes_slot_released_every_exit test_lanes_slot_wait_not_in_session_minutes \
+  test_lanes_slot_stop_ends_wait test_lanes_slot_enqueue_failure_retried test_lanes_session_release_clears_slotwait test_lanes_slot_released_every_exit test_lanes_slot_wait_not_in_session_minutes \
   test_lanes_session_wait_event_and_status test_lanes_max_sessions_preflight \
   test_lanes_round_trip_two_runs test_lanes_round_trip_sync_conflict test_lanes_round_trip_stop_one_of_two \
   test_lanes_no_orphans

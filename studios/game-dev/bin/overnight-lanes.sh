@@ -842,15 +842,17 @@ hold_record() { story_write "$1" "$2"; }
 slot_halt() { if [ -n "${LANE_PID:-}" ]; then lane_halt; else [ -e "$STOP_FILE" ]; fi; }
 # session_acquire LABEL — queue for a project session slot before the unit
 # starts (#39 AC27): FIFO, taken before unit_started and the clocks. 1 on a
-# halt (the wait entry removed). The first failed try writes slotwait and
+# halt (the wait entry removed); a queueing that fails is retried, never a
+# halt. The first failed try writes slotwait and
 # the session_wait event. The key (SESS_ME) is the lane's pid, the runner's
 # for a final-step unit, so no two lanes share a mutex key or a wait entry;
 # an entry of this key left from an earlier wait goes before queueing.
 session_acquire() {
   SESS_ME="${LANE_PID:-$$}"; SESS_RUN="$RUN_DIR"; sess_init
   _sa_story="${CUR_ID:--}"; _sa_lane="${LANE_K:-final}"; _sa_waited=0
-  rm -f "$SESS_DIR"/wait/[0-9]*-"$SESS_ME"
-  sess_enqueue "$_sa_story" "$1" || { say "sessions: cannot queue in $STATE_ROOT/.studio/sessions"; return 1; }
+  rm -f "$SESS_DIR"/wait/[0-9]*-"$SESS_ME"; SESS_WAIT=""
+  # A failed first queueing is not a halt: say it, and the loop queues again.
+  sess_enqueue "$_sa_story" "$1" || { SESS_WAIT=""; say "sessions: cannot queue in $STATE_ROOT/.studio/sessions — retrying"; }
   while :; do
     if slot_halt; then sess_wait_cancel; rm -f "$UNIT_DIR/slotwait"; return 1; fi
     if sess_try "$1"; then rm -f "$UNIT_DIR/slotwait"; return 0; fi
@@ -864,8 +866,9 @@ session_acquire() {
 }
 # session_started PID — the slot's owner names the unit's session pid too.
 session_started() { sess_session "$1"; }
-# session_release — this lane's slot (owner-checked) and any wait entry go.
-session_release() { sess_release; sess_wait_cancel; }
+# session_release — this lane's slot (owner-checked), any wait entry and its
+# slotwait go (a HUP or runner error mid-wait must not leave a stale wait).
+session_release() { sess_release; sess_wait_cancel; [ -z "${UNIT_DIR:-}" ] || rm -f "$UNIT_DIR/slotwait"; }
 # lane_slot_drop K — lanes_end_sessions' part for a dead lane K (AC27): its
 # slot and wait entry go, keyed by its pid. Called only after the lane's
 # session was ended; a lane still alive releases its own (lane_exit), so a
