@@ -1427,10 +1427,18 @@ final_body() {
 # 4 push HEAD to <Target>. 5 the body; `gh pr edit` the open PR, else `gh pr
 #   create --draft` into the default branch; `[red] ` when red.
 # 6 RECORD/final = `<head> <url> <color>`.
-# setup_note LINE — studio-setup's stderr LINE (`worktree setup failed — exit
-# <n> — log <path>`) with its relative log path put under FINAL_W (D11).
+# setup_note STATUS TEXT — the note for a failed studio-setup (D11/D12): the
+# last line of its stderr TEXT (`worktree setup failed — exit <n> — log
+# <path>`) with a relative log path put under FINAL_W by parameter expansion
+# (a `#` or `&` in FINAL_W is no special case); when TEXT is empty (a signal
+# death), a note naming the exit STATUS. Never empty.
 setup_note() {
-  printf '%s\n' "$1" | tail -n 1 | sed "s# — log \\([^/].*\\)\$# — log $FINAL_W/\\1#"
+  _sn_l="$(printf '%s\n' "$2" | tail -n 1)"
+  case $_sn_l in
+    "") printf 'worktree setup failed — exit %s — no output, log unknown\n' "$1" ;;
+    *" — log "[!/]*) printf '%s — log %s/%s\n' "${_sn_l%% — log *}" "$FINAL_W" "${_sn_l#* — log }" ;;
+    *) printf '%s\n' "$_sn_l" ;;
+  esac
 }
 
 final_integration() {
@@ -1478,8 +1486,10 @@ final_integration() {
   fi
   # D11: the project's worktree setup, once the worktree is in place. A
   # failure is a red final gate (Step 3); Step 2 still runs.
-  _fi_su=""
-  _fi_se="$( cd "$FINAL_W" && sh "$SELF_DIR/studio-setup" 2>&1 >/dev/null )" || _fi_su="$(setup_note "$_fi_se")"
+  # Failure is tracked by exit status (_fi_su), never by the note's text.
+  _fi_su=0; _fi_sn=""
+  _fi_se="$( cd "$FINAL_W" && sh "$SELF_DIR/studio-setup" 2>&1 >/dev/null )" \
+    || { _fi_su=$?; _fi_sn="$(setup_note "$_fi_su" "$_fi_se")"; }
   # Step 2.
   final_stopped "the progress unit" && return 1
   if progress_exists && ! git -C "$FINAL_W" log --format=%s HEAD | grep -qxF "docs(progress): $MF_SLUG"; then
@@ -1492,8 +1502,8 @@ final_integration() {
   _fi_h="$(git -C "$FINAL_W" rev-parse HEAD)"
   _fi_gs=""; _fi_gc=""
   [ ! -f "$RECORD/gate" ] || read -r _fi_gs _fi_gc < "$RECORD/gate"
-  if [ -n "$_fi_su" ]; then
-    FINAL_GATE=red; _fi_log="the setup log"; final_note "$_fi_su"
+  if [ "$_fi_su" != 0 ]; then
+    FINAL_GATE=red; _fi_log="the setup log"; final_note "$_fi_sn"
   elif [ "$_fi_gs" = "$_fi_h" ] && [ -n "$_fi_gc" ]; then
     FINAL_GATE="$_fi_gc"; _fi_log="(recorded)"
   else
@@ -1522,7 +1532,7 @@ final_integration() {
   fi
   if [ "$FINAL_GATE" != green ]; then
     FINAL_COLOR=red
-    [ -n "$_fi_su" ] || final_note "the full gate is red (log: $_fi_log)"
+    [ "$_fi_su" != 0 ] || final_note "the full gate is red (log: $_fi_log)"
   fi
   final_stopped "the push" && return 1
   # Step 4.
@@ -1576,7 +1586,7 @@ progress_direct() {
   fi
   # D12: the project's worktree setup; a failure is a red final, before any unit.
   _pd_se="$( cd "$FINAL_W" && sh "$SELF_DIR/studio-setup" 2>&1 >/dev/null )" \
-    || { FINAL_COLOR=red; final_note "$(setup_note "$_pd_se")"; return 1; }
+    || { _pd_su=$?; FINAL_COLOR=red; final_note "$(setup_note "$_pd_su" "$_pd_se")"; return 1; }
   if ! git -C "$FINAL_W" log --format=%s HEAD | grep -qxF "docs(progress): $MF_SLUG"; then
     final_stopped "the progress unit" && return 1
     final_unit progress "/game-dev:execute --progress"

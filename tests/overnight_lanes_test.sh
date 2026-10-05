@@ -1438,7 +1438,7 @@ test_lanes_final_step_once() {
   sleep 1
   run_lanes start "$MFP"
   assert_eq 0 "$LS_STATUS" "the resumed run is done"
-  assert_eq 1 "$(final_gates)" "a resume at an unchanged head runs no gate"
+  assert_eq 1 "$(final_gates)" "a resume at an unchanged target head runs no gate (Step 0 returns before setup)"
   assert_eq 0 "$(grep -c '^pr edit ' "$GH/calls")" "and edits no PR"
   assert_eq 1 "$(grep -c '^pr create ' "$GH/calls")" "and opens none"
   assert_eq 1 "$(prompt_calls '/game-dev:execute --progress' | grep -c .)" "and runs no second progress unit"
@@ -2703,6 +2703,54 @@ test_lanes_setup_fail_final_red() {
   assert_missing "$P/.studio/runs/demo/gate" "no gate record, so a resume re-runs setup"
 }
 
+# A worktree_setup that kills studio-setup itself (a signal death: no stderr
+# line) inside an integration or progress worktree. No double quote or
+# backslash: studio-setup's config reader cannot decode them.
+SETUP_KILL='case $(pwd -P) in */integration-*|*/progress-*) p=$$; while [ $p -gt 1 ]; do q=$(ps -o ppid= -p $p | tr -d " "); case $(ps -o command= -p $p) in sh?/*studio-setup) kill -9 $p;; esac; p=$q; done;; esac'
+setup_kill_config() {
+  printf '{%s"worktree_setup": "%s"}' "$1" "$(printf '%s' "$SETUP_KILL" | tr '"' "'")"
+}
+test_lanes_setup_silent_fail_final_red() {
+  LANES_CONFIG="$(setup_kill_config '')"; export LANES_CONFIG; LANES_PROGRESS=1; export LANES_PROGRESS
+  lanes_fixture ssf integration A:-
+  use_gate "echo gate >> '$CALLS/final-gates'"
+  run_lanes start "$MFP"
+  use_gate true
+  R="$(last_lanes_dir)/report.md"
+  assert_eq 0 "$(final_gates)" "a setup killed by a signal: no gate runs"
+  assert_contains "$R" "^Final PR: .* (red)$" "the final PR is red"
+  assert_contains "$R" "^Final note: .*worktree setup failed — exit [0-9]" "the note names the status though stderr was empty"
+  assert_missing "$P/.studio/runs/demo/gate" "no gate record"
+  assert_not_contains "$GH/calls" "^pr create --draft .*--title demo: " "no green PR"
+}
+
+test_lanes_setup_fail_path_specials() {
+  LANES_CONFIG='{"worktree_setup": "case $(pwd -P) in */integration-*) exit 4;; esac"}'; export LANES_CONFIG
+  lanes_fixture 'sp#a&b' integration A:-
+  use_gate "echo gate >> '$CALLS/final-gates'"
+  run_lanes start "$MFP"
+  use_gate true
+  R="$(last_lanes_dir)/report.md"
+  assert_eq 0 "$(final_gates)" "a failed setup: no gate runs (# and & in the path)"
+  assert_contains "$R" "^Final PR: .* (red)$" "red"
+  assert_contains "$R" "^Final note: .*worktree setup failed — exit 4 — log $P/.claude/worktrees/integration-demo/.studio/reports/setup-" "the note's log path is intact under the worktree"
+}
+
+test_lanes_direct_setup_fail_note() {
+  LANES_CONFIG='{"merge_command": "scripts/merge.sh <pr>", "worktree_setup": "case $(pwd -P) in */progress-*) exit 6;; esac"}'; LANES_PROGRESS=1; export LANES_CONFIG LANES_PROGRESS
+  lanes_fixture 'dps#a&b' direct A:-
+  printf 'progress\n' > "$SCEN/progress"
+  run_lanes start "$MFP"
+  assert_eq 0 "$(prompt_calls '/game-dev:execute --progress' | grep -c .)" "a failed progress setup: no progress unit"
+  assert_contains "$(last_lanes_dir)/report.md" "^Final note: .*worktree setup failed — exit 6 — log $P/.claude/worktrees/progress-demo/.studio/reports/setup-" "the note is intact"
+  LANES_CONFIG="$(setup_kill_config '"merge_command": "scripts/merge.sh <pr>", ')"; export LANES_CONFIG; LANES_PROGRESS=1; export LANES_PROGRESS
+  lanes_fixture dpsk direct A:-
+  printf 'progress\n' > "$SCEN/progress"
+  run_lanes start "$MFP"
+  assert_eq 0 "$(prompt_calls '/game-dev:execute --progress' | grep -c .)" "a signalled progress setup: no progress unit"
+  assert_contains "$(last_lanes_dir)/report.md" "^Final note: .*worktree setup failed — exit [0-9]" "the note is not empty"
+}
+
 test_lanes_gate_command_final() {
   LANES_CONFIG='{"gate_command": "echo gc >> '"$TMP"'/calls-gcf/gc; exit 0"}'; export LANES_CONFIG
   lanes_fixture gcf integration A:-
@@ -2775,5 +2823,5 @@ run_tests test_lanes_chain_rule test_lanes_manifest_refusals test_lanes_prefligh
   test_lanes_final_step_no_delivery test_lanes_deadline \
   test_lanes_stop_at_done_never_lands test_lanes_stop_held_by_operator test_lanes_stop_pending_never_holds \
   test_lanes_gate_repair_own_stop_holds test_lanes_directive_cap_holds test_lanes_hold_during_last_unit_lands_and_clears \
-  test_lanes_next_adopted_planned test_lanes_context_preflight test_lanes_check_unit_first test_lanes_adopt_sync_fail_holds test_lanes_setup_fail_holds test_lanes_setup_fail_final_red test_lanes_gate_command_final test_lanes_gate_command_finish_red_repair test_lanes_report_adopted_lines test_lanes_adopt_seeded_runs_rest test_lanes_adopt_round_trip \
+  test_lanes_next_adopted_planned test_lanes_context_preflight test_lanes_check_unit_first test_lanes_adopt_sync_fail_holds test_lanes_setup_fail_holds test_lanes_setup_fail_final_red test_lanes_setup_silent_fail_final_red test_lanes_setup_fail_path_specials test_lanes_direct_setup_fail_note test_lanes_gate_command_final test_lanes_gate_command_finish_red_repair test_lanes_report_adopted_lines test_lanes_adopt_seeded_runs_rest test_lanes_adopt_round_trip \
   test_lanes_no_orphans
