@@ -664,6 +664,10 @@ test_execute_adopt() {
   assert_contains "$E" 'check done none' "and none when no fix commit"
   assert_contains "$E" 'Stop: check — <reason>' "a check it cannot fix stops"
   assert_contains "$E" 'commits already on the branch for this task: <first>..<last> — check and finish them; do not start over' "the part-done brief line (AC16)"
+  assert_contains "$E" 'range starts at `git rev-parse <first>^1`' "§6: a part-done task's range starts before its first commit (AC16)"
+  assert_contains "$E" 'never an empty `X..X`' "§6: no empty range for a unit with no new commit"
+  assert_eq 1 "$([ "$(sed -n '/^## 6\. /,/^## 7\. /p' "$E" | grep -c 'first>^1')" -ge 1 ] && echo 1 || echo 0)" "the rule sits in §6"
+  assert_contains "$E" "the task's ledger range (§6: it starts at .<first>^1.)" "§0 points the sync report at the §6 range"
   assert_contains "$E" 'verify with the command that failed' "§11 (AC20)"
   assert_contains "$E" 'Direct mode runs no finish gate, so `gate_command` does not run there' "direct mode (AC20)"
 }

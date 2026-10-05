@@ -107,7 +107,8 @@ is `STUDIO_STORY`:
   before *Where to start* reads `task`. On exit 1 or exit 2 (usage):
   `studio-state ledger "Stop: adopt sync — <its stderr line>"`, committed the same way;
   under a lane the runner holds the story. Keep its report: a
-  `T<k+1> in progress: <first>..<last>` line feeds the task brief (§8, Inputs).
+  `T<k+1> in progress: <first>..<last>` line feeds the task brief (§8, Inputs) and
+  the task's ledger range (§6: it starts at `<first>^1`).
 - **The gate runs in the foreground.** Run `studio-test` and `studio-run`
   (and `studio-setup` and `studio-setup gate`, the same way) as foreground Bash calls with `timeout` set to `$BASH_MAX_TIMEOUT_MS` (the
   runner exports it, `session_minutes` × 60000). A call that waits for the
@@ -456,6 +457,10 @@ the last task's review. Under `--one`, see §8: a task unit never starts it.
 - When a task is complete (§4a rule 6): `studio-state set task n/N` and
   `studio-state ledger "T<n> complete <full sha>..<full sha>"` (`git rev-parse` of HEAD
   before the task, captured before the implementer is dispatched, and of its last commit). Older short-sha lines still parse.
+  For the part-done task (§0's sync reported `T<k+1> in progress: <first>..<last>`) that
+  HEAD is already past the task's commits, so the range starts at `git rev-parse <first>^1`
+  instead: with no new commit the line is `<first>^1..<last>`, never an empty `X..X`
+  (the next sync stops on `empty range`), and the part-done commits fall inside the task's range.
 - Every judgment call: `studio-state ledger "T<n> Ruling: <decision> — <why> — <cost if wrong>"`.
   The SDD ledger under `.superpowers/sdd/` remains the recovery map for the
   loop; the feature ledger (`.studio/ledger/<feature>.md`) carries the rulings
