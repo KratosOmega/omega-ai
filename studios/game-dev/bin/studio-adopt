@@ -331,12 +331,153 @@ cmd_inspect() {
   return 0
 }
 
+# ledger_texts FILE — the text (date stripped) of every truth-region line of FILE.
+ledger_texts() { truth_lines "$1" | sed -n 's/^- [0-9-]* //p'; }
+
+# sd_add TEXT — queue TEXT as a line to write, unless the truth region (or the
+# queue) already has it.
+sd_add() {
+  if grep -qxF -- "$1" "$TMPD/sd.truth"; then return 0; fi
+  printf '%s\n' "$1" >> "$TMPD/sd.truth"; printf '%s\n' "$1" >> "$TMPD/sd.add"
+}
+
+# seed_ac10f K — D34: the SDD notes of Tasks 1..K from every workspace in
+# $TMPD/ws, as ledger texts.
+seed_ac10f() {
+  while IFS="$TAB" read -r _sf_t _sf_d; do
+    grep -E '^Task [0-9]+: ' "$_sf_d/progress.md" 2>/dev/null | while IFS= read -r _sf_l; do
+      _sf_n="$(printf '%s\n' "$_sf_l" | sed 's/^Task \([0-9]*\):.*/\1/')"
+      [ "$_sf_n" -le "$1" ] || continue
+      _sf_x="${_sf_l#Task "$_sf_n": }"
+      case "$_sf_x" in
+        "parked — "*) printf 'minor (deferred) T%s: %s (standard mode)\n' "$_sf_n" "${_sf_x#parked — }" ;;
+        "minor (deferred): "*) printf 'minor (deferred) T%s: %s (standard mode)\n' "$_sf_n" "${_sf_x#minor (deferred): }" ;;
+        "complete ("*|*"fix round"*) ;;
+        *"Ruling: "*) printf 'T%s Ruling: %s\n' "$_sf_n" "${_sf_x#*Ruling: }" ;;
+      esac
+    done
+  done < "$TMPD/ws"
+  return 0
+}
+
+# cmd_seed ID [--base SHA] [--reset] — write the adopted truth into the current
+# tree's story ledger (D26-D28). Everything is checked before anything is
+# written, and a failed write puts the ledger back.
+cmd_seed() {
+  ID="${1:-}"; [ -n "$ID" ] && valid_id "$ID" || usage
+  shift
+  _sd_reset=0; _sd_base=""
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --reset) _sd_reset=1; shift ;;
+      --base) [ "$#" -ge 2 ] || usage; _sd_base="$2"; shift 2 ;;
+      *) usage ;;
+    esac
+  done
+  STATE_ROOT="$(state_root)"
+  TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+  [ -n "$TOPLEVEL" ] || { echo "not in a git checkout" >&2; return 1; }
+  _sd_src="$STATE_ROOT/.studio/ledger/$ID.md"
+  _sd_adopted=""; _sd_source=""
+  if [ -f "$_sd_src" ]; then
+    _sd_adopted="$(sed -n 's/^- [0-9-]* \(adopted .* -> .*\)$/\1/p' "$_sd_src" | tail -n 1)"
+    _sd_source="$(sed -n 's/^- [0-9-]* \(source .*\)$/\1/p' "$_sd_src" | tail -n 1)"
+  fi
+  [ -n "$_sd_adopted" ] || { echo "no adopted line for $ID in the start checkout" >&2; return 1; }
+  _sd_rest="${_sd_adopted#adopted }"; _sd_orig="${_sd_rest%% -> *}"; _sd_conv="${_sd_rest#* -> }"
+
+  BRANCH="$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+  _sd_pb="$(STUDIO_STORY="$ID" sh "$SELF_DIR/studio-state" get branch 2>/dev/null || true)"
+  [ -n "$_sd_pb" ] && [ "$BRANCH" = "$_sd_pb" ] \
+    || { echo "run seed on the story branch ${_sd_pb:-<unset>} (this checkout is on ${BRANCH:-a detached HEAD})" >&2; return 1; }
+  TIP="$(resolve HEAD)" || { echo "no commits on $BRANCH" >&2; return 1; }
+
+  _sd_led="$TOPLEVEL/.studio/ledger/$ID.md"
+  if [ "$_sd_reset" -eq 1 ] || [ ! -f "$_sd_led" ]; then : > "$TMPD/sd.truth"; else ledger_texts "$_sd_led" > "$TMPD/sd.truth"; fi
+  : > "$TMPD/sd.add"
+
+  # Base (D26): the truth's adopt-base, else --base, else the fork point.
+  _sd_have="$(sed -n 's/^adopt-base //p' "$TMPD/sd.truth" | tail -n 1)"
+  _sd_given=""
+  if [ -n "$_sd_base" ]; then
+    _sd_given="$(resolve "$_sd_base")" || { echo "base $_sd_base does not name exactly one commit" >&2; return 1; }
+  fi
+  if [ -n "$_sd_have" ]; then
+    [ -z "$_sd_given" ] || [ "$_sd_given" = "$_sd_have" ] \
+      || { echo "adopt-base is $(s7 "$_sd_have") in the ledger but --base is $(s7 "$_sd_given")" >&2; return 1; }
+    BASE_SHA="$_sd_have"
+  elif [ -n "$_sd_given" ]; then BASE_SHA="$_sd_given"
+  else
+    DEFAULT="$(default_branch)" || return 1
+    BASE_SHA="$(fork_point "$TIP" "$DEFAULT")" \
+      || { echo "$BRANCH shares no history with origin/$DEFAULT — pass --base <sha>" >&2; return 1; }
+  fi
+
+  _sd_of="$(plan_file "$_sd_orig")" || return 1
+  _sd_cf="$(plan_file "$_sd_conv")" || return 1
+  N="$(task_count "$_sd_of")"
+  [ "$N" -gt 0 ] || { echo "$_sd_orig has no tasks" >&2; return 1; }
+  merged_claims "$_sd_orig" > "$TMPD/chain" || return 1
+  workspaces "$_sd_orig" > "$TMPD/ws"
+  _sd_over="$(awk -v n="$N" '$1 + 0 > n { print $1; exit }' "$TMPD/chain")"
+  [ -z "$_sd_over" ] || { echo "claim for Task $_sd_over but $_sd_orig has $N tasks" >&2; return 1; }
+  chain_check "$TMPD/chain" "$BASE_SHA" 1 "$TIP" || return 1
+  K="$(awk 'END { print $1 + 0 }' "$TMPD/chain")"
+
+  _sd_i=1
+  while [ "$_sd_i" -le "$K" ]; do
+    _sd_a="$(task_title "$_sd_of" "$_sd_i")" || return 1
+    _sd_b="$(task_title "$_sd_cf" "$_sd_i")" || return 1
+    [ "$_sd_a" = "$_sd_b" ] \
+      || { echo "Task $_sd_i: title differs — $_sd_orig has \"$_sd_a\", $_sd_conv has \"$_sd_b\"" >&2; return 1; }
+    _sd_i=$((_sd_i + 1))
+  done
+  # An existing T<n> complete with a different range is a mismatch.
+  while read -r _sd_n _sd_a _sd_b; do
+    _sd_old="$(sed -n "s/^T$_sd_n complete //p" "$TMPD/sd.truth" | tail -n 1)"
+    [ -z "$_sd_old" ] || [ "$_sd_old" = "$_sd_a..$_sd_b" ] \
+      || { echo "T$_sd_n: ledger has $_sd_old but the claims say $_sd_a..$_sd_b" >&2; return 1; }
+  done < "$TMPD/chain"
+
+  [ -z "$_sd_source" ] || sd_add "$_sd_source"
+  sd_add "$_sd_adopted"
+  sd_add "adopt-base $BASE_SHA"
+  while read -r _sd_n _sd_a _sd_b; do sd_add "T$_sd_n complete $_sd_a..$_sd_b"; done < "$TMPD/chain"
+  seed_ac10f "$K" > "$TMPD/sd.f"
+  while IFS= read -r _sd_l; do sd_add "$_sd_l"; done < "$TMPD/sd.f"
+  if ledger_texts "$_sd_src" | grep -qxF 'check requested'; then sd_add "check requested"; fi
+
+  if [ "$_sd_reset" -eq 1 ]; then
+    { printf 'adopt reset %s\n' "$TIP"; cat "$TMPD/sd.add"; } > "$TMPD/sd.out"
+  else cp "$TMPD/sd.add" "$TMPD/sd.out"; fi
+  if [ ! -s "$TMPD/sd.out" ]; then echo "already seeded"; return 0; fi
+
+  _sd_had=0; if [ -f "$_sd_led" ]; then _sd_had=1; cp "$_sd_led" "$TMPD/sd.backup"; fi
+  _sd_ok=1
+  while IFS= read -r _sd_l; do
+    STUDIO_STORY="$ID" sh "$SELF_DIR/studio-state" ledger "$_sd_l" >/dev/null || { _sd_ok=0; break; }
+  done < "$TMPD/sd.out"
+  if [ "$_sd_ok" -eq 1 ]; then
+    { git add -- ".studio/ledger/$ID.md" \
+      && git commit -q -m "chore(studio): ledger (adopt)" -- ".studio/ledger/$ID.md"; } >/dev/null 2>&1 || _sd_ok=0
+  fi
+  if [ "$_sd_ok" -eq 0 ]; then
+    git reset -q -- ".studio/ledger/$ID.md" >/dev/null 2>&1 || true
+    if [ "$_sd_had" -eq 1 ]; then cp "$TMPD/sd.backup" "$_sd_led"; else rm -f "$_sd_led"; fi
+    echo "could not write the adopt lines for $ID — ledger restored" >&2
+    return 1
+  fi
+  printf 'seeded: %s lines\n' "$(wc -l < "$TMPD/sd.out" | tr -d ' ')"
+  return 0
+}
+
 main() {
   [ "$#" -ge 1 ] || usage
   case "$1" in
     --help|-h) usage_text; exit 0 ;;
     inspect) shift; cmd_inspect "$@"; exit $? ;;
-    seed|sync) echo "studio-adopt: $1 is not available yet" >&2; exit 2 ;;
+    seed) shift; cmd_seed "$@"; exit $? ;;
+    sync) echo "studio-adopt: $1 is not available yet" >&2; exit 2 ;;
     *) usage ;;
   esac
 }

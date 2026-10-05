@@ -263,9 +263,121 @@ test_adopt_rewritten_history_message() {
   assert_contains "$TMP/ad.err" "history of S1-b was rewritten after T3 — re-adopt: studio-adopt seed S1 --reset" "AC10b wording"
 }
 
+# ledger_texts — $W's story ledger as texts (date stripped), in order.
+ledger_texts() { sed -n 's/^- [0-9-]* //p' "$W/.studio/ledger/S1.md"; }
+seed_commits() { git -C "$W" log --format=%s | grep -c '^chore(studio): ledger (adopt)$'; }
+
+test_adopt_seed_writes_truth() {
+  adopt_repo sd 6 3
+  adopt "$W" seed S1
+  assert_eq 0 "$AD_STATUS" "seed exits 0"
+  assert_eq "seeded: 6 lines" "$(cat "$TMP/ad.out")" "seeded count"
+  printf '%s\n' "source $ORIG spec -" "adopted $ORIG -> $CONV" "adopt-base $BASE" \
+    "T1 complete $BASE..$C1" "T2 complete $C1..$C2" "T3 complete $C2..$C3" > "$TMP/sd.want"
+  ledger_texts > "$TMP/sd.got"
+  assert_eq "$(cat "$TMP/sd.want")" "$(cat "$TMP/sd.got")" "truth lines, in order"
+  assert_eq "chore(studio): ledger (adopt)" "$(git -C "$W" log -1 --format=%s)" "one adopt commit"
+  ( cd "$W" && STUDIO_STORY=S1 sh "$STATE_BIN" check --rebuild ) >/dev/null 2>&1
+  assert_eq "3/6" "$( cd "$W" && STUDIO_STORY=S1 sh "$STATE_BIN" get task )" "rebuild gives 3/6"
+}
+
+test_adopt_seed_second_run_noop() {
+  adopt_repo sn 6 3
+  adopt "$W" seed S1; _h="$(git -C "$W" rev-parse HEAD)"; cp "$W/.studio/ledger/S1.md" "$TMP/sn.led"
+  adopt "$W" seed S1
+  assert_eq 0 "$AD_STATUS" "second seed exits 0"
+  assert_eq "already seeded" "$(cat "$TMP/ad.out")" "says already seeded"
+  assert_eq "$_h" "$(git -C "$W" rev-parse HEAD)" "no new commit"
+  assert_eq "$(cat "$TMP/sn.led")" "$(cat "$W/.studio/ledger/S1.md")" "ledger unchanged"
+}
+
+test_adopt_seed_check_requested() {
+  adopt_repo sc 6 3
+  ( cd "$P" && STUDIO_STORY=S1 sh "$STATE_BIN" ledger "check requested" ) >/dev/null 2>&1
+  adopt "$W" seed S1
+  assert_eq 0 "$AD_STATUS" "seed exits 0"
+  assert_eq "check requested" "$(ledger_texts | tail -n 1)" "check requested is the last line"
+}
+
+test_adopt_seed_refuses_changed_title() {
+  adopt_repo st 6 3
+  sed 's/^### Task 2: step 2$/### Task 2: other/' "$P/$CONV" > "$TMP/st.conv" && cp "$TMP/st.conv" "$W/$CONV"
+  _h="$(git -C "$W" rev-parse HEAD)"
+  adopt "$W" seed S1
+  assert_eq 1 "$AD_STATUS" "changed title: exit 1"
+  assert_contains "$TMP/ad.err" "Task 2" "names Task 2"
+  assert_eq "$_h" "$(git -C "$W" rev-parse HEAD)" "no commit"
+  assert_missing "$W/.studio/ledger/S1.md" "ledger not written"
+}
+
+test_adopt_seed_wrong_branch() {
+  adopt_repo sw 6 3
+  adopt "$P" seed S1
+  assert_eq 1 "$AD_STATUS" "wrong branch: exit 1"
+  assert_contains "$TMP/ad.err" "S1-b" "names the story branch"
+}
+
+test_adopt_seed_carries_rulings() {
+  adopt_repo sr 6 3
+  { printf 'Task 2: parked — slow path — Ruling: fine for now\n'
+    printf 'Task 3: minor (deferred): rename foo\n'
+    printf 'Task 1: Ruling: kept X — cheaper\n'
+    printf 'Task 5: Ruling: later\n'
+    printf 'Task 2: fix round 1 — Ruling: nope\n'; } >> "$W/$WS/progress.md"
+  adopt "$W" seed S1
+  assert_eq 0 "$AD_STATUS" "seed exits 0"
+  ledger_texts > "$TMP/sr.got"
+  assert_contains "$TMP/sr.got" "^minor (deferred) T2: slow path — Ruling: fine for now (standard mode)$" "parked"
+  assert_contains "$TMP/sr.got" "^minor (deferred) T3: rename foo (standard mode)$" "minor deferred"
+  assert_contains "$TMP/sr.got" "^T1 Ruling: kept X — cheaper$" "ruling"
+  assert_not_contains "$TMP/sr.got" "T5" "n above k is not carried"
+  assert_not_contains "$TMP/sr.got" "nope" "fix round lines are not carried"
+}
+
+test_adopt_seed_base_conflict() {
+  adopt_repo sb 6 3
+  adopt "$W" seed S1
+  adopt "$W" seed S1 --base "$C1"
+  assert_eq 1 "$AD_STATUS" "a different --base: exit 1"
+  assert_contains "$TMP/ad.err" "adopt-base" "names adopt-base"
+  adopt "$W" seed S1 --base "$BASE"
+  assert_eq 0 "$AD_STATUS" "the same --base: exit 0"
+}
+
+test_adopt_seed_reset_after_rebase() {
+  adopt_repo rb 6 3
+  adopt "$W" seed S1
+  ( cd "$P" && printf 'm\n' > m.txt && git add m.txt && git commit -q -m m && git push -q origin main ) >/dev/null 2>&1
+  _new="$(git -C "$P" rev-parse main)"
+  ( cd "$W" && git fetch -q origin && git rebase -q --onto "$_new" "$BASE" ) >/dev/null 2>&1
+  adopt "$W" seed S1
+  assert_eq 1 "$AD_STATUS" "old claims no longer chain: exit 1"
+  _l="$(git -C "$W" rev-list --reverse "$_new..HEAD" | head -n 3)"
+  _n1="$(printf '%s\n' "$_l" | sed -n 1p)"; _n2="$(printf '%s\n' "$_l" | sed -n 2p)"; _n3="$(printf '%s\n' "$_l" | sed -n 3p)"
+  set_claims "Task 1: complete (commits $(s7 "$_new")..$(s7 "$_n1"), review clean)" \
+    "Task 2: complete (commits $(s7 "$_n1")..$(s7 "$_n2"), review clean)" \
+    "Task 3: complete (commits $(s7 "$_n2")..$(s7 "$_n3"), review clean)"
+  _head="$(git -C "$W" rev-parse HEAD)"
+  adopt "$W" seed S1 --reset
+  assert_eq 0 "$AD_STATUS" "reset seed exits 0"
+  ledger_texts > "$TMP/rb.got"
+  _r="$(grep -n "^adopt reset $_head$" "$TMP/rb.got" | tail -n 1 | cut -d: -f1)"
+  [ -n "$_r" ] && assert_eq 1 1 "adopt reset line present" || assert_eq "reset line" "none" "adopt reset line present"
+  tail -n +"$((${_r:-0} + 1))" "$TMP/rb.got" > "$TMP/rb.after"
+  printf '%s\n' "source $ORIG spec -" "adopted $ORIG -> $CONV" "adopt-base $_new" \
+    "T1 complete $_new..$_n1" "T2 complete $_n1..$_n2" "T3 complete $_n2..$_n3" > "$TMP/rb.want"
+  assert_eq "$(cat "$TMP/rb.want")" "$(cat "$TMP/rb.after")" "fresh truth after the reset line"
+  ( cd "$W" && STUDIO_STORY=S1 sh "$STATE_BIN" check --rebuild ) >/dev/null 2>&1
+  assert_eq "3/6" "$( cd "$W" && STUDIO_STORY=S1 sh "$STATE_BIN" get task )" "rebuild gives 3/6"
+  ( cd "$W" && awk '/^- [0-9-]+ adopt reset /{ n = NR } { l[NR] = $0 } END { for (i = n + 1; i <= NR; i++) print l[i] }' .studio/ledger/S1.md ) > "$TMP/rb.truth"
+  assert_not_contains "$TMP/rb.truth" "$C1" "no pre-reset T line in the truth region"
+}
+
 run_tests test_adopt_help_and_usage test_adopt_inspect_clean_chain test_adopt_inspect_from_any_checkout \
   test_adopt_inspect_not_started test_adopt_inspect_no_workspace test_adopt_main_merged_between_tasks \
   test_adopt_claim_tokens test_adopt_claim_gaps_and_order test_adopt_short_sha_lines_parse \
   test_adopt_part_done_filter test_adopt_post_task_commits test_adopt_explicit_base \
   test_adopt_check_done_on_branch_ledger test_adopt_workspaces_status test_adopt_claim_stops_at_close_paren \
-  test_adopt_rewritten_history_message
+  test_adopt_rewritten_history_message test_adopt_seed_writes_truth test_adopt_seed_second_run_noop \
+  test_adopt_seed_check_requested test_adopt_seed_refuses_changed_title test_adopt_seed_wrong_branch \
+  test_adopt_seed_carries_rulings test_adopt_seed_base_conflict test_adopt_seed_reset_after_rebase
