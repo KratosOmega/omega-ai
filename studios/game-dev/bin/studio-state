@@ -2,12 +2,14 @@
 # studio-state — read and write the studio's state the same way from every
 # skill. Two roots: the stage/task pointer (.studio/STATE.md) lives in the
 # project's main checkout, so a linked git worktree edits the same file and
-# one project has one stage; the feature ledger, config.json and the spec and
-# plan paths live in the checkout the command runs in, so they travel with
-# the branch.
+# one project has one stage — except that a run worktree (`init --local`)
+# keeps its own stage pointer. Everything else keyed on `root` (STUDIO_STORY
+# state, the gate lock, records, reports) stays project-wide; the feature
+# ledger, config.json and the spec and plan paths live in the checkout the
+# command runs in, so they travel with the branch.
 #
-#   studio-state root [--work]   print the pointer's root, or the working root
-#   studio-state init            create .studio/ (STATE.md, config.json, ledger/)
+#   studio-state root [--work]   print the project root (the main checkout; the gate lock, stories, records), or the working root
+#   studio-state init [--local]  create .studio/ (STATE.md, config.json, ledger/)
 #   studio-state show            print STATE.md, then the current feature ledger
 #   studio-state get KEY         print one field
 #   studio-state set KEY VALUE   replace one field; '-' clears it
@@ -44,7 +46,18 @@ else
 fi
 [ -n "$STATE_ROOT" ] || STATE_ROOT="$(pwd -P)"
 [ -n "$WORK_ROOT" ] || WORK_ROOT="$(pwd -P)"
+# AC2 (#39): a linked worktree (its git dir is not the common one) that has
+# its own .studio/STATE.md — a run worktree after `init --local` — keeps its
+# stage there. Every other key stays at today's root: STUDIO_STORY state,
+# the gate lock, records and reports at STATE_ROOT; the ledger, config.json,
+# spec and plan at WORK_ROOT.
 STATE="$STATE_ROOT/.studio/STATE.md"
+_gd="$(git rev-parse --path-format=absolute --git-dir 2>/dev/null || true)"
+_gcd="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+if [ -n "$_gd" ] && [ "$_gd" != "$_gcd" ] && [ -f "$WORK_ROOT/.studio/STATE.md" ]; then
+  STATE="$WORK_ROOT/.studio/STATE.md"
+fi
+LINKED=0; [ -z "$_gd" ] || [ "$_gd" = "$_gcd" ] || LINKED=1
 STORY="${STUDIO_STORY:-}"
 if [ -n "$STORY" ]; then
   printf '%s' "$STORY" | grep -Eq '^[A-Za-z0-9._-]+$' || { printf "studio-state: bad STUDIO_STORY '%s'\n" "$STORY" >&2; exit 1; }
@@ -57,7 +70,7 @@ STAGES="idle brainstorm plan execute"
 MILESTONES="prototype vertical-slice alpha beta gold"
 
 usage() {
-  printf 'usage: studio-state root [--work] | init | show | get KEY | set KEY VALUE | ledger TEXT | check [--rebuild] | reset [--keep-ledger] | worktree\nkeys: %s\n' "$KEYS" >&2
+  printf 'usage: studio-state root [--work] | init [--local] | show | get KEY | set KEY VALUE | ledger TEXT | check [--rebuild] | reset [--keep-ledger] | worktree\nkeys: %s\n' "$KEYS" >&2
   exit 1
 }
 
@@ -67,6 +80,23 @@ fail() { printf 'studio-state: %s\n' "$*" >&2; exit 1; }
 in_list() {
   for _w in $2; do [ "$_w" = "$1" ] && return 0; done
   return 1
+}
+
+# write_idle_state FILE — the idle template, shared by every init form.
+write_idle_state() {
+  cat > "$1" <<'EOF'
+# Studio State
+
+stage: idle
+spec: -
+plan: -
+task: -
+branch: -
+milestone: prototype
+
+## Ledger
+
+EOF
 }
 
 need_state() {
@@ -159,22 +189,22 @@ case "$cmd" in
     esac
     ;;
   init)
+    if [ "${2:-}" = --local ]; then
+      [ -z "$STORY" ] || fail "init --local cannot be combined with STUDIO_STORY"
+      [ "$LINKED" = 1 ] || fail "init --local: the main checkout keeps $STATE_ROOT/.studio/STATE.md — run it in a run worktree"
+      [ ! -f "$WORK_ROOT/.studio/STATE.md" ] || fail "init --local: $WORK_ROOT/.studio/STATE.md already exists"
+      mkdir -p "$WORK_ROOT/.studio"
+      write_idle_state "$WORK_ROOT/.studio/STATE.md"
+      mkdir -p "$_gcd/info"
+      grep -qxF '.studio/STATE.md' "$_gcd/info/exclude" 2>/dev/null || {
+        if [ -s "$_gcd/info/exclude" ] && [ -n "$(tail -c 1 "$_gcd/info/exclude")" ]; then printf '\n' >> "$_gcd/info/exclude"; fi
+        printf '.studio/STATE.md\n' >> "$_gcd/info/exclude"; }
+      printf 'initialised %s (local stage pointer)\n' "$WORK_ROOT/.studio/STATE.md"; exit 0
+    fi
     if [ -n "$STORY" ]; then
       mkdir -p "$STATE_ROOT/.studio/stories"
       if [ ! -f "$STATE" ]; then
-        cat > "$STATE" <<'EOF'
-# Studio State
-
-stage: idle
-spec: -
-plan: -
-task: -
-branch: -
-milestone: prototype
-
-## Ledger
-
-EOF
+        write_idle_state "$STATE"
       fi
       _gc="$(git rev-parse --git-common-dir 2>/dev/null || true)"
       if [ -n "$_gc" ]; then
@@ -192,19 +222,7 @@ EOF
     fi
     [ ! -f "$STATE" ] || fail "$STATE already exists"
     mkdir -p "$STATE_ROOT/.studio" "$LEDGER_DIR"
-    cat > "$STATE" <<'EOF'
-# Studio State
-
-stage: idle
-spec: -
-plan: -
-task: -
-branch: -
-milestone: prototype
-
-## Ledger
-
-EOF
+    write_idle_state "$STATE"
     # The studio defaults; the session hook reads this file for its identity
     # line and a project overrides keys here.
     if [ ! -f "$CONFIG" ]; then
