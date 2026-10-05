@@ -110,8 +110,22 @@ chan_find_run() {
       _cf_l="$(printf '%s\n' "$_cf_live" | runs_match "$A_RUN")"
       [ -n "$_cf_l" ] || chan_fail 1 "run $A_RUN is not live"
     else
-      [ -n "$_cf_live" ] || chan_fail 1 "no live run in $STATE_ROOT"
-      _cf_l="$(printf '%s\n' "$_cf_live" | head -n 1)"     # T10: AC13's resolution
+      _cf_n="$(printf '%s\n' "$_cf_live" | grep -c .)"
+      [ "$_cf_n" -gt 0 ] || chan_fail 1 "no live run in $STATE_ROOT"
+      # AC13: the live run that lists the story (oldest first); none lists it:
+      # the only live run (chan_open then refuses with its own text), else a
+      # failure. A verb with no story uses the only-live-run rule.
+      _cf_l=""
+      if [ -n "$A_P1" ]; then
+        _cf_d="$(printf '%s\n' "$_cf_live" | while IFS="$(printf '\t')" read -r _ _ _ _ _d _ _; do
+                   awk -F'\t' -v s="$A_P1" '$1 == s { f = 1 } END { exit !f }' "$_d/rows.tsv" 2>/dev/null && { printf '%s\n' "$_d"; break; }
+                 done)"
+        [ -z "$_cf_d" ] || _cf_l="$(printf '%s\n' "$_cf_live" | awk -F'\t' -v d="$_cf_d" '$5 == d')"
+      fi
+      if [ -z "$_cf_l" ]; then
+        [ "$_cf_n" = 1 ] || chan_fail 1 "no live run lists ${A_P1:-that story}"
+        _cf_l="$_cf_live"
+      fi
     fi
     # Fields by cut, not `read`: a tab is IFS white space, so an empty start
     # dir would shift the lock path into its place.

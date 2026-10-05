@@ -1838,6 +1838,155 @@ test_overnight_requeue_retire() {
   assert_contains "$R/report.md" "^- 2 (retire, requeues 1): " "and left, as a retire message"
 }
 
+
+# ---- #39 T10: run selection for status, watch, stop and the channel ----
+test_status_two_runs_blocks_oldest_first() {
+  fixture s2r; FR_SEQ=2; fake_mrun beta S2=running; _pb="$FR_PID"; FR_SEQ=1; fake_mrun alpha S1=running
+  verb status
+  assert_eq 0 "$V_STATUS" "status with two live runs exits 0"
+  _a="$(grep -n '^== alpha (manifest, pid ' "$V_OUT" | cut -d: -f1)"; _b="$(grep -n '^== beta (manifest, pid ' "$V_OUT" | cut -d: -f1)"
+  if [ -n "$_a" ] && [ -n "$_b" ] && [ "$_a" -lt "$_b" ]; then _pass "alpha's block comes before beta's"; else _fail "block order: alpha=$_a beta=$_b"; fi
+  fake_run_end "$FR_PID"; fake_run_end "$_pb"
+}
+test_status_run_not_live() {
+  fixture snl; FR_SEQ=1; fake_mrun alpha S1=running
+  verb status --run ghost
+  assert_eq 1 "$V_STATUS" "status --run of a run that is not live exits 1"
+  assert_contains "$V_OUT" "no live run ghost" "and says so"
+  verb status --run alpha
+  assert_contains "$V_OUT" "run:" "status --run alpha prints alpha's run line"
+  if grep -q '^== ' "$V_OUT"; then _fail "a single selected run has no == header"; else _pass "a single selected run has no == header"; fi
+  fake_run_end
+}
+test_status_registry_root_once() {
+  fixture srr; FR_SEQ=1; fake_mrun alpha S1=running; _pa="$FR_PID"; FR_SEQ=2; fake_mrun beta S2=running
+  mkdir -p "$TMP/outside"
+  verb_in "$TMP/outside" status
+  assert_eq 3 "$V_STATUS" "outside a project, live runs elsewhere exit 3"
+  assert_eq 1 "$(grep -c "^== .* — $P\$" "$V_OUT")" "the root's header prints once"
+  assert_contains "$V_OUT" "^== .*alpha.* — $P\$" "the header names alpha"
+  assert_contains "$V_OUT" "^== .*beta.* — $P\$" "and beta"
+  fake_run_end "$FR_PID"; fake_run_end "$_pa"
+}
+test_watch_run_selects() {
+  fixture wrs; FR_SEQ=1; fake_mrun alpha S1=running; _pa="$FR_PID"; FR_SEQ=2; fake_mrun beta S2=running
+  STUDIO_OVERNIGHT_WATCH_COUNT=1; export STUDIO_OVERNIGHT_WATCH_COUNT
+  verb watch --run beta 1
+  assert_eq 0 "$V_STATUS" "watch --run exits 0"
+  assert_contains "$V_OUT" "S2" "beta's story is shown"
+  if grep -q 'S1' "$V_OUT"; then _fail "alpha's story is not shown"; else _pass "alpha's story is not shown"; fi
+  verb watch --run beta
+  assert_eq 0 "$V_STATUS" "watch --run with the default seconds"
+  unset STUDIO_OVERNIGHT_WATCH_COUNT
+  fake_run_end "$FR_PID"; fake_run_end "$_pa"
+}
+test_stop_two_runs_refuses() {
+  fixture s2x; FR_SEQ=1; fake_mrun alpha S1=running; _pa="$FR_PID"; FR_SEQ=2; fake_mrun beta S2=running
+  verb stop
+  assert_eq 1 "$V_STATUS" "bare stop with two live runs exits 1"
+  assert_contains "$V_OUT" "2 runs are live — nothing stopped:" "says nothing was stopped"
+  assert_contains "$V_OUT" "  alpha  " "lists alpha"
+  assert_contains "$V_OUT" "  beta  " "lists beta"
+  assert_contains "$V_OUT" "stop --run <slug>" "names stop --run"
+  assert_contains "$V_OUT" "stop --all" "names stop --all"
+  assert_missing "$P/.studio/runs/alpha/stop" "no flag for alpha"
+  assert_missing "$P/.studio/runs/beta/stop" "no flag for beta"
+  fake_run_end "$FR_PID"; fake_run_end "$_pa"
+}
+test_stop_run_writes_own_flag() {
+  fixture srf; FR_SEQ=1; fake_mrun alpha S1=running; _pa="$FR_PID"; _ad="$FR_DIR"; FR_SEQ=2; fake_mrun beta S2=running
+  verb stop --run beta
+  assert_eq 0 "$V_STATUS" "stop --run beta"
+  assert_file "$P/.studio/runs/beta/stop" "beta's flag"
+  assert_missing "$P/.studio/runs/alpha/stop" "not alpha's"
+  verb stop --run "$(basename "$_ad")"
+  assert_eq 0 "$V_STATUS" "stop --run <run dir basename>"
+  assert_file "$P/.studio/runs/alpha/stop" "alpha's flag"
+  fake_run_end "$FR_PID"; fake_run_end "$_pa"
+  fixture srs; fake_run overnight-srs-1 single
+  verb stop --run overnight-srs-1
+  assert_eq 0 "$V_STATUS" "stop --run of a single-plan run"
+  assert_file "$P/.studio/overnight.stop" "writes the project-wide flag"
+  fake_run_end
+}
+test_stop_all_writes_each_flag() {
+  fixture sal; FR_SEQ=1; fake_mrun alpha S1=running; _pa="$FR_PID"; FR_SEQ=2; fake_mrun beta S2=running; _pb="$FR_PID"
+  verb stop --all
+  assert_eq 0 "$V_STATUS" "stop --all"
+  assert_file "$P/.studio/runs/alpha/stop" "alpha's flag"
+  assert_file "$P/.studio/runs/beta/stop" "beta's flag"
+  assert_contains "$V_OUT" "stop requested: alpha (pid $_pa)" "one line for alpha"
+  assert_contains "$V_OUT" "stop requested: beta (pid $_pb)" "one line for beta"
+  rm -f "$P"/.studio/runs/*/stop
+  fake_run_end "$_pb"
+  verb stop --all
+  assert_file "$P/.studio/runs/alpha/stop" "alpha still stopped"
+  assert_missing "$P/.studio/runs/beta/stop" "an ended run is skipped"
+  fake_run_end "$_pa"
+}
+test_stop_story_unchanged() {
+  fixture ssu; FR_SEQ=1; fake_mrun alpha S1=running; _pa="$FR_PID"; FR_SEQ=2; fake_mrun beta S2=running
+  verb stop S1
+  assert_eq 0 "$V_STATUS" "stop S1 with two runs live $(cat "$V_ERR")"
+  assert_file "$P/.studio/reports/overnight-alpha-20261004-210000/control/S1.stop" "alpha's story control file"
+  assert_missing "$P/.studio/runs/alpha/stop" "no run flag"
+  assert_missing "$P/.studio/runs/beta/stop" "none for beta"
+  fake_run_end "$FR_PID"; fake_run_end "$_pa"
+}
+test_verbs_channel_resolution_by_story() {
+  fixture vcs; FR_SEQ=1; fake_mrun alpha S1=running; _pa="$FR_PID"; FR_SEQ=2; fake_mrun beta S2=running; _bd="$FR_DIR"
+  verb say S2 hello; assert_eq 0 "$V_STATUS" "say S2 $(cat "$V_ERR")"
+  assert_file "$_bd/inbox/S2/1.msg" "say S2 reaches beta"
+  verb said S2; assert_eq 0 "$V_STATUS" "said S2"
+  assert_contains "$V_OUT" "1" "said S2 lists beta's directive"
+  verb hold S2; assert_eq 0 "$V_STATUS" "hold S2 $(cat "$V_ERR")"
+  assert_file "$_bd/control/S2.hold" "hold on beta"
+  printf "held\n" > "$_bd/stories/S2"
+  verb resume S2; assert_eq 0 "$V_STATUS" "resume S2 $(cat "$V_ERR")"
+  assert_file "$_bd/control/S2.resume" "resume on beta"
+  verb unsay S2 1; assert_eq 0 "$V_STATUS" "unsay S2 1 $(cat "$V_ERR")"
+  assert_missing "$_bd/inbox/S2/1.msg" "unsay on beta"
+  verb stop S2; assert_eq 0 "$V_STATUS" "stop S2"
+  assert_file "$_bd/control/S2.stop" "stop on beta"
+  assert_missing "$P/.studio/reports/overnight-alpha-20261004-210000/inbox/S2" "nothing for alpha"
+  fake_run_end "$FR_PID"; fake_run_end "$_pa"
+}
+test_verbs_channel_run_flag_slug_or_basename() {
+  fixture vcr; FR_SEQ=1; fake_mrun alpha S1=running; _pa="$FR_PID"; FR_SEQ=2; fake_mrun beta S2=running; _bd="$FR_DIR"
+  verb say --run beta S2 x; assert_eq 0 "$V_STATUS" "say --run <slug> $(cat "$V_ERR")"
+  verb say --run "$(basename "$_bd")" S2 y; assert_eq 0 "$V_STATUS" "say --run <basename>"
+  assert_file "$_bd/inbox/S2/2.msg" "both reached beta"
+  verb say --run alpha S2 z; assert_eq 1 "$V_STATUS" "--run alpha S2 refuses"
+  assert_contains "$V_ERR" "S2 is not in run" "with today's text"
+  fake_run_end "$FR_PID"; fake_run_end "$_pa"
+}
+test_verbs_channel_no_run_lists_story() {
+  fixture vcn; FR_SEQ=1; fake_mrun alpha S1=running; _pa="$FR_PID"; FR_SEQ=2; fake_mrun beta S2=running
+  verb say S9 x
+  assert_eq 1 "$V_STATUS" "no run lists S9"
+  assert_contains "$V_ERR" "no live run lists S9" "says so"
+  fake_run_end "$FR_PID"; fake_run_end "$_pa"
+  verb say S9 x
+  assert_eq 1 "$V_STATUS" "no run at all"
+  assert_contains "$V_ERR" "no live run in $P" "keeps today's text"
+}
+test_verbs_channel_start_dir_from_lock() {
+  fixture vcd; FR_SEQ=1; fake_mrun alpha S1=running; _pa="$FR_PID"
+  mkdir -p "$P/wt"; sed -i.bak "s|^start=.*|start=$P/wt|" "$FR_LOCK"; rm -f "$FR_LOCK.bak"
+  # resume's dirty check runs in the start dir: a held story, a ledger changed there
+  printf 'held\n' > "$FR_DIR/stories/S1"
+  ( cd "$P/wt" && g=g; command "${g}it" init -q && mkdir -p .studio/ledger && printf 'x\n' > .studio/ledger/S1.md ) >/dev/null 2>&1
+  verb resume S1
+  assert_eq 1 "$V_STATUS" "resume is refused"
+  assert_contains "$V_ERR" "uncommitted changes in $P/wt" "the dirty check ran in the lock's start dir"
+  fake_run_end "$_pa"
+}
+test_help_names_concurrent_runs() {
+  out="$(sh "$RUNNER" --help 2>&1)"; printf '%s\n' "$out" > "$TMP/help.txt"
+  for w in "status \[--run <slug>\]" "watch \[--run <slug>\]" "stop --run" "stop --all" "max_sessions" "install or pull omega-ai only when"; do
+    assert_contains "$TMP/help.txt" "$w" "help names $w"
+  done
+}
 run_tests test_overnight_report_done test_overnight_report_not_done test_overnight_preflight_env_warns_not_blocks \
   test_overnight_report_anchors test_overnight_resume_quote test_overnight_label_t1 \
   test_overnight_session_seconds_refused test_overnight_claim_without_run_dir \
@@ -1909,4 +2058,8 @@ run_tests test_overnight_report_done test_overnight_report_not_done test_overnig
   test_overnight_stop_held_by_operator \
   test_overnight_stop_pending_never_holds \
   test_overnight_sighup_while_held \
-  test_overnight_requeue_retire
+  test_overnight_requeue_retire \
+  test_status_two_runs_blocks_oldest_first test_status_run_not_live test_status_registry_root_once \
+  test_watch_run_selects test_stop_two_runs_refuses test_stop_run_writes_own_flag test_stop_all_writes_each_flag \
+  test_stop_story_unchanged test_verbs_channel_resolution_by_story test_verbs_channel_run_flag_slug_or_basename \
+  test_verbs_channel_no_run_lists_story test_verbs_channel_start_dir_from_lock test_help_names_concurrent_runs

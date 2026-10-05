@@ -204,7 +204,7 @@ take_lock() {
 
 usage() {
   cat <<EOF
-usage: $SELF_ABS start [--dry-run | --detach] [<manifest>] | status [--follow] | watch [<seconds>] | stop [--run <run>] | next [<manifest>] | activity <unit.jsonl> | deny-rules [--dir <path>]
+usage: $SELF_ABS start [--dry-run | --detach] [<manifest>] | status [--run <slug>] | status --follow | watch [--run <slug>] [<seconds>] | stop | stop --run <slug> | stop --all | next [<manifest>] | activity <unit.jsonl> | deny-rules [--dir <path>]
        $SELF_ABS say|said|unsay|hold|resume|stop <story> [--run <run>] … (talking to a live run; below)
 
   start [--dry-run]  preflight, then run the approved plan one unit per fresh
@@ -248,9 +248,18 @@ usage: $SELF_ABS start [--dry-run | --detach] [<manifest>] | status [--follow] |
                      else the last ended one, else where it looked.
                      Exit 0 this project's run is live, 1 no run, 3 (outside
                      a project) a run is live elsewhere.
-  watch [<seconds>]  status every <seconds> (default 5) until Ctrl-C; the same
-                     as status --follow. Exit 0.
-  stop               end the run after the running unit (exit 1: no run)
+                     Several runs may be live in one project (each with its own
+                     lock under .studio/runs/): status prints one block per run,
+                     oldest first, each headed "== <slug> (<kind>, pid <pid>)".
+                     status --run <slug> shows one (a slug or a run dir
+                     basename); exit 1 "no live run <slug>" if it is not live.
+  watch [--run <slug>] [<seconds>]
+                     status every <seconds> (default 5) until Ctrl-C; the same
+                     as status --follow. --run watches one run. Exit 0.
+  stop               end the run after the running unit (exit 1: no run); with
+                     two or more live runs it stops none and lists them
+  stop --run <slug>  end that run only (its own stop flag)
+  stop --all         end every live run after its running unit
   activity <unit.jsonl>
                      one unit log's last activity in one line, as status shows it
 
@@ -281,6 +290,12 @@ Talking to a live run (<story> is - in a single-plan run; every verb takes
   Events: <run dir>/events.jsonl, schema v1 (docs/game-dev/overnight-events.md).
 
 Exit: start 0 done, 1 any other ending, 2 refused.
+
+Run selection: a story verb (say, said, unsay, hold, resume, stop <story>) acts
+on the live run that lists the story; with two or more live runs and none
+listing it, it refuses ("no live run lists <story>"). --run <slug or run dir
+basename> picks the run explicitly.
+install or pull omega-ai only when `studio-overnight status` shows no live run (a run reads the plugin while it runs)
 
 The run may: commit, push the feature branch, open a draft PR.
 The run may not: merge, force-push, delete a remote branch, read or write secrets.
@@ -316,6 +331,8 @@ Config: .studio/config.json "overnight" (defaults, ranges):
                                     0 = a red gate stops the story
   kill_grace_seconds   30    5-120    TERM-to-KILL grace
   max_lanes            0     0-8      lane processes (0 = one per chain)
+  max_sessions         6     1-8      claude sessions running at once across every live run
+                                    in the project (read from the main checkout's config)
   model_task           sonnet   model for task units      (^[a-z0-9.-]+$)
   model_final          opus     model for the final review
   model_finish         sonnet   model for the finish
@@ -1568,12 +1585,19 @@ reg_show() {
 # died); else where it looked. Returns 3 when a run is live elsewhere (0 is
 # kept for "this project's run is live", the skills' liveness test), else 1.
 registry_status() {
-  _rs_n=0
+  _rs_n=0; _rs_seen=""
   for _rs_f in "$REGISTRY"/overnight-*; do
     [ -f "$_rs_f" ] && reg_live "$_rs_f" || continue
-    _rs_n=$((_rs_n + 1)); [ "$_rs_n" = 1 ] || echo
     _rs_root="$(reg_get root "$_rs_f")"
-    printf '== %s — %s\n' "$(reg_get run "$_rs_f" | sed 's|.*/||')" "$_rs_root"
+    case "$_rs_seen" in *"|$_rs_root|"*) continue ;; esac     # D17: each root once
+    _rs_seen="$_rs_seen|$_rs_root|"
+    _rs_names=""
+    for _rs_g in "$REGISTRY"/overnight-*; do
+      [ -f "$_rs_g" ] && reg_live "$_rs_g" && [ "$(reg_get root "$_rs_g")" = "$_rs_root" ] || continue
+      _rs_names="${_rs_names:+$_rs_names, }$(reg_get run "$_rs_g" | sed 's|.*/||')"
+    done
+    _rs_n=$((_rs_n + 1)); [ "$_rs_n" = 1 ] || echo
+    printf '== %s — %s\n' "$_rs_names" "$_rs_root"
     reg_show "$_rs_root"
   done
   [ "$_rs_n" -eq 0 ] || return 3
@@ -1644,7 +1668,12 @@ case "$1" in
       --follow|-f) shift; cmd_watch "$@" ;;
       *) usage >&2; exit 2 ;;
     esac ;;
-  watch)  shift; [ "$#" -le 1 ] || { usage >&2; exit 2; }; cmd_watch "$@" ;;
+  watch)  shift
+          if [ "${1:-}" = --run ]; then
+            [ "$#" -ge 2 ] && [ -n "$2" ] || { usage >&2; exit 2; }
+            RUN_SEL="$2"; shift 2
+          fi
+          [ "$#" -le 1 ] || { usage >&2; exit 2; }; cmd_watch "$@" ;;
   activity)
     [ "$#" -eq 2 ] && [ -f "$2" ] || { usage >&2; exit 2; }
     unit_activity "$2"; exit 0 ;;
@@ -1662,11 +1691,32 @@ case "$1" in
     exit $? ;;
   say|said|unsay|hold|resume) chan_main "$@" ;;
   stop)
-    [ "$#" -eq 1 ] || chan_main "$@"
+    [ "$#" -eq 1 ] || {
+      # stop --all: every live run's own flag (D13); anything else is the channel's.
+      [ "${2:-}" = --all ] || chan_main "$@"
+      [ "$#" -eq 2 ] || { usage >&2; exit 2; }
+      _sp_l="$( { [ -z "$STATE_ROOT" ] || runs_live "$STATE_ROOT"; } )"
+      [ -n "$_sp_l" ] || { echo "no run in ${STATE_ROOT:-$(pwd)} — stop runs from the run's project ($(sq "$SELF_ABS") status lists live runs)"; exit 1; }
+      printf '%s\n' "$_sp_l" | while IFS= read -r _sp_e; do
+        _sp_k="$(printf '%s\n' "$_sp_e" | cut -f7)"; _sp_s="$(printf '%s\n' "$_sp_e" | cut -f2)"
+        runs_lock_live "$_sp_k" || continue
+        : > "$(runs_stop_of "$_sp_k")"
+        [ "$_sp_s" != - ] || _sp_s="$(basename "$(printf '%s\n' "$_sp_e" | cut -f5)")"
+        printf 'stop requested: %s (pid %s)\n' "$_sp_s" "$(printf '%s\n' "$_sp_e" | cut -f4)"
+      done
+      exit 0
+    }
     # The live run's own flag (D5): a per-run lock's stop, or .studio/overnight.stop.
-    # T10: two or more live runs list them and stop none (D13); until then the oldest.
-    _sp_l="$( { [ -z "$STATE_ROOT" ] || runs_live "$STATE_ROOT"; } | head -n 1)"
-    if [ -n "$_sp_l" ]; then
+    # Two or more live runs list them and stop none (D13).
+    _sp_l="$( { [ -z "$STATE_ROOT" ] || runs_live "$STATE_ROOT"; } )"
+    _sp_n="$(printf '%s\n' "$_sp_l" | grep -c .)"
+    if [ "$_sp_n" -gt 1 ]; then
+      printf '%s runs are live — nothing stopped:\n' "$_sp_n"
+      printf '%s\n' "$_sp_l" | awk -F'\t' '{ b = $5; sub(/.*\//, "", b); printf "  %s  %s\n", ($2 == "-" ? b : $2), $5 }'
+      printf 'stop one: %s stop --run <slug> · stop all: %s stop --all\n' "$(sq "$SELF_ABS")" "$(sq "$SELF_ABS")"
+      exit 1
+    fi
+    if [ "$_sp_n" -eq 1 ]; then
       : > "$(runs_stop_of "$(printf '%s\n' "$_sp_l" | cut -f7)")"
       echo "stop requested: the run ends after its running unit (pid $(printf '%s\n' "$_sp_l" | cut -f4))"
       exit 0
