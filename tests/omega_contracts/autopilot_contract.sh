@@ -132,4 +132,14 @@ test_autopilot_adopt_order() {
     if [ "$_n" -gt "$_prev" ]; then _pass "adopt order: $_ph"; else _fail "adopt order: $_ph (line $_n after $_prev)"; fi
     _prev=$_n
   done
+  # I1: seed needs the pointer's branch, so it runs after `set branch` and before the rebuild
+  # (all three sit in step 3.3, so compare offsets inside that line).
+  _l="$(grep -F -m1 -- 'In that worktree, only' "$S")"
+  _b="$(printf '%s' "$_l" | awk '{ print index($0, "`set branch <Branch>`") }')"
+  _s="$(printf '%s' "$_l" | awk '{ print index($0, "`studio-adopt seed <id>`") }')"
+  _r="$(printf '%s' "$_l" | awk '{ print index($0, "then `studio-state check --rebuild`") }')"
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if [ "$_b" -gt 0 ] && [ "$_s" -gt "$_b" ] && [ "$_r" -gt "$_s" ]; then
+    _pass "adopt order: set branch, then seed, then check --rebuild"
+  else _fail "adopt order: set branch ($_b), seed ($_s), check --rebuild ($_r)"; fi
 }
