@@ -1593,8 +1593,13 @@ project_status() {
     done
     return 0
   fi
+  # The lock's run dir, unless a newer run dir exists: a manifest run no
+  # longer rewrites .studio/overnight.lock, so a dead old lock must not mask
+  # every newer run (#39).
   _sd="$(sed -n 's/^run=//p' "$LOCK" 2>/dev/null | head -n 1)"
-  { [ -n "$_sd" ] && [ -d "$_sd" ]; } || _sd="$(ls -dt "$REPORTS"/overnight-*/ 2>/dev/null | head -n 1)"
+  { [ -n "$_sd" ] && [ -d "$_sd" ]; } || _sd=""
+  _sn="$(ls -dt "$REPORTS"/overnight-*/ 2>/dev/null | head -n 1)"; _sn="${_sn%/}"
+  if [ -z "$_sd" ] || { [ -n "$_sn" ] && [ "$_sn" -nt "$_sd" ]; }; then _sd="$_sn"; fi
   _sd="${_sd%/}"
   if [ -n "$_sd" ] && [ -f "$_sd/manifest.md" ]; then
     ( . "$SELF_DIR/overnight-lanes.sh"; lanes_status "$_sd" ); return $?

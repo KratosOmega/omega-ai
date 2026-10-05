@@ -2010,6 +2010,22 @@ test_lanes_final_gate_interrupted_not_recorded() {
 }
 # ---- T12: status, report.md, run endings ----
 
+# A dead old-style .studio/overnight.lock naming an older run must not mask a
+# newer manifest run in a no-live `status` (#39 final review, T7-2).
+test_lanes_status_dead_old_lock_not_masking() {
+  lanes_fixture sdol integration A:-
+  run_lanes start "$MFP"
+  R="$(last_lanes_dir)"
+  _o="$P/.studio/reports/overnight-20000101-000000"; mkdir -p "$_o"
+  printf '# Overnight run\n\nEnding: done\n' > "$_o/report.md"; touch -t 200001010000 "$_o"
+  _d="$(sh -c 'echo $$')"
+  printf 'pid=%s\nrun=%s\nstarted=2000-01-01T00:00:00Z\n' "$_d" "$_o" > "$P/.studio/overnight.lock"
+  ( cd "$P" && sh "$RUNNER" status ) > "$TMP/st.out" 2>&1; _st=$?
+  assert_eq 1 "$_st" "no live run: status exits 1"
+  assert_contains "$TMP/st.out" "^no run — the last run: $R$" "the newer manifest run is shown, not the dead lock's older run"
+  assert_not_contains "$TMP/st.out" "$_o" "the dead lock's run is not named"
+  rm -f "$P/.studio/overnight.lock"
+}
 test_lanes_status_per_story() {
   lanes_fixture stat integration A:- B:A C:-
   printf 'sleep 4\n' > "$SCEN/A"
@@ -3808,7 +3824,7 @@ run_tests test_lanes_chain_rule test_lanes_manifest_refusals test_lanes_branch_d
   test_lanes_final_skipped_on_stop_or_nothing_landed test_lanes_final_stop_before_setup test_lanes_final_gate_default test_lanes_direct_progress_landing \
   test_lanes_final_dirty_unit_is_red test_lanes_final_budget test_lanes_final_conflict_then_red test_lanes_final_gate_interrupted_not_recorded \
   test_lanes_direct_merge_timeout_after_merge_lands test_lanes_direct_merge_timeout_term_ignored \
-  test_lanes_status_per_story test_lanes_report_every_ending test_lanes_report_on_lane_crash \
+  test_lanes_status_dead_old_lock_not_masking test_lanes_status_per_story test_lanes_report_every_ending test_lanes_report_on_lane_crash \
   test_lanes_done_marker test_lanes_status_reaps_dead_runner test_lanes_reap_names_final_pr \
   test_lanes_detach_strips_env test_lanes_detach_refusal_in_foreground test_lanes_detach_child_refusal_surfaces \
   test_lanes_detach_timeout_lock_held_points_at_status test_lanes_detach_timeout_no_lock_ends_child \
