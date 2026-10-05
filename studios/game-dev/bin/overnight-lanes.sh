@@ -1180,6 +1180,10 @@ lanes_reap_stale() {
 # indented: `    <unit> · <elapsed> · <last activity>` (unit_now_line); a
 # final-step unit, `final: …`. Then the gate lock (gate_line) and the spend.
 lanes_status_lines() {
+  # $1 is 1 for a live run: the progress line (first) then has an ETA, and
+  # each story line ends with its own bar (progress_story, #37).
+  progress_compute manifest "${1:-0}" || true
+  progress_overall
   for _st_id in $(cut -f1 "$MF_ROWS" | awk '!seen[$0]++'); do
     _st_k="$(cat "$RUN_DIR/claims/$(chain_of "$_st_id")/lane" 2>/dev/null)"; [ -n "$_st_k" ] || _st_k=-
     _st_r="$(story_get "$_st_id")"; _st_s="${_st_r%% *}"; _st_s="${_st_s%:}"; [ -n "$_st_s" ] || _st_s=-
@@ -1188,8 +1192,9 @@ lanes_status_lines() {
       _st_c="$(cat "$RUN_DIR/lanes/$_st_k/current" 2>/dev/null)"
       case "$_st_c" in "$_st_id "*) _st_u="$_st_c" ;; esac
     fi
-    _st_t="$(story_state "$_st_id" get task 2>/dev/null)"; [ -n "$_st_t" ] || _st_t=-
-    printf '%s  lane %s  %s  unit %s  task %s\n' "$_st_id" "$_st_k" "$_st_s" "$_st_u" "$_st_t"
+    _st_t="$(progress_task "$_st_id" 2>/dev/null)" || _st_t="$(story_state "$_st_id" get task 2>/dev/null)"
+    [ -n "$_st_t" ] || _st_t=-
+    printf '%s  lane %s  %s  unit %s  task %s%s\n' "$_st_id" "$_st_k" "$_st_s" "$_st_u" "$_st_t" "$(progress_story "$_st_id")"
     case "$_st_r" in
       "held "*) printf '    %s\n' "$(held_line "$_st_r" "$_st_id")" ;;
       *) if [ "$_st_u" != - ]; then
@@ -1201,6 +1206,7 @@ lanes_status_lines() {
   _st_n="$(unit_now_line "$RUN_DIR/final")"; [ -z "$_st_n" ] || printf 'final: %s\n' "$_st_n"
   gate_line "$RUN_DIR"
   printf 'spent: $%s\n' "$(spent_all)"
+  progress_done
 }
 # lanes_status DIR [live] — the `status` verb for manifest run DIR. Live:
 # the lines, `pid: <runner pid>` and the run dir; exit 0. Not live: a stale
@@ -1210,15 +1216,16 @@ lanes_status_lines() {
 lanes_status() {
   lanes_load_run "$1"
   if [ "${2:-}" = live ]; then
-    lanes_status_lines
+    lanes_status_lines 1
     printf 'pid: %s\nrun: %s\n' "$(lock_pid)" "$RUN_DIR"
+    env_line "$(lock_pid)"
     return 0
   fi
   LR_LIVE=""
   [ -f "$RUN_DIR/report.md" ] || lanes_reap
   printf 'no run — the last run: %s\n' "$RUN_DIR"
   [ ! -f "$RUN_DIR/report.md" ] || ended_line "$RUN_DIR/report.md"
-  lanes_status_lines
+  lanes_status_lines 0
   if [ -n "$LR_LIVE" ]; then printf 'pid: none (the runner is gone; lanes still finishing: %s)\n' "$LR_LIVE"
   else printf 'report: %s\n' "$RUN_DIR/report.md"; fi
   return 1

@@ -1,0 +1,167 @@
+#!/bin/sh
+# studio-env — one look at the machine before (and during) an overnight run:
+# cpu load, memory, swap, free disk and, on a Mac, power. Prints one summary
+# line, then a warning block only when something is warn or critical.
+#
+#   studio-env [--run-pid <pid>] [--dir <path>]
+#
+#   --run-pid   mark a process `(this run)` when it descends from this pid
+#   --dir       the volume to check for free disk (default: the cwd)
+#
+#   env: cpu 3.1/10 · memory ok (swap 0.4 GB) · disk 182 GB free · power AC
+#   ⚠ memory pressure high, swap 3.2 GB — close something; top by memory:
+#       Chrome 4.1 GB · Slack 1.2 GB · Godot 0.9 GB (this run) · …
+#
+# Warns / critical: cpu 5-min load > cores / > 2x cores; memory pressure warn /
+# critical (macOS) or < 10% / < 5% available (Linux); swap > 2 GB; disk < 20 /
+# < 5 GB free; on battery (macOS). A source that cannot be read shows as `?`.
+# It never fails and never blocks: exit 0 always. Each sample is a few fast
+# reads (no top, no memory_pressure).
+# STUDIO_ENV_FIXTURE=<dir> (test hook): read each source's output from a file
+# in <dir> (uname, sysctl.vm.loadavg, sysctl.hw.ncpu,
+# sysctl.kern.memorystatus_vm_pressure_level, sysctl.vm.swapusage,
+# proc.loadavg, nproc, proc.meminfo, df, pmset, ps) instead of running it.
+set -u
+
+FIX="${STUDIO_ENV_FIXTURE:-}"
+RUN_PID=""; DIR="."
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --run-pid) RUN_PID="${2:-}"; [ "$#" -lt 2 ] || shift ;;
+    --run-pid=*) RUN_PID="${1#--run-pid=}" ;;
+    --dir) DIR="${2:-.}"; [ "$#" -lt 2 ] || shift ;;
+    --dir=*) DIR="${1#--dir=}" ;;
+  esac
+  shift
+done
+[ -n "$DIR" ] || DIR="."
+
+# src NAME CMD… — the source's output: the fixture file NAME, else CMD.
+src() {
+  _s_n="$1"; shift
+  if [ -n "$FIX" ]; then cat "$FIX/$_s_n" 2>/dev/null; else "$@" 2>/dev/null; fi
+}
+# num X — X when it is a plain number, else empty.
+num() { printf '%s\n' "$1" | awk '$1 ~ /^[0-9]+([.][0-9]+)?$/ { print $1 }'; }
+WARNS=""
+# warn TEXT — one more line of the warning block.
+warn() { WARNS="${WARNS}${WARNS:+
+}$1"; }
+
+OS="$(src uname uname -s | head -n 1)"
+
+# CPU: the 5-minute load average against the core count.
+CPU_LVL=0; CPU_TXT="?"; LOAD=""; CORES=""
+if [ "$OS" = Darwin ]; then
+  LOAD="$(num "$(src sysctl.vm.loadavg sysctl -n vm.loadavg | awk '{ print $3 }')")"
+  CORES="$(num "$(src sysctl.hw.ncpu sysctl -n hw.ncpu | head -n 1)")"
+else
+  LOAD="$(num "$(src proc.loadavg cat /proc/loadavg | awk '{ print $2 }')")"
+  CORES="$(num "$(src nproc nproc | head -n 1)")"
+  [ -n "$CORES" ] || CORES="$(num "$(getconf _NPROCESSORS_ONLN 2>/dev/null)")"
+fi
+if [ -n "$LOAD" ] && [ -n "$CORES" ]; then
+  CPU_TXT="$LOAD/$CORES"
+  CPU_LVL="$(awk -v l="$LOAD" -v c="$CORES" 'BEGIN { print (l > 2 * c) ? 2 : (l > c) ? 1 : 0 }')"
+fi
+
+# Memory: the OS's pressure level (macOS) or the share available (Linux).
+MEM_LVL=0; MEM_TXT="?"; MEM_MSG=""; SWAP=""
+if [ "$OS" = Darwin ]; then
+  case "$(src sysctl.kern.memorystatus_vm_pressure_level sysctl -n kern.memorystatus_vm_pressure_level | head -n 1)" in
+    1) MEM_TXT=ok ;;
+    2) MEM_TXT=warn; MEM_LVL=1; MEM_MSG="memory pressure high" ;;
+    4) MEM_TXT=critical; MEM_LVL=2; MEM_MSG="memory pressure critical" ;;
+  esac
+  SWAP="$(src sysctl.vm.swapusage sysctl -n vm.swapusage | awk '
+    match($0, /used = [0-9.]+[KMGT]/) {
+      s = substr($0, RSTART + 7, RLENGTH - 7); u = substr(s, length(s)); v = substr(s, 1, length(s) - 1) + 0
+      if (u == "K") v /= 1048576; else if (u == "M") v /= 1024; else if (u == "T") v *= 1024
+      printf "%.1f\n", v }')"
+else
+  _mi="$(src proc.meminfo cat /proc/meminfo)"
+  _mp="$(printf '%s\n' "$_mi" | awk '
+    $1 == "MemTotal:" { t = $2 } $1 == "MemAvailable:" { a = $2 }
+    END { if (t > 0 && a != "") printf "%d\n", a * 100 / t }')"
+  if [ -n "$_mp" ]; then
+    if [ "$_mp" -lt 5 ]; then MEM_TXT=critical; MEM_LVL=2; MEM_MSG="memory critically low ($_mp% available)"
+    elif [ "$_mp" -lt 10 ]; then MEM_TXT=warn; MEM_LVL=1; MEM_MSG="memory low ($_mp% available)"
+    else MEM_TXT=ok; fi
+  fi
+  SWAP="$(printf '%s\n' "$_mi" | awk '
+    $1 == "SwapTotal:" { t = $2; ht = 1 } $1 == "SwapFree:" { f = $2; hf = 1 }
+    END { if (ht && hf) printf "%.1f\n", (t - f) / 1048576 }')"
+fi
+SWAP_LVL=0
+[ -z "$SWAP" ] || SWAP_LVL="$(awk -v s="$SWAP" 'BEGIN { print (s > 2) ? 1 : 0 }')"
+
+# Disk: free space on the volume holding DIR.
+DISK_LVL=0; DISK_TXT="?"; DISK_GB=""
+_df="$(src df df -Pk "$DIR" | awk 'NF >= 4 && $4 ~ /^[0-9]+$/ { k = $4 } END { if (k != "") print k }')"
+if [ -n "$_df" ]; then
+  DISK_GB="$(awk -v k="$_df" 'BEGIN { printf "%.0f\n", k / 1048576 }')"
+  DISK_TXT="$DISK_GB GB free"
+  DISK_LVL="$(awk -v k="$_df" 'BEGIN { g = k / 1048576; print (g < 5) ? 2 : (g < 20) ? 1 : 0 }')"
+fi
+
+# Power (macOS only): on battery, a laptop sleeps with the lid closed whatever caffeinate says.
+PWR_TXT=""; PWR_LVL=0
+if [ "$OS" = Darwin ]; then
+  case "$(src pmset pmset -g batt)" in
+    *"Battery Power"*) PWR_TXT=battery; PWR_LVL=1 ;;
+    *"AC Power"*) PWR_TXT=AC ;;
+    *) PWR_TXT="?" ;;
+  esac
+fi
+
+# ps_top MODE — the top 5 processes by `mem` or `cpu`, aggregated by command
+# name, ` · `-joined; `(this run)` on a name with a process under RUN_PID
+# (the name is aggregated, so any one such process marks the whole name).
+ps_top() {
+  if [ "$OS" = Darwin ]; then _pt="$(src ps ps -Ao pid,ppid,rss,pcpu,comm)"; else _pt="$(src ps ps -eo pid,ppid,rss,pcpu,comm)"; fi
+  printf '%s\n' "$_pt" | awk -v mode="$1" -v rp="$RUN_PID" '
+    $1 ~ /^[0-9]+$/ && $3 ~ /^[0-9]+$/ {
+      p = $1; par[p] = $2; r[p] = $3; c[p] = $4
+      nm = $5; for (i = 6; i <= NF; i++) nm = nm " " $i
+      sub(/^.*\//, "", nm); name[p] = nm }
+    END {
+      for (p in name) {
+        n = name[p]; rs[n] += r[p]; cs[n] += c[p]
+        for (q = p; rp != "" && q != "" && g < 64; q = par[q]) { if (q == rp) { mine[n] = 1; break }; g++ }
+        g = 0
+      }
+      for (n in rs) names[++nn] = n
+      for (k = 1; k <= 5 && k <= nn; k++) {
+        best = ""
+        for (i = 1; i <= nn; i++) { n = names[i]; if (n in used) continue
+          v = (mode == "cpu") ? cs[n] : rs[n]; bv = (mode == "cpu") ? cs[best] : rs[best]
+          if (best == "" || v > bv || (v == bv && n < best)) best = n }
+        used[best] = 1
+        item = (mode == "cpu") ? sprintf("%s %.0f%% cpu", best, cs[best]) : sprintf("%s %.1f GB", best, rs[best] / 1048576)
+        printf "%s%s%s", (k > 1 ? " · " : ""), item, (best in mine) ? " (this run)" : ""
+      }
+      if (nn > 5) printf " · …"
+      printf "\n"
+    }'
+}
+
+if [ "$CPU_LVL" -gt 0 ]; then
+  warn "⚠ cpu load $LOAD on $CORES cores — something is busy; top by cpu:
+    $(ps_top cpu)"
+fi
+if [ "$MEM_LVL" -gt 0 ] || [ "$SWAP_LVL" -gt 0 ]; then
+  if [ "$MEM_LVL" -eq 0 ]; then _mw="swap $SWAP GB in use"
+  elif [ "$SWAP_LVL" -gt 0 ]; then _mw="$MEM_MSG, swap $SWAP GB"
+  else _mw="$MEM_MSG"; fi
+  warn "⚠ $_mw — close something; top by memory:
+    $(ps_top mem)"
+fi
+if [ "$DISK_LVL" -gt 0 ]; then
+  warn "⚠ disk $DISK_GB GB free on $DIR — $([ "$DISK_LVL" -ge 2 ] && echo 'critical, ')free space before a long run"
+fi
+[ "$PWR_LVL" -eq 0 ] || warn "⚠ on battery — plug in (caffeinate does not stop lid-close sleep)"
+
+_sw="?"; [ -z "$SWAP" ] || _sw="$SWAP GB"
+printf 'env: cpu %s · memory %s (swap %s) · disk %s%s\n' "$CPU_TXT" "$MEM_TXT" "$_sw" "$DISK_TXT" "${PWR_TXT:+ · power $PWR_TXT}"
+[ -z "$WARNS" ] || printf '%s\n' "$WARNS"
+exit 0

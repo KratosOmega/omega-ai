@@ -14,7 +14,10 @@
 # Exit: start 0 done · 1 any other ending · 2 refused. status 0 this
 # project's run is live · 1 no run · 3 (outside a project) live elsewhere.
 # watch 0. stop 0 stop requested · 1 no run.
-# Self-contained on purpose (copy mode); calls its sibling studio-state.
+# Self-contained on purpose (copy mode); calls its siblings studio-state,
+# studio-event and studio-env, and sources overnight-lanes.sh, -channel.sh and
+# -progress.sh. status prints a progress bar with a rough finish time, then the
+# resource readout (studio-env).
 set -u
 
 # Manifest mode's per-unit words, set only by overnight-lanes.sh: never taken
@@ -218,7 +221,9 @@ usage: $SELF_ABS start [--dry-run | --detach] [<manifest>] | status [--follow] |
   next [<manifest>]  the planning loop: classify each manifest row (brainstorm,
                      plan, planned) and print the one next command; no argument
                      reads .studio/run. Reads files and ledger lines only.
-  status             the live run: dir, unit, task k/N, spend, pid (exit 1: no run)
+  status             the live run: a progress bar with a rough finish time, dir, unit,
+                     task k/N, spend, pid, and the machine readout (studio-env)
+                     (exit 1: no run)
                      A manifest run: one line per story (lane, state, unit,
                      task k/N), the gate holder, spend, pid; with no live run,
                      the last manifest run (a SIGKILLed one is swept and its
@@ -348,6 +353,8 @@ Test hooks (tests only; never set them for a real run; --detach strips them):
                      place of hold_minutes x 60; a whole number
   STUDIO_OVERNIGHT_INBOX_WAIT — test hook: seconds a verb waits for the
                      inbox lock (default 15)
+  STUDIO_ENV_FIXTURE — test hook: a directory of canned outputs studio-env reads
+                     in place of uname, sysctl, /proc, nproc, df, pmset and ps
 EOF
 }
 
@@ -446,7 +453,14 @@ preflight() {
   if lock_live; then
     refuse "a run is live (pid $(lock_pid)) — $(sq "$SELF_ABS") status"
   fi
+  env_line
   [ -n "$_pf_mf" ] || [ "$FAILED" -eq 0 ] || exit 2
+}
+# env_line [RUN_PID] — studio-env's readout on stdout: a summary line, and a
+# warning block when the machine is short of something. Never fails, never
+# blocks. The preflight prints it on stdout too (stderr is the refusals').
+env_line() {
+  sh "$SELF_DIR/studio-env" --dir "${START_DIR:-.}" ${1:+--run-pid "$1"} || true
 }
 
 # gate_room_check — a warning (never a refusal) when the slowest of the last
@@ -1365,20 +1379,24 @@ project_status() {
   fi
   if lock_live; then
     RUN_DIR="$(sed -n 's/^run=//p' "$LOCK" | head -n 1)"
+    { progress_compute single 1 || true; progress_overall; progress_done; }
     printf 'run: %s\nunit: %s\ntask: %s\nspent: $%s\npid: %s\n' "$RUN_DIR" \
       "$(cat "$RUN_DIR/current" 2>/dev/null)" "$(state get task 2>/dev/null)" "$(spent)" "$(lock_pid)"
     if [ -f "$RUN_DIR/control/-.held" ]; then held_line "$(cat "$RUN_DIR/control/-.held")" -
     else _ps_now="$(unit_now_line "$RUN_DIR")"; [ -z "$_ps_now" ] || printf 'now: %s\n' "$_ps_now"; fi
     gate_line "$RUN_DIR"
+    env_line "$(lock_pid)"
     return 0
   fi
   if [ -n "$_sd" ] && [ -f "$_sd/report.md" ]; then
     printf 'no run — the last run: %s\n' "$_sd"
     ended_line "$_sd/report.md"
+    RUN_DIR="$_sd"; { progress_compute single 0 || true; progress_overall; progress_done; }
     return 1
   fi
   if [ -n "$_sd" ] && [ -d "$_sd" ]; then
     printf 'no run — the last run: %s has no report (its runner died before writing one; units.tsv and the unit logs are there)\n' "$_sd"
+    RUN_DIR="$_sd"; { progress_compute single 0 || true; progress_overall; progress_done; }
     return 1
   fi
   printf 'no run in %s — no live run lock (%s) and no run under %s\n' "$STATE_ROOT" "$LOCK" "$REPORTS"
@@ -1461,6 +1479,8 @@ cmd_watch() {
 # The operator channel's verbs (#27): say, said, unsay, hold, resume,
 # stop <story> and stop --run; and the message helpers the runner uses.
 . "$SELF_DIR/overnight-channel.sh"
+# The progress bar and rough finish time of `status` (#37).
+. "$SELF_DIR/overnight-progress.sh"
 
 case "$1" in
   start)  shift; cmd_start "$@" ;;
