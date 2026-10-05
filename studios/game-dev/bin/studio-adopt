@@ -467,8 +467,18 @@ cmd_seed() {
   # An existing T<n> complete with a different range is a mismatch.
   while read -r _sd_n _sd_a _sd_b; do
     _sd_old="$(sed -n "s/^T$_sd_n complete //p" "$TMPD/sd.truth" | tail -n 1)"
-    [ -z "$_sd_old" ] || [ "$_sd_old" = "$_sd_a..$_sd_b" ] \
-      || { echo "T$_sd_n: ledger has $_sd_old but the claims say $_sd_a..$_sd_b" >&2; return 1; }
+    [ -n "$_sd_old" ] || continue
+    [ "$_sd_old" = "$_sd_a..$_sd_b" ] && continue
+    # Older ledgers hold short shas: compare the resolved full shas.
+    _sd_oa="$(resolve "${_sd_old%%..*}")" || _sd_oa=""
+    _sd_ob="$(resolve "${_sd_old#*..}")" || _sd_ob=""
+    case "$_sd_old" in *..*) ;; *) _sd_oa="" ;; esac
+    if [ -n "$_sd_oa" ] && [ "$_sd_oa" = "$_sd_a" ] && [ "$_sd_ob" = "$_sd_b" ]; then
+      # Same range: count the full-form line as present, so it is not written twice.
+      printf '%s\n' "T$_sd_n complete $_sd_a..$_sd_b" >> "$TMPD/sd.truth"
+      continue
+    fi
+    echo "T$_sd_n: ledger has $_sd_old but the claims say $_sd_a..$_sd_b" >&2; return 1
   done < "$TMPD/chain"
 
   [ -z "$_sd_source" ] || sd_add "$_sd_source"
@@ -621,6 +631,9 @@ sync_truth() {
   chain_check "$TMPD/truth" "$ADOPT_BASE" 1 HEAD
 }
 
+# sy_unwrite — put the ledger back as it was before the sync lines (nothing is committed yet).
+sy_unwrite() { if [ "${_sy_wrote:-0}" -eq 1 ]; then cp "$TMPD/sy.backup" "$_sy_led"; fi; }
+
 # cmd_sync ID — AC10: verify the truth, accept new SDD claims, regenerate the
 # views (D29-D36). Everything is checked before anything is written.
 cmd_sync() {
@@ -708,22 +721,21 @@ cmd_sync() {
   seed_ac10f "$K1" > "$TMPD/sd.f"
   while IFS= read -r _sy_l; do sd_add "$_sy_l"; done < "$TMPD/sd.f"
 
-  # One commit (restored on failure), then the push.
-  _sy_pushed=""
+  # Write the lines now (restored on any failure); the commit and push come last,
+  # after the task view and the views, so a failure there leaves nothing landed.
+  _sy_pushed=""; _sy_wrote=0
   if [ -s "$TMPD/sd.add" ]; then
     cp "$_sy_led" "$TMPD/sy.backup"
     _sy_ok=1
     while IFS= read -r _sy_l; do
       STUDIO_STORY="$ID" sh "$SELF_DIR/studio-state" ledger "$_sy_l" >/dev/null || { _sy_ok=0; break; }
     done < "$TMPD/sd.add"
-    if [ "$_sy_ok" -eq 1 ]; then commit_ledger "chore(studio): ledger (sync)" "$_sy_led" 1 "$TMPD/sy.backup" || _sy_ok=0; fi
     if [ "$_sy_ok" -eq 0 ]; then
       cp "$TMPD/sy.backup" "$_sy_led"
       echo "could not write the sync lines for $ID — ledger restored" >&2
       return 1
     fi
-    if git_retry git push -q origin "$BRANCH"; then _sy_pushed="pushed $BRANCH"
-    else _sy_pushed="push failed: $(head -n 1 "$TMPD/gr.err")"; echo "$_sy_pushed" >&2; fi
+    _sy_wrote=1
   fi
 
   # Report, part one.
@@ -739,7 +751,7 @@ cmd_sync() {
   _sy_stage="$(STUDIO_STORY="$ID" sh "$SELF_DIR/studio-state" get stage 2>/dev/null || true)"
   if [ "$_sy_stage" = "execute" ]; then
     STUDIO_STORY="$ID" sh "$SELF_DIR/studio-state" check --rebuild >"$TMPD/sy.chk" 2>&1 \
-      || { cat "$TMPD/sy.chk" >&2; echo "studio-state check --rebuild failed for $ID" >&2; return 1; }
+      || { cat "$TMPD/sy.chk" >&2; sy_unwrite; echo "studio-state check --rebuild failed for $ID — nothing committed" >&2; return 1; }
   else echo "task view: skipped (stage ${_sy_stage:-unknown})" >> "$TMPD/sy.rep"; fi
 
   # D32-D33: the views, and the landed note.
@@ -753,11 +765,22 @@ cmd_sync() {
       if [ -n "$_sy_lr" ]; then _sy_landed="Landed: ${_sy_lr% *} at ${_sy_lr#* } — continue dependent stories from there"; fi
     fi
   fi
-  write_view "$ORIG_PLAN" "$_sy_landed" || return 1
-  write_view "$CONV_PLAN" "" || return 1
+  write_view "$ORIG_PLAN" "$_sy_landed" || { sy_unwrite; echo "nothing committed" >&2; return 1; }
+  write_view "$CONV_PLAN" "" || { sy_unwrite; echo "nothing committed" >&2; return 1; }
   cat "$TMPD/sy.rep3" >> "$TMPD/sy.rep"
   _sy_trees="$(cut -f1 "$TMPD/ws" | awk '!s[$0]++' | paste -sd, - | sed 's/,/, /g')"
   printf 'trees: %s\n' "${_sy_trees:-none}" >> "$TMPD/sy.rep"
+
+  # The commit (restored on failure), then the push: the last writes.
+  if [ "$_sy_wrote" -eq 1 ]; then
+    if ! commit_ledger "chore(studio): ledger (sync)" "$_sy_led" 1 "$TMPD/sy.backup"; then
+      cp "$TMPD/sy.backup" "$_sy_led"
+      echo "could not write the sync lines for $ID — ledger restored" >&2
+      return 1
+    fi
+    if git_retry git push -q origin "$BRANCH"; then _sy_pushed="pushed $BRANCH"
+    else _sy_pushed="push failed: $(head -n 1 "$TMPD/gr.err")"; echo "$_sy_pushed" >&2; fi
+  fi
 
   # AC11: work already on the branch past the last accepted task.
   build_checkset "$ID" HEAD

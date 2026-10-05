@@ -727,7 +727,55 @@ test_adopt_from_subdirectory() {
   assert_eq "chore(studio): ledger (adopt)" "$(git -C "$W" log -1 --format=%s)" "its commit lands"
 }
 
-run_tests test_sync_failed_commit_restores test_sync_bad_new_claim_is_plain_mismatch test_adopt_from_subdirectory test_sync_already_in_sync test_sync_accepts_claims test_sync_all_or_nothing test_sync_claim_end_differs \
+test_adopt_seed_short_sha_line_same_range() {
+  adopt_repo ssh 6 3; adopt "$W" seed S1
+  sed "s/^\(- [0-9-]* \)T2 complete .*/\1T2 complete $(s7 "$C1")..$(s7 "$C2")/" "$W/.studio/ledger/S1.md" > "$TMP/ssh.led" && cp "$TMP/ssh.led" "$W/.studio/ledger/S1.md"
+  git -C "$W" commit -q -am "short form" >/dev/null 2>&1
+  adopt "$W" seed S1
+  assert_eq 0 "$AD_STATUS" "a short-sha T line for the same range is not a mismatch"
+  assert_not_contains "$TMP/ad.err" "claims say" "no mismatch line"
+  assert_eq "1" "$(grep -c 'T2 complete' "$W/.studio/ledger/S1.md")" "no second T2 line"
+}
+
+test_sync_short_sha_truth_line() {
+  sync_repo shs
+  set_truth 2 "$(s7 "$C1")..$(s7 "$C2")"
+  adopt "$W" sync S1
+  assert_eq 0 "$AD_STATUS" "a short-sha truth line that resolves: exit 0"
+  assert_contains "$TMP/ad.out" "^k: 3/6 -> 3/6$" "k line"
+  assert_eq "$(view_want "$ORIG")" "$(cat "$W/$WS/progress.md")" "the view holds the full shas"
+}
+
+test_sync_view_collision_counter() {
+  sync_repo cc
+  git -C "$P" worktree add -q -b side3 "$TMP/cc-wt2" main >/dev/null 2>&1
+  _stem="$(basename "$WS")"; _par="$(basename "$(dirname "$ORIG")")"
+  mkdir -p "$TMP/cc-wt2/.superpowers/sdd/$_stem-$_par-2"
+  printf '%s\n' "$ORIG" > "$TMP/cc-wt2/.superpowers/sdd/$_stem-$_par-2/plan-path"
+  cp "$W/$WS/progress.md" "$TMP/cc-wt2/.superpowers/sdd/$_stem-$_par-2/progress.md"
+  printf '%s\n' "docs/other/$_stem.md" > "$W/$WS/plan-path"
+  mkdir -p "$W/$WS-$_par"; printf '%s\n' "docs/another/$_stem.md" > "$W/$WS-$_par/plan-path"
+  adopt "$W" sync S1
+  assert_eq 0 "$AD_STATUS" "two foreign owners: exit 0"
+  assert_eq "$ORIG" "$(cat "$W/$WS-$_par-2/plan-path")" "view dir takes the -<parent>-2 name"
+  assert_eq "$(view_want "$ORIG")" "$(cat "$W/$WS-$_par-2/progress.md")" "view written there"
+  assert_contains "$TMP/ad.out" "^trees: .*$TMP/cc-wt2" "the second tree's workspace is found"
+}
+
+test_sync_view_write_failure_commits_nothing() {
+  sync_repo vw; claim_t4
+  cp "$W/.studio/ledger/S1.md" "$TMP/vw.led"; _h="$(git -C "$W" rev-parse HEAD)"; _o="$(git -C "$W" rev-parse origin/S1-b)"
+  chmod 555 "$W/$WS"
+  adopt "$W" sync S1
+  chmod 755 "$W/$WS"
+  assert_eq 1 "$AD_STATUS" "view write fails: exit 1"
+  assert_contains "$TMP/ad.err" "could not write" "says so"
+  assert_eq "$_h" "$(git -C "$W" rev-parse HEAD)" "no commit"
+  assert_eq "$(cat "$TMP/vw.led")" "$(cat "$W/.studio/ledger/S1.md")" "ledger restored"
+  assert_eq "$_o" "$(git -C "$W" rev-parse origin/S1-b)" "nothing pushed"
+}
+
+run_tests test_adopt_seed_short_sha_line_same_range test_sync_short_sha_truth_line test_sync_view_collision_counter test_sync_view_write_failure_commits_nothing test_sync_failed_commit_restores test_sync_bad_new_claim_is_plain_mismatch test_adopt_from_subdirectory test_sync_already_in_sync test_sync_accepts_claims test_sync_all_or_nothing test_sync_claim_end_differs \
   test_sync_truth_mismatches test_sync_ambiguous_short_sha test_sync_rewrite_message test_sync_views_keep_other_lines \
   test_sync_carries_rulings_once test_sync_landed_note test_sync_live_run_refusal test_sync_own_unit_exempt \
   test_sync_diverged_and_behind test_sync_preconditions test_adopt_workspace_lookup_two_trees test_sync_push_failure_warns \
