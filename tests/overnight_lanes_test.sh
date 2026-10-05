@@ -703,6 +703,18 @@ test_lanes_chain_rule() {
   assert_eq "" "$(ls -d "$P"/.studio/tmp.* 2>/dev/null)" "dry run leaves no temp dir"
 }
 
+# A story Branch that is the default branch (direct mode's Target too): its
+# story worktree would be the main checkout, a sync would merge into it and
+# the runner would push to origin/<default> (#39 final review, T13-1).
+test_lanes_branch_default_or_target_refused() {
+  for _bm in integration direct; do
+    lanes_fixture "bdt-$_bm" "$_bm" A:-
+    sed -i.bak 's/^| A | A-b |/| A | main |/' "$P/$MFP"; rm -f "$P/$MFP.bak"
+    run_lanes start --dry-run "$MFP"
+    assert_eq 2 "$LS_STATUS" "$_bm: a story on the default branch refuses"
+    assert_contains "$LS_ERR" "manifest: A: branch main is the default branch or the run's Target — pick another" "$_bm: the refusal names the story and branch"
+  done
+}
 test_lanes_manifest_refusals() {
   lanes_fixture refuse direct A:- B:A
   # direct without merge_command; later-row dependency; duplicate id; a '-' cell
@@ -3740,7 +3752,7 @@ test_lanes_round_trip_sync_conflict() {
   assert_not_contains "$P/.studio/runs/alpha/landed.tsv" 'stopped' "stopped appears nowhere in alpha's landed.tsv"
 }
 
-run_tests test_lanes_chain_rule test_lanes_manifest_refusals test_lanes_conflicts_lock_without_start test_lanes_preflight_backlog_tasks test_lanes_manifest_header_refusals \
+run_tests test_lanes_chain_rule test_lanes_manifest_refusals test_lanes_branch_default_or_target_refused test_lanes_conflicts_lock_without_start test_lanes_preflight_backlog_tasks test_lanes_manifest_header_refusals \
   test_lanes_preflight_story_checks test_lanes_preflight_story_state test_lanes_docs_unreachable \
   test_lanes_git_too_old test_lanes_sourced_only test_lanes_next \
   test_lanes_next_all_planned_and_ambiguous test_lanes_next_plan_before_autopilot \

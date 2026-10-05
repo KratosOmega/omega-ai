@@ -168,7 +168,12 @@ mf_check() {
     *) refuse "slug $MF_SLUG is all digits (it reads as a story id) — pick another" ;;
   esac
   # A branch whose / -> - form starts like a run's own branches would collide with them (#39).
+  # A Branch that is the default branch or the Target: its story worktree
+  # would be the main checkout, and a sync or landing would push to it.
   while IFS="$(printf '\t')" read -r _bf_id _bf_b _; do
+    if [ -n "$_bf_b" ] && { [ "$_bf_b" = "$DEFAULT_BRANCH" ] || [ "$_bf_b" = "$MF_TARGET" ]; }; then
+      refuse "manifest: $_bf_id: branch $_bf_b is the default branch or the run's Target — pick another"
+    fi
     case "$(printf '%s' "$_bf_b" | tr / -)" in
       run-*|integration-*|progress-*) refuse "manifest: $_bf_id: branch $_bf_b collides with a run, integration or progress branch (its / -> - form starts run-, integration- or progress-) — pick another" ;;
     esac
