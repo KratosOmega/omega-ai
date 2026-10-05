@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-Status: Draft (2026-10-05; two rulings needed, see "Rulings needed" at the end)
+Status: Approved (2026-10-05). The operator delegated plan approval ("keep going until this is merged"). The controller accepted R1 and R2 as proposed, and G1-G7 as written.
 
 **Goal:** Give every checkout its own stage pointer. A linked worktree with no
 pointer reads "no story in this checkout". A story crosses checkouts only by a
