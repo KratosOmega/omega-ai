@@ -30,6 +30,10 @@ Method:
 2. Build the scene, bind it to event-bus signals, wire focus neighbours.
 3. Check at the base resolution and at one wider aspect ratio.
 
+## Finding tools
+
+Never search for a tool or script: no `find /`, `find ~`, `locate` or recursive `ls` from `/` or `$HOME`. A search can hang a headless unit for hours. Use `sdd-script` (superpowers scripts), a path the studio documents, or stop and report the tool as missing.
+
 ## Skills you may call
 
 - `godot-prompter:godot-ui`, `godot-prompter:hud-system`,

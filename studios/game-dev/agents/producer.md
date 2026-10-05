@@ -45,6 +45,10 @@ Finish method:
    skill moves `milestone` in state. If not, list what is still missing in
    one line each.
 
+## Finding tools
+
+Never search for a tool or script: no `find /`, `find ~`, `locate` or recursive `ls` from `/` or `$HOME`. A search can hang a headless unit for hours. Use `sdd-script` (superpowers scripts), a path the studio documents, or stop and report the tool as missing.
+
 ## Skills you may call
 
 - `game-dev:vertical-slice` and `game-dev:milestone-gates` — when they are

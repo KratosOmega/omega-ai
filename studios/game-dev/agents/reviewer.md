@@ -38,6 +38,10 @@ Severity: `critical` — an acceptance criterion is not met, a crash, data
 loss, or a test that does not test; `important` — a checklist rule 3–6
 violation; `minor` — naming, dead weight, a comment that lies.
 
+## Finding tools
+
+Never search for a tool or script: no `find /`, `find ~`, `locate` or recursive `ls` from `/` or `$HOME`. A search can hang a headless unit for hours. Use `sdd-script` (superpowers scripts), a path the studio documents, or stop and report the tool as missing.
+
 ## Skills you may call
 
 - `godot-prompter:godot-code-review`, `godot-prompter:godot-optimization`.

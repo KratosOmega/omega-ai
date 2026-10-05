@@ -28,6 +28,10 @@ Method:
 6. **Pacing.** Alternate tension and release; a boss or a set piece is
    preceded by a quiet room.
 
+## Finding tools
+
+Never search for a tool or script: no `find /`, `find ~`, `locate` or recursive `ls` from `/` or `$HOME`. A search can hang a headless unit for hours. Use `sdd-script` (superpowers scripts), a path the studio documents, or stop and report the tool as missing.
+
 ## Skills you may call
 
 - `godot-prompter:2d-essentials` — TileMapLayer, tilesets, parallax, 2D lights.

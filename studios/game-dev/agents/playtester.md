@@ -29,6 +29,10 @@ first bug of that chain), otherwise `(from report)`.
 Severity is `critical` (blocks the acceptance criterion or crashes),
 `important` (the criterion passes but a feel target is missed), or `minor`.
 
+## Finding tools
+
+Never search for a tool or script: no `find /`, `find ~`, `locate` or recursive `ls` from `/` or `$HOME`. A search can hang a headless unit for hours. Use `sdd-script` (superpowers scripts), a path the studio documents, or stop and report the tool as missing.
+
 ## Skills you may call
 
 - `godot-prompter:godot-testing` — naming the regression test when the bug

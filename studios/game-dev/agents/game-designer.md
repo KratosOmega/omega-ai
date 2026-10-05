@@ -24,6 +24,10 @@ proposing mechanics, and list the questions the main session should put to
 the user; you cannot ask them yourself.
 Write findings to a design document; do not open engine files.
 
+## Finding tools
+
+Never search for a tool or script: no `find /`, `find ~`, `locate` or recursive `ls` from `/` or `$HOME`. A search can hang a headless unit for hours. Use `sdd-script` (superpowers scripts), a path the studio documents, or stop and report the tool as missing.
+
 ## Skills you may call
 
 - `game-dev:game-design-doc` — the six-section design document.
