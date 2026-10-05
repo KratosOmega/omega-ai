@@ -25,7 +25,7 @@ WS=.superpowers/sdd/2026-09-01-demo
 # task 0/TASKS, branch S1-b, stage execute) and $P's ledger lines `source` and
 # `adopted`. Sets P, W, BASE (main's tip) and C1..C<DONE> (full shas).
 adopt_repo() {
-  _n="$2"; _d="$3"; _t="$TMP/tpl-$_n-$_d"
+  _n="$2"; _d="$3"; _t="${ADOPT_TPL:-$TMP/tpl-$_n-$_d}"
   # The fixture is built once per (TASKS, DONE) into a template, then copied
   # per test: the build costs seconds, a copy costs milliseconds.
   [ -d "$_t" ] || build_adopt_tpl "tpl-$_n-$_d" "$_n" "$_d"
@@ -410,7 +410,284 @@ test_adopt_seed_failed_commit_restores() {
   assert_eq "$_h" "$(git -C "$W" rev-parse HEAD)" "no commit"
 }
 
-run_tests test_adopt_seed_no_workspace_refused test_adopt_seed_existing_range_differs test_adopt_seed_no_adopted_line test_adopt_seed_failed_commit_restores \
+# sync_repo NAME [N DONE] — adopt_repo, then seed.
+sync_repo() {
+  _sn="${2:-6}"; _sd="${3:-3}"; _st="$TMP/stpl-$_sn-$_sd"
+  if [ ! -d "$_st" ]; then
+    # The seeded fixture is built once per (TASKS, DONE) and copied per test.
+    adopt_repo "stplsrc-$_sn-$_sd" "$_sn" "$_sd"; adopt "$W" seed S1
+    mkdir -p "$_st"; cp -R "$P" "$_st/p"; cp -R "$W" "$_st/wt"; cp -R "$TMP/stplsrc-$_sn-$_sd.git" "$_st/origin.git"
+    cp "$TMP/tpl-$_sn-$_sd"/c[0-9]* "$_st/"
+  fi
+  ADOPT_TPL="$_st" adopt_repo "$1" "$_sn" "$_sd"
+}
+# claim_t4 — commit T4 in $W and append its SDD claim; sets C4.
+claim_t4() {
+  wt_commit T4 S1-T4.txt; C4="$(git -C "$W" rev-parse HEAD)"
+  printf 'Task 4: complete (commits %s..%s, review clean)\n' "$(s7 "$C3")" "$(s7 "$C4")" >> "$W/$WS/progress.md"
+}
+# set_truth N RANGE — replace $W's ledger T<N> line; del_truth N; add_truth TEXT.
+set_truth() { sed "s/^\(- [0-9-]* \)T$1 complete .*/\1T$1 complete $2/" "$W/.studio/ledger/S1.md" > "$TMP/tr.led" && cp "$TMP/tr.led" "$W/.studio/ledger/S1.md"; }
+del_truth() { grep -v "^- [0-9-]* T$1 complete " "$W/.studio/ledger/S1.md" > "$TMP/tr.led"; cp "$TMP/tr.led" "$W/.studio/ledger/S1.md"; }
+add_truth() { printf -- '- 2026-10-04 %s\n' "$1" >> "$W/.studio/ledger/S1.md"; }
+view_want() { # PLAN — the identity line and the three truth tasks
+  printf '# SDD ledger — plan: %s\n' "$1"
+  printf 'Task 1: complete (commits %s..%s, review clean)\n' "$BASE" "$C1"
+  printf 'Task 2: complete (commits %s..%s, review clean)\n' "$C1" "$C2"
+  printf 'Task 3: complete (commits %s..%s, review clean)\n' "$C2" "$C3"
+}
+
+test_sync_already_in_sync() {
+  sync_repo sy1
+  adopt "$W" sync S1
+  assert_eq 0 "$AD_STATUS" "sync exits 0"
+  assert_contains "$TMP/ad.out" "^already in sync$" "in sync"
+  assert_contains "$TMP/ad.out" "^k: 3/6 -> 3/6$" "k line"
+  view_want "$ORIG" > "$TMP/sy.want"
+  assert_eq "$(cat "$TMP/sy.want")" "$(cat "$W/$WS/progress.md")" "original view"
+  _cd=".superpowers/sdd/2026-10-04-S1"
+  assert_eq "$CONV" "$(cat "$W/$_cd/plan-path")" "converted view marker"
+  view_want "$CONV" > "$TMP/sy.want"
+  assert_eq "$(cat "$TMP/sy.want")" "$(cat "$W/$_cd/progress.md")" "converted view"
+  assert_eq '*' "$(cat "$W/.superpowers/sdd/.gitignore")" "gitignore"
+}
+
+test_sync_accepts_claims() {
+  sync_repo sy2; claim_t4
+  adopt "$W" sync S1
+  assert_eq 0 "$AD_STATUS" "sync exits 0"
+  assert_contains "$TMP/ad.out" "^accepted: T4 $C3\.\.$C4$" "accepted line"
+  assert_contains "$TMP/ad.out" "^k: 3/6 -> 4/6$" "k line"
+  assert_eq "chore(studio): ledger (sync)" "$(git -C "$W" log -1 --format=%s)" "sync commit"
+  assert_contains "$W/.studio/ledger/S1.md" "T4 complete $C3\.\.$C4$" "T4 in the ledger"
+  assert_eq "$(git -C "$W" rev-parse HEAD)" "$(git -C "$W" rev-parse origin/S1-b)" "pushed"
+  assert_contains "$TMP/ad.out" "^pushed S1-b$" "pushed line"
+  assert_eq "4/6" "$( cd "$W" && STUDIO_STORY=S1 sh "$STATE_BIN" get task )" "task view"
+  _h="$(git -C "$W" rev-parse HEAD)"
+  adopt "$W" sync S1
+  assert_eq 0 "$AD_STATUS" "second sync exits 0"
+  assert_contains "$TMP/ad.out" "^already in sync$" "second run: in sync"
+  assert_eq "$_h" "$(git -C "$W" rev-parse HEAD)" "no new commit"
+}
+
+test_sync_all_or_nothing() {
+  sync_repo sy3; adopt "$W" sync S1; claim_t4
+  _x="$(git -C "$W" commit-tree -m x -p "$C4" "$C4^{tree}")"
+  printf 'Task 5: complete (commits %s..%s, review clean)\n' "$(s7 "$C4")" "$(s7 "$_x")" >> "$W/$WS/progress.md"
+  cp "$W/.studio/ledger/S1.md" "$TMP/sy.led"; cp "$W/$WS/progress.md" "$TMP/sy.view"
+  _h="$(git -C "$W" rev-parse HEAD)"
+  adopt "$W" sync S1
+  assert_eq 1 "$AD_STATUS" "a bad new claim: exit 1"
+  assert_eq "$(cat "$TMP/sy.led")" "$(cat "$W/.studio/ledger/S1.md")" "ledger unchanged"
+  assert_eq "$_h" "$(git -C "$W" rev-parse HEAD)" "no commit"
+  assert_eq "$(cat "$TMP/sy.view")" "$(cat "$W/$WS/progress.md")" "view unchanged"
+}
+
+test_sync_claim_end_differs() {
+  sync_repo sy4
+  set_claims "Task 1: complete (commits $(s7 "$BASE")..$(s7 "$C1"), review clean)" \
+    "Task 2: complete (commits $(s7 "$C1")..$(s7 "$C3"), review clean)" \
+    "Task 3: complete (commits $(s7 "$C2")..$(s7 "$C3"), review clean)"
+  adopt "$W" sync S1
+  assert_eq 1 "$AD_STATUS" "claim end differs: exit 1"
+  assert_contains "$TMP/ad.err" "Task 2" "names Task 2"
+}
+
+test_sync_truth_mismatches() {
+  sync_repo m1; set_truth 2 "$C1..$C1"; adopt "$W" sync S1
+  assert_eq 1 "$AD_STATUS" "empty range: exit 1"; assert_contains "$TMP/ad.err" "empty range" "empty range"
+  assert_contains "$TMP/ad.err" "$(s7 "$C1")" "names the sha"
+  sync_repo m2; del_truth 2; adopt "$W" sync S1
+  assert_eq 1 "$AD_STATUS" "gap: exit 1"; assert_contains "$TMP/ad.err" "T2" "names T2"
+  sync_repo m3; add_truth "T1 complete $BASE..$C2"; adopt "$W" sync S1
+  assert_eq 1 "$AD_STATUS" "two ranges: exit 1"; assert_contains "$TMP/ad.err" "T1" "names T1"
+  sync_repo m4; set_truth 3 "$C3..$C2"; adopt "$W" sync S1
+  assert_eq 1 "$AD_STATUS" "reversed: exit 1"; assert_contains "$TMP/ad.err" "not an ancestor" "not an ancestor"
+  assert_contains "$TMP/ad.err" "$(s7 "$C3")" "names the sha"
+  sync_repo m5
+  ( cd "$W" && mkdir -p .studio && printf x > .studio/x.txt && git add -f .studio/x.txt && git commit -q -m studio-only ) >/dev/null 2>&1
+  _s="$(git -C "$W" rev-parse HEAD)"; add_truth "T4 complete $C3..$_s"; adopt "$W" sync S1
+  assert_eq 1 "$AD_STATUS" ".studio-only range: exit 1"; assert_contains "$TMP/ad.err" "no commit outside .studio/" "studio-only"
+  assert_contains "$TMP/ad.err" "$(s7 "$_s")" "names the sha"
+}
+
+test_sync_ambiguous_short_sha() {
+  sync_repo am
+  awk 'BEGIN { for (i = 1; i <= 1000; i++) printf "commit refs/heads/noise\ncommitter t <t@t> 1700000000 +0000\ndata <<EOF\nn%d\nEOF\n\n", i }' | git -C "$W" fast-import --quiet
+  tok="$(git -C "$W" rev-list noise | cut -c1-4 | sort | uniq -d | head -n 1)"
+  [ -n "$tok" ] || { TESTS_RUN=$((TESTS_RUN + 1)); _fail "no ambiguous 4-char prefix in the noise branch"; return 0; }
+  set_truth 1 "$tok..$C1"; adopt "$W" sync S1
+  assert_eq 1 "$AD_STATUS" "ambiguous token: exit 1"
+  assert_contains "$TMP/ad.err" "$tok" "names the token"
+}
+
+test_sync_rewrite_message() {
+  sync_repo rw1
+  ( cd "$P" && printf 'm\n' > m.txt && git add m.txt && git commit -q -m m && git push -q origin main ) >/dev/null 2>&1
+  ( cd "$W" && git fetch -q origin && git rebase -q --onto "$(git -C "$P" rev-parse main)" "$BASE" && git push -qf origin S1-b ) >/dev/null 2>&1
+  adopt "$W" sync S1
+  assert_eq 1 "$AD_STATUS" "rewritten: exit 1"
+  assert_eq "history of S1-b was rewritten after its adopt base — re-adopt: studio-adopt seed S1 --reset" "$(cat "$TMP/ad.err")" "after the adopt base"
+  sync_repo rw2
+  _alt="$(git -C "$W" commit-tree -m alt -p "$C2" "$C2^{tree}")"
+  ( cd "$W" && git rebase -q --onto "$_alt" "$C2" && git push -qf origin S1-b ) >/dev/null 2>&1
+  adopt "$W" sync S1
+  assert_eq 1 "$AD_STATUS" "T3 rewritten: exit 1"
+  assert_eq "history of S1-b was rewritten after T2 — re-adopt: studio-adopt seed S1 --reset" "$(cat "$TMP/ad.err")" "after T2"
+}
+
+test_sync_views_keep_other_lines() {
+  sync_repo kp
+  set_claims "Task 1: complete (commits $(s7 "$BASE")..$(s7 "$C1"), review clean)" \
+    "Task 2: complete (commits $(s7 "$C1")..$(s7 "$C2"), review clean)" \
+    "Task 3: complete (commits $(s7 "$C2")..$(s7 "$C3"), review clean)" \
+    "Task 2: fix round 1/5 (1 addressed, 0 open; commits a..b)" \
+    "Task 4: parked — x — Ruling: y" "notes line"
+  adopt "$W" sync S1
+  assert_eq 0 "$AD_STATUS" "sync exits 0"
+  { view_want "$ORIG"; printf '%s\n' "Task 2: fix round 1/5 (1 addressed, 0 open; commits a..b)" "Task 4: parked — x — Ruling: y" "notes line"; } > "$TMP/kp.want"
+  assert_eq "$(cat "$TMP/kp.want")" "$(cat "$W/$WS/progress.md")" "truth lines, then the kept lines in order"
+  assert_contains "$TMP/ad.out" "^kept: 3 lines in $W/$WS$" "kept report"
+}
+
+test_sync_carries_rulings_once() {
+  sync_repo cr
+  { printf 'Task 2: parked — slow path — Ruling: fine for now\n'; printf 'Task 1: Ruling: kept X — cheaper\n'; printf 'Task 5: Ruling: later\n'; } >> "$W/$WS/progress.md"
+  adopt "$W" sync S1
+  assert_eq 0 "$AD_STATUS" "sync exits 0"
+  assert_contains "$W/.studio/ledger/S1.md" "minor (deferred) T2: slow path — Ruling: fine for now (standard mode)$" "parked carried"
+  assert_contains "$W/.studio/ledger/S1.md" "T1 Ruling: kept X — cheaper$" "ruling carried"
+  assert_not_contains "$W/.studio/ledger/S1.md" "T5" "n above k not carried"
+  assert_eq "chore(studio): ledger (sync)" "$(git -C "$W" log -1 --format=%s)" "one commit"
+  _h="$(git -C "$W" rev-parse HEAD)"
+  adopt "$W" sync S1
+  assert_contains "$TMP/ad.out" "^already in sync$" "second run adds none"
+  assert_eq "$_h" "$(git -C "$W" rev-parse HEAD)" "no new commit"
+}
+
+test_sync_landed_note() {
+  sync_repo ln
+  mkdir -p "$P/docs/runs" "$P/.studio/runs/demo"
+  printf '# Run: demo\nTarget: integration/demo\n' > "$P/docs/runs/demo.md"
+  printf 'docs/runs/demo.md\n' > "$P/.studio/run"
+  printf 'S1\tintegration/demo\tabc1234\t1\n' > "$P/.studio/runs/demo/landed.tsv"
+  adopt "$W" sync S1
+  assert_eq 0 "$AD_STATUS" "sync exits 0"
+  assert_eq "Landed: integration/demo at abc1234 — continue dependent stories from there" "$(tail -n 1 "$W/$WS/progress.md")" "original ends with the note"
+  assert_not_contains "$W/.superpowers/sdd/2026-10-04-S1/progress.md" "^Landed:" "converted view has none"
+  rm "$P/.studio/runs/demo/landed.tsv"
+  adopt "$W" sync S1
+  assert_not_contains "$W/$WS/progress.md" "^Landed:" "no record, no note"
+}
+
+# live_lock STATE… — a live dummy run holding S1 in state STATE.
+live_lock() {
+  mkdir -p "$TMP/run1/stories"; printf '# Run: x\n' > "$TMP/run1/manifest.md"; printf '%s\n' "$1" > "$TMP/run1/stories/S1"
+  sh -c 'sleep 60; :' studio-overnight >/dev/null 2>&1 &
+  DUMMY=$!
+  printf 'pid=%s\nrun=%s\nstarted=x\n' "$DUMMY" "$TMP/run1" > "$P/.studio/overnight.lock"
+}
+live_done() { pkill -P "$DUMMY" 2>/dev/null; kill "$DUMMY" 2>/dev/null; wait "$DUMMY" 2>/dev/null; return 0; }
+
+test_sync_live_run_refusal() {
+  sync_repo lr
+  live_lock running; adopt "$W" sync S1
+  assert_eq 1 "$AD_STATUS" "running: exit 1"
+  assert_eq "story S1 is in a live run — /hold it or wait for it to end" "$(cat "$TMP/ad.err")" "message"
+  printf 'held held by operator until 1\n' > "$TMP/run1/stories/S1"; adopt "$W" sync S1
+  assert_eq 1 "$AD_STATUS" "held: exit 1"
+  printf 'queued\n' > "$TMP/run1/stories/S1"; adopt "$W" sync S1
+  assert_eq 0 "$AD_STATUS" "queued: exit 0"
+  live_done
+}
+
+test_sync_own_unit_exempt() {
+  sync_repo ou
+  live_lock running
+  STUDIO_RUN="$TMP/run1/manifest.md"; STUDIO_STORY=S1; STUDIO_RUN_DIR="$TMP/run1"; export STUDIO_RUN STUDIO_STORY STUDIO_RUN_DIR
+  adopt "$W" sync S1
+  assert_eq 0 "$AD_STATUS" "own unit: exit 0"
+  STUDIO_STORY=S2; adopt "$W" sync S1
+  assert_eq 1 "$AD_STATUS" "another story's unit: exit 1"
+  unset STUDIO_RUN STUDIO_STORY STUDIO_RUN_DIR
+  live_done
+}
+
+test_sync_diverged_and_behind() {
+  sync_repo db; git -C "$W" push -q origin S1-b
+  git clone -q "$TMP/db.git" "$TMP/db-c2" >/dev/null 2>&1
+  ( cd "$TMP/db-c2" && git checkout -q S1-b && printf r > S1-T4.txt && git add S1-T4.txt && git commit -q -m remote4 && git push -q origin S1-b ) >/dev/null 2>&1
+  adopt "$W" sync S1
+  assert_eq 0 "$AD_STATUS" "behind: exit 0"
+  assert_eq "$(git -C "$W" rev-parse HEAD)" "$(git -C "$W" rev-parse origin/S1-b)" "fast-forwarded"
+  assert_contains "$TMP/ad.out" "^k: 3/6 -> 3/6$" "k line"
+  assert_contains "$TMP/ad.out" "^T4 in progress: " "part-done line"
+  wt_commit local5 S1-T5.txt
+  ( cd "$TMP/db-c2" && printf s > S1-T6.txt && git add S1-T6.txt && git commit -q -m remote6 && git push -q origin S1-b ) >/dev/null 2>&1
+  adopt "$W" sync S1
+  assert_eq 1 "$AD_STATUS" "diverged: exit 1"
+  assert_eq "S1-b has diverged from origin/S1-b — reconcile it by hand, then sync" "$(cat "$TMP/ad.err")" "message"
+}
+
+test_sync_preconditions() {
+  sync_repo pc
+  adopt "$P" sync S1
+  assert_eq 1 "$AD_STATUS" "on main: exit 1"
+  assert_contains "$TMP/ad.err" "S1-b" "names the story branch"
+  rm "$P/.studio/stories/S1.md"
+  adopt "$W" sync S1
+  assert_eq 1 "$AD_STATUS" "no pointer, no manifest: exit 1"
+  mkdir -p "$P/docs/runs"
+  printf '# Run: demo\nTarget: integration/demo\n\n| Story | Branch | Ticket | Spec | Plan | Depends on |\n|---|---|---|---|---|---|\n| S1 | S1-b | T-1 | a | b | - |\n' > "$P/docs/runs/demo.md"
+  printf 'docs/runs/demo.md\n' > "$P/.studio/run"
+  adopt "$W" sync S1
+  assert_eq 0 "$AD_STATUS" "pointer re-initialised from the manifest row: exit 0"
+  assert_file "$P/.studio/stories/S1.md" "pointer exists again"
+  assert_contains "$TMP/ad.out" "^task view: skipped (stage idle)$" "stage idle skips the task view"
+}
+
+test_adopt_workspace_lookup_two_trees() {
+  sync_repo tt
+  git -C "$P" worktree add -q -b side "$TMP/tt-wt2" main >/dev/null 2>&1
+  mkdir -p "$TMP/tt-wt2/.superpowers/sdd/2026-09-01-demo-plans"
+  printf '%s\n' "$ORIG" > "$TMP/tt-wt2/.superpowers/sdd/2026-09-01-demo-plans/plan-path"
+  cp "$W/$WS/progress.md" "$TMP/tt-wt2/.superpowers/sdd/2026-09-01-demo-plans/progress.md"
+  adopt "$W" sync S1
+  assert_eq 0 "$AD_STATUS" "two trees agree: exit 0"
+  assert_contains "$TMP/ad.out" "^trees: .*$W" "lists the current tree"
+  assert_contains "$TMP/ad.out" "^trees: .*$TMP/tt-wt2" "lists the second tree"
+  sed "s/^Task 2: .*/Task 2: complete (commits $(s7 "$C1")..$(s7 "$C3"), review clean)/" "$TMP/tt-wt2/.superpowers/sdd/2026-09-01-demo-plans/progress.md" > "$TMP/tt.p"
+  cp "$TMP/tt.p" "$TMP/tt-wt2/.superpowers/sdd/2026-09-01-demo-plans/progress.md"
+  adopt "$W" sync S1
+  assert_eq 1 "$AD_STATUS" "conflicting ranges: exit 1"
+  assert_contains "$TMP/ad.err" "two ranges for Task 2" "says so"
+  # A foreign owner of the slug sends the view to the collision name.
+  sync_repo tc
+  git -C "$P" worktree add -q -b side2 "$TMP/tc-wt2" main >/dev/null 2>&1
+  mkdir -p "$TMP/tc-wt2/.superpowers/sdd/2026-09-01-demo-plans"
+  printf '%s\n' "$ORIG" > "$TMP/tc-wt2/.superpowers/sdd/2026-09-01-demo-plans/plan-path"
+  cp "$W/$WS/progress.md" "$TMP/tc-wt2/.superpowers/sdd/2026-09-01-demo-plans/progress.md"
+  printf '%s\n' "docs/other/2026-09-01-demo.md" > "$W/$WS/plan-path"
+  adopt "$W" sync S1
+  assert_eq 0 "$AD_STATUS" "collision: exit 0"
+  assert_eq "$ORIG" "$(cat "$W/.superpowers/sdd/2026-09-01-demo-plans/plan-path")" "view dir is the collision name"
+  assert_eq "$(view_want "$ORIG")" "$(cat "$W/.superpowers/sdd/2026-09-01-demo-plans/progress.md")" "view written there"
+}
+
+test_sync_push_failure_warns() {
+  sync_repo pf; claim_t4
+  git -C "$W" config remote.origin.pushurl "$TMP/no-such.git"
+  adopt "$W" sync S1
+  assert_eq 0 "$AD_STATUS" "push failure: exit 0"
+  assert_contains "$TMP/ad.out" "^push failed:" "reported"
+  assert_eq "chore(studio): ledger (sync)" "$(git -C "$W" log -1 --format=%s)" "commit kept locally"
+}
+
+run_tests test_sync_already_in_sync test_sync_accepts_claims test_sync_all_or_nothing test_sync_claim_end_differs \
+  test_sync_truth_mismatches test_sync_ambiguous_short_sha test_sync_rewrite_message test_sync_views_keep_other_lines \
+  test_sync_carries_rulings_once test_sync_landed_note test_sync_live_run_refusal test_sync_own_unit_exempt \
+  test_sync_diverged_and_behind test_sync_preconditions test_adopt_workspace_lookup_two_trees test_sync_push_failure_warns \
+  test_adopt_seed_no_workspace_refused test_adopt_seed_existing_range_differs test_adopt_seed_no_adopted_line test_adopt_seed_failed_commit_restores \
   test_adopt_help_and_usage test_adopt_inspect_clean_chain test_adopt_inspect_from_any_checkout \
   test_adopt_inspect_not_started test_adopt_inspect_no_workspace test_adopt_main_merged_between_tasks \
   test_adopt_claim_tokens test_adopt_claim_gaps_and_order test_adopt_short_sha_lines_parse \
