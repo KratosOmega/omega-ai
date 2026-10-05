@@ -157,7 +157,7 @@ session (it is on `PATH` only inside a `claude-gd` session).
    - Fill each row's Spec and Plan cells, then `git add docs/runs/<slug>.md .studio/config.json <specs> <plans> .studio/ledger/<id>.md …` (every story's ledger, half-done ones included), `git commit -m "docs(run): <slug> planned"`, `git push -u origin run/<slug>`.
      Write that commit's sha (`git rev-parse HEAD`) as `Docs:`, then commit `docs(run): <slug> docs <short sha>` and push `run/<slug>` again.
 4. **Readiness checklist.** Print it; every line must pass:
-   - `studio-overnight start --dry-run <manifest>` exits 0 (the runner's own preflight: the manifest, `Docs:` on `origin/run/<slug>`, each plan's `Story:`, `Spec:` lines and `## Decisions`, each story's state and ledger, `claude-gd`, `gh auth status`, the deny list, config, `merge_command` in direct mode, no live run);
+   - `studio-overnight start --dry-run <manifest>` exits 0 (the runner's own preflight: the manifest, `Docs:` on `origin/run/<slug>`, each plan's `Story:`, `Spec:` lines and `## Decisions`, each story's state and ledger, `claude-gd`, `gh auth status`, the deny list, config, `merge_command` in direct mode, no conflicting live or stopped run (slug, story, branch));
    - the baseline test run is green — `studio-test`, exit 0, run in the run worktree after `worktree_setup`;
    - the engine binary resolves — `studio-test` or `GODOT_PATH`;
    - for each adopted story: `studio-adopt sync <id>` from its worktree exits 0 (a not-started story is skipped, with a note).
@@ -173,7 +173,7 @@ session (it is on `PATH` only inside a `claude-gd` session).
    Either way, say in the same message:
    - what the run may merge in the chosen mode — integration: the runner merges stories into `integration/<slug>`, nothing is merged into `main`, and the morning brings one draft PR integration → `main`; direct: the runner merges each story into `main` only through `merge_command`, each dependent after its dependency;
    - what it may not do: no session merges anything; no force-push; no remote branch deleted; no destructive or security-sensitive operation; no reading or writing of secrets;
-   - how to watch and end it: `studio-overnight status` (from any directory) or `studio-overnight watch`, and `studio-overnight stop` (from the project);
+   - how to watch and end it: `studio-overnight status` (from any directory) or `studio-overnight watch`, and `studio-overnight stop --run <slug>` (from the project);
    - that the morning `report.md` lands in `.studio/reports/overnight-<slug>-<ts>/`;
    - the run worktree: `git worktree remove <path>` once the run is `done`; nothing removes the worktree automatically;
    - that this chat can now close, and to keep the laptop on power with the lid open.

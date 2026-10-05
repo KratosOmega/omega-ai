@@ -201,6 +201,11 @@ test_autopilot_off_stop_rule() {
   assert_contains "$S" '`off`: `omega-mode clear autopilot`; then a bare `studio-overnight stop`' "off clears the mode, then a bare stop"
   assert_contains "$S" 'stop --run <slug>' "off names stop --run with several runs"
   assert_contains "$S" 'stop --all' "off names stop --all with several runs"
+  # #39 final review N2: a live run no longer blocks a start (AC19), and a
+  # bare stop refuses with two live runs.
+  assert_not_contains "$S" 'direct mode, no live run)' "the dry run no longer checks for no live run"
+  assert_contains "$S" 'no conflicting live or stopped run (slug, story, branch)' "the dry run checks for conflicting runs"
+  assert_contains "$S" '`studio-overnight stop --run <slug>` (from the project)' "the user ends the run with stop --run"
 }
 
 # #39 AC14/#35: adopt steps print slug-qualified ids.
