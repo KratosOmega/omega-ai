@@ -1667,6 +1667,18 @@ test_lanes_final_conflict_then_red() {
   assert_eq 1 "$(final_gates)" "one gate"
   assert_contains "$P/.studio/runs/demo/final" " red$" "the step ends red"
 }
+# A stop that lands while the final worktree is being added ends the step
+# before the (possibly long) worktree setup runs.
+test_lanes_final_stop_before_setup() {
+  LANES_CONFIG='{"worktree_setup": "case $(pwd -P) in */integration-*) : > '"$TMP"'/setup-ran-fstop;; esac"}'; export LANES_CONFIG
+  lanes_fixture fstop integration A:-
+  printf '#!/bin/sh\ncase "$(pwd -P)" in */integration-*) : > "%s/.studio/overnight.stop";; esac\n' "$P" > "$P/.git/hooks/post-checkout"
+  chmod +x "$P/.git/hooks/post-checkout"
+  run_lanes start "$MFP"
+  rm -f "$P/.git/hooks/post-checkout"
+  assert_missing "$TMP/setup-ran-fstop" "a stop requested before setup: setup does not run"
+  assert_not_contains "$GH/calls" "^pr create" "no final PR after the stop"
+}
 # Final fix wave: a stop during the final gate (a Ctrl-C reaches studio-gate,
 # exit 130) records no gate result, so a resume runs the gate again instead
 # of opening a [red] PR that no complete gate produced. studio-gate's own
@@ -2805,7 +2817,7 @@ run_tests test_lanes_chain_rule test_lanes_manifest_refusals test_lanes_prefligh
   test_lanes_gate_repair_no_progress test_lanes_gate_repair_model_and_no_log test_lanes_gate_repair_budget test_lanes_gate_repair_halt \
   test_lanes_final_step_once test_lanes_final_red_after_repair \
   test_lanes_final_repair_turns_green test_lanes_final_conflict test_lanes_final_resume_edits_pr \
-  test_lanes_final_skipped_on_stop_or_nothing_landed test_lanes_final_gate_default test_lanes_direct_progress_landing \
+  test_lanes_final_skipped_on_stop_or_nothing_landed test_lanes_final_stop_before_setup test_lanes_final_gate_default test_lanes_direct_progress_landing \
   test_lanes_final_dirty_unit_is_red test_lanes_final_budget test_lanes_final_conflict_then_red test_lanes_final_gate_interrupted_not_recorded \
   test_lanes_direct_merge_timeout_after_merge_lands test_lanes_direct_merge_timeout_term_ignored \
   test_lanes_status_per_story test_lanes_report_every_ending test_lanes_report_on_lane_crash \

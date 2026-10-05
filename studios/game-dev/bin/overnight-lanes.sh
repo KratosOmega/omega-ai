@@ -178,9 +178,11 @@ mf_check() {
     done > "$MF_TMP/spec-refusals"
     while IFS= read -r _l; do refuse "$_l"; done < "$MF_TMP/spec-refusals"
     # D40: each Context: path (a comma list in the header) is in the Docs revision.
+    set -f   # a `*` in a Context path is a name, not a glob
     for _cx in $(sed -n '/^## /q; s/^Context:[[:space:]]*//p' "$MF_TMP/plan" | head -n 1 | tr ',' '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//'); do
       git -C "$START_DIR" cat-file -e "$MF_DOCS:$_cx" 2>/dev/null || refuse "$_id: Context file $_cx is not in Docs: $MF_DOCS"
     done
+    set +f
   done < "$MF_TMP/stories"
 }
 
@@ -1487,6 +1489,7 @@ final_integration() {
   # D11: the project's worktree setup, once the worktree is in place. A
   # failure is a red final gate (Step 3); Step 2 still runs.
   # Failure is tracked by exit status (_fi_su), never by the note's text.
+  final_stopped "the worktree setup" && return 1
   _fi_su=0; _fi_sn=""
   _fi_se="$( cd "$FINAL_W" && sh "$SELF_DIR/studio-setup" 2>&1 >/dev/null )" \
     || { _fi_su=$?; _fi_sn="$(setup_note "$_fi_su" "$_fi_se")"; }

@@ -251,8 +251,9 @@ Rulings on what the spec leaves to implementation.
   - the plan's `## Global Constraints`, `## Decisions` and `## Acceptance criteria`
     (each, or a one-line note when absent);
   - for each n in 1..k, the `### Task <n>:` block and its `Spec:` items (as `task`);
-  - `range: <adopt-base>..<T_k end>` and `diff: git diff <adopt-base>..<T_k end>`;
-  - directives, then `## Context files`.
+  - `range: <adopt-base>..<T_k end>`;
+  - directives, then `## Context files`;
+  - `diff: git diff <adopt-base>..<T_k end>`, last (as `final` ends with its `diff:` line).
 
   The shas come from the truth region (D2): the last `adopt-base` line, and T`k`'s
   last token's right side.
