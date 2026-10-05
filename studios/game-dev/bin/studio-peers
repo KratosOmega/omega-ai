@@ -19,7 +19,6 @@ ROOT="$(sh "$SELF_DIR/studio-state" root 2>/dev/null)" || exit 0
 [ -n "$ROOT" ] || exit 0
 canon() { ( cd "$1" 2>/dev/null && pwd -P ) || printf '%s\n' "$1"; }
 [ -z "$EXCL" ] || EXCL="$(canon "$EXCL")"
-TAB="$(printf '\t')"
 # peer_run SLUG DIR — this run's line(s); 1 when its data cannot be read.
 peer_run() {
   _pr_mf="$2/manifest.md"; _pr_rows="$2/rows.tsv"
@@ -46,7 +45,11 @@ peer_run() {
     printf '%s %s: %s\n' "$1" "${_pr_mode:--}" "${_pr_open:--}"
   fi
 }
-runs_live "$ROOT" | while IFS="$TAB" read -r _t _slug _kind _pid _dir _sd _lock; do
+# cut, not IFS=<tab> read: a tab is IFS whitespace, so an empty column (a
+# lock without started= or start=) would collapse and shift the fields.
+runs_live "$ROOT" | while IFS= read -r _e; do
+  _slug="$(printf '%s\n' "$_e" | cut -f2)"; _kind="$(printf '%s\n' "$_e" | cut -f3)"
+  _dir="$(printf '%s\n' "$_e" | cut -f5)"
   [ "$_kind" = manifest ] || continue
   [ -z "$EXCL" ] || [ "$(canon "$_dir")" != "$EXCL" ] || continue
   _out="$(peer_run "$_slug" "$_dir")" && printf '%s\n' "$_out" | awk 'NF' || printf '%s: unreadable\n' "$_slug"

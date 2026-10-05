@@ -93,8 +93,12 @@ mf_rows_clash() {
 # LIVE_ONLY=0 also stopped records (landed.tsv, no done; rows from the
 # newest report dir) and a done record of this slug. One line per conflict.
 mf_conflicts() {
-  _mc_tab="$(printf '\t')"
-  runs_live "$STATE_ROOT" | while IFS="$_mc_tab" read -r _ _mc_s _mc_k _mc_p _mc_d _ _mc_l; do
+  # cut, not IFS=<tab> read: a tab is IFS whitespace, so an empty column (a
+  # lock without start=) would collapse and shift the lock path out of field 7.
+  runs_live "$STATE_ROOT" | while IFS= read -r _mc_e; do
+    _mc_s="$(printf '%s\n' "$_mc_e" | cut -f2)"; _mc_k="$(printf '%s\n' "$_mc_e" | cut -f3)"
+    _mc_p="$(printf '%s\n' "$_mc_e" | cut -f4)"; _mc_d="$(printf '%s\n' "$_mc_e" | cut -f5)"
+    _mc_l="$(printf '%s\n' "$_mc_e" | cut -f7)"
     [ "$1" = 0 ] || [ "$_mc_l" != "$LOCK" ] || continue   # own lock: only once it is held (re-check)
     [ "$_mc_k" = manifest ] || continue
     _mc_how="live run $_mc_s ($_mc_d, pid $_mc_p) — stop it ($(sq "$SELF_ABS") stop --run $_mc_s) or pick another"

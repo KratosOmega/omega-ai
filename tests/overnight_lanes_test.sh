@@ -3286,6 +3286,34 @@ test_lanes_preflight_refuses_live_old_style_run() {
   assert_eq 2 "$_st2" "a slug shared with a live old-style run refuses"
   assert_contains "$_er2" "slug old is used by live run old" "names the slug"
 }
+# A live lock with no start= line gives runs_live an empty start_dir column;
+# mf_conflicts must still read the lock path (field 7) and skip its own lock
+# in the re-check, and still name the other run (#39 final review, known #2).
+test_lanes_conflicts_lock_without_start() {
+  _cs_p="$TMP/cs"; mkdir -p "$_cs_p/.studio/runs/demo" "$_cs_p/.studio/runs/alpha"
+  sh -c 'sleep 60; :' studio-overnight >/dev/null 2>&1 & _cs_d=$!
+  for _cs_s in demo alpha; do
+    _cs_r="$_cs_p/.studio/reports/overnight-$_cs_s-20261004-210000"; mkdir -p "$_cs_r"
+    printf '# Run: %s\n\nMode: integration\nTarget: integration/%s\n' "$_cs_s" "$_cs_s" > "$_cs_r/manifest.md"
+    printf 'pid=%s\nrun=%s\nstarted=2026-10-04T21:00:0%s\n' "$_cs_d" "$_cs_r" "${#_cs_s}" > "$_cs_p/.studio/runs/$_cs_s/lock"
+  done
+  printf 'S1\tS1-b\tS1\t-\t-\t\n' > "$_cs_p/.studio/reports/overnight-demo-20261004-210000/rows.tsv"
+  printf 'S9\tS9-b\tS9\t-\t-\t\n' > "$_cs_p/.studio/reports/overnight-alpha-20261004-210000/rows.tsv"
+  _cs_out="$( (
+    SELF_DIR="$BIN"; STATE_ROOT="$_cs_p"; SELF_ABS="$BIN/studio-overnight"; MF_SLUG=demo
+    MF_ROWS="$_cs_p/.studio/reports/overnight-demo-20261004-210000/rows.tsv"; LOCK="$_cs_p/.studio/runs/demo/lock"
+    sq() { printf "'%s'" "$1"; }
+    . "$BIN/overnight-runs.sh"; . "$BIN/overnight-lanes.sh"
+    printf 'recheck:\n'; mf_conflicts 1
+    printf 'S9\tS9-b\tS9\t-\t-\t\n' >> "$MF_ROWS"; printf 'other:\n'; mf_conflicts 1
+  ) 2>&1)"
+  kill "$_cs_d"; wait "$_cs_d" 2>/dev/null
+  assert_eq "recheck:
+other:
+story S9 is used by live run alpha ($_cs_p/.studio/reports/overnight-alpha-20261004-210000, pid $_cs_d) — stop it ('$BIN/studio-overnight' stop --run alpha) or pick another id
+branch S9-b is used by live run alpha ($_cs_p/.studio/reports/overnight-alpha-20261004-210000, pid $_cs_d) — stop it ('$BIN/studio-overnight' stop --run alpha) or pick another branch" \
+    "$_cs_out" "its own start=-less lock is skipped; the other run is named with its pid"
+}
 test_lanes_preflight_refuses_stopped_record() {
   lanes_fixture pfs integration S1:-
   mkdir -p "$P/.studio/runs/alpha" "$P/.studio/reports/overnight-alpha-20261004-210000"
@@ -3696,7 +3724,7 @@ test_lanes_round_trip_sync_conflict() {
   assert_not_contains "$P/.studio/runs/alpha/landed.tsv" 'stopped' "stopped appears nowhere in alpha's landed.tsv"
 }
 
-run_tests test_lanes_chain_rule test_lanes_manifest_refusals test_lanes_preflight_backlog_tasks test_lanes_manifest_header_refusals \
+run_tests test_lanes_chain_rule test_lanes_manifest_refusals test_lanes_conflicts_lock_without_start test_lanes_preflight_backlog_tasks test_lanes_manifest_header_refusals \
   test_lanes_preflight_story_checks test_lanes_preflight_story_state test_lanes_docs_unreachable \
   test_lanes_git_too_old test_lanes_sourced_only test_lanes_next \
   test_lanes_next_all_planned_and_ambiguous test_lanes_next_plan_before_autopilot \

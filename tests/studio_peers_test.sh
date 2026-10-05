@@ -76,6 +76,14 @@ test_peers_ignores_single_and_dead() {
   dead_pid; prun gone "$DEAD" 2026-10-04T21:00:00Z deadbeef
   assert_eq "" "$(sh "$PEERS")" "a single-plan lock and a dead lock print nothing"
 }
+# A live lock with no start= (and no started=) line: runs_live's empty columns
+# must not shift the fields studio-peers reads (#39 final review, known #2).
+test_peers_lock_without_start() {
+  peers_fixture t8; cd "$P"
+  printf 'pid=%s\nrun=%s\n' "$(sed -n 's/^pid=//p' "$P/.studio/runs/beta/lock")" "$B_DIR" > "$P/.studio/runs/beta/lock"
+  assert_eq "beta integration: S3 task 0/2" "$(sh "$PEERS" --exclude "$A_DIR")" "a lock without start= or started= is still a peer"
+  assert_eq "alpha integration: S1 task 1/3" "$(sh "$PEERS" --exclude "$B_DIR")" "and --exclude still matches its run dir"
+}
 test_peer_hook_block() {
   peers_fixture t5; cd "$P"
   out="$(printf '%s' "$SS_START" | STUDIO_UNIT_TAG=u1 STUDIO_RUN_DIR="$A_DIR" sh "$HOOK")"
@@ -111,4 +119,4 @@ test_peer_hook_exit0_bad_input() {
 }
 
 run_tests test_peers_default_two_runs test_peers_files_both_forms test_peers_unreadable_run \
-  test_peers_ignores_single_and_dead test_peer_hook_block test_peer_hook_silent test_peer_hook_exit0_bad_input
+  test_peers_ignores_single_and_dead test_peers_lock_without_start test_peer_hook_block test_peer_hook_silent test_peer_hook_exit0_bad_input
