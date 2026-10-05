@@ -1635,6 +1635,19 @@ test_lanes_sync_repair_stops() {
     assert_eq 1 "$(cat "$CALLS/m-A" 2>/dev/null)" "$_sr: no unit after it"
   done
 }
+# A sync repair that lands but spends the run budget: the story stops before
+# its next unit (#39 final review, known #3), as a gate repair's budget does.
+test_lanes_sync_repair_budget() {
+  LANES_TASKS=2; export LANES_TASKS
+  LANES_CONFIG='{"overnight": {"run_usd": 30, "session_usd": 25}}'; export LANES_CONFIG
+  lanes_fixture syncbudget integration A:-
+  printf 'cost 2; push_target A-T1.txt\n' > "$SCEN/A"
+  printf 'syncrepair; cost 4\n' > "$SCEN/A.sync"
+  run_lanes start "$MFP"
+  assert_eq 1 "$(cat "$CALLS/m-A.sync" 2>/dev/null)" "spent 2 + 25 <= 30: the sync repair runs"
+  assert_contains "$(last_lanes_dir)/stories/A" "^stopped stop: run budget$" "spent 6 + 25 > 30 after it: the story stops on the run budget"
+  assert_eq 1 "$(cat "$CALLS/m-A" 2>/dev/null)" "no task unit after the repair"
+}
 test_lanes_no_sync_before_repairs() {
   # A gate repair: the target moves during the red finish.
   lanes_fixture syncgr integration A:-
@@ -3740,7 +3753,7 @@ run_tests test_lanes_chain_rule test_lanes_manifest_refusals test_lanes_conflict
   test_lanes_gate_repair_same_stop_twice test_lanes_gate_repairs_zero test_lanes_gate_hard_stops_no_repair \
   test_lanes_gate_repair_no_progress test_lanes_gate_repair_model_and_no_log test_lanes_gate_repair_budget test_lanes_gate_repair_halt \
   test_lanes_sync_clean_merge_no_session test_lanes_sync_skips test_lanes_sync_integration_two_refs \
-  test_lanes_sync_failed_merge_aborts test_lanes_sync_conflict_launches_repair test_lanes_sync_repair_stops \
+  test_lanes_sync_failed_merge_aborts test_lanes_sync_conflict_launches_repair test_lanes_sync_repair_stops test_lanes_sync_repair_budget \
   test_lanes_no_sync_before_repairs \
   test_lanes_final_step_once test_lanes_final_red_after_repair \
   test_lanes_final_repair_turns_green test_lanes_final_conflict test_lanes_final_resume_edits_pr \

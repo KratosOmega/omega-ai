@@ -718,8 +718,10 @@ sync_check() {
 # sync-repair, model_repair) with STUDIO_REPAIR=sync:REF added to the story's
 # env words. Returns 0 when the feature ledger gained a `Synced:` line: the
 # record goes back to running, stops.before is taken again, and the story's
-# next unit runs. Else returns 1 with ENDING set, and the story stops at once
-# (no retry, no hold): the halt reason; `stop: run budget`; `sync repair:
+# next unit runs, once op_boundary, the run budget and the stage (plan or
+# execute) are checked again (story_units checked them before the repair;
+# their endings are story_units'). Else returns 1 with ENDING set, and the
+# story stops at once (no retry, no hold): the halt reason; `stop: run budget`; `sync repair:
 # stop: <reason>` for a new Stop: line; `sync repair: no progress [(orphaned:
 # …)]`; `sync repair: timed out (session_minutes N)` (D32).
 sync_repair() {
@@ -738,7 +740,13 @@ sync_repair() {
   _sr_a="$(ledger_of "$FEATURE_DIR" | grep -c '^- [0-9-]* Synced: ')"
   if [ -n "$NEW_STOP" ]; then row "$n" sync-repair stop; ENDING="sync repair: $STOP_ENDING"; return 1; fi
   if [ "$_sr_a" -gt "$_sr_b" ]; then
-    row "$n" sync-repair progress; story_write "$1" running; snapshot "$UNIT_DIR/stops.before"; return 0
+    row "$n" sync-repair progress; story_write "$1" running; snapshot "$UNIT_DIR/stops.before"
+    # story_units checked these before the repair; the repair took time,
+    # money and maybe the stage, so check them again before the next unit.
+    op_boundary "$1" || return 1
+    if run_budget_out; then ENDING="stop: run budget"; return 1; fi
+    case "$SIG_STAGE" in plan|execute) ;; *) ENDING="stop: unexpected stage $SIG_STAGE"; return 1 ;; esac
+    return 0
   fi
   _sr_o="$(unit_outcome)"
   if [ "$_sr_o" != "timed out" ]; then row "$n" sync-repair "$_sr_o"; ENDING="sync repair: no progress$(orphan_note "$_sr_o")"
