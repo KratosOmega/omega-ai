@@ -138,7 +138,23 @@ test_mutex_reap_race() {
   assert_missing "$M.reap" "no reap lock is left behind"
 }
 
+# AC27 (f3-N2): a reap lock left by a reaper killed mid-reap (older than 5 s)
+# is broken, so a dead holder's link is still reaped and the take succeeds.
+test_mutex_stale_reap_lock_broken() {
+  M="$TMP/stale.mutex"; rm -rf "$M" "$M.reap"
+  sh -c 'exit 0' & _d=$!; wait "$_d"
+  ln -s "$_d" "$M"; mkdir "$M.reap"
+  touch -t "$(date -v-1M +%Y%m%d%H%M.%S 2>/dev/null || date -d '-1 min' +%Y%m%d%H%M.%S)" "$M.reap"
+  _t0=$(date +%s)
+  if mx_take "$M" $$; then _ok=0; else _ok=1; fi
+  assert_eq 0 "$_ok" "the take succeeds past a stale reap lock"
+  assert_eq "$$" "$(readlink "$M")" "the mutex names the taker"
+  assert_missing "$M.reap" "the stale reap lock is gone"
+  [ $(( $(date +%s) - _t0 )) -lt 5 ] && _pass "no long wait" || _fail "no long wait"
+  TESTS_RUN=$((TESTS_RUN + 1)); mx_drop "$M" $$
+}
+
 run_tests test_runs_live_per_run_and_old_lock test_runs_live_skips_dead_and_single test_runs_match_slug_or_basename \
   test_runs_stop_of test_runs_start_dir_lock_then_registry test_runs_records test_runs_rows_newest_report \
   test_runs_worktree_of test_runs_plan_files_studio_form test_runs_plan_files_superpowers_form test_runs_plan_files_comma_line_list test_mx_take_drop_and_dead_owner \
-  test_mutex_reap_race
+  test_mutex_reap_race test_mutex_stale_reap_lock_broken
