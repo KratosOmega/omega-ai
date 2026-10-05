@@ -28,7 +28,7 @@ runs_start_dir() {
   _rs_s="$(runs_kv start "$1")"
   if [ -z "$_rs_s" ]; then
     _rs_r="$(runs_kv run "$1")"; _rs_g="${REGISTRY:-$HOME/.claude-gamedev/runs}"
-    for _rs_e in "$_rs_g"/*; do
+    for _rs_e in "$_rs_g"/overnight-* "$_rs_g/last"; do
       [ -f "$_rs_e" ] && [ -n "$_rs_r" ] && [ "$(runs_kv run "$_rs_e")" = "$_rs_r" ] || continue
       _rs_s="$(runs_kv start "$_rs_e")"; break
     done
@@ -81,7 +81,7 @@ runs_plan_files() {
         while (match(s, /`[^`]+`/)) { clean(substr(s, RSTART + 1, RLENGTH - 2)); s = substr(s, RSTART + RLENGTH) }
         return
       }
-      n = split(s, a, ","); for (i = 1; i <= n; i++) clean(a[i])
+      n = split(s, a, ","); for (i = 1; i <= n; i++) if (a[i] !~ /^[ \t]*L?[0-9][0-9-]*[ \t]*$/) clean(a[i])
     }
     /^## Backlog/ { exit }
     /^### Task [0-9]/ { t++; intask = 1; inlist = 0; next }

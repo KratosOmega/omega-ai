@@ -5,7 +5,7 @@ set -u
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 . "$REPO_ROOT/tests/assert.sh"
 LIB="$REPO_ROOT/studios/game-dev/bin/overnight-runs.sh"
-TMP="$(cd "$(mktemp -d)" && pwd -P)"; trap 'kill $DUMMIES 2>/dev/null; rm -rf "$TMP"' EXIT
+TMP="$(cd "$(mktemp -d)" && pwd -P)"; trap '{ for _d in $DUMMIES; do kill "$_d"; done; wait; } 2>/dev/null; rm -rf "$TMP"' EXIT
 HOME="$TMP/home"; export HOME; mkdir -p "$HOME"
 DUMMIES=""
 TAB="$(printf '\t')"
@@ -59,7 +59,7 @@ test_runs_start_dir_lock_then_registry() {
   live_dummy; plock "$R" a "$DUMMY" 2026-10-04T21:00:00Z 1 "$R/wt-a"
   assert_eq "$R/wt-a" "$(runs_start_dir "$R/.studio/runs/a/lock")" "lock start= wins"
   plock "$R" b "$DUMMY" 2026-10-04T21:00:00Z 2
-  printf 'root=%s\nstart=%s\nrun=%s\npid=%s\n' "$R" "$R/wt-b" "$PL_DIR" "$DUMMY" > "$HOME/.claude-gamedev/runs/x-$DUMMY"
+  printf 'root=%s\nstart=%s\nrun=%s\npid=%s\n' "$R" "$R/wt-b" "$PL_DIR" "$DUMMY" > "$HOME/.claude-gamedev/runs/$(basename "$PL_DIR")-$DUMMY"
   assert_eq "$R/wt-b" "$(runs_start_dir "$R/.studio/runs/b/lock")" "else the registry's start= for the same run="
   plock "$R" c "$DUMMY" 2026-10-04T21:00:00Z 3
   assert_eq "" "$(runs_start_dir "$R/.studio/runs/c/lock")" "else empty (the caller keeps its own)"
@@ -98,6 +98,11 @@ test_runs_plan_files_superpowers_form() {
     '- Test: `tests/test_x.py`' '' '- [ ] **Step 1: …**' '' '## Self-review' 'Files: no.sh' > "$TMP/plan2"
   assert_eq "src/new.py src/old.py tests/test_x.py" "$(runs_plan_files 0 < "$TMP/plan2" | tr '\n' ' ' | sed 's/ $//')" "bullets read; a ## line ends the task"
 }
+test_runs_plan_files_comma_line_list() {
+  printf '%s\n' '### Task 1: a' 'Files: src/a.gd:10,20, src/b.gd' > "$TMP/plan3"
+  _o="$(runs_plan_files 0 < "$TMP/plan3" | tr '\n' ' ' | sed 's/ $//')"
+  assert_eq "src/a.gd src/b.gd" "$_o" "a comma line list continues the path; 20 is not a file"
+}
 test_mx_take_drop_and_dead_owner() {
   M="$TMP/m.mutex"; live_dummy
   mx_take "$M" "$DUMMY"; assert_eq 0 $? "taken"
@@ -111,4 +116,4 @@ test_mx_take_drop_and_dead_owner() {
 
 run_tests test_runs_live_per_run_and_old_lock test_runs_live_skips_dead_and_single test_runs_match_slug_or_basename \
   test_runs_stop_of test_runs_start_dir_lock_then_registry test_runs_records test_runs_rows_newest_report \
-  test_runs_worktree_of test_runs_plan_files_studio_form test_runs_plan_files_superpowers_form test_mx_take_drop_and_dead_owner
+  test_runs_worktree_of test_runs_plan_files_studio_form test_runs_plan_files_superpowers_form test_runs_plan_files_comma_line_list test_mx_take_drop_and_dead_owner
