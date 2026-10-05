@@ -604,6 +604,69 @@ test_state_check_ignores_before_adopt_reset() {
   assert_eq 0/3 "$(cd "$P" && STUDIO_STORY=RS sh "$STATE_BIN" get task)" "the last reset wins: nothing after it"
 }
 
+# #39 fixture: a project P (main checkout, studio-state init, one commit) and a
+# linked run worktree RW on run/x under P/.claude/worktrees/run-x.
+BIN="$REPO_ROOT/studios/game-dev/bin"
+rw_fixture() {
+  P="$TMP/rw-$1"; RW="$P/.claude/worktrees/run-x"; rm -rf "$P"; mkdir -p "$P"
+  ( cd "$P" && git init -q -b main && sh "$STATE_BIN" init >/dev/null \
+      && git add -A && git -c user.name=t -c user.email=t@t commit -qm init \
+      && git worktree add -q -b run/x "$RW" ) >/dev/null 2>&1
+}
+test_state_root_from_run_worktree() {
+  rw_fixture root
+  assert_eq "$P" "$(cd "$RW" && sh "$STATE_BIN" root)" "root is the main checkout from a run worktree"
+  assert_eq "$RW" "$(cd "$RW" && sh "$STATE_BIN" root --work)" "--work is the run worktree"
+}
+test_state_init_local_creates_pointer() {
+  rw_fixture local
+  ( cd "$RW" && sh "$STATE_BIN" init --local ) > "$TMP/out" 2>&1
+  assert_file "$RW/.studio/STATE.md" "the local pointer exists"
+  assert_contains "$RW/.studio/STATE.md" '^stage: idle$' "stage idle"
+  assert_contains "$(git -C "$P" rev-parse --path-format=absolute --git-common-dir)/info/exclude" '^\.studio/STATE\.md$' "kept out of git (D41)"
+  assert_eq "" "$(git -C "$RW" status --porcelain)" "no untracked noise"
+}
+test_state_init_local_refusals() {
+  rw_fixture refuse
+  st=0; ( cd "$P" && sh "$STATE_BIN" init --local ) > "$TMP/out" 2>&1 || st=$?
+  assert_eq 1 "$st" "refused in the main checkout"
+  assert_contains "$TMP/out" "init --local: the main checkout" "says why"
+  ( cd "$RW" && sh "$STATE_BIN" init --local ) >/dev/null 2>&1
+  st=0; ( cd "$RW" && sh "$STATE_BIN" init --local ) > "$TMP/out" 2>&1 || st=$?
+  assert_eq 1 "$st" "refused when the checkout already has one"
+}
+test_state_local_pointer_only_when_present() {
+  rw_fixture present
+  ( cd "$RW" && sh "$STATE_BIN" set stage brainstorm ) >/dev/null 2>&1
+  assert_contains "$P/.studio/STATE.md" '^stage: brainstorm$' "no local pointer: the root's STATE.md, as today"
+  ( cd "$P" && sh "$STATE_BIN" set stage idle ) >/dev/null 2>&1
+  ( cd "$RW" && sh "$STATE_BIN" init --local && sh "$STATE_BIN" set stage plan ) >/dev/null 2>&1
+  assert_contains "$RW/.studio/STATE.md" '^stage: plan$' "with one: the local pointer"
+  assert_eq idle "$(cd "$P" && sh "$STATE_BIN" get stage)" "the main checkout reads its own"
+  rm -f "$RW/.studio/STATE.md"
+  assert_eq idle "$(cd "$RW" && sh "$STATE_BIN" get stage)" "pointer removed: back to the root's STATE.md"
+}
+test_state_run_worktree_leaves_main_state() {
+  rw_fixture untouched
+  _before="$(cat "$P/.studio/STATE.md")"
+  ( cd "$RW" && sh "$STATE_BIN" init --local && sh "$STATE_BIN" set stage brainstorm \
+      && sh "$STATE_BIN" set spec docs/s.md && sh "$STATE_BIN" ledger "spec approved docs/s.md" ) >/dev/null 2>&1
+  assert_eq "$_before" "$(cat "$P/.studio/STATE.md")" "stage writes in a run worktree leave the main STATE.md"
+}
+test_state_story_state_stays_at_root() {
+  rw_fixture story
+  ( cd "$RW" && sh "$STATE_BIN" init --local && STUDIO_STORY=S1 sh "$STATE_BIN" init \
+      && STUDIO_STORY=S1 sh "$STATE_BIN" set task 1/3 ) >/dev/null 2>&1
+  assert_contains "$P/.studio/stories/S1.md" '^task: 1/3$' "STUDIO_STORY state is at <root>"
+  assert_missing "$RW/.studio/stories" "never in the run worktree"
+}
+test_state_gate_lock_from_run_worktree() {
+  rw_fixture gate
+  ( cd "$RW" && sh "$BIN/studio-gate" studio-test -- sh -c "test -d '$P/.studio/gate.lock' && echo held" ) > "$TMP/out" 2>&1
+  assert_contains "$TMP/out" '^held$' "studio-gate locks <main>/.studio/gate.lock from a run worktree"
+  assert_missing "$RW/.studio/gate.lock" "and nothing in the run worktree"
+}
+
 run_tests test_state_check_ignores_before_adopt_reset test_state_needs_init test_state_init test_state_get_set test_state_validation \
   test_state_ledger test_state_ledger_keeps_all_words test_state_ledger_folds_newlines \
   test_state_set_keeps_backslashes test_state_show test_state_resolves_to_main_checkout \
@@ -613,4 +676,7 @@ run_tests test_state_check_ignores_before_adopt_reset test_state_needs_init test
   test_state_feature_ledger test_state_ledger_per_branch test_state_check test_state_reset \
   test_state_stage_list test_state_legacy_file test_state_branch_key \
   test_state_branch_insert_is_literal test_state_worktree test_state_worktree_edges \
-  test_state_story_init_and_isolation test_state_story_rebuild test_state_story_gap_from_k_of_n test_state_story_rebuild_skips_backlog
+  test_state_story_init_and_isolation test_state_story_rebuild test_state_story_gap_from_k_of_n test_state_story_rebuild_skips_backlog \
+  test_state_root_from_run_worktree test_state_init_local_creates_pointer test_state_init_local_refusals \
+  test_state_local_pointer_only_when_present test_state_run_worktree_leaves_main_state \
+  test_state_story_state_stays_at_root test_state_gate_lock_from_run_worktree

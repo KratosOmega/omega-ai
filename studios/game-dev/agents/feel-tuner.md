@@ -44,6 +44,10 @@ Feel targets are in real units — frames at 60 fps, seconds, tiles, pixels —
 and you measure before you change: count the frames from press to first
 visible change with the profiler or a frame-step, do not guess.
 
+## Finding tools
+
+Never search for a tool or script: no `find /`, `find ~`, `locate` or recursive `ls` from `/`, `~` or `$HOME`. `find .` or `git ls-files` inside the project, and `command -v`, are fine. A search can hang a headless unit for hours. Use `sdd-script` (superpowers scripts), a path the studio documents, or stop and report the tool as missing.
+
 ## Skills you may call
 
 - `game-dev:game-feel` — the diagnostic order above.

@@ -100,7 +100,8 @@ the board stays empty (bridge) or a mode 3 session stalls on a prompt nobody see
 
 Plan at the desk, start from the board, steer from the phone, review in the
 morning. A run asks no questions overnight, so every decision is made before it
-starts.
+starts. Another run can be planned and started while one is live; the bridge
+mirrors each live run on its own Run issue.
 
 1. **Plan (terminal, in the project).** Run `claude-gd`, then `/omega:autopilot`.
    - Answer its first question: integration mode (recommended: stories land on
@@ -193,7 +194,7 @@ Rules that catch people out:
 | Story state | Issue status |
 |---|---|
 | `queued`, `waiting` | `todo` |
-| `running`, `repair`, `gate-repair`, `landing` | `in_progress` |
+| `running`, `repair`, `gate-repair`, `sync-repair`, `landing` | `in_progress` |
 | `held` | `blocked` |
 | `landed` | `done` |
 | `stopped`, `skipped` | `cancelled` |

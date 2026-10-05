@@ -45,7 +45,7 @@ test_autopilot_contract() {
   assert_contains "$S" 'docs/runs/<slug>.md' "the run manifest"
   assert_contains "$S" '> \.studio/run`' "the pointer (anchored: not .studio/runs/)"
   assert_contains "$S" '.studio/runs/<slug>/done' "a done run's pointer is ignored"
-  assert_contains "$S" 'switch this checkout to .<default>. first' "D11: run/<slug> needs the default branch"
+  assert_not_contains "$S" 'switch this checkout to' "D1: the checkout is never switched to the default branch"
   assert_contains "$S" 'studio-overnight next' "the planning loop is driven by next"
   assert_contains "$S" 'set stage plan' "STATE.md is set before a plan of an approved spec"
   assert_contains "$S" 'Print .\/clear., then the command' "one stage per session"
@@ -59,7 +59,7 @@ test_autopilot_contract() {
   assert_contains "$S" 'the file the runner.s preflight reads' "seeded ledger lines go to the phase-1 checkout (C1)"
   assert_contains "$S" 'In that worktree, only' "the worktree gets only the move, branch, stage and rebuild (C1)"
   assert_not_contains "$S" 'a half-done one in its worktree' "no seeding ledger lines in the story worktree (C1)"
-  assert_contains "$S" '.studio-overnight status. exits 0, a run is live: stop' "discovery never re-seeds a live run (I1)"
+  assert_not_contains "$S" 'a run is live: stop' "D1: a live run no longer stops discovery"
   assert_contains "$S" '.studio/runs/<slug>/. exists, the run was started: skip to step 4' "a started run is not re-seeded (I1)"
   assert_contains "$S" 'when .STUDIO_RUN. is unset, the base is per .omega:local-merge. §3' "the non-studio PR base is unchanged (I2)"
   assert_contains "$S" 'python3 -c' "max_lanes is merged into config.json (I3)"
@@ -67,14 +67,14 @@ test_autopilot_contract() {
   assert_contains "$S" 'an integer from 0 to 8' "max_lanes uses the runner's range (I3)"
   assert_contains "$S" 'git add docs/runs/<slug>.md .studio/config.json' "config.json is committed on run/<slug> (I3)"
   assert_contains "$S" 'When .next. exits non-zero' "a failing next stops the loop"
-  assert_contains "$S" 'git switch run/<slug>. when it already exists' "an existing run branch is switched to"
+  assert_contains "$S" 'git worktree add <path> run/<slug>. when the branch exists' "an existing run branch gets a worktree"
   # Task 17 fix round 3: the story file (STATE_ROOT, shared) carries N, so a worktree rebuild needs no plan.
   assert_contains "$S" 'plan=.); .set task 0/<N>.' "every story is seeded with task 0/N in the phase-1 checkout"
   assert_contains "$S" "awk '/^## Backlog/ { exit } /^### Task \\[0-9\\]/ { n++ } END { print n + 0 }' <plan>" "N counts only the tasks above ## Backlog"
   assert_not_contains "$S" "grep -c '^### Task" "N is never a bare grep -c (it would count backlog tasks)"
   assert_contains "$S" 'takes .N. from the story file and never needs the plan' "a worktree rebuild reads N, not the plan file"
-  assert_contains "$S" 'Write it only after the switch to .run/<slug>.' "max_lanes is written after the run branch switch"
-  assert_contains "$S" 'Then, on .run/<slug>., write the lane count' "the run-branch step writes the lane count"
+  assert_contains "$S" 'Write it only in the run worktree' "max_lanes is written in the run worktree"
+  assert_contains "$S" 'the lane count' "the run worktree step writes the lane count"
   assert_contains "$S" 'start --detach' "autopilot can start the run detached"
   assert_contains "$S" "start <manifest>" "the printed command names the manifest"
   assert_contains "$S" 'never retries in this session' "a refused detach prints the command"
@@ -115,6 +115,11 @@ test_autopilot_contract() {
     assert_contains "$S" "$lit" "autopilot adopt branch: $lit"
   done
   test_autopilot_adopt_order
+  test_autopilot_run_worktree
+  test_autopilot_discovery_lists_runs
+  test_autopilot_start_from_run_worktree
+  test_autopilot_off_stop_rule
+  test_autopilot_adopt_slug_forms
   # AC1: the manifest commit carries every story's ledger; AC3: step 3 ledgers `adopted` before seeding.
   _a="$(grep -n -F -m1 -- 'git add docs/runs/<slug>.md .studio/config.json .studio/ledger/<id>.md … && git commit -m "docs(run): <slug> manifest"' "$S" | cut -d: -f1)"
   TESTS_RUN=$((TESTS_RUN + 1))
@@ -151,4 +156,63 @@ test_autopilot_adopt_order() {
   if [ "$_b" -gt 0 ] && [ "$_s" -gt "$_b" ] && [ "$_r" -gt "$_s" ]; then
     _pass "adopt order: set branch, then seed, then check --rebuild"
   else _fail "adopt order: set branch ($_b), seed ($_s), check --rebuild ($_r)"; fi
+}
+
+# #39 AC15: a new run gets its own run worktree; the main checkout is never switched.
+test_autopilot_run_worktree() {
+  S="$REPO_ROOT/shared/omega/skills/autopilot/SKILL.md"
+  assert_contains "$S" 'git worktree add --no-track -b run/<slug> <root>/.claude/worktrees/run-<slug> origin/<default>' "run worktree is created from origin/<default>"
+  assert_contains "$S" 'git worktree add <path> run/<slug>' "an existing run branch gets a worktree"
+  assert_contains "$S" 'Enter the feature checkout' "the run worktree is entered by execute's procedure"
+  assert_contains "$S" 'git rev-parse --show-toplevel' "the entered worktree is checked"
+  assert_contains "$S" 'studio-state init --local' "the run worktree is initialised locally"
+  assert_contains "$S" 'worktree_setup' "the setup hook runs in the run worktree"
+  assert_contains "$S" "The main checkout's branch is never switched" "the main checkout is untouched"
+  assert_contains "$S" 'not `off`, not all digits' "slug rules: off and all-digit"
+  assert_contains "$S" 'all digits' "slug rule: all-digit"
+  assert_contains "$S" '.studio/runs/<slug>.$(date -u +%Y%m%dT%H%M%SZ)' "a done record is archived under a utc timestamp"
+  assert_contains "$S" 'an id or branch that another run uses' "the story list refuses ids and branches of other runs (AC8)"
+}
+
+# #39 AC16: discovery lists runs.
+test_autopilot_discovery_lists_runs() {
+  S="$REPO_ROOT/shared/omega/skills/autopilot/SKILL.md"
+  assert_contains "$S" 'runs being planned' "discovery lists runs being planned"
+  assert_contains "$S" 'started runs' "discovery lists started runs"
+  assert_contains "$S" 'branch refs/heads/run/' "planned runs come from the run worktrees"
+  assert_contains "$S" 'each run, and .new run.' "one question with each run and new run"
+  assert_contains "$S" '/omega:autopilot <slug>. skips the question' "a slug skips the question"
+  assert_contains "$S" 'A live run never stops discovery' "a live run never stops discovery"
+}
+
+# #39 AC15/AC18: the run starts from its run worktree.
+test_autopilot_start_from_run_worktree() {
+  S="$REPO_ROOT/shared/omega/skills/autopilot/SKILL.md"
+  assert_contains "$S" "cd '<run worktree>' && '<abs>' start --detach <manifest>" "the detached start runs from the run worktree"
+  assert_contains "$S" "cd '<run worktree>' && '<abs>' start <manifest>" "the printed command runs from the run worktree"
+  assert_contains "$S" 'baseline test run is green.*run worktree.*worktree_setup' "the baseline test runs in the run worktree after setup"
+  assert_contains "$S" 'git worktree remove <path>' "the report names the worktree removal"
+  assert_contains "$S" 'nothing removes the worktree automatically' "the worktree is never removed automatically"
+}
+
+# #39 AC19: off applies the bare-stop rule.
+test_autopilot_off_stop_rule() {
+  S="$REPO_ROOT/shared/omega/skills/autopilot/SKILL.md"
+  assert_contains "$S" '`off`: `omega-mode clear autopilot`; then a bare `studio-overnight stop`' "off clears the mode, then a bare stop"
+  assert_contains "$S" 'stop --run <slug>' "off names stop --run with several runs"
+  assert_contains "$S" 'stop --all' "off names stop --all with several runs"
+  # #39 final review N2: a live run no longer blocks a start (AC19), and a
+  # bare stop refuses with two live runs.
+  assert_not_contains "$S" 'direct mode, no live run)' "the dry run no longer checks for no live run"
+  assert_contains "$S" 'no conflicting live or stopped run (slug, story, branch)' "the dry run checks for conflicting runs"
+  assert_contains "$S" '`studio-overnight stop --run <slug>` (from the project)' "the user ends the run with stop --run"
+}
+
+# #39 AC14/#35: adopt steps print slug-qualified ids.
+test_autopilot_adopt_slug_forms() {
+  S="$REPO_ROOT/shared/omega/skills/autopilot/SKILL.md"
+  assert_contains "$S" '/game-dev:plan <slug>/<id>' "adopt prints the plan command with slug/id"
+  assert_contains "$S" '/game-dev:brainstorm <slug>/<id>' "adopt prints the brainstorm command with slug/id"
+  assert_not_contains "$S" '/game-dev:plan <id>' "no bare-id plan command"
+  assert_not_contains "$S" '/game-dev:brainstorm <id>' "no bare-id brainstorm command"
 }

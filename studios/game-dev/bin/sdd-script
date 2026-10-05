@@ -1,0 +1,82 @@
+#!/bin/sh
+# sdd-script — print the absolute path of one of superpowers' skill scripts
+# (review-package, sdd-workspace, task-brief, task-start, task-done), so a
+# skill never has to hunt for it. It never searches: it reads two known places.
+#
+#   sdd-script [--skill <skill>] <name>
+#   bash "$(sdd-script review-package)" <plan> <BASE> HEAD
+#
+#   --skill   the superpowers skill that owns the script (default:
+#             subagent-driven-development; task-start / task-done live in
+#             executing-plans)
+#
+# Config dir: $CLAUDE_CONFIG_DIR if set, else $HOME/.claude (never a glob over
+# ~/.claude*: other profiles hold other superpowers versions). Root, in order:
+#   1. the installPath of superpowers@* (the user-scope entry, else the first) in <config>/plugins/installed_plugins.json,
+#      when that directory exists;
+#   2. the highest version directory under <config>/plugins/cache/*/superpowers/
+#      (versions compared numerically field by field, so 6.10.0 > 6.4.1 > 6.3.0;
+#      a pre-release ranks below its release; folders without skills/ are skipped).
+# Prints <root>/skills/<skill>/scripts/<name> and exits 0. When the script is not
+# there it names every path it checked on stderr and exits 1: stop and report it.
+set -u
+
+die() { printf 'sdd-script: %s\n' "$*" >&2; exit 1; }
+
+SKILL="subagent-driven-development"; NAME=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --skill) [ "$#" -ge 2 ] || die "--skill needs a value"; SKILL="$2"; shift ;;
+    --skill=*) SKILL="${1#--skill=}" ;;
+    -*) die "unknown option $1 (usage: sdd-script [--skill <skill>] <name>)" ;;
+    *) [ -z "$NAME" ] || die "one script name only (usage: sdd-script [--skill <skill>] <name>)"; NAME="$1" ;;
+  esac
+  shift
+done
+[ -n "$NAME" ] || die "usage: sdd-script [--skill <skill>] <name>"
+[ -n "$SKILL" ] || die "--skill needs a value"
+
+CFG="${CLAUDE_CONFIG_DIR:-${HOME:-}/.claude}"
+CHECKED=""
+ROOT=""
+
+# 1. the active install
+REG="$CFG/plugins/installed_plugins.json"
+if [ -f "$REG" ]; then
+  # The superpowers@* array, split into its entries: the user-scope entry's
+  # installPath, else the first entry's.
+  P="$(tr -d '\n' < "$REG" | sed -n 's/.*"superpowers@[^"]*" *: *\[\([^]]*\)\].*/\1/p' | awk -v RS='}' '
+    { if (match($0, /"installPath" *: *"[^"]*"/)) {
+        v = substr($0, RSTART, RLENGTH); sub(/^"installPath" *: *"/, "", v); sub(/"$/, "", v)
+        if (first == "") first = v
+        if (user == "" && $0 ~ /"scope" *: *"user"/) user = v
+      } }
+    END { print (user != "" ? user : first) }')"
+  CHECKED="$CHECKED
+  $REG (installPath: ${P:-none})"
+  if [ -n "$P" ] && [ -d "$P" ]; then ROOT="$P"; fi
+else
+  CHECKED="$CHECKED
+  $REG (absent)"
+fi
+
+# 2. the highest cached version
+if [ -z "$ROOT" ]; then
+  CHECKED="$CHECKED
+  $CFG/plugins/cache/*/superpowers/<highest version>"
+  ROOT="$(for d in "$CFG"/plugins/cache/*/superpowers/*/; do
+      [ -d "$d" ] || continue
+      d="${d%/}"
+      [ -d "$d/skills" ] || continue
+      printf '%s\t%s\n' "$(basename "$d" | awk -F. '{ k = ""; for (i = 1; i <= 5; i++) { f = $i; gsub(/[^0-9].*/, "", f); k = k sprintf("%08d", f + 0) } print k (index($0, "-") ? "0" : "1") }')" "$d"
+    done | sort -k1,1 | tail -n 1 | cut -f2)"
+fi
+
+[ -n "$ROOT" ] || die "no superpowers install found. Checked:$CHECKED
+  superpowers is not installed in this config dir, or CLAUDE_CONFIG_DIR points at the wrong one ($CFG). Stop and report it; do not search for it."
+
+SCRIPT="$ROOT/skills/$SKILL/scripts/$NAME"
+[ -f "$SCRIPT" ] || die "script '$NAME' not found at $SCRIPT. Checked:$CHECKED
+  superpowers root used: $ROOT
+  The script is missing from that version, or the wrong CLAUDE_CONFIG_DIR is set. Stop and report it; do not search for it."
+printf '%s\n' "$SCRIPT"

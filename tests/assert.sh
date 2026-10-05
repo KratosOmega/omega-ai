@@ -71,6 +71,12 @@ run_tests() {
       case " $TESTS_ONLY " in *" $_t "*) ;; *) continue ;; esac
     fi
     printf '%s\n' "$_t"
+    # A listed name that is not a defined function (a joined or misspelt name) fails
+    # loudly, so a test can never drop out of a suite silently.
+    case "$(type "$_t" 2>/dev/null)" in
+      *function*) ;;
+      *) TESTS_RUN=$((TESTS_RUN + 1)); _fail "no test function $_t"; continue ;;
+    esac
     "$_t"
   done
   printf '\n%s assertions, %s failed\n' "$TESTS_RUN" "$TESTS_FAILED"

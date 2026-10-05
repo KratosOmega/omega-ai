@@ -35,16 +35,21 @@ export GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
 # - Numbering: a global call number n under a `mkdir $CALLS/n.lock` spin
 #   ($CALLS/count), and a per-story, per-kind number m. Each call records
 #   $CALLS/<n>.argv (one element per line), .story, .prompt, .pid, .pwd,
+#   .peers (the peer-runs hook's output; only with STUDIO_UNIT_TAG set),
 #   .env (OMEGA_AUTOPILOT, STUDIO_RUN, STUDIO_DOCS_REV, STUDIO_REPAIR,
 #   STUDIO_GATE_HELD as KEY=value lines), .t0 and .t1 (epoch seconds).
+# - Live count (#39): $CALLS/live/<pid> while a call runs; $CALLS/max holds
+#   the most calls seen running at once.
 # - Scenario: line m of $SCEN/<id> (unit prompts), $SCEN/<id>.land
-#   (`--land`), $SCEN/<id>.gate (`--gate-repair`), $SCEN/progress
+#   (`--land`), $SCEN/<id>.sync (`--land` with STUDIO_REPAIR=sync:<ref>),
+#   $SCEN/<id>.gate (`--gate-repair`), $SCEN/progress
 #   (`--progress`) or $SCEN/final-repair
 #   (`/omega:integration repair`). A missing file or line means `auto`.
 # - A line is a `;`-separated list of actions, run in order. `auto` runs
 #   last unless the line names a terminal action (stop, noop, hang, exit,
-#   repair, fakerepair, gaterepair, progress); naming `auto` itself changes
-#   nothing.
+#   repair, fakerepair, gaterepair, syncrepair, progress); naming `auto`
+#   itself changes nothing. Post actions (push_target, push_main, dirty,
+#   localcommit, rmwt) run after auto or the terminal action, in order.
 # - Actions:
 #   auto            one well-behaved unit, as execute §0/§8 would: §0 adds
 #                   the story worktree $TMP_WT/<Branch> (--no-track; from
@@ -65,6 +70,8 @@ export GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
 #                   story id) instead of <id>-T<k>.txt
 #   cost <usd>      the result event's total_cost_usd (default 1)
 #   sleep <s>       sleep s seconds
+#   waitfor <path>  poll up to 60 s for <path> to exist and be non-empty
+#                   (e.g. a peer run's landed.tsv); the unit then goes on
 #   gate <s>        studio-gate studio-test around a sleep of s seconds,
 #                   logging `s|e <story> <epoch>` lines to $CALLS/gate.iv
 #   bggate <s>      studio-gate studio-test around a sleep of s seconds,
@@ -108,6 +115,24 @@ export GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
 #   the unit. A ledger with `check requested` and no `check done` is a check
 #   unit: it ledgers `check done none`, commits and pushes. A task commit's
 #   ledger line is `T<k> complete <a>..<b>` (full shas).
+#   syncrepair      terminal (`--land`, STUDIO_REPAIR=sync:<ref>): in the
+#                   story worktree, fetch, merge <ref> (a conflict resolved
+#                   with --theirs), commit `fix(sync): resolve <ref>`, ledger
+#                   `Synced: merged <ref>` (committed), push
+#   push_target <f> post: commits <f> (content: the branch name) to
+#                   origin/<Target> through a temp clone
+#   push_main <f>   post: the same on origin/main
+#   mark <path>     post: writes <path> (a flag another unit can waitfor)
+#   waitafter <path> post: as waitfor, after auto (the unit's work is pushed)
+#   dirty <f>       post: an untracked <f> in the story worktree
+#   localcommit     post: an empty commit in the story worktree, not pushed
+#   rmwt            post: removes the story worktree (the branch stays)
+#   mergehook on|off  modifier: adds (on) or removes (off) a pre-merge-commit
+#                   hook that exits 1, in the common git dir
+#   probe           modifier: the story worktree's state now, as key=value
+#                   lines in $CALLS/<n>.probe: head, subject, p2 (HEAD^2 or
+#                   empty), remote (origin's <Branch>, by ls-remote), dirty
+#                   (porcelain line count), mergehead (1 when MERGE_HEAD)
 #   inbox           modifier: the operator-inbox hook as a startup session
 #                   runs it, its output in $CALLS/<n>.inbox
 #   say <text>      modifier: `studio-overnight say <id> -- <text>`
@@ -120,7 +145,7 @@ fi
 id="${STUDIO_STORY:-}"; prompt="${2:-}"
 case "$prompt" in
   *--gate-repair*) kind="$id.gate" ;;
-  *--land*) kind="$id.land" ;;
+  *--land*) case "${STUDIO_REPAIR:-}" in sync:*) kind="$id.sync" ;; *) kind="$id.land" ;; esac ;;
   *--progress*) kind=progress ;;
   *'/omega:integration repair'*) kind=final-repair ;;
   *) kind="$id" ;;
@@ -129,6 +154,15 @@ while ! mkdir "$CALLS/n.lock" 2>/dev/null; do sleep 0.1; done
 n=$(( $(cat "$CALLS/count" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$CALLS/count"
 m=$(( $(cat "$CALLS/m-$kind" 2>/dev/null || echo 0) + 1 )); echo "$m" > "$CALLS/m-$kind"
 rmdir "$CALLS/n.lock"
+# #39: live-session counter. live/<pid> while this session runs; max holds the
+# largest count seen (updated under n.lock).
+mkdir -p "$CALLS/live"; : > "$CALLS/live/$$"
+trap 'rm -f "$CALLS/live/$$"' EXIT; trap 'rm -f "$CALLS/live/$$"; exit 143' TERM
+while ! mkdir "$CALLS/n.lock" 2>/dev/null; do sleep 0.1; done
+_lv="$(ls "$CALLS/live" | grep -c .)"; _mx="$(cat "$CALLS/max" 2>/dev/null || echo 0)"
+[ "$_lv" -le "$_mx" ] || echo "$_lv" > "$CALLS/max"
+rmdir "$CALLS/n.lock"
+printf '%s\n' "$(date +%s)" > "$CALLS/$n.t0w"      # wall start, for the session_minutes test
 date +%s > "$CALLS/$n.t0"
 echo "$$" > "$CALLS/$n.pid"
 for a in "$@"; do printf '%s\n' "$a"; done > "$CALLS/$n.argv"
@@ -138,6 +172,8 @@ pwd -P > "$CALLS/$n.pwd"
 printf 'OMEGA_AUTOPILOT=%s\nSTUDIO_RUN=%s\nSTUDIO_DOCS_REV=%s\nSTUDIO_REPAIR=%s\nSTUDIO_GATE_HELD=%s\n' \
   "${OMEGA_AUTOPILOT:-}" "${STUDIO_RUN:-}" "${STUDIO_DOCS_REV:-}" "${STUDIO_REPAIR:-}" "${STUDIO_GATE_HELD:-}" > "$CALLS/$n.env"
 env > "$CALLS/$n.fullenv"
+# #39: a unit session starts under the peers hook, as SessionStart runs it.
+[ -z "${STUDIO_UNIT_TAG:-}" ] || sh "$STUB_PLUGIN/hooks/peer-runs.sh" < /dev/null > "$CALLS/$n.peers" 2>/dev/null
 line="$(sed -n "${m}p" "$SCEN/$kind" 2>/dev/null)"
 
 st() { sh "$STUB_STATE_BIN" "$@"; }
@@ -223,7 +259,14 @@ auto() {
   fi
 }
 
-cost=1; code=0; terminal=0; conflict=""
+# push_to BRANCH FILE — commit FILE (content: BRANCH) to origin's BRANCH via a temp clone.
+push_to() {
+  _pd="$(mktemp -d)"
+  ( git clone -q "$(git remote get-url origin)" "$_pd/c" && cd "$_pd/c" && git checkout -q "$1" \
+    && printf '%s\n' "$1" > "$2" && git add "$2" && git commit -qm "$1 moves: $2" && git push -q origin "$1" ) >&2
+  rm -rf "$_pd"
+}
+cost=1; code=0; terminal=0; conflict=""; post=""
 old_ifs="$IFS"; IFS=';'
 set -f; set -- $line; set +f
 IFS="$old_ifs"
@@ -234,6 +277,8 @@ for act in "$@"; do
     "conflict "*)     conflict="${act#conflict }" ;;
     "cost "*)         cost="${act#cost }" ;;
     "sleep "*)        sleep "${act#sleep }" ;;
+    "waitfor "*)      _wf="${act#waitfor }"; _wi=0
+                      while [ ! -s "$_wf" ] && [ "$_wi" -lt 600 ]; do sleep 0.1; _wi=$((_wi + 1)); done ;;
     "gate "*)         s="${act#gate }"
                       sh "$(dirname "$STUB_STATE_BIN")/studio-gate" studio-test -- sh -c \
                         "echo s $id \$(date +%s) >> '$CALLS/gate.iv'; sleep $s; echo e $id \$(date +%s) >> '$CALLS/gate.iv'" ;;
@@ -255,6 +300,21 @@ for act in "$@"; do
                         && st ledger "Repair: merged target" && commit_ledger repair && sg push -q origin "$BRANCH" ) ;;
     fakerepair)       terminal=1; w="$(story_wt)"
                       ( cd "$w" && st ledger "Repair: merged target" && commit_ledger repair ) ;;
+    syncrepair)       terminal=1; w="$(story_wt)"; _ref="${STUDIO_REPAIR#sync:}"
+                      ( cd "$w" && sg fetch -q origin && { git merge -q --no-edit "$_ref" >/dev/null 2>&1 || {
+                          git checkout -q --theirs -- . && git add -A && git -c core.editor=true commit -q --no-edit; }; } \
+                        && git commit -q --allow-empty -m "fix(sync): resolve $_ref" \
+                        && st ledger "Synced: merged $_ref" \
+                        && git add -A && git commit -q -m "docs(ledger): synced" && sg push -q origin HEAD ) >> "$CALLS/$n.log" 2>&1 ;;
+    "push_target "*|"push_main "*|"dirty "*|"mark "*|"waitafter "*|localcommit|rmwt) post="$post${post:+;}$act" ;;
+    "mergehook "*)    _hd="$(cd "$(git rev-parse --git-common-dir)" && pwd -P)/hooks"; mkdir -p "$_hd"
+                      if [ "${act#mergehook }" = on ]; then printf '#!/bin/sh\nexit 1\n' > "$_hd/pre-merge-commit"; chmod +x "$_hd/pre-merge-commit"
+                      else rm -f "$_hd/pre-merge-commit"; fi ;;
+    probe)            w="$(story_wt)"
+                      ( cd "$w" && printf 'head=%s\nsubject=%s\np2=%s\nremote=%s\ndirty=%s\nmergehead=%s\n' \
+                          "$(git rev-parse HEAD)" "$(git log -1 --format=%s)" "$(git rev-parse -q --verify 'HEAD^2' 2>/dev/null)" \
+                          "$(git ls-remote origin "refs/heads/$BRANCH" | cut -f1)" "$(git status --porcelain | grep -c .)" \
+                          "$(if git rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1; then echo 1; else echo 0; fi)" ) > "$CALLS/$n.probe" ;;
     gaterepair)       terminal=1; w="$(story_wt)"
                       ( cd "$w" && st ledger "Repair: gate — fixed" && commit_ledger gate-repair && sg push -q origin "$BRANCH" ) ;;
     gatelog)          w="$(story_wt)"
@@ -278,6 +338,19 @@ for act in "$@"; do
   esac
 done
 [ "$terminal" = 1 ] || ( auto ) >&2
+IFS=';'; set -f; set -- $post; set +f; IFS="$old_ifs"
+for act in "$@"; do
+  case "$act" in
+    "push_target "*)  push_to "$TARGET" "${act#push_target }" ;;
+    "push_main "*)    push_to main "${act#push_main }" ;;
+    "dirty "*)        w="$(story_wt)"; : > "$w/${act#dirty }" ;;
+    "mark "*)         echo 1 > "${act#mark }" ;;
+    "waitafter "*)    _wf="${act#waitafter }"; _wi=0
+                      while [ ! -s "$_wf" ] && [ "$_wi" -lt 600 ]; do sleep 0.1; _wi=$((_wi + 1)); done ;;
+    localcommit)      w="$(story_wt)"; git -C "$w" commit -q --allow-empty -m "local: not pushed" ;;
+    rmwt)             w="$(story_wt)"; git worktree remove --force "$w" ;;
+  esac
+done
 printf '{"type":"system","subtype":"init"}\n'
 [ -z "$cost" ] || printf '{"type":"result","subtype":"success","total_cost_usd":%s}\n' "$cost"
 date +%s > "$CALLS/$n.t1"
@@ -449,6 +522,7 @@ last_lanes_dir() { ls -d "$P"/.studio/reports/overnight-demo-* 2>/dev/null | tai
 # on main and pushes it, so origin/main is not in integration/demo until the
 # final step merges it; for MODE direct, an
 # executable scripts/merge.sh (the stub merge program) committed on run/demo.
+# LANES_TASKS=2 gives every plan a Task 2 and sets task 0/2 (default: one task).
 # Exports P, MFP, CALLS, GH,
 # TMP_WT and SCEN (an empty scenario dir: every unit is `auto`); unsets LANES_*.
 lanes_fixture() {
@@ -462,6 +536,7 @@ lanes_fixture() {
   git init -q --bare "$TMP/$_lf_name.git"
   _lf_cfg="${LANES_CONFIG:-}"; [ -n "$_lf_cfg" ] || _lf_cfg='{}'
   _lf_cells="${LANES_CELLS:-}"; _lf_progress="${LANES_PROGRESS:-}"; _lf_moves="${LANES_MAIN_MOVES:-}"
+  _lf_tasks="${LANES_TASKS:-1}"
   _lf_spec=docs/game-dev/specs/2026-10-01-demo.md
   ( set -e
     cd "$P"
@@ -488,13 +563,14 @@ lanes_fixture() {
       _id="${_r%%:*}"; _plan="docs/game-dev/plans/2026-10-01-$_id.md"
       printf '# Plan: %s\n\nStory: %s\n\n## Global Constraints\n\n- none\n\n## Decisions\n\n- none\n\n### Task 1: t\n\nSpec: %s:L1-2\nReview: final\n' \
         "$_id" "$_id" "$_lf_spec" > "$_plan"
+      [ "$_lf_tasks" != 2 ] || printf '\n### Task 2: u\n\nSpec: %s:L1-2\nReview: final\n' "$_lf_spec" >> "$_plan"
       STUDIO_STORY="$_id"; export STUDIO_STORY
       sh "$STATE_BIN" init >/dev/null
       sh "$STATE_BIN" set spec "$_lf_spec"; sh "$STATE_BIN" set plan "$_plan"
       sh "$STATE_BIN" ledger "spec approved $_lf_spec"
       sh "$STATE_BIN" ledger "plan approved $_plan"
       sh "$STATE_BIN" ledger "Decisions swept $_id"
-      sh "$STATE_BIN" set stage plan; sh "$STATE_BIN" set task 0/1
+      sh "$STATE_BIN" set stage plan; sh "$STATE_BIN" set task "0/$_lf_tasks"
       unset STUDIO_STORY
     done
     git add -A && git commit -q -m docs && git push -q origin run/demo
@@ -518,7 +594,7 @@ lanes_fixture() {
         && git commit -q -m "main moves" && git push -q origin main && git checkout -q run/demo
     fi
   ) >/dev/null 2>&1 || { TESTS_RUN=$((TESTS_RUN + 1)); _fail "lanes_fixture $_lf_name: setup failed"; }
-  unset LANES_CONFIG LANES_CELLS LANES_PROGRESS LANES_MAIN_MOVES
+  unset LANES_CONFIG LANES_CELLS LANES_PROGRESS LANES_MAIN_MOVES LANES_TASKS
 }
 
 # run_lanes ARGS — `studio-overnight ARGS` in $P: LS_STATUS, and LS_OUT and
@@ -543,6 +619,68 @@ run_lanes() {
     TESTS_RUN=$((TESTS_RUN + 1)); _fail "run_lanes $*: the runner ran past 120 s and was killed"
   fi
 }
+# lanes_add_run SLUG MODE ROW… — a second run in the current fixture $P
+# (after lanes_fixture): run worktree RW=$P/.claude/worktrees/run-SLUG on
+# run/SLUG from origin/main (studio-state init --local), .studio/config.json
+# from $LANES_CONFIG (default {}; MODE direct adds scripts/merge.sh and
+# merge_command), its own spec, one plan per story, story state at <root>
+# (stage plan, task 0/1, approved and swept), manifest RMF=docs/runs/SLUG.md,
+# all committed and pushed; integration/SLUG on origin for MODE integration.
+# Story ids must not clash with $P's run (A, B, …): use S1, S2, ….
+lanes_add_run() {
+  _ar_s="$1"; _ar_m="$2"; shift 2
+  RW="$P/.claude/worktrees/run-$_ar_s"; RMF="docs/runs/$_ar_s.md"; export RW RMF
+  _ar_cfg="${LANES_CONFIG:-}"; [ -n "$_ar_cfg" ] || _ar_cfg='{}'
+  _ar_spec="docs/game-dev/specs/2026-10-01-$_ar_s.md"
+  ( set -e
+    cd "$P"; git fetch -q origin
+    grep -qxF .claude/worktrees/ "$(git rev-parse --git-common-dir)/info/exclude" 2>/dev/null \
+      || printf '.claude/worktrees/\n' >> "$(git rev-parse --git-common-dir)/info/exclude"
+    git worktree add -q --no-track -b "run/$_ar_s" "$RW" origin/main
+    cd "$RW"; sh "$STATE_BIN" init --local >/dev/null
+    mkdir -p docs/game-dev/specs docs/game-dev/plans docs/runs .studio
+    if [ "$_ar_m" = direct ]; then
+      mkdir -p scripts && printf '#!/bin/sh\nexec sh %s "$@"\n' "'$FAKE/merge-stub'" > scripts/merge.sh && chmod +x scripts/merge.sh
+      _ar_cfg="$(printf '%s' "$_ar_cfg" | sed 's/^{ *}$/{"overnight": {}}/; s/"overnight": {/"overnight": {"merge_command": "scripts\/merge.sh <pr>", /; s/, }/}/')"
+    fi
+    printf '%s\n' "$_ar_cfg" > .studio/config.json
+    { printf '# Spec: %s\n\n## Stories\n\n| Story | Summary |\n|-------|---------|\n' "$_ar_s"
+      for _r in "$@"; do printf '| %s | story %s |\n' "${_r%%:*}" "${_r%%:*}"; done; } > "$_ar_spec"
+    for _r in "$@"; do
+      _id="${_r%%:*}"; _plan="docs/game-dev/plans/2026-10-01-$_id.md"
+      printf '# Plan: %s\n\nStory: %s\n\n## Decisions\n\n- none\n\n### Task 1: t\n\nSpec: %s:L1-2\nFiles: `%s-T1.txt`\n\n### Task 2: u\n\nSpec: %s:L1-2\nFiles: `%s-T2.txt`\n' \
+        "$_id" "$_id" "$_ar_spec" "$_id" "$_ar_spec" "$_id" > "$_plan"
+      STUDIO_STORY="$_id"; export STUDIO_STORY
+      sh "$STATE_BIN" init >/dev/null; sh "$STATE_BIN" set spec "$_ar_spec"; sh "$STATE_BIN" set plan "$_plan"
+      sh "$STATE_BIN" ledger "spec approved $_ar_spec"; sh "$STATE_BIN" ledger "plan approved $_plan"
+      sh "$STATE_BIN" ledger "Decisions swept $_id"; sh "$STATE_BIN" set stage plan; sh "$STATE_BIN" set task 0/2
+      unset STUDIO_STORY
+    done
+    git add -A && git commit -q -m docs && git push -q origin "run/$_ar_s"
+    _docs="$(git rev-parse HEAD)"
+    if [ "$_ar_m" = integration ]; then _t="integration/$_ar_s"; else _t=main; fi
+    { printf '# Run: %s\n\nMode: %s\nTarget: %s\nDocs: %s\nGoal: the %s goal\n\n' "$_ar_s" "$_ar_m" "$_t" "$_docs" "$_ar_s"
+      printf '| Story | Branch | Ticket | Spec | Plan | Depends on |\n|-------|--------|--------|------|------|------------|\n'
+      for _r in "$@"; do _id="${_r%%:*}"
+        printf '| %s | %s-b | %s | %s | docs/game-dev/plans/2026-10-01-%s.md | %s |\n' "$_id" "$_id" "$_id" "$_ar_spec" "$_id" "$(printf '%s' "${_r#*:}" | sed 's/,/, /g')"
+      done; } > "$RMF"
+    printf '%s\n' "$RMF" > .studio/run
+    git add -A && git commit -q -m manifest && git push -q origin "run/$_ar_s"
+    [ "$_ar_m" != integration ] || git push -q origin "origin/main:refs/heads/integration/$_ar_s"
+  ) >/dev/null 2>&1 || { TESTS_RUN=$((TESTS_RUN + 1)); _fail "lanes_add_run $_ar_s: setup failed"; }
+  unset LANES_CONFIG
+}
+# run_lanes_in DIR ARGS — run_lanes from DIR (same LS_* results and watchdog).
+run_lanes_in() { _rli="$P"; P="$1"; shift; run_lanes "$@"; P="$_rli"; }
+# bg_lanes NAME DIR ARGS — `studio-overnight ARGS` in DIR in the background:
+# $TMP/bg-NAME.{pid,out,err}. bg_wait NAME — wait up to 120 s; BG_STATUS.
+bg_lanes() { _bn="$1"; _bd="$2"; shift 2
+  ( cd "$_bd" && exec sh "$RUNNER" "$@" ) > "$TMP/bg-$_bn.out" 2> "$TMP/bg-$_bn.err" < /dev/null &
+  echo "$!" > "$TMP/bg-$_bn.pid"; }
+bg_wait() { _bp="$(cat "$TMP/bg-$1.pid")"; _bi=0
+  while kill -0 "$_bp" 2>/dev/null && [ "$_bi" -lt 1200 ]; do sleep 0.1; _bi=$((_bi + 1)); done
+  if kill -0 "$_bp" 2>/dev/null; then kill -TERM "$_bp"; TESTS_RUN=$((TESTS_RUN + 1)); _fail "bg run $1 ran past 120 s"; fi
+  BG_STATUS=0; wait "$_bp" 2>/dev/null || BG_STATUS=$?; }
 
 test_lanes_chain_rule() {
   lanes_fixture chains integration A:- B:- C:A D:A E:C,B F:E
@@ -561,9 +699,22 @@ test_lanes_chain_rule() {
   assert_contains "$LS_OUT" "^deny: [0-9][0-9]* rules$" "the deny rule count"
   assert_eq 0 "$(calls)" "dry run launches no session"
   assert_missing "$P/.studio/overnight.lock" "dry run takes no lock"
+  assert_missing "$P/.studio/runs/demo/lock" "nor a per-run lock"
   assert_eq "" "$(ls -d "$P"/.studio/tmp.* 2>/dev/null)" "dry run leaves no temp dir"
 }
 
+# A story Branch that is the default branch (direct mode's Target too): its
+# story worktree would be the main checkout, a sync would merge into it and
+# the runner would push to origin/<default> (#39 final review, T13-1).
+test_lanes_branch_default_or_target_refused() {
+  for _bm in integration direct; do
+    lanes_fixture "bdt-$_bm" "$_bm" A:-
+    sed -i.bak 's/^| A | A-b |/| A | main |/' "$P/$MFP"; rm -f "$P/$MFP.bak"
+    run_lanes start --dry-run "$MFP"
+    assert_eq 2 "$LS_STATUS" "$_bm: a story on the default branch refuses"
+    assert_contains "$LS_ERR" "manifest: A: branch main is the default branch or the run's Target — pick another" "$_bm: the refusal names the story and branch"
+  done
+}
 test_lanes_manifest_refusals() {
   lanes_fixture refuse direct A:- B:A
   # direct without merge_command; later-row dependency; duplicate id; a '-' cell
@@ -680,10 +831,10 @@ test_lanes_next() {
   assert_contains "$LS_OUT" "^A  planned  spec=docs/game-dev/specs/2026-10-01-demo.md  plan=docs/game-dev/plans/2026-10-01-A.md$" "A resolved and planned"
   assert_contains "$LS_OUT" "^B  plan  " "B lacks its sweep line"
   assert_contains "$LS_OUT" "^C  brainstorm  spec=-  plan=-$" "C has no spec row"
-  assert_contains "$LS_OUT" "^next: /game-dev:brainstorm C$" "brainstorm comes before plan"
+  assert_contains "$LS_OUT" "^next: /game-dev:brainstorm demo/C$" "brainstorm comes before plan"
   printf '%s\n' "$MFP" > "$P/.studio/run"
   run_lanes next
-  assert_contains "$LS_OUT" "^next: /game-dev:brainstorm C$" "no argument reads .studio/run"
+  assert_contains "$LS_OUT" "^next: /game-dev:brainstorm demo/C$" "no argument reads .studio/run"
   rm "$P/.studio/run"; run_lanes next
   assert_eq 2 "$LS_STATUS" "no pointer and no argument exits 2"
   assert_contains "$LS_ERR" "no run manifest (.studio/run)" "and says why"
@@ -693,7 +844,7 @@ test_lanes_next_all_planned_and_ambiguous() {
   lanes_fixture nxt2 integration A:-
   printf -- '- 2026-10-01 spec approved docs/game-dev/specs/2026-10-01-demo.md\n- 2026-10-01 plan approved docs/game-dev/plans/2026-10-01-A.md\n- 2026-10-01 Decisions swept A\n' > "$P/.studio/ledger/demo.md"
   run_lanes next "$MFP"
-  assert_contains "$LS_OUT" "^next: /omega:autopilot$" "every row planned"
+  assert_contains "$LS_OUT" "^next: /omega:autopilot demo$" "every row planned"
   cp "$P/docs/game-dev/plans/2026-10-01-A.md" "$P/docs/game-dev/plans/2026-10-02-A2.md"
   ( cd "$P" && git add -A && git commit -qm dup ) >/dev/null 2>&1
   run_lanes next "$MFP"
@@ -706,7 +857,7 @@ test_lanes_next_plan_before_autopilot() {
   printf -- '- 2026-10-01 spec approved docs/game-dev/specs/2026-10-01-demo.md\n- 2026-10-01 plan approved docs/game-dev/plans/2026-10-01-A.md\n- 2026-10-01 Decisions swept A\n' > "$P/.studio/ledger/demo.md"
   run_lanes next "$MFP"
   assert_contains "$LS_OUT" "^B  plan  " "B has no plan approval"
-  assert_contains "$LS_OUT" "^next: /game-dev:plan B$" "plan comes when nothing needs brainstorming"
+  assert_contains "$LS_OUT" "^next: /game-dev:plan demo/B$" "plan comes when nothing needs brainstorming"
   _before="$(cd "$P" && git status --porcelain | wc -l | tr -d ' ')"
   run_lanes next "$MFP"
   assert_eq "$_before" "$(cd "$P" && git status --porcelain | wc -l | tr -d ' ')" "next writes nothing"
@@ -1390,6 +1541,147 @@ test_lanes_gate_repair_budget() {
   assert_contains "$(last_lanes_dir)/stories/A" "^stopped stop: run budget$" "spent 6 + 25 > 30: the run budget refuses the repair"
   assert_eq 0 "$(gate_calls)" "no gate-repair unit"
 }
+# ---- #39 T13: the sync check before task and final-review units ----
+
+# sync_events ID — ID's story_synced lines in the last run's events.jsonl.
+sync_events() { grep "\"event\":\"story_synced\",\"story\":\"$1\"" "$(last_lanes_dir)/events.jsonl" 2>/dev/null; }
+# sync_skips ID — the skipped values of ID's story_synced lines, comma-joined.
+sync_skips() { sync_events "$1" | sed -n 's/.*"skipped":"\([a-z-]*\)".*/\1/p' | paste -sd, -; }
+# sync_merges ID — the chore(sync) subjects on origin's ID-b, oldest first, `|`-joined.
+sync_merges() { git -C "$P" fetch -q origin; git -C "$P" log --reverse --format=%s "origin/$1-b" 2>/dev/null | grep '^chore(sync): ' | paste -sd'|' -; }
+# nth_call ID K — the global number of ID's K-th stub call (0 when none).
+nth_call() { _nc="$(story_calls "$1" | sort -n | sed -n "${2}p")"; printf '%s\n' "${_nc:-0}"; }
+# probe_get N KEY — KEY from call N's probe file.
+probe_get() { sed -n "s/^$2=//p" "$CALLS/$1.probe" 2>/dev/null; }
+# sync_call — the call number of the (one) sync-repair unit (0 when none).
+sync_call() { _sc="$(grep -l '^STUDIO_REPAIR=sync:' "$CALLS"/*.env 2>/dev/null | sed 's#.*/\([0-9]*\)\.env#\1#' | head -n 1)"; printf '%s\n' "${_sc:-0}"; }
+
+test_lanes_sync_clean_merge_no_session() {
+  LANES_TASKS=2; export LANES_TASKS
+  lanes_fixture syncok integration A:-
+  printf 'push_target other.txt\nprobe\n' > "$SCEN/A"
+  run_lanes start "$MFP"
+  assert_eq 0 "$LS_STATUS" "the story lands"
+  assert_contains "$(last_lanes_dir)/stories/A" "^landed " "A ends landed"
+  n2="$(nth_call A 2)"; _m="$(probe_get "$n2" head)"
+  assert_eq "chore(sync): merge origin/integration/demo into A-b" "$(probe_get "$n2" subject)" "before task 2 the lane merged the moved target"
+  assert_eq "integration/demo moves: other.txt" "$(git -C "$P" log -1 --format=%s "$(probe_get "$n2" p2)" 2>/dev/null)" "the merge's second parent is the moved target"
+  assert_eq "$_m" "$(probe_get "$n2" remote)" "the merge is pushed to origin's A-b (HEAD:refs/heads/A-b)"
+  assert_eq 4 "$(story_calls A | wc -l | tr -d ' ')" "no session for the sync: T1, T2, final review, finish, as with no target move"
+  assert_missing "$CALLS/m-A.sync" "no sync-repair unit"
+  assert_contains "$(last_lanes_dir)/events.jsonl" "\"event\":\"story_synced\",\"story\":\"A\",\"refs\":\[\"origin/integration/demo\"\],\"sha\":\"$_m\"}$" "a story_synced event names the ref and the new head"
+  assert_eq "chore(sync): merge origin/integration/demo into A-b" "$(sync_merges A)" "one sync merge in A-b's history"
+  assert_eq "no-worktree" "$(sync_skips A)" "before task 1 there is no story worktree yet"
+}
+test_lanes_sync_skips() {
+  for _ss in dirty ahead no-worktree; do
+    LANES_TASKS=2; export LANES_TASKS
+    lanes_fixture "sync-$_ss" integration A:-
+    case "$_ss" in
+      dirty) printf 'push_target other.txt; dirty stray.txt\n' > "$SCEN/A" ;;
+      ahead) printf 'push_target other.txt; localcommit\nlocalcommit\n' > "$SCEN/A" ;;
+      no-worktree) printf 'push_target other.txt; rmwt\nrmwt\n' > "$SCEN/A" ;;
+    esac
+    run_lanes start "$MFP"
+    assert_eq "no-worktree,$_ss,$_ss" "$(sync_skips A)" "$_ss: the checks before task 2 and the final review are skipped=$_ss"
+    assert_eq 0 "$(sync_events A | grep -c '"refs"')" "$_ss: no merged event"
+    assert_eq "" "$(sync_merges A)" "$_ss: no sync merge"
+    assert_contains "$(last_lanes_dir)/stories/A" "^landed " "$_ss: a skip never stops the story"
+  done
+}
+test_lanes_sync_integration_two_refs() {
+  LANES_TASKS=2; export LANES_TASKS
+  lanes_fixture sync2 integration A:-
+  printf 'push_target other.txt; push_main main.txt\nprobe\n' > "$SCEN/A"
+  run_lanes start "$MFP"
+  assert_contains "$(last_lanes_dir)/stories/A" "^landed " "A lands"
+  n2="$(nth_call A 2)"; _m="$(probe_get "$n2" head)"
+  assert_eq "chore(sync): merge origin/integration/demo into A-b|chore(sync): merge origin/main into A-b" "$(sync_merges A)" "the target, then the default branch, one merge each"
+  assert_eq "chore(sync): merge origin/main into A-b" "$(probe_get "$n2" subject)" "both merged before task 2"
+  assert_eq 1 "$(sync_events A | grep -c '"refs"')" "one merged event"
+  assert_contains "$(last_lanes_dir)/events.jsonl" "\"story\":\"A\",\"refs\":\[\"origin/integration/demo\",\"origin/main\"\],\"sha\":\"$_m\"}$" "it lists both refs in merge order and the new head"
+}
+test_lanes_sync_failed_merge_aborts() {
+  LANES_TASKS=2; export LANES_TASKS
+  lanes_fixture syncfail integration A:-
+  printf 'mergehook on; push_target other.txt\nprobe; mergehook off\n' > "$SCEN/A"
+  run_lanes start "$MFP"
+  assert_contains "$(last_lanes_dir)/events.jsonl" '"event":"story_synced","story":"A","failed":"merge"}$' "a refused merge is failed=merge"
+  n2="$(nth_call A 2)"
+  assert_eq "ledger(A): T1 complete" "$(probe_get "$n2" subject)" "the head is task 1's"
+  assert_eq "$(probe_get "$n2" head)" "$(probe_get "$n2" remote)" "and nothing new was pushed"
+  assert_eq "0 0" "$(probe_get "$n2" dirty) $(probe_get "$n2" mergehead)" "merge --abort left a clean tree and no MERGE_HEAD"
+  assert_contains "$(last_lanes_dir)/stories/A" "^landed " "a failed sync never stops the story"
+}
+test_lanes_sync_conflict_launches_repair() {
+  LANES_TASKS=2; export LANES_TASKS
+  lanes_fixture synccf integration A:-
+  printf 'push_target A-T1.txt\n' > "$SCEN/A"
+  printf 'syncrepair\n' > "$SCEN/A.sync"
+  run_lanes start "$MFP"
+  assert_eq 1 "$(cat "$CALLS/m-A.sync" 2>/dev/null)" "one sync-repair call"
+  _n="$(sync_call)"
+  assert_contains "$CALLS/$_n.env" "^STUDIO_REPAIR=sync:origin/integration/demo$" "the repair names the ref"
+  assert_contains "$CALLS/$_n.argv" "^/game-dev:execute --land$" "through the landing-repair prompt"
+  assert_eq opus "$(sed -n 4p "$CALLS/$_n.argv" 2>/dev/null)" "on model_repair"
+  _states="$(grep '"event":"story_state","story":"A"' "$(last_lanes_dir)/events.jsonl" | sed -n 's/.*"state":"\([a-z-]*\)".*/\1/p' | paste -sd' ' -)"
+  assert_eq "queued running sync-repair running landing landed" "$_states" "the record goes sync-repair, then running, and the story lands"
+  assert_eq "1 A-T1 progress,2 A-sync-repair progress,3 A-T2 progress,4 A-final-review progress,5 A-finish done," "$(story_rows A)" "the repair's row is sync-repair, and task 2 follows it"
+  assert_eq "" "$(sync_merges A)" "a conflict is never merged by the runner"
+}
+test_lanes_sync_repair_stops() {
+  for _sr in stop noop hang; do
+    LANES_TASKS=2; export LANES_TASKS
+    LANES_CONFIG='{"overnight": {"kill_grace_seconds": 5}}'; export LANES_CONFIG
+    lanes_fixture "syncstop-$_sr" integration A:-
+    printf 'push_target A-T1.txt\n' > "$SCEN/A"
+    case "$_sr" in
+      stop) printf 'stop cannot resolve\n' > "$SCEN/A.sync"; _want="stop: cannot resolve" ;;
+      noop) printf 'noop\n' > "$SCEN/A.sync"; _want="no progress" ;;
+      hang) printf 'hang\n' > "$SCEN/A.sync"; _want="timed out (session_minutes 90)"
+            STUDIO_OVERNIGHT_SESSION_SECONDS=10; export STUDIO_OVERNIGHT_SESSION_SECONDS ;;
+    esac
+    run_lanes start "$MFP"; unset STUDIO_OVERNIGHT_SESSION_SECONDS
+    assert_contains "$(last_lanes_dir)/stories/A" "^stopped sync repair: $_want$" "$_sr: the story ends stopped sync repair: $_want"
+    assert_eq 1 "$(cat "$CALLS/m-A.sync" 2>/dev/null)" "$_sr: no retry"
+    assert_eq 1 "$(cat "$CALLS/m-A" 2>/dev/null)" "$_sr: no unit after it"
+  done
+}
+# A sync repair that lands but spends the run budget: the story stops before
+# its next unit (#39 final review, known #3), as a gate repair's budget does.
+test_lanes_sync_repair_budget() {
+  LANES_TASKS=2; export LANES_TASKS
+  LANES_CONFIG='{"overnight": {"run_usd": 30, "session_usd": 25}}'; export LANES_CONFIG
+  lanes_fixture syncbudget integration A:-
+  printf 'cost 2; push_target A-T1.txt\n' > "$SCEN/A"
+  printf 'syncrepair; cost 4\n' > "$SCEN/A.sync"
+  run_lanes start "$MFP"
+  assert_eq 1 "$(cat "$CALLS/m-A.sync" 2>/dev/null)" "spent 2 + 25 <= 30: the sync repair runs"
+  assert_contains "$(last_lanes_dir)/stories/A" "^stopped stop: run budget$" "spent 6 + 25 > 30 after it: the story stops on the run budget"
+  assert_eq 1 "$(cat "$CALLS/m-A" 2>/dev/null)" "no task unit after the repair"
+}
+test_lanes_no_sync_before_repairs() {
+  # A gate repair: the target moves during the red finish.
+  lanes_fixture syncgr integration A:-
+  printf 'auto\nauto\ngatelog; stop gate red — studio-test: 1 failed; push_target other.txt\n' > "$SCEN/A"
+  printf 'gaterepair\n' > "$SCEN/A.gate"
+  run_lanes start "$MFP"
+  assert_eq 1 "$(gate_calls)" "gate repair: one gate-repair unit"
+  assert_contains "$(last_lanes_dir)/stories/A" "^landed " "gate repair: A lands"
+  assert_eq "no-worktree" "$(sync_skips A)" "gate repair: no check after the target moved (task 1's skip only)"
+  assert_eq 1 "$(sync_events A | grep -c .)" "gate repair: no other story_synced event"
+  assert_eq "" "$(sync_merges A)" "gate repair: no sync merge"
+  # A landing repair: A lands during B's finish, so B's landing conflicts.
+  lanes_fixture synclr integration A:- B:-
+  printf 'conflict shared.txt\n' > "$SCEN/A"; printf 'conflict shared.txt\nauto\nsleep 4\n' > "$SCEN/B"
+  printf 'repair\n' > "$SCEN/B.land"
+  run_lanes start "$MFP"
+  assert_eq 1 "$(land_calls)" "landing repair: one repair unit"
+  assert_contains "$(last_lanes_dir)/stories/B" "^landed " "landing repair: B lands"
+  assert_eq "no-worktree" "$(sync_skips B)" "landing repair: no check after the target moved (task 1's skip only)"
+  assert_eq 1 "$(sync_events B | grep -c .)" "landing repair: no other story_synced event"
+  assert_eq "" "$(sync_merges B)" "landing repair: no sync merge"
+}
 # ---- T11: the integration final step and the direct progress landing ----
 
 # prompt_calls PROMPT — the stub call numbers whose prompt is exactly PROMPT.
@@ -1434,7 +1726,9 @@ test_lanes_final_step_once() {
   assert_not_contains "$GH/calls" "^pr merge" "the final PR is never merged"
   assert_contains "$(last_lanes_dir)/report.md" "^Final PR: https://gh.test/pr/1 (green)$" "the report names the final PR"
   assert_eq "" "$(git -C "$P" status --porcelain)" "the integration worktree leaves the checkout clean"
-  # Resume with an unchanged head and the PR open: nothing more.
+  # Resume with an unchanged head and the PR open: nothing more. (A done record
+  # must be archived first, so the run is made a stopped one: #39 AC8.)
+  rm -f "$P/.studio/runs/demo/done"
   sleep 1
   run_lanes start "$MFP"
   assert_eq 0 "$LS_STATUS" "the resumed run is done"
@@ -1477,10 +1771,11 @@ test_lanes_final_repair_turns_green() {
   assert_status 0 "the repair's commit is pushed" -- git -C "$P" cat-file -e origin/integration/demo:fixed
   assert_contains "$P/.studio/runs/demo/gate" "^$(git -C "$P" rev-parse origin/integration/demo) green$" "the gate record names the repaired head"
 }
+# main moves during A's finish (a unit with no sync check before it, #39
+# D34), so the conflict reaches the final step rather than a sync repair.
 test_lanes_final_conflict() {
-  LANES_MAIN_MOVES=shared.txt; export LANES_MAIN_MOVES
   lanes_fixture fincf integration A:-
-  printf 'conflict shared.txt\n' > "$SCEN/A"; printf 'mergemain\n' > "$SCEN/final-repair"
+  printf 'conflict shared.txt\nauto\npush_main shared.txt\n' > "$SCEN/A"; printf 'mergemain\n' > "$SCEN/final-repair"
   run_lanes start "$MFP"
   _n="$(prompt_calls '/omega:integration repair demo')"
   assert_eq 1 "$(printf '%s' "$_n" | grep -c .)" "one final-repair unit for the conflict"
@@ -1490,9 +1785,8 @@ test_lanes_final_conflict() {
   assert_status 0 "the repaired merge is pushed" -- git -C "$P" merge-base --is-ancestor origin/main origin/integration/demo
   assert_contains "$P/.studio/runs/demo/final" " green$" "a resolved conflict and a green gate: green"
   # The repair cannot resolve it: red, the integration head unmerged.
-  LANES_MAIN_MOVES=shared.txt; export LANES_MAIN_MOVES
   lanes_fixture fincf2 integration A:-
-  printf 'conflict shared.txt\n' > "$SCEN/A"; printf 'noop\n' > "$SCEN/final-repair"
+  printf 'conflict shared.txt\nauto\npush_main shared.txt\n' > "$SCEN/A"; printf 'noop\n' > "$SCEN/final-repair"
   run_lanes start "$MFP"
   git -C "$P" fetch -q origin
   assert_status 1 "the integration head stays unmerged" -- git -C "$P" merge-base --is-ancestor origin/main origin/integration/demo
@@ -1505,7 +1799,7 @@ test_lanes_final_resume_edits_pr() {
   lanes_fixture finedit integration A:-
   use_gate "echo gate >> '$CALLS/final-gates'"
   run_lanes start "$MFP"
-  rm -f "$P/.studio/runs/demo/final"; sleep 1
+  rm -f "$P/.studio/runs/demo/final" "$P/.studio/runs/demo/done"; sleep 1
   run_lanes start "$MFP"
   use_gate true
   assert_eq 1 "$(final_gates)" "the gate record names HEAD: no second gate"
@@ -1657,9 +1951,8 @@ test_lanes_final_budget() {
 }
 # One final-repair unit in total: after a conflict repair, a red gate is final.
 test_lanes_final_conflict_then_red() {
-  LANES_MAIN_MOVES=shared.txt; export LANES_MAIN_MOVES
   lanes_fixture fincfred integration A:-
-  printf 'conflict shared.txt\n' > "$SCEN/A"; printf 'mergemain\nfixgate\n' > "$SCEN/final-repair"
+  printf 'conflict shared.txt\nauto\npush_main shared.txt\n' > "$SCEN/A"; printf 'mergemain\nfixgate\n' > "$SCEN/final-repair"
   use_gate "echo gate >> '$CALLS/final-gates'; exit 1"
   run_lanes start "$MFP"
   use_gate true
@@ -1672,7 +1965,7 @@ test_lanes_final_conflict_then_red() {
 test_lanes_final_stop_before_setup() {
   LANES_CONFIG='{"worktree_setup": "case $(pwd -P) in */integration-*) : > '"$TMP"'/setup-ran-fstop;; esac"}'; export LANES_CONFIG
   lanes_fixture fstop integration A:-
-  printf '#!/bin/sh\ncase "$(pwd -P)" in */integration-*) : > "%s/.studio/overnight.stop";; esac\n' "$P" > "$P/.git/hooks/post-checkout"
+  printf '#!/bin/sh\ncase "$(pwd -P)" in */integration-*) : > "%s/.studio/runs/demo/stop";; esac\n' "$P" > "$P/.git/hooks/post-checkout"
   chmod +x "$P/.git/hooks/post-checkout"
   run_lanes start "$MFP"
   rm -f "$P/.git/hooks/post-checkout"
@@ -1686,7 +1979,7 @@ test_lanes_final_stop_before_setup() {
 # other exit (an engine crash's 139) is a red gate: recorded, repaired.
 test_lanes_final_gate_interrupted_not_recorded() {
   lanes_fixture fingint integration A:-
-  use_gate "echo gate >> '$CALLS/final-gates'; if [ ! -f '$CALLS/gate-once' ]; then : > '$CALLS/gate-once'; : > '$P/.studio/overnight.stop'; exit 130; fi"
+  use_gate "echo gate >> '$CALLS/final-gates'; if [ ! -f '$CALLS/gate-once' ]; then : > '$CALLS/gate-once'; : > '$P/.studio/runs/demo/stop'; exit 130; fi"
   run_lanes start "$MFP"
   assert_eq 1 "$(final_gates)" "the interrupted gate ran once"
   assert_missing "$P/.studio/runs/demo/gate" "a stopped gate records no result"
@@ -1717,6 +2010,22 @@ test_lanes_final_gate_interrupted_not_recorded() {
 }
 # ---- T12: status, report.md, run endings ----
 
+# A dead old-style .studio/overnight.lock naming an older run must not mask a
+# newer manifest run in a no-live `status` (#39 final review, T7-2).
+test_lanes_status_dead_old_lock_not_masking() {
+  lanes_fixture sdol integration A:-
+  run_lanes start "$MFP"
+  R="$(last_lanes_dir)"
+  _o="$P/.studio/reports/overnight-20000101-000000"; mkdir -p "$_o"
+  printf '# Overnight run\n\nEnding: done\n' > "$_o/report.md"; touch -t 200001010000 "$_o"
+  _d="$(sh -c 'echo $$')"
+  printf 'pid=%s\nrun=%s\nstarted=2000-01-01T00:00:00Z\n' "$_d" "$_o" > "$P/.studio/overnight.lock"
+  ( cd "$P" && sh "$RUNNER" status ) > "$TMP/st.out" 2>&1; _st=$?
+  assert_eq 1 "$_st" "no live run: status exits 1"
+  assert_contains "$TMP/st.out" "^no run — the last run: $R$" "the newer manifest run is shown, not the dead lock's older run"
+  assert_not_contains "$TMP/st.out" "$_o" "the dead lock's run is not named"
+  rm -f "$P/.studio/overnight.lock"
+}
 test_lanes_status_per_story() {
   lanes_fixture stat integration A:- B:A C:-
   printf 'sleep 4\n' > "$SCEN/A"
@@ -1725,7 +2034,8 @@ test_lanes_status_per_story() {
   ( cd "$P" && sh "$RUNNER" status ) > "$TMP/st.out"; st=$?
   wait_pid_or_fail "$RPID" 60 "the run ends"
   assert_eq 0 "$st" "status exits 0 during a run"
-  assert_eq "A B C" "$(awk '!/^ / && !/^progress:/ { if (++r > 3) exit; printf "%s%s", s, $1; s=" " }' "$TMP/st.out")" "stories in manifest order"
+  # The run's block follows the project's sessions line (#39 AC10, D15).
+  assert_eq "A B C" "$(awk '!/^ / && !/^progress:/ && !/^sessions:/ { if (++r > 3) exit; printf "%s%s", s, $1; s=" " }' "$TMP/st.out")" "stories in manifest order"
   assert_contains "$TMP/st.out" "^A  lane [12]  running  unit A T1  task 0/1   \[[= ]*\] [0-9]*%$" "A is running T1"
   assert_contains "$TMP/st.out" "^B  lane [12]  queued  unit -  task 0/1   \[[= ]*\] [0-9]*%$" "B waits in A's chain, on A's lane"
   assert_contains "$TMP/st.out" "^C  lane [12]  " "C has its own lane"
@@ -1874,7 +2184,7 @@ test_lanes_reap_names_final_pr() {
 # detach_stop — end a detached run: stop, then wait for the run lock to clear.
 detach_stop() {
   ( cd "$P" && sh "$RUNNER" stop ) > /dev/null 2>&1
-  wait_for "[ ! -f '$P/.studio/overnight.lock' ]" 60
+  wait_for "[ ! -f '$P/.studio/runs/demo/lock' ]" 60
   wait_for "[ -z \"\$(pgrep -f '$TMP'; pgrep -f '$RUNNER')\" ]" 20
 }
 test_lanes_detach_strips_env() {
@@ -1934,8 +2244,9 @@ test_lanes_detach_timeout_lock_held_points_at_status() {
   assert_eq 1 "$st" "a status timeout exits 1"
   assert_contains "$TMP/dtl.out" "is live" "a lock-holding child is reported live"
   assert_contains "$TMP/dtl.out" "/studio-overnight' stop" "and stop is named, by its absolute path"
+  assert_contains "$TMP/dtl.out" "status --run demo, or .*/studio-overnight' stop --run demo$" "status and stop name the detached run (another run may be live)"
   assert_not_contains "$TMP/dtl.out" "run the plain command" "no plain start is offered"
-  assert_eq 1 "$([ -f "$P/.studio/overnight.lock" ] && echo 1 || echo 0)" "the run still holds its lock"
+  assert_eq 1 "$([ -f "$P/.studio/runs/demo/lock" ] && echo 1 || echo 0)" "the run still holds its lock"
   # The hung stub would hold the run past stop: end it, then wait the run out.
   ( cd "$P" && sh "$RUNNER" stop ) > /dev/null 2>&1; pkill -f "$TMP/fakebin/claude" 2>/dev/null
   detach_stop
@@ -2800,7 +3111,697 @@ test_lanes_report_adopted_lines() {
   assert_eq 2 "$(grep -c '^Adopted from ' "$R")" "a story that was not adopted has no line"
 }
 
-run_tests test_lanes_chain_rule test_lanes_manifest_refusals test_lanes_preflight_backlog_tasks test_lanes_manifest_header_refusals \
+# ---- #39 T7: per-run locks, run identity and the status loop ----
+test_lanes_per_run_lock_paths() {
+  lanes_fixture perrun integration A:-
+  printf 'sleep 3\n' > "$SCEN/A"
+  bg_lanes pr "$P" start "$MFP"
+  _i=0; while [ ! -f "$P/.studio/runs/demo/lock" ] && [ "$_i" -lt 50 ]; do sleep 0.1; _i=$((_i + 1)); done
+  assert_file "$P/.studio/runs/demo/lock" "the manifest run's lock is .studio/runs/<slug>/lock"
+  assert_contains "$P/.studio/runs/demo/lock" "^start=$P\$" "it records the start dir"
+  assert_missing "$P/.studio/overnight.lock" "no project-wide lock"
+  ( cd "$P" && sh "$RUNNER" stop ) > "$TMP/out" 2>&1
+  assert_file "$P/.studio/runs/demo/stop" "bare stop with one live run writes its own flag"
+  bg_wait pr
+  assert_missing "$P/.studio/runs/demo/lock" "unlocked at the end"
+  assert_missing "$P/.studio/runs/demo/stop" "and its stop flag removed"
+}
+test_lanes_excludes_before_lock() {
+  lanes_fixture excl integration A:-
+  _ex="$(git -C "$P" rev-parse --path-format=absolute --git-common-dir)/info/exclude"
+  STUDIO_OVERNIGHT_LOCK_HOOK="cp '$_ex' '$TMP/excl.at-lock'"; export STUDIO_OVERNIGHT_LOCK_HOOK
+  run_lanes start "$MFP"; unset STUDIO_OVERNIGHT_LOCK_HOOK
+  for _e in .studio/runs/ .studio/sessions/ .studio/runs.mutex .studio/sessions.mutex .studio/runs.mutex.reap/ .studio/sessions.mutex.reap/ .studio/overnight.lock .studio/overnight.stop .claude/worktrees/; do
+    assert_contains "$TMP/excl.at-lock" "^$(printf '%s' "$_e" | sed 's/\./\\./g')\$" "$_e excluded before the lock (D6)"
+  done
+}
+test_lanes_two_runs_each_own_lock() {
+  lanes_fixture two integration A:-
+  lanes_add_run alpha integration S1:-
+  printf 'sleep 3\n' > "$SCEN/A"; printf 'sleep 3\n' > "$SCEN/S1"
+  bg_lanes demo "$P" start "$MFP"; bg_lanes alpha "$RW" start "$RMF"
+  # Both preflights run at once: wait for both locks (up to 10 s), not a fixed sleep.
+  _i=0; while { [ ! -f "$P/.studio/runs/demo/lock" ] || [ ! -f "$P/.studio/runs/alpha/lock" ]; } && [ "$_i" -lt 100 ]; do sleep 0.1; _i=$((_i + 1)); done
+  assert_file "$P/.studio/runs/demo/lock" "demo holds its lock"
+  assert_file "$P/.studio/runs/alpha/lock" "alpha holds its own"
+  ( cd "$P" && sh "$RUNNER" status ) > "$TMP/st.out" 2>&1; _st=$?
+  assert_eq 0 "$_st" "status exits 0 with runs live"
+  assert_contains "$TMP/st.out" '^== alpha (manifest, pid [0-9]*) — ' "a headed block per run (D16)"
+  assert_contains "$TMP/st.out" '^== demo (manifest, pid [0-9]*) — ' "both"
+  ( cd "$P" && sh "$RUNNER" status --run alpha ) > "$TMP/st1.out" 2>&1
+  assert_not_contains "$TMP/st1.out" '^== ' "status --run prints one block, no header"
+  assert_contains "$TMP/st1.out" "run: .*overnight-alpha-" "alpha's block"
+  bg_wait demo; bg_wait alpha
+  assert_eq 0 "$BG_STATUS" "alpha ran to its end beside demo"
+  assert_contains "$P/.studio/runs/alpha/landed.tsv" '^S1	' "and landed S1"
+}
+test_lanes_status_run_not_live() {
+  lanes_fixture nolive integration A:-
+  ( cd "$P" && sh "$RUNNER" status --run ghost ) > "$TMP/out" 2>&1; _st=$?
+  assert_eq 1 "$_st" "status --run <slug> exits 1 when that run is not live"
+  assert_contains "$TMP/out" '^no live run ghost$' "the fixed text"
+}
+test_lanes_manifest_refuses_live_single() {
+  lanes_fixture msingle integration A:-
+  sh -c 'sleep 30; :' studio-overnight >/dev/null 2>&1 & _d=$!
+  printf 'pid=%s\nrun=%s\nstarted=2026-10-04T21:00:00Z\n' "$_d" "$P/.studio/reports/overnight-20261004-210000" > "$P/.studio/overnight.lock"
+  run_lanes start "$MFP"
+  kill "$_d"; wait "$_d" 2>/dev/null; rm -f "$P/.studio/overnight.lock"
+  assert_eq 2 "$LS_STATUS" "a manifest start refuses while a single-plan run is live (AC5)"
+  assert_contains "$LS_ERR" "a run is live" "names it"
+}
+test_lanes_lock_race_single_vs_manifest() {
+  lanes_fixture race integration A:-
+  printf 'sleep 2\n' > "$SCEN/A"
+  STUDIO_OVERNIGHT_LOCK_HOOK='sleep 2'; export STUDIO_OVERNIGHT_LOCK_HOOK
+  bg_lanes m "$P" start "$MFP"; unset STUDIO_OVERNIGHT_LOCK_HOOK
+  sleep 0.5
+  # The single-plan start passed its preflight before the manifest run locked; the re-check catches it.
+  sh -c 'sleep 30; :' studio-overnight >/dev/null 2>&1 & _d=$!
+  printf 'pid=%s\nrun=%s\nstarted=2026-10-04T21:00:00Z\n' "$_d" "$P/.studio/reports/overnight-20261004-210000" > "$P/.studio/overnight.lock"
+  bg_wait m; kill "$_d"; wait "$_d" 2>/dev/null; rm -f "$P/.studio/overnight.lock"
+  assert_eq 2 "$BG_STATUS" "the manifest start that re-checks after a single-plan lock appears loses"
+  assert_missing "$P/.studio/runs/demo/lock" "the loser leaves no lock"
+  assert_eq "" "$(ls -d "$P"/.studio/reports/overnight-demo-* 2>/dev/null)" "and no run dir"
+}
+test_lanes_reg_write_keeps_live_sibling() {
+  lanes_fixture reg integration A:-
+  mkdir -p "$HOME/.claude-gamedev/runs"
+  sh -c 'sleep 30; :' studio-overnight >/dev/null 2>&1 & _d=$!
+  printf 'root=%s\nstart=%s\nrun=/x/overnight-sib\npid=%s\n' "$P" "$P" "$_d" > "$HOME/.claude-gamedev/runs/overnight-sib-$_d"
+  printf 'root=%s\nstart=%s\nrun=/x/overnight-dead\npid=999999\n' "$P" "$P" > "$HOME/.claude-gamedev/runs/overnight-dead-999999"
+  run_lanes start "$MFP"
+  assert_file "$HOME/.claude-gamedev/runs/overnight-sib-$_d" "a live sibling's entry is kept (AC6)"
+  assert_missing "$HOME/.claude-gamedev/runs/overnight-dead-999999" "a dead one is dropped"
+  kill "$_d"; wait "$_d" 2>/dev/null; rm -f "$HOME"/.claude-gamedev/runs/overnight-sib-*
+}
+test_lanes_detach_with_other_run_live() {
+  lanes_fixture det integration A:-
+  lanes_add_run alpha integration S1:-
+  printf 'hang\n' > "$SCEN/S1"; bg_lanes alpha "$RW" start "$RMF"
+  _i=0; while [ ! -f "$P/.studio/runs/alpha/lock" ] && [ "$_i" -lt 100 ]; do sleep 0.1; _i=$((_i + 1)); done
+  _ap="$(sed -n 's/^pid=//p' "$P/.studio/runs/alpha/lock")"
+  printf 'hang\n' > "$SCEN/A"
+  run_lanes start --detach "$MFP"
+  assert_eq 0 "$LS_STATUS" "detach succeeds with another run live (waits on its own lock and status --run)"
+  assert_contains "$LS_OUT" "^detached: pid " "detached"
+  assert_eq "pid=$_ap" "$(grep '^pid=' "$P/.studio/runs/alpha/lock" 2>/dev/null)" "alpha still holds its lock when detach returns"
+  # Stop demo by name: alpha is untouched and stays live.
+  ( cd "$P" && sh "$RUNNER" stop --run demo ) > /dev/null 2>&1
+  assert_file "$P/.studio/runs/demo/stop" "stop --run demo writes demo's flag"
+  assert_missing "$P/.studio/runs/alpha/stop" "and not alpha's"
+  assert_eq "pid=$_ap" "$(grep '^pid=' "$P/.studio/runs/alpha/lock" 2>/dev/null)" "alpha still holds its lock after demo's stop"
+  assert_eq 1 "$(pid_alive "$_ap" && echo 1 || echo 0)" "and alpha's runner is still live"
+  # Then end both: stop alpha, end the hung stubs, wait both runs out.
+  ( cd "$P" && sh "$RUNNER" stop --run alpha ) > /dev/null 2>&1; pkill -f "$TMP/fakebin/claude" 2>/dev/null
+  detach_stop; bg_wait alpha
+}
+# Two starts of one slug share its lock path: a second start while the first
+# is live refuses (exit 2, naming it) and never reclaims, rewrites or removes
+# the live run's lock, stop flag or run dir.
+test_lanes_same_slug_live_refused() {
+  lanes_fixture same integration A:-
+  printf 'hang\n' > "$SCEN/A"
+  bg_lanes first "$P" start "$MFP"
+  wait_for "[ -f '$CALLS/1.story' ]" 60
+  _lp="$(sed -n 's/^pid=//p' "$P/.studio/runs/demo/lock")"
+  _ld="$(ls -d "$P"/.studio/reports/overnight-demo-[0-9]* 2>/dev/null)"
+  printf 'operator stop\n' > "$P/.studio/runs/demo/stop"   # the run stays live until its hung unit ends
+  run_lanes start "$MFP"
+  assert_eq 2 "$LS_STATUS" "a second start of a live slug exits 2"
+  assert_contains "$LS_ERR" "slug demo is used by live run demo (.*pid $_lp)" "and names the live run and its pid"
+  assert_not_contains "$LS_ERR" "reclaiming stale lock" "it never treats the live lock as stale"
+  assert_contains "$P/.studio/runs/demo/lock" "^pid=$_lp\$" "the live run's lock is unchanged"
+  assert_contains "$P/.studio/runs/demo/stop" "^operator stop\$" "its stop flag is left alone"
+  assert_eq "$_ld" "$(ls -d "$P"/.studio/reports/overnight-demo-[0-9]* 2>/dev/null)" "no second run dir"
+  assert_eq 1 "$([ -d "$_ld" ] && echo 1 || echo 0)" "the live run's dir is kept"
+  pkill -f "$TMP/fakebin/claude" 2>/dev/null
+  bg_wait first
+}
+test_lanes_units_get_start_dir() {
+  lanes_fixture sdenv integration A:-
+  lanes_add_run alpha integration S1:-
+  run_lanes_in "$RW" start "$RMF"
+  _n="$(grep -l '^S1$' "$CALLS"/*.story | head -n 1)"; _n="${_n%.story}"
+  assert_contains "$_n.fullenv" "^STUDIO_START_DIR=$RW\$" "every unit gets STUDIO_START_DIR (AC30)"
+}
+test_lanes_reap_resume_line_run_worktree() {
+  lanes_fixture reap integration A:-
+  lanes_add_run alpha integration S1:-
+  printf 'hang\n' > "$SCEN/S1"; bg_lanes alpha "$RW" start "$RMF"
+  # Wait for the hung unit (its session is running), not a fixed sleep.
+  _i=0; while [ ! -f "$CALLS/1.story" ] && [ "$_i" -lt 300 ]; do sleep 0.1; _i=$((_i + 1)); done
+  _rp="$(sed -n 's/^pid=//p' "$P/.studio/runs/alpha/lock")"
+  pkill -KILL -P "$_rp" 2>/dev/null; kill -KILL "$_rp"; bg_wait alpha
+  # The hung stub runs in its own process group: end it by its path.
+  pkill -KILL -f "$TMP/fakebin/claude" 2>/dev/null; sleep 1
+  ( cd "$P" && sh "$RUNNER" status ) > "$TMP/out" 2>&1
+  _rd="$(ls -d "$P"/.studio/reports/overnight-alpha-* | tail -n 1)"
+  assert_file "$_rd/report.md" "status from the main checkout reaped the dead run"
+  assert_contains "$_rd/report.md" "^cd '$RW' && " "its Resume line changes into the run worktree (AC7)"
+}
+test_lanes_old_lock_counts_live() {
+  lanes_fixture oldlive integration A:-
+  _od="$P/.studio/reports/overnight-old-20261003-210000"; mkdir -p "$_od"; printf '# Run: old\n' > "$_od/manifest.md"
+  sh -c 'sleep 30; :' studio-overnight >/dev/null 2>&1 & _d=$!
+  printf 'pid=%s\nrun=%s\nstarted=2026-10-03T21:00:00Z\n' "$_d" "$_od" > "$P/.studio/overnight.lock"
+  ( cd "$P" && sh "$RUNNER" status ) > "$TMP/out" 2>&1; _st=$?
+  kill "$_d"; wait "$_d" 2>/dev/null; rm -f "$P/.studio/overnight.lock"
+  assert_eq 0 "$_st" "an old-style manifest run on overnight.lock is live (AC31)"
+}
+test_lanes_old_lock_reaped_by_start() {
+  lanes_fixture oldreap integration A:-
+  _od="$P/.studio/reports/overnight-old-20261003-210000"; mkdir -p "$_od/stories" "$_od/lanes"
+  printf '# Run: old\n\nMode: integration\nTarget: integration/old\n' > "$_od/manifest.md"; : > "$_od/rows.tsv"; : > "$_od/chains"
+  printf 'pid=999999\nrun=%s\nstarted=2026-10-03T21:00:00Z\n' "$_od" > "$P/.studio/overnight.lock"
+  run_lanes start "$MFP"
+  assert_file "$_od/report.md" "start reaps a dead old-style manifest lock (AC31)"
+  assert_eq 0 "$LS_STATUS" "and runs"
+}
+
+# ---- #39 T11: the manifest preflight — conflicts, re-check, overlap, next ----
+# live_alpha NAME — lanes_fixture NAME (demo, story A) with alpha (S1) added and
+# live: its S1 unit hangs. end_alpha stops it and ends its stub by temp path.
+live_alpha() {
+  lanes_fixture "$1" integration A:-
+  lanes_add_run alpha integration S1:-
+  printf 'hang\n' > "$SCEN/S1"
+  bg_lanes alpha "$RW" start "$RMF"
+  wait_for "[ -f '$CALLS/1.story' ]" 60
+}
+end_alpha() {
+  ( cd "$P" && sh "$RUNNER" stop --run alpha ) > /dev/null 2>&1
+  pkill -f "$TMP/fakebin/claude" 2>/dev/null
+  bg_wait alpha
+}
+test_lanes_preflight_refuses_live_slug_id_branch() {
+  live_alpha pfl
+  _ad="$(ls -d "$P"/.studio/reports/overnight-alpha-[0-9]* | tail -n 1)"
+  sed 's/S1/X1/g' "$RW/$RMF" > "$RW/docs/runs/m1.md"
+  sed -e 's/^# Run: alpha/# Run: beta/' -e 's/S1-b/X1-b/g' "$RW/$RMF" > "$RW/docs/runs/m2.md"
+  sed -e 's/^# Run: alpha/# Run: beta/' -e 's/| S1 | S1-b | S1 |/| X1 | S1-b | X1 |/' "$RW/$RMF" > "$RW/docs/runs/m3.md"
+  for _m in m1:slug:alpha m2:story:S1 m3:branch:S1-b; do
+    _f="${_m%%:*}"; _w="${_m#*:}"; _k="${_w%%:*}"; _v="${_w#*:}"
+    run_lanes_in "$RW" start --dry-run "docs/runs/$_f.md"
+    assert_eq 2 "$LS_STATUS" "$_f: a $_k shared with a live run refuses"
+    assert_contains "$LS_ERR" "$_k $_v is used by live run alpha ($_ad, pid [0-9]*)" "$_f: names the run and its dir"
+    assert_contains "$LS_ERR" "stop it ('.*studio-overnight' stop --run alpha) or pick another" "$_f: and the way out"
+  done
+  end_alpha
+}
+test_lanes_preflight_refuses_live_old_style_run() {
+  lanes_fixture pfold integration A:-
+  _od="$P/.studio/reports/overnight-old-20261003-210000"; mkdir -p "$_od"
+  printf '# Run: old\n\nMode: integration\nTarget: integration/old\n' > "$_od/manifest.md"
+  printf 'A\tA-b\tA\t-\t-\t\n' > "$_od/rows.tsv"
+  sh -c 'sleep 60; :' studio-overnight >/dev/null 2>&1 & _d=$!
+  printf 'pid=%s\nrun=%s\nstarted=2026-10-03T21:00:00Z\nstart=%s\n' "$_d" "$_od" "$P" > "$P/.studio/overnight.lock"
+  run_lanes start --dry-run "$MFP"
+  _st="$LS_STATUS"; _er="$TMP/pfold1.err"; cp "$LS_ERR" "$_er"
+  sed 's/^# Run: demo/# Run: old/' "$P/$MFP" > "$P/docs/runs/os.md"
+  run_lanes start --dry-run docs/runs/os.md
+  _st2="$LS_STATUS"; _er2="$LS_ERR"
+  kill "$_d"; wait "$_d" 2>/dev/null; rm -f "$P/.studio/overnight.lock"
+  assert_eq 2 "$_st" "a story shared with a live old-style run refuses (AC8, AC31)"
+  assert_contains "$_er" "story A is used by live run old ($_od, pid $_d)" "names the old-style run"
+  assert_eq 2 "$_st2" "a slug shared with a live old-style run refuses"
+  assert_contains "$_er2" "slug old is used by live run old" "names the slug"
+}
+# A live lock with no start= line gives runs_live an empty start_dir column;
+# mf_conflicts must still read the lock path (field 7) and skip its own lock
+# in the re-check, and still name the other run (#39 final review, known #2).
+test_lanes_conflicts_lock_without_start() {
+  _cs_p="$TMP/cs"; mkdir -p "$_cs_p/.studio/runs/demo" "$_cs_p/.studio/runs/alpha"
+  sh -c 'sleep 60; :' studio-overnight >/dev/null 2>&1 & _cs_d=$!
+  for _cs_s in demo alpha; do
+    _cs_r="$_cs_p/.studio/reports/overnight-$_cs_s-20261004-210000"; mkdir -p "$_cs_r"
+    printf '# Run: %s\n\nMode: integration\nTarget: integration/%s\n' "$_cs_s" "$_cs_s" > "$_cs_r/manifest.md"
+    printf 'pid=%s\nrun=%s\nstarted=2026-10-04T21:00:0%s\n' "$_cs_d" "$_cs_r" "${#_cs_s}" > "$_cs_p/.studio/runs/$_cs_s/lock"
+  done
+  printf 'S1\tS1-b\tS1\t-\t-\t\n' > "$_cs_p/.studio/reports/overnight-demo-20261004-210000/rows.tsv"
+  printf 'S9\tS9-b\tS9\t-\t-\t\n' > "$_cs_p/.studio/reports/overnight-alpha-20261004-210000/rows.tsv"
+  _cs_out="$( (
+    SELF_DIR="$BIN"; STATE_ROOT="$_cs_p"; SELF_ABS="$BIN/studio-overnight"; MF_SLUG=demo
+    MF_ROWS="$_cs_p/.studio/reports/overnight-demo-20261004-210000/rows.tsv"; LOCK="$_cs_p/.studio/runs/demo/lock"
+    sq() { printf "'%s'" "$1"; }
+    . "$BIN/overnight-runs.sh"; . "$BIN/overnight-lanes.sh"
+    printf 'recheck:\n'; mf_conflicts 1
+    printf 'S9\tS9-b\tS9\t-\t-\t\n' >> "$MF_ROWS"; printf 'other:\n'; mf_conflicts 1
+  ) 2>&1)"
+  kill "$_cs_d"; wait "$_cs_d" 2>/dev/null
+  assert_eq "recheck:
+other:
+story S9 is used by live run alpha ($_cs_p/.studio/reports/overnight-alpha-20261004-210000, pid $_cs_d) — stop it ('$BIN/studio-overnight' stop --run alpha) or pick another id
+branch S9-b is used by live run alpha ($_cs_p/.studio/reports/overnight-alpha-20261004-210000, pid $_cs_d) — stop it ('$BIN/studio-overnight' stop --run alpha) or pick another branch" \
+    "$_cs_out" "its own start=-less lock is skipped; the other run is named with its pid"
+}
+test_lanes_preflight_refuses_stopped_record() {
+  lanes_fixture pfs integration S1:-
+  mkdir -p "$P/.studio/runs/alpha" "$P/.studio/reports/overnight-alpha-20261004-210000"
+  : > "$P/.studio/runs/alpha/landed.tsv"
+  printf 'S1\tS1-b\tS1\t-\t-\t\n' > "$P/.studio/reports/overnight-alpha-20261004-210000/rows.tsv"
+  printf 'docs/runs/alpha-real.md\n' > "$P/.studio/reports/overnight-alpha-20261004-210000/manifest.path"
+  mkdir -p "$P/.studio/reports/overnight-alpha-20261003-210000"
+  run_lanes start --dry-run "$MFP"
+  assert_eq 2 "$LS_STATUS" "a story of a stopped run's record refuses"
+  assert_contains "$LS_ERR" "story S1 is used by stopped run alpha (record $P/.studio/runs/alpha, report $P/.studio/reports/overnight-alpha-20261004-210000) — resume it" "names the run, its record and its newest report"
+  assert_contains "$LS_ERR" "— resume it ('.*' start docs/runs/alpha-real.md) or abandon it (mv '$P/.studio/runs/alpha' '$P/.studio/runs/alpha'.<utc ts>) or pick another id" "the way out: resume with the real manifest path, or abandon by archiving the record (AC8)"
+  assert_contains "$LS_ERR" "branch S1-b is used by stopped run alpha" "and its branch"
+  : > "$P/.studio/runs/alpha/done"
+  run_lanes start --dry-run "$MFP"
+  assert_eq 0 "$LS_STATUS" "a done record no longer conflicts"
+}
+test_lanes_preflight_done_record_needs_archive() {
+  lanes_fixture pfd integration A:-
+  mkdir -p "$P/.studio/runs/demo"; : > "$P/.studio/runs/demo/landed.tsv"; : > "$P/.studio/runs/demo/done"
+  run_lanes start --dry-run "$MFP"
+  assert_eq 2 "$LS_STATUS" "a new run named like a done record refuses"
+  assert_contains "$LS_ERR" "run demo is done: archive its record first: mv '$P/.studio/runs/demo' '$P/.studio/runs/demo'\.<utc ts>" "names the archive path"
+  mv "$P/.studio/runs/demo" "$P/.studio/runs/demo.20261004T000000Z"
+  run_lanes start --dry-run "$MFP"
+  assert_eq 0 "$LS_STATUS" "after the archive it passes"
+}
+test_lanes_preflight_branch_forms() {
+  lanes_fixture pfb integration A:-
+  for _b in run/x integration-x progress/y; do
+    sed "s#| A | A-b |#| A | $_b |#" "$P/$MFP" > "$P/docs/runs/bf.md"
+    run_lanes start --dry-run docs/runs/bf.md
+    assert_eq 2 "$LS_STATUS" "branch $_b refuses"
+    assert_contains "$LS_ERR" "branch $_b collides" "branch $_b names its form"
+  done
+  live_alpha pfb2
+  sed 's#| A | A-b |#| A | integration/alpha |#' "$P/$MFP" > "$P/docs/runs/bf.md"
+  run_lanes start --dry-run docs/runs/bf.md
+  assert_eq 2 "$LS_STATUS" "a live run's Target as a branch refuses"
+  assert_contains "$LS_ERR" "branch integration/alpha is the Target of live run alpha" "names it"
+  end_alpha
+}
+test_lanes_preflight_slug_off_and_digits() {
+  lanes_fixture pfo integration A:-
+  sed 's/^# Run: demo/# Run: off/' "$P/$MFP" > "$P/docs/runs/off.md"
+  run_lanes start --dry-run docs/runs/off.md
+  assert_eq 2 "$LS_STATUS" "slug off refuses"
+  assert_contains "$LS_ERR" "slug off is reserved (/omega:autopilot off)" "reserved"
+  sed 's/^# Run: demo/# Run: 123/' "$P/$MFP" > "$P/docs/runs/num.md"
+  run_lanes start --dry-run docs/runs/num.md
+  assert_eq 2 "$LS_STATUS" "an all-digit slug refuses"
+  assert_contains "$LS_ERR" "slug 123 is all digits" "reads as a story id"
+}
+test_lanes_preflight_resume_own_record() {
+  lanes_fixture pfr integration A:-
+  mkdir -p "$P/.studio/runs/demo"; : > "$P/.studio/runs/demo/landed.tsv"
+  run_lanes start --dry-run "$MFP"
+  assert_eq 0 "$LS_STATUS" "a stopped run's own record (no done) is a resume"
+}
+test_lanes_recheck_race_one_wins() {
+  lanes_fixture rcr integration A:-
+  lanes_add_run alpha integration S1:-; _aw="$RW"; _am="$RMF"
+  lanes_add_run gamma integration S1:-; _gw="$RW"; _gm="$RMF"
+  printf 'sleep 2\n' > "$SCEN/S1"
+  STUDIO_OVERNIGHT_LOCK_HOOK='sleep 2'; export STUDIO_OVERNIGHT_LOCK_HOOK
+  bg_lanes alpha "$_aw" start "$_am"; sleep 0.2; bg_lanes gamma "$_gw" start "$_gm"
+  unset STUDIO_OVERNIGHT_LOCK_HOOK
+  bg_wait alpha; _as=$BG_STATUS; bg_wait gamma; _gs=$BG_STATUS
+  if [ "$_as" = 0 ]; then _win=alpha; _lose=gamma; _ls=$_gs; else _win=gamma; _lose=alpha; _ls=$_as; fi
+  assert_eq 0 "$([ "$_as" = 0 ] || [ "$_gs" = 0 ] && echo 0 || echo 1)" "one of the two runs exits 0"
+  assert_eq 2 "$_ls" "the loser exits 2"
+  assert_contains "$TMP/bg-$_lose.err" "lost the start race: story S1 is used by live run $_win" "and names the winner"
+  assert_missing "$P/.studio/runs/$_lose/lock" "the loser left no lock"
+  assert_missing "$P/.studio/runs/$_lose" "no record dir"
+  assert_eq "" "$(ls -d "$P"/.studio/reports/overnight-$_lose-* 2>/dev/null)" "and no run dir"
+}
+# overlap_case NAME ALPHA_FILES DEMO_FILES — alpha (S1 task 2 names ALPHA_FILES)
+# is live; demo's A task 1 names DEMO_FILES; `start --dry-run` of demo.
+overlap_case() {
+  lanes_fixture "$1" integration A:-
+  lanes_add_run alpha integration S1:-
+  ( cd "$RW" && sed -i '' "s|^Files: \`S1-T2.txt\`|Files: $2|" docs/game-dev/plans/2026-10-01-S1.md \
+    && git add -A && git commit -qm files && git push -q origin run/alpha \
+    && _d="$(git rev-parse HEAD)" && sed "s/^Docs: .*/Docs: $_d/" "$RMF" > "$TMP/mf.new" && cp "$TMP/mf.new" "$RMF" \
+    && git add -A && git commit -qm manifest && git push -q origin run/alpha ) > /dev/null 2>&1
+  printf 'hang\n' > "$SCEN/S1"
+  bg_lanes alpha "$RW" start "$RMF"
+  wait_for "[ -f '$CALLS/1.story' ]" 60
+  printf 'Files: %s\n' "$3" >> "$P/docs/game-dev/plans/2026-10-01-A.md"
+  redocs
+  run_lanes start --dry-run "$MFP"
+}
+test_lanes_overlap_warning() {
+  overlap_case ovl '`shared.txt`, `only-alpha.txt`' '`shared.txt`, `only-demo.txt`'
+  assert_eq 0 "$LS_STATUS" "an overlap only warns"
+  assert_contains "$LS_ERR" "warning — live run alpha is changing files this run's unfinished tasks change too:" "the D38 header"
+  assert_contains "$LS_ERR" "^  shared.txt\$" "lists the shared path"
+  assert_not_contains "$LS_ERR" "only-alpha.txt" "and not the unshared ones"
+  end_alpha
+  _a=""; _d=""
+  for _i in $(seq 10 34); do _a="$_a\`shared$_i.txt\`, "; done
+  overlap_case ovl25 "$_a" "$_a"
+  assert_eq 0 "$LS_STATUS" "25 shared paths still only warn"
+  assert_eq 20 "$(grep -c '^  shared[0-9]*\.txt$' "$LS_ERR")" "at most 20 paths are listed"
+  assert_contains "$LS_ERR" "^  and 5 more\$" "then the rest as a count"
+  end_alpha
+}
+test_lanes_next_slug_forms() {
+  LANES_CELLS=dash; export LANES_CELLS
+  lanes_fixture nxs integration A:-
+  sed 's/^# Run: demo/# Run: alpha-2/' "$P/$MFP" > "$P/docs/runs/alpha-2.md"
+  run_lanes next docs/runs/alpha-2.md
+  assert_contains "$LS_OUT" "^next: /game-dev:brainstorm alpha-2/A\$" "the slug is part of the next command"
+}
+
+# ---- #39 T12: the project-wide session cap (AC27, AC28) ----
+# sess_left — the slot dirs and wait entries left under $P/.studio/sessions ("" when none).
+sess_left() { ls -d "$P"/.studio/sessions/[0-9]* "$P"/.studio/sessions/wait/[0-9]* 2>/dev/null; }
+# lane_of ID — the number of the demo run's lane whose current unit names ID.
+lane_of() {
+  for _lo in "$(last_lanes_dir)"/lanes/*/current; do
+    case "$(cat "$_lo" 2>/dev/null)" in "$1 "*) _lo="${_lo%/current}"; printf '%s\n' "${_lo##*/}"; return 0 ;; esac
+  done
+  return 1
+}
+# slot_waiting ID — ID's lane is waiting for a session slot (lanes/<k>/slotwait).
+slot_waiting() { _sw_k="$(lane_of "$1")" && [ -f "$(last_lanes_dir)/lanes/$_sw_k/slotwait" ]; }
+# n_calls ID — how many sessions ran for story ID.
+n_calls() { story_calls "$1" | wc -l | tr -d ' '; }
+slot_poll() { STUDIO_OVERNIGHT_SLOT_POLL_SECONDS=1; export STUDIO_OVERNIGHT_SLOT_POLL_SECONDS; }
+
+test_lanes_slot_cap_two_across_runs() {
+  LANES_CONFIG='{"overnight": {"max_lanes": 2, "max_sessions": 2}}'; export LANES_CONFIG
+  lanes_fixture cap2 integration A:- B:-
+  LANES_CONFIG='{"overnight": {"max_lanes": 2}}'; export LANES_CONFIG
+  lanes_add_run alpha integration S1:- S2:-
+  for _id in A B S1 S2; do printf 'sleep 2\n' > "$SCEN/$_id"; done
+  slot_poll
+  bg_lanes demo "$P" start "$MFP"; bg_lanes alpha "$RW" start "$RMF"
+  bg_wait demo; _ds="$BG_STATUS"; bg_wait alpha
+  unset STUDIO_OVERNIGHT_SLOT_POLL_SECONDS
+  assert_eq 0 "$_ds" "demo runs to its end under the cap"
+  assert_eq 0 "$BG_STATUS" "and so does alpha"
+  assert_eq 2 "$(cat "$CALLS/max" 2>/dev/null)" "four lanes in two runs, never more than two sessions at once (cap 2)"
+  for _id in A B; do assert_contains "$P/.studio/runs/demo/landed.tsv" "^$_id	" "$_id lands"; done
+  for _id in S1 S2; do assert_contains "$P/.studio/runs/alpha/landed.tsv" "^$_id	" "$_id lands"; done
+  assert_eq "" "$(sess_left)" "no slot or wait entry is left"
+}
+test_lanes_slot_cap_one_alternates() {
+  LANES_CONFIG='{"overnight": {"max_sessions": 1}}'; export LANES_CONFIG
+  lanes_fixture alt integration A:-
+  lanes_add_run alpha integration S1:-
+  # A's first unit is long enough for alpha to start and queue behind it.
+  printf 'sleep 6\nsleep 1\n' > "$SCEN/A"; printf 'sleep 1\nsleep 1\n' > "$SCEN/S1"
+  slot_poll
+  bg_lanes demo "$P" start "$MFP"
+  wait_for "[ -f '$CALLS/1.story' ]" 60
+  bg_lanes alpha "$RW" start "$RMF"
+  bg_wait demo; _ds="$BG_STATUS"; bg_wait alpha
+  unset STUDIO_OVERNIGHT_SLOT_POLL_SECONDS
+  assert_eq 0 "$_ds" "demo lands"; assert_eq 0 "$BG_STATUS" "alpha lands"
+  _seq="$(_i=1; while [ "$_i" -le "$(calls)" ]; do cat "$CALLS/$_i.story"; _i=$((_i + 1)); done | tr '\n' ' ')"
+  assert_eq "A S1" "$(printf '%s\n' "$_seq" | cut -d' ' -f1-2)" "the waiting run's lane takes the slot A's first unit frees (FIFO)"
+  # No story runs three units in a row while the other still has one to run.
+  _run3="$(printf '%s\n' "$_seq" | awk '{ for (i = 1; i + 2 <= NF; i++) if ($i == $(i+1) && $i == $(i+2)) for (j = i + 3; j <= NF; j++) if ($j != $i) { print i; exit } }')"
+  assert_eq "" "$_run3" "the two runs alternate under cap 1 (calls: $_seq)"
+  assert_eq 1 "$(cat "$CALLS/max" 2>/dev/null)" "never two sessions at once"
+}
+test_lanes_slot_kill9_lane_reclaimed() {
+  LANES_CONFIG='{"overnight": {"max_lanes": 2, "max_sessions": 1}}'; export LANES_CONFIG
+  lanes_fixture slk9 integration A:- B:-
+  printf 'hang\n' > "$SCEN/A"
+  slot_poll; KILL_GRACE_SECONDS=2; export KILL_GRACE_SECONDS
+  bg_lanes demo "$P" start "$MFP"
+  unset STUDIO_OVERNIGHT_SLOT_POLL_SECONDS KILL_GRACE_SECONDS
+  wait_for "[ -n \"\$(story_calls A)\" ] && lane_of A > /dev/null" 60
+  R="$(last_lanes_dir)"; _k="$(lane_of A)"
+  _lp="$(cat "$R/lanes/${_k:-0}/pid" 2>/dev/null)"; _sp="$(cat "$CALLS/$(story_calls A | head -n 1).pid" 2>/dev/null)"
+  _b0="$(n_calls B)"
+  kill -9 "${_lp:-0}" "${_sp:-0}"
+  bg_wait demo
+  assert_eq 1 "$BG_STATUS" "the run ends, partial (A's lane crashed)"
+  assert_eq 1 "$([ "$(n_calls B)" -gt "$_b0" ] && echo 1 || echo 0)" "B's next unit gets the dead lane's slot (reclaimed by liveness)"
+  assert_contains "$R/stories/B" "^landed " "and B lands"
+  assert_contains "$R/stories/A" "^stopped: lane crashed (137)$" "A's story names the crash"
+  assert_eq "" "$(sess_left)" "no slot or wait entry is left"
+}
+test_lanes_slot_stop_ends_wait() {
+  LANES_CONFIG='{"overnight": {"max_lanes": 2, "max_sessions": 1}}'; export LANES_CONFIG
+  lanes_fixture slstop integration A:- B:-
+  printf 'sleep 4\n' > "$SCEN/A"
+  slot_poll
+  bg_lanes demo "$P" start "$MFP"
+  unset STUDIO_OVERNIGHT_SLOT_POLL_SECONDS
+  wait_for "slot_waiting B" 60
+  R="$(last_lanes_dir)"; _k="$(lane_of B)"
+  assert_file "$R/lanes/${_k:-0}/slotwait" "B's lane waits for a slot: lanes/<k>/slotwait"
+  ( cd "$P" && sh "$RUNNER" status ) > "$TMP/st.out" 2>&1
+  assert_contains "$TMP/st.out" "^    waiting for a session slot since [0-9][0-9]:[0-9][0-9]\$" "status shows the wait"
+  _b0="$(n_calls B)"
+  ( cd "$P" && sh "$RUNNER" stop ) > /dev/null 2>&1
+  bg_wait demo
+  assert_contains "$R/stories/B" "^stopped stopped by user\$" "a stop ends the wait: B ends stopped by user"
+  assert_eq "$_b0" "$(n_calls B)" "no session is launched for B after the stop"
+  assert_missing "$R/lanes/${_k:-0}/slotwait" "slotwait goes"
+  assert_eq "" "$(sess_left)" "the wait entry is gone and no slot is left"
+}
+# A first queueing that fails (here: sessions/wait cannot be created) is said
+# and retried in the wait loop, never taken as a halt (#39 final review,
+# T12-1): once the queue can be written, the story runs and lands.
+test_lanes_slot_enqueue_failure_retried() {
+  LANES_CONFIG='{"overnight": {"max_sessions": 1}}'; export LANES_CONFIG
+  lanes_fixture slenq integration A:-
+  mkdir -p "$P/.studio/sessions"; : > "$P/.studio/sessions/wait"
+  slot_poll
+  bg_lanes x "$P" start "$MFP"
+  unset STUDIO_OVERNIGHT_SLOT_POLL_SECONDS
+  wait_for "grep -q 'sessions: cannot queue' '$TMP/bg-x.out' '$TMP/bg-x.err' 2>/dev/null" 60
+  assert_eq 1 "$(cat "$TMP/bg-x.out" "$TMP/bg-x.err" 2>/dev/null | grep -c 'sessions: cannot queue')" "the failed first queueing is said once"
+  rm -f "$P/.studio/sessions/wait"
+  bg_wait x
+  assert_eq 0 "$BG_STATUS" "the run ends normally"
+  assert_contains "$(last_lanes_dir)/stories/A" "^landed " "A is not ended as stopped by user: its lane queued again and ran"
+  assert_eq "" "$(sess_left)" "no slot or wait entry is left"
+}
+# session_release removes the unit dir's slotwait with the wait entry, so a
+# HUP or runner error mid-wait never leaves a stale `waiting for a session
+# slot` (final/slotwait) behind (#39 final review, T12-3).
+test_lanes_session_release_clears_slotwait() {
+  _rs_out="$( (
+    SELF_DIR="$BIN"; STATE_ROOT="$TMP/srs"; UNIT_DIR="$TMP/srs/final"; mkdir -p "$UNIT_DIR" "$STATE_ROOT/.studio/sessions/wait"
+    . "$BIN/overnight-runs.sh"; . "$BIN/overnight-sessions.sh"; . "$BIN/overnight-lanes.sh"
+    sess_init; SESS_ME=$$; SESS_WAIT="$STATE_ROOT/.studio/sessions/wait/1-$$"; : > "$SESS_WAIT"
+    date +%H:%M > "$UNIT_DIR/slotwait"
+    session_release
+    [ -e "$UNIT_DIR/slotwait" ] && echo "slotwait left"; [ -e "$STATE_ROOT/.studio/sessions/wait/1-$$" ] && echo "wait entry left"
+    echo done
+  ) 2>&1)"
+  assert_eq "done" "$_rs_out" "session_release removes slotwait and the wait entry"
+}
+test_lanes_slot_released_every_exit() {
+  LANES_CONFIG='{"overnight": {"max_sessions": 1}}'; export LANES_CONFIG
+  lanes_fixture slx1 integration A:-
+  run_lanes start "$MFP"
+  assert_eq 0 "$LS_STATUS" "a normal end"
+  assert_eq "" "$(sess_left)" "a normal end leaves no slot or wait entry"
+  LANES_CONFIG='{"overnight": {"max_sessions": 1}}'; export LANES_CONFIG
+  lanes_fixture slx2 integration A:-
+  printf 'sleep 3\n' > "$SCEN/A"
+  bg_lanes x "$P" start "$MFP"; wait_for "[ -f '$CALLS/1.t0' ]" 60
+  ( cd "$P" && sh "$RUNNER" stop ) > /dev/null 2>&1; bg_wait x
+  assert_eq "" "$(sess_left)" "a stop mid-unit leaves no slot or wait entry"
+  LANES_CONFIG='{"overnight": {"max_sessions": 1}}'; export LANES_CONFIG
+  lanes_fixture slx3 integration A:-
+  printf 'sleep 3\n' > "$SCEN/A"
+  bg_lanes x "$P" start "$MFP"; wait_for "[ -f '$CALLS/1.t0' ]" 60
+  kill -TERM "$(cat "$TMP/bg-x.pid")"; bg_wait x
+  assert_eq "" "$(sess_left)" "a SIGTERM to the runner leaves no slot or wait entry"
+  LANES_CONFIG='{"overnight": {"max_sessions": 1}}'; export LANES_CONFIG
+  lanes_fixture slx4 integration A:-
+  printf 'hang\n' > "$SCEN/A"
+  KILL_GRACE_SECONDS=2; export KILL_GRACE_SECONDS
+  bg_lanes x "$P" start "$MFP"; unset KILL_GRACE_SECONDS
+  wait_for "[ -f '$CALLS/1.story' ] && [ -s \"\$(last_lanes_dir)/lanes/1/cpid\" ]" 60
+  kill -9 "$(cat "$(last_lanes_dir)/lanes/1/pid" 2>/dev/null)"; bg_wait x
+  assert_eq "" "$(pgrep -f "$TMP/fakebin/claude" 2>/dev/null)" "the killed lane's session is ended by the sweep"
+  assert_eq "" "$(sess_left)" "and the sweep frees the dead lane's slot"
+}
+test_lanes_slot_wait_not_in_session_minutes() {
+  LANES_CONFIG='{"overnight": {"max_lanes": 2, "max_sessions": 1}}'; export LANES_CONFIG
+  lanes_fixture slmin integration A:- B:-
+  printf 'sleep 3\n' > "$SCEN/A"
+  slot_poll; run_lanes start "$MFP"
+  EV="$(last_lanes_dir)/events.jsonl"
+  assert_eq 0 "$LS_STATUS" "both land under cap 1"
+  _w="$(grep -n '"event":"session_wait".*"story":"B"' "$EV" | head -n 1 | cut -d: -f1)"
+  _u="$(awk -v w="${_w:-0}" 'NR > w && /"event":"unit_started"/ && /"story":"B"/ { print NR; exit }' "$EV")"
+  assert_eq 1 "$([ -n "$_w" ] && [ -n "$_u" ] && echo 1 || echo 0)" "B's session_wait comes before the unit_started of the unit it waited for"
+  # Cap 1: each session starts at or after the previous one's end (wall clock),
+  # so B's unit (its clock, unit.now and watchdog) began once A's had ended.
+  _ov=""; _i=2
+  while [ "$_i" -le "$(calls)" ]; do
+    [ "$(cat "$CALLS/$_i.t0w")" -ge "$(cat "$CALLS/$((_i - 1)).t1")" ] || _ov="$_ov $_i"
+    _i=$((_i + 1))
+  done
+  assert_eq "" "$_ov" "no session starts before the one holding the slot ends"
+  _bn="$(story_calls B | sort -n | while read -r _c; do [ "$_c" -gt 1 ] && [ "$(cat "$CALLS/$((_c - 1)).story")" = A ] && { echo "$_c"; break; }; done)"
+  assert_eq 1 "$([ -n "$_bn" ] && [ "$(cat "$CALLS/$_bn.t0w")" -ge "$(cat "$CALLS/$((_bn - 1)).t1")" ] && echo 1 || echo 0)" "B's unit after A's starts at or after A's end (t0 >= t1)"
+  # The session limit (STUDIO_OVERNIGHT_SESSION_SECONDS, 5 s) is shorter than an
+  # 8 s wait behind another run's slot: B never times out.
+  LANES_CONFIG='{"overnight": {"max_sessions": 1}}'; export LANES_CONFIG
+  lanes_fixture slmin2 integration B:-
+  mkdir -p "$P/.studio/sessions/1"
+  sh -c 'sleep 8; :' studio-overnight >/dev/null 2>&1 & _hold=$!
+  printf 'lane=%s\nsession=\nrun=other\nunit=hold\n' "$_hold" > "$P/.studio/sessions/1/owner"
+  STUDIO_OVERNIGHT_SESSION_SECONDS=5; export STUDIO_OVERNIGHT_SESSION_SECONDS
+  run_lanes start "$MFP"
+  unset STUDIO_OVERNIGHT_SESSION_SECONDS STUDIO_OVERNIGHT_SLOT_POLL_SECONDS
+  kill "$_hold" 2>/dev/null; wait "$_hold" 2>/dev/null
+  R="$(last_lanes_dir)"
+  assert_eq 0 "$LS_STATUS" "B lands after its wait"
+  assert_contains "$R/events.jsonl" '"event":"session_wait".*"story":"B"' "B waited for the slot"
+  assert_not_contains "$R/lanes/1/units.tsv" "timed out" "the wait is not session time: no unit timed out"
+}
+test_lanes_session_wait_event_and_status() {
+  LANES_CONFIG='{"overnight": {"max_lanes": 2, "max_sessions": 1}}'; export LANES_CONFIG
+  lanes_fixture slev integration A:- B:-
+  printf 'sleep 4\n' > "$SCEN/A"
+  slot_poll
+  bg_lanes demo "$P" start "$MFP"
+  unset STUDIO_OVERNIGHT_SLOT_POLL_SECONDS
+  wait_for "slot_waiting B" 60
+  R="$(last_lanes_dir)"; _k="$(lane_of B)"; _hm="$(cat "$R/lanes/${_k:-0}/slotwait" 2>/dev/null)"
+  ( cd "$P" && sh "$RUNNER" status ) > "$TMP/st.out" 2>&1
+  bg_wait demo
+  assert_eq "sessions: 1/1" "$(sed -n 1p "$TMP/st.out")" "status prints the sessions line first (AC10)"
+  assert_eq "    waiting for a session slot since $_hm" "$(grep -A1 '^B  lane ' "$TMP/st.out" | sed -n 2p)" "under B: the wait and its start"
+  assert_contains "$R/events.jsonl" '"event":"session_wait","lane":"'"$_k"'","story":"B","since":"[0-9-]*T[0-9:]*Z"' "the session_wait event: lane, story and an ISO since (AC28)"
+}
+test_lanes_max_sessions_preflight() {
+  lanes_fixture msp integration A:-
+  for _v in 0 9 '"x"' 8; do
+    ( cd "$P" && printf '{"overnight": {"max_sessions": %s}}\n' "$_v" > .studio/config.json \
+      && git commit -qam "cfg $_v" ) > /dev/null 2>&1
+    run_lanes start --dry-run "$MFP"
+    if [ "$_v" = 8 ]; then
+      assert_eq 0 "$LS_STATUS" "max_sessions 8 passes"
+    else
+      assert_eq 2 "$LS_STATUS" "max_sessions $_v refuses"
+      assert_contains "$LS_ERR" "overnight.max_sessions must be an integer 1-8 in $P/.studio/config.json" "and says why ($_v)"
+    fi
+  done
+}
+
+# ---- T15: the Milestone round trip (two concurrent runs) ----
+
+# rt_pair — alpha (integration, S1) and beta (direct, S2) in one project, each
+# max_lanes 1, 2 sessions at once. The fixture's own run (X) is never started.
+rt_pair() {
+  _rt_cfg='{"overnight": {"max_lanes": 1, "max_sessions": 2}}'
+  LANES_CONFIG="$_rt_cfg"; export LANES_CONFIG
+  lanes_fixture rt integration X:-
+  printf '%s\n' "$_rt_cfg" > "$P/.studio/config.json"
+  LANES_CONFIG="$_rt_cfg"; export LANES_CONFIG
+  lanes_add_run alpha integration S1:-; RW_A="$RW"; RMF_A="$RMF"
+  LANES_CONFIG="$_rt_cfg"; export LANES_CONFIG
+  lanes_add_run beta direct S2:-; RW_B="$RW"; RMF_B="$RMF"
+  slot_poll
+}
+# rt_start — start alpha, wait for its lock, then start beta while alpha is live.
+rt_start() {
+  bg_lanes alpha "$RW_A" start "$RMF_A"
+  wait_for "[ -f '$P/.studio/runs/alpha/lock' ]" 60
+  bg_lanes beta "$RW_B" start "$RMF_B"
+  wait_for "[ -f '$P/.studio/runs/beta/lock' ]" 60
+}
+# rt_bare_stop — a bare stop with two live runs exits 1, names both, stops none.
+rt_bare_stop() {
+  ( cd "$P" && sh "$RUNNER" stop ) > "$TMP/bs.out" 2>&1; _bs=$?
+  assert_eq 1 "$_bs" "a bare stop with two live runs exits 1"
+  assert_contains "$TMP/bs.out" 'alpha' "and lists alpha"
+  assert_contains "$TMP/bs.out" 'beta' "and lists beta"
+  assert_contains "$TMP/bs.out" 'stop --run <slug>' "names stop --run <slug>"
+  assert_contains "$TMP/bs.out" 'stop --all' "and stop --all"
+  assert_missing "$P/.studio/runs/alpha/stop" "a bare stop wrote no alpha stop"
+  assert_missing "$P/.studio/runs/beta/stop" "nor a beta stop"
+}
+# rt_scen — S1's task 1 pushes a target move, flags it, then holds until beta
+# has landed S2 (so task 2's sync sees both moved refs); S2 waits for the flag.
+# $1 is S2's task 1 line (default: auto).
+rt_scen() {
+  printf 'auto; push_target other.txt; mark %s; waitafter %s\n' "$TMP/rt-s1t1" "$P/.studio/runs/beta/landed.tsv" > "$SCEN/S1"
+  printf 'waitfor %s; %s\n' "$TMP/rt-s1t1" "${1:-auto}" > "$SCEN/S2"
+  rm -f "$TMP/rt-s1t1"
+}
+rt_alpha_dir() { ls -d "$P"/.studio/reports/overnight-alpha-* 2>/dev/null | tail -n 1; }
+
+test_lanes_round_trip_two_runs() {
+  rt_pair; rt_scen
+  rt_start
+  ( cd "$P" && sh "$RUNNER" status ) > "$TMP/st.out" 2>&1; _st=$?
+  assert_eq 0 "$_st" "status exits 0 with both runs live"
+  assert_contains "$TMP/st.out" '^sessions: [0-2]/2' "status line 1 shows the session count"
+  assert_eq "sessions" "$(head -n 1 "$TMP/st.out" | cut -d: -f1)" "and it is line 1"
+  assert_contains "$TMP/st.out" '^== alpha (manifest' "alpha's block"
+  assert_contains "$TMP/st.out" '^== beta (manifest' "beta's block"
+  rt_bare_stop
+  bg_wait beta
+  assert_eq 0 "$BG_STATUS" "beta ends 0"
+  assert_contains "$P/.studio/runs/beta/landed.tsv" '^S2	' "S2 landed"
+  git -C "$P" fetch -q origin
+  assert_eq 1 "$(git -C "$P" ls-tree -r --name-only origin/main | grep -c '^S2-T1.txt$')" "S2's work is on main"
+  bg_wait alpha
+  assert_eq 0 "$BG_STATUS" "alpha ends 0"
+  unset STUDIO_OVERNIGHT_SLOT_POLL_SECONDS
+  assert_contains "$P/.studio/runs/alpha/landed.tsv" '^S1	' "S1 landed"
+  _ev="$(rt_alpha_dir)/events.jsonl"
+  assert_eq 1 "$(grep '"event":"story_synced","story":"S1"' "$_ev" | grep -c '"refs":\["origin/integration/alpha","origin/main"\]')" "one story_synced for S1 names both refs"
+  assert_eq "chore(sync): merge origin/integration/alpha into S1-b|chore(sync): merge origin/main into S1-b" "$(sync_merges S1)" "the merge commits are on S1-b"
+  assert_eq 4 "$(story_calls S1 | wc -l | tr -d ' ')" "S1: T1, T2, final review, finish"
+  assert_missing "$CALLS/m-S1.sync" "the sync ran no session"
+  assert_eq 4 "$(story_calls S2 | wc -l | tr -d ' ')" "S2: T1, T2, final review, finish"
+  assert_eq 1 "$([ "$(cat "$CALLS/max")" -le 2 ] && echo 1 || echo 0)" "never more than 2 sessions at once (max $(cat "$CALLS/max"))"
+  # Units that started while the other run was live saw it in their peers block.
+  _seen=0
+  for _pf in "$CALLS"/*.peers; do
+    grep -q '^Other live runs$' "$_pf" || continue
+    _seen=$((_seen + 1)); _pn="${_pf##*/}"; _pn="${_pn%.peers}"
+    case "$(cat "$CALLS/$_pn.story")" in S1) _other=beta ;; *) _other=alpha ;; esac
+    assert_contains "$_pf" "$_other" "call $_pn names the other run ($_other)"
+  done
+  assert_eq 1 "$([ "$_seen" -ge 1 ] && echo 1 || echo 0)" "at least one unit saw the Other live runs block"
+}
+test_lanes_round_trip_stop_one_of_two() {
+  rt_pair
+  # A stop ends a run after its running unit (never mid-unit), so the units
+  # are long sleeps, not `hang`: alpha's ends soon, beta's outlives it.
+  printf 'sleep 8\n' > "$SCEN/S1"; printf 'sleep 40\n' > "$SCEN/S2"
+  rt_start
+  wait_for "[ \"\$(ls '$CALLS/live' 2>/dev/null | grep -c .)\" -ge 2 ]" 60
+  rt_bare_stop
+  ( cd "$P" && sh "$RUNNER" stop --run alpha ) > "$TMP/so.out" 2>&1
+  assert_file "$P/.studio/runs/alpha/stop" "stop --run alpha writes alpha's stop"
+  assert_missing "$P/.studio/runs/beta/stop" "and not beta's"
+  bg_wait alpha
+  assert_file "$P/.studio/runs/beta/lock" "beta's lock is still held"
+  assert_eq 1 "$(kill -0 "$(cat "$TMP/bg-beta.pid")" 2>/dev/null && echo 1 || echo 0)" "beta's runner is alive"
+  assert_missing "$P/.studio/runs/beta/stop" "still no beta stop"
+  ( cd "$P" && sh "$RUNNER" stop --run beta ) > /dev/null 2>&1
+  bg_wait beta
+  unset STUDIO_OVERNIGHT_SLOT_POLL_SECONDS
+  assert_missing "$P/.studio/runs/beta/lock" "beta's lock is gone after its stop"
+}
+test_lanes_round_trip_sync_conflict() {
+  rt_pair; rt_scen 'conflict S1-T1.txt'
+  printf 'syncrepair\n' > "$SCEN/S1.sync"
+  rt_start
+  bg_wait beta
+  assert_eq 0 "$BG_STATUS" "beta ends 0"
+  bg_wait alpha
+  assert_eq 0 "$BG_STATUS" "alpha ends 0"
+  unset STUDIO_OVERNIGHT_SLOT_POLL_SECONDS
+  assert_eq 1 "$(cat "$CALLS/m-S1.sync" 2>/dev/null)" "exactly one S1.sync call resolves the conflict"
+  assert_contains "$P/.studio/runs/alpha/landed.tsv" '^S1	' "S1 lands"
+  assert_not_contains "$P/.studio/runs/alpha/landed.tsv" 'stopped' "stopped appears nowhere in alpha's landed.tsv"
+}
+
+run_tests test_lanes_chain_rule test_lanes_manifest_refusals test_lanes_branch_default_or_target_refused test_lanes_conflicts_lock_without_start test_lanes_preflight_backlog_tasks test_lanes_manifest_header_refusals \
   test_lanes_preflight_story_checks test_lanes_preflight_story_state test_lanes_docs_unreachable \
   test_lanes_git_too_old test_lanes_sourced_only test_lanes_next \
   test_lanes_next_all_planned_and_ambiguous test_lanes_next_plan_before_autopilot \
@@ -2815,12 +3816,15 @@ run_tests test_lanes_chain_rule test_lanes_manifest_refusals test_lanes_prefligh
   test_lanes_gate_never_overlaps test_lanes_gate_repair_then_lands test_lanes_gate_repair_cap \
   test_lanes_gate_repair_same_stop_twice test_lanes_gate_repairs_zero test_lanes_gate_hard_stops_no_repair \
   test_lanes_gate_repair_no_progress test_lanes_gate_repair_model_and_no_log test_lanes_gate_repair_budget test_lanes_gate_repair_halt \
+  test_lanes_sync_clean_merge_no_session test_lanes_sync_skips test_lanes_sync_integration_two_refs \
+  test_lanes_sync_failed_merge_aborts test_lanes_sync_conflict_launches_repair test_lanes_sync_repair_stops test_lanes_sync_repair_budget \
+  test_lanes_no_sync_before_repairs \
   test_lanes_final_step_once test_lanes_final_red_after_repair \
   test_lanes_final_repair_turns_green test_lanes_final_conflict test_lanes_final_resume_edits_pr \
   test_lanes_final_skipped_on_stop_or_nothing_landed test_lanes_final_stop_before_setup test_lanes_final_gate_default test_lanes_direct_progress_landing \
   test_lanes_final_dirty_unit_is_red test_lanes_final_budget test_lanes_final_conflict_then_red test_lanes_final_gate_interrupted_not_recorded \
   test_lanes_direct_merge_timeout_after_merge_lands test_lanes_direct_merge_timeout_term_ignored \
-  test_lanes_status_per_story test_lanes_report_every_ending test_lanes_report_on_lane_crash \
+  test_lanes_status_dead_old_lock_not_masking test_lanes_status_per_story test_lanes_report_every_ending test_lanes_report_on_lane_crash \
   test_lanes_done_marker test_lanes_status_reaps_dead_runner test_lanes_reap_names_final_pr \
   test_lanes_detach_strips_env test_lanes_detach_refusal_in_foreground test_lanes_detach_child_refusal_surfaces \
   test_lanes_detach_timeout_lock_held_points_at_status test_lanes_detach_timeout_no_lock_ends_child \
@@ -2836,4 +3840,16 @@ run_tests test_lanes_chain_rule test_lanes_manifest_refusals test_lanes_prefligh
   test_lanes_stop_at_done_never_lands test_lanes_stop_held_by_operator test_lanes_stop_pending_never_holds \
   test_lanes_gate_repair_own_stop_holds test_lanes_directive_cap_holds test_lanes_hold_during_last_unit_lands_and_clears \
   test_lanes_next_adopted_planned test_lanes_context_preflight test_lanes_check_unit_first test_lanes_adopt_sync_fail_holds test_lanes_setup_fail_holds test_lanes_setup_fail_final_red test_lanes_setup_silent_fail_final_red test_lanes_setup_fail_path_specials test_lanes_direct_setup_fail_note test_lanes_gate_command_final test_lanes_gate_command_finish_red_repair test_lanes_report_adopted_lines test_lanes_adopt_seeded_runs_rest test_lanes_adopt_round_trip \
+  test_lanes_per_run_lock_paths test_lanes_excludes_before_lock test_lanes_two_runs_each_own_lock \
+  test_lanes_status_run_not_live test_lanes_manifest_refuses_live_single test_lanes_lock_race_single_vs_manifest \
+  test_lanes_reg_write_keeps_live_sibling test_lanes_detach_with_other_run_live test_lanes_units_get_start_dir \
+  test_lanes_reap_resume_line_run_worktree test_lanes_old_lock_counts_live test_lanes_old_lock_reaped_by_start \
+  test_lanes_same_slug_live_refused \
+  test_lanes_preflight_refuses_live_slug_id_branch test_lanes_preflight_refuses_live_old_style_run test_lanes_preflight_refuses_stopped_record test_lanes_preflight_done_record_needs_archive \
+  test_lanes_preflight_branch_forms test_lanes_preflight_slug_off_and_digits test_lanes_preflight_resume_own_record \
+  test_lanes_recheck_race_one_wins test_lanes_overlap_warning test_lanes_next_slug_forms \
+  test_lanes_slot_cap_two_across_runs test_lanes_slot_cap_one_alternates test_lanes_slot_kill9_lane_reclaimed \
+  test_lanes_slot_stop_ends_wait test_lanes_slot_enqueue_failure_retried test_lanes_session_release_clears_slotwait test_lanes_slot_released_every_exit test_lanes_slot_wait_not_in_session_minutes \
+  test_lanes_session_wait_event_and_status test_lanes_max_sessions_preflight \
+  test_lanes_round_trip_two_runs test_lanes_round_trip_sync_conflict test_lanes_round_trip_stop_one_of_two \
   test_lanes_no_orphans

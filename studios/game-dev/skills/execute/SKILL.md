@@ -9,6 +9,16 @@ description: Use when an approved plan exists — dispatches a fresh role agent 
 "… in inline mode" when `--inline` was given, "… one unit (--one)" when
 `--one` was given).
 
+**Never search for a tool or script.** Do not run `find /`, `find ~`, `locate`
+or a recursive `ls` from `/`, `~` or `$HOME` to look for one: a search can hang
+a headless unit for hours. `find .` or `git ls-files` inside the project, and
+`command -v`, are fine. Find superpowers' scripts with `sdd-script` (below),
+use a path this studio documents, or stop and report the tool as missing.
+If `sdd-script` is command not found, run
+`"$(command -v sdd-script || echo "$OMEGA_STUDIO_ROOT/bin/sdd-script")"` in its
+place; if that is missing too, stop and report "reinstall omega-ai". Never look
+for it.
+
 ## 0. Preconditions and isolation
 
 Check these first, in the checkout you are in:
@@ -240,7 +250,10 @@ procedures, below).
 `superpowers:subagent-driven-development` and follow its loop for the
 per-task cycle: fresh implementer per task, task review after each, ledger.
 Its fix loop, its final review and its last step are replaced by §4a, §5 and
-§7 below. The studio rules in §2–§7 layer on top of it.
+§7 below. The studio rules in §2–§7 layer on top of it. When a superpowers
+skill says `scripts/<name>`, run `bash "$(sdd-script [--skill <skill>] <name>)" ...`
+(`--skill executing-plans` for task-start and task-done); if that fails, stop
+and report it (`sdd-script` not found: "reinstall omega-ai").
 Under `--one`, SDD's setup never reads the plan: the one task's text comes from `studio-brief task <n>`, and no other task is extracted.
 Under `--one`, see §8.
 
@@ -256,7 +269,7 @@ apply in inline mode too, and so do §4a's re-review and no-third-pass rules
 Three more modes are units only the overnight runner launches (the headless
 rules of §8 apply to all three):
 
-- `--land`: the landing repair unit (§9), launched when a landing conflicts or the merge command refuses.
+- `--land`: the landing repair unit (§9), launched when a landing conflicts or the merge command refuses, or a sync repair (`STUDIO_REPAIR=sync:<ref>`, §9).
 - `--gate-repair`: the gate repair unit (§11), launched under a lane when a story's finish gate is red.
 - `--progress`: the run's PROGRESS entry unit (§10), launched once per run.
 
@@ -266,6 +279,9 @@ Dispatch the agent named by the task's `Role:` line with the Agent tool
 (`subagent_type: "game-dev:<role>"` — for example
 `subagent_type: "game-dev:gameplay-programmer"`). The agent carries its own
 persona, rules and output contract; the brief carries only the task.
+
+Under a lane, when the session's start output has an `Other live runs` block
+(the peer-runs hook), copy that block verbatim into every implementer and fixer brief.
 
 One exception: when `.studio/config.json` sets `language: csharp` and the
 role is `game-dev:gameplay-programmer`, dispatch
@@ -279,7 +295,7 @@ The `Role:` values are the studio's agents: `game-dev:gameplay-programmer`,
 `game-dev:producer`, `game-dev:playtester` and `game-dev:reviewer` never
 appear in `Role:`.
 
-Every brief also carries: the task text (via the skill's task-brief script),
+Every brief also carries: the task text (via the skill's task-brief script, ``bash "$(sdd-script task-brief)" <plan> <n>``),
 the spec sections the task cites, and the project `CLAUDE.md` architecture
 rules. The agent's own `## Skills you may call` section (in
 `agents/<role>.md`) names the skills it reads before writing code. A stuck
@@ -359,8 +375,9 @@ This overrides `superpowers:subagent-driven-development`'s fix loop (rounds 1–
    dispatch rule, the C# exception included). Its brief carries:
    - the findings, verbatim;
    - the diff as a file, never pasted inline: SDD's review package for the
-     task's commit range. `bash scripts/review-package <plan> <BASE> HEAD`,
-     run by its path in SDD's skill directory, from the worktree root, with
+     task's commit range. ``bash "$(sdd-script review-package)" <plan> <BASE> HEAD``,
+     run from the worktree root (`sdd-script` prints the script's path; if it
+     fails, stop and report its message, never search for the script), with
      `<BASE>` the commit the task started from, prints the file's path (the
      script runs git in its working directory); the file holds
      `git log --oneline`, `git diff --stat` and `git diff -U10` for the
@@ -412,8 +429,9 @@ the last task's review. Under `--one`, see §8: a task unit never starts it.
    (`requesting-code-review`'s `code-reviewer.md`). The brief:
    - `Scope: branch <name> vs <base>`;
    - the review package for `<merge-base>..HEAD`
-     (`bash scripts/review-package <plan> <merge-base> HEAD`, run by its
-     path in SDD's skill directory, from the worktree root), as SDD's final
+     (``bash "$(sdd-script review-package)" <plan> <merge-base> HEAD``, run
+     from the worktree root; a failing `sdd-script` means stop and report),
+     as SDD's final
      review gets one;
    - the spec path and the project `CLAUDE.md` path — report every
      acceptance criterion as met or unmet, in the agent's own
@@ -775,7 +793,17 @@ a `Stop:` line (§8's stop rule).
   the ledger the checks below read is the feature checkout's.
 - **Operator messages** are recorded here, after entering (see §8, Operator messages).
 - **Preconditions:** `stage idle`, a `shipped` line in the ledger, and
-  `STUDIO_REPAIR` set.
+  `STUDIO_REPAIR` set. For `STUDIO_REPAIR=sync:<ref>` they are `stage execute`
+  in place of `stage idle` and a `shipped` line, and `STUDIO_REPAIR=sync:<ref>` set.
+- **The `sync:<ref>` form** merges a peer run's ref into the feature branch:
+  enter the feature checkout as above, `git fetch origin`, then
+  `git merge <ref>`. Resolve the conflict with one fresh fixer (§4a's brief).
+  Gate with `studio-test <paths>`: the files the resolution touched, as §11
+  scopes it, up to three rounds. Green: commit `fix(sync): <summary>`, push,
+  `studio-state ledger "Synced: <summary>"`, committed and pushed. Red after
+  three rounds: `studio-state ledger "Stop: sync repair red — <failing line>"`,
+  committed, not pushed. The next task's `Verify:` and the finish gate cover
+  the rest. The `origin/<Target>` form below is unchanged.
 - **Merge the target:** `git fetch origin`, then
   `git merge --no-edit origin/<Target>`. Merge, never rebase: the branch is
   already pushed and force-push is denied.

@@ -1,0 +1,57 @@
+#!/bin/sh
+# studio-peers — the other live manifest runs of this project (#39 AC21):
+# their slug, mode and unfinished stories (task k/N), or with --files the
+# files of those stories' unfinished tasks (k+1..N above ## Backlog) read
+# from each run's plans at its Docs: revision. Reads only; no lock. A run
+# whose data cannot be read prints `<slug>: unreadable`. Always exits 0.
+set -u
+SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
+. "$SELF_DIR/overnight-runs.sh"
+EXCL=""; FILES=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --exclude) EXCL="${2:-}"; shift 2 || shift ;;
+    --files) FILES=1; shift ;;
+    *) printf 'usage: studio-peers [--exclude <run dir>] [--files]\n' >&2; exit 0 ;;
+  esac
+done
+ROOT="$(sh "$SELF_DIR/studio-state" root 2>/dev/null)" || exit 0
+[ -n "$ROOT" ] || exit 0
+canon() { ( cd "$1" 2>/dev/null && pwd -P ) || printf '%s\n' "$1"; }
+[ -z "$EXCL" ] || EXCL="$(canon "$EXCL")"
+# peer_run SLUG DIR — this run's line(s); 1 when its data cannot be read.
+peer_run() {
+  _pr_mf="$2/manifest.md"; _pr_rows="$2/rows.tsv"
+  [ -r "$_pr_mf" ] && [ -r "$_pr_rows" ] || return 1
+  _pr_mode="$(runs_mf_header "$_pr_mf" Mode)"; _pr_docs="$(runs_mf_header "$_pr_mf" Docs)"
+  _pr_open=""; _pr_files=""
+  for _pr_id in $(cut -f1 "$_pr_rows" | awk 'NF && !seen[$0]++'); do
+    case "$(head -n 1 "$2/stories/$_pr_id" 2>/dev/null)" in landed*|stopped*|skipped*) continue ;; esac
+    _pr_t="$(sed -n 's/^task:[[:blank:]]*//p' "$ROOT/.studio/stories/$_pr_id.md" 2>/dev/null | head -n 1)"
+    [ -n "$_pr_t" ] || _pr_t=-
+    _pr_open="$_pr_open${_pr_open:+, }$_pr_id task $_pr_t"
+    if [ "$FILES" = 1 ]; then
+      _pr_k="${_pr_t%%/*}"; case "$_pr_k" in ''|*[!0-9]*) _pr_k=0 ;; esac
+      _pr_plan="$(awk -F'\t' -v id="$_pr_id" '$1 == id { print $5; exit }' "$_pr_rows")"
+      [ -n "$_pr_docs" ] && [ -n "$_pr_plan" ] || return 1
+      _pr_f="$(git -C "$ROOT" show "$_pr_docs:$_pr_plan" 2>/dev/null)" || return 1
+      _pr_files="$_pr_files$(printf '%s\n' "$_pr_f" | runs_plan_files "$_pr_k")
+"
+    fi
+  done
+  if [ "$FILES" = 1 ]; then
+    printf '%s' "$_pr_files" | awk 'NF' | sort -u | sed "s|^|$1 |"
+  else
+    printf '%s %s: %s\n' "$1" "${_pr_mode:--}" "${_pr_open:--}"
+  fi
+}
+# cut, not IFS=<tab> read: a tab is IFS whitespace, so an empty column (a
+# lock without started= or start=) would collapse and shift the fields.
+runs_live "$ROOT" | while IFS= read -r _e; do
+  _slug="$(printf '%s\n' "$_e" | cut -f2)"; _kind="$(printf '%s\n' "$_e" | cut -f3)"
+  _dir="$(printf '%s\n' "$_e" | cut -f5)"
+  [ "$_kind" = manifest ] || continue
+  [ -z "$EXCL" ] || [ "$(canon "$_dir")" != "$EXCL" ] || continue
+  _out="$(peer_run "$_slug" "$_dir")" && printf '%s\n' "$_out" | awk 'NF' || printf '%s: unreadable\n' "$_slug"
+done
+exit 0
