@@ -162,6 +162,21 @@ spec and the state that must travel with them into the execution worktree —
 (a no-op for an already-committed, unchanged spec; it captures the spec
 approved in §0).
 
+**`<slug>/<id>` form.** Invoked as `/game-dev:plan <slug>/<id>`:
+
+1. Find the checkout of `run/<slug>`: `git worktree list --porcelain`, the
+   `worktree` whose `branch refs/heads/run/<slug>`.
+2. When none holds it, stop with "no checkout holds run/<slug> —
+   /omega:autopilot <slug> creates its run worktree".
+3. Enter it with execute's **Enter the feature checkout** procedure
+   (`EnterWorktree path:`, else `cd`), and check it with
+   `git rev-parse --show-toplevel`.
+4. Run `studio-state show` after entering and print it.
+5. Continue as the `<id>` form under that worktree's `.studio/run`, with
+   every file path absolute under it.
+
+The bare `<id>` form keeps today's meaning in the current checkout.
+
 **Not a manifest story** (no `.studio/run`, or its manifest does not list the
 id): print `Next: run /clear, then /game-dev:execute` (subagent-driven by
 default; `--inline` for checkpointed execution in this session). Do not

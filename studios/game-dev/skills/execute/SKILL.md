@@ -256,7 +256,7 @@ apply in inline mode too, and so do §4a's re-review and no-third-pass rules
 Three more modes are units only the overnight runner launches (the headless
 rules of §8 apply to all three):
 
-- `--land`: the landing repair unit (§9), launched when a landing conflicts or the merge command refuses.
+- `--land`: the landing repair unit (§9), launched when a landing conflicts or the merge command refuses, or a sync repair (`STUDIO_REPAIR=sync:<ref>`, §9).
 - `--gate-repair`: the gate repair unit (§11), launched under a lane when a story's finish gate is red.
 - `--progress`: the run's PROGRESS entry unit (§10), launched once per run.
 
@@ -266,6 +266,9 @@ Dispatch the agent named by the task's `Role:` line with the Agent tool
 (`subagent_type: "game-dev:<role>"` — for example
 `subagent_type: "game-dev:gameplay-programmer"`). The agent carries its own
 persona, rules and output contract; the brief carries only the task.
+
+Under a lane, when the session's start output has an `Other live runs` block
+(the peer-runs hook), copy that block verbatim into every implementer and fixer brief.
 
 One exception: when `.studio/config.json` sets `language: csharp` and the
 role is `game-dev:gameplay-programmer`, dispatch
@@ -775,7 +778,17 @@ a `Stop:` line (§8's stop rule).
   the ledger the checks below read is the feature checkout's.
 - **Operator messages** are recorded here, after entering (see §8, Operator messages).
 - **Preconditions:** `stage idle`, a `shipped` line in the ledger, and
-  `STUDIO_REPAIR` set.
+  `STUDIO_REPAIR` set. For `STUDIO_REPAIR=sync:<ref>` they are `stage execute`
+  in place of `stage idle` and a `shipped` line, and `STUDIO_REPAIR=sync:<ref>` set.
+- **The `sync:<ref>` form** merges a peer run's ref into the feature branch:
+  enter the feature checkout as above, `git fetch origin`, then
+  `git merge <ref>`. Resolve the conflict with one fresh fixer (§4a's brief).
+  Gate with `studio-test <paths>`: the files the resolution touched, as §11
+  scopes it, up to three rounds. Green: commit `fix(sync): <summary>`, push,
+  `studio-state ledger "Synced: <summary>"`, committed and pushed. Red after
+  three rounds: `studio-state ledger "Stop: sync repair red — <failing line>"`,
+  committed, not pushed. The next task's `Verify:` and the finish gate cover
+  the rest. The `origin/<Target>` form below is unchanged.
 - **Merge the target:** `git fetch origin`, then
   `git merge --no-edit origin/<Target>`. Merge, never rebase: the branch is
   already pushed and force-push is denied.
