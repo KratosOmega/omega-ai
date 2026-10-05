@@ -15,6 +15,7 @@
 set -u
 
 SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
+. "$SELF_DIR/overnight-runs.sh"
 TMPD="$(mktemp -d)"
 trap 'rm -rf "$TMPD"' EXIT
 TAB="$(printf '\t')"
@@ -76,6 +77,21 @@ STATE_ROOT=""; TOPLEVEL=""
 state_root() {
   if [ -n "$STATE_ROOT" ]; then printf '%s\n' "$STATE_ROOT"; return 0; fi
   sh "$SELF_DIR/studio-state" root 2>/dev/null || true
+}
+
+# start_checkout ID — the checkout whose .studio/run manifest lists ID
+# (#39 AC20, D40): a porcelain worktree on run/* (the main checkout
+# included). Two refuse; none prints state_root.
+start_checkout() {
+  _sc_id="$1"; _sc_hits=""
+  for _sc_w in $(git worktree list --porcelain 2>/dev/null | awk '/^worktree /{ w = substr($0, 10) } /^branch refs\/heads\/run\//{ print w }'); do
+    _sc_m="$(head -n 1 "$_sc_w/.studio/run" 2>/dev/null)"; [ -n "$_sc_m" ] || continue
+    case "$_sc_m" in /*) ;; *) _sc_m="$_sc_w/$_sc_m" ;; esac
+    grep -q "^|[[:blank:]]*$_sc_id[[:blank:]]*|" "$_sc_m" 2>/dev/null && _sc_hits="$_sc_hits $_sc_w"
+  done
+  set -- $_sc_hits
+  if [ "$#" -gt 1 ]; then echo "story $_sc_id is listed by two run worktrees: $*" >&2; return 1; fi
+  if [ "$#" = 1 ]; then printf '%s\n' "$1"; else state_root; fi
 }
 
 # plan_file PATH — the plan's file: in the current tree, else in the start
@@ -203,14 +219,14 @@ chain_check() {
 # part_done FROM TIP DOCS — AC11: the first-parent commits FROM..TIP, oldest
 # first, minus merges of the default or Target branch, commits touching only
 # .studio/ and DOCS paths (D22), commits inside a `check done <a>..<b>` range
-# (the $TMPD/checkset file), and fix(final|gate|review / docs(progress subjects.
+# (the $TMPD/checkset file), and fix(final|gate|review|sync / chore(sync / docs(progress subjects.
 part_done() {
   git log --first-parent --diff-merges=first-parent --name-only --reverse \
       --format='C %H %P%x09%s' "$1..$2" 2>/dev/null | awk -v docs="$3" '
     BEGIN { n = split(docs, d, " "); for (i = 1; i <= n; i++) isdoc[d[i]] = 1 }
     function flush() { if (h != "" && keep) print h; h = "" }
     /^C / { flush(); split($0, t, "\t"); h = substr(t[1], 3); keep = 0
-            if (t[2] ~ /^(fix\(final|fix\(gate|fix\(review|docs\(progress)/) h = ""
+            if (t[2] ~ /^(fix\(final|fix\(gate|fix\(review|fix\(sync|chore\(sync|docs\(progress)/) h = ""
             next }
     NF == 0 { next }
     h != "" && $0 !~ /^\.studio\// && !($0 in isdoc) { keep = 1 }
@@ -229,7 +245,7 @@ part_done() {
 run_target() {
   _rt_m="${STUDIO_RUN:-}"
   if [ -z "$_rt_m" ]; then
-    _rt_r="$(state_root)"
+    if [ -n "${1:-}" ]; then _rt_r="$(start_checkout "$1")" || return 1; else _rt_r="$(state_root)"; fi
     _rt_m="$(head -n 1 "$_rt_r/.studio/run" 2>/dev/null || true)"
     case "$_rt_m" in ''|/*) ;; *) _rt_m="$_rt_r/$_rt_m" ;; esac
   fi
@@ -327,7 +343,7 @@ cmd_inspect() {
   N="$(task_count "$_in_pf")"
   [ "$N" -gt 0 ] || { echo "$_in_plan has no tasks" >&2; return 1; }
   DEFAULT="$(default_branch)" || return 1
-  TARGET="$(run_target)"
+  TARGET="$(run_target "$ID")" || return 1
 
   TIP="$(resolve "refs/heads/$BRANCH")" || TIP="$(resolve "refs/remotes/origin/$BRANCH")" || TIP=""
   build_checkset "$ID" "$TIP"
@@ -451,7 +467,7 @@ cmd_seed() {
   N="$(task_count "$_sd_of")"
   [ "$N" -gt 0 ] || { echo "$_sd_orig has no tasks" >&2; return 1; }
   [ -n "${DEFAULT:-}" ] || DEFAULT="$(default_branch)" || return 1
-  TARGET="$(run_target)"
+  TARGET="$(run_target "$ID")" || return 1
   build_checkset "$ID" "$TIP"
   adopt_evidence "$_sd_orig" "$N" || return 1
   workspaces "$_sd_orig" > "$TMPD/ws"
@@ -538,7 +554,7 @@ git_retry() {
 run_manifest() {
   _rm_m="${IN_RUN:-}"
   if [ -z "$_rm_m" ]; then
-    _rm_r="$(state_root)"
+    _rm_r="$(start_checkout "$ID")" || return 1
     _rm_m="$(head -n 1 "$_rm_r/.studio/run" 2>/dev/null || true)"
     case "$_rm_m" in ''|/*) ;; *) _rm_m="$_rm_r/$_rm_m" ;; esac
   fi
@@ -558,17 +574,19 @@ manifest_branch() {
 # live_run_check — D30: refuse when a live run has the story, unless this is
 # that run's own unit (the incoming STUDIO_RUN/STUDIO_STORY/STUDIO_RUN_DIR).
 live_run_check() {
-  _lr_l="$STATE_ROOT/.studio/overnight.lock"
-  [ -f "$_lr_l" ] || return 0
-  _lr_p="$(sed -n 's/^pid=//p' "$_lr_l" | head -n 1)"
-  _lr_d="$(sed -n 's/^run=//p' "$_lr_l" | head -n 1)"
-  [ -n "$_lr_p" ] && kill -0 "$_lr_p" 2>/dev/null && ps -o args= -p "$_lr_p" 2>/dev/null | grep -q studio-overnight || return 0
-  [ -f "$_lr_d/manifest.md" ] || return 0
-  _lr_s="$(cat "$_lr_d/stories/$ID" 2>/dev/null || true)"
-  case "${_lr_s%% *}" in running|held|repair|gate-repair|landing) ;; *) return 0 ;; esac
-  if [ -n "$IN_RUN" ] && [ "$IN_STORY" = "$ID" ] && [ "$IN_RUN_DIR" = "$_lr_d" ]; then return 0; fi
-  echo "story $ID is in a live run — /hold it or wait for it to end" >&2
-  return 1
+  runs_live "$STATE_ROOT" | awk -F"\t" '{ print $5 }' > "$TMPD/live.tsv"
+  while read -r _lr_d; do
+    [ -n "$_lr_d" ] || continue
+    if [ -f "$_lr_d/rows.tsv" ]; then
+      awk -F'\t' -v id="$ID" '$1 == id { f = 1 } END { exit !f }' "$_lr_d/rows.tsv" || continue
+    fi
+    _lr_s="$(cat "$_lr_d/stories/$ID" 2>/dev/null || true)"
+    case "${_lr_s%% *}" in running|held|repair|gate-repair|sync-repair|landing) ;; *) continue ;; esac
+    if [ -n "$IN_RUN" ] && [ "$IN_STORY" = "$ID" ] && [ "$IN_RUN_DIR" = "$_lr_d" ]; then continue; fi
+    echo "story $ID is in a live run — /hold it or wait for it to end" >&2
+    return 1
+  done < "$TMPD/live.tsv"
+  return 0
 }
 
 # vd_owns DIR PLAN / view_dir PLAN — this tree's SDD workspace for PLAN, by
@@ -652,7 +670,7 @@ cmd_sync() {
   fi
   BRANCH="$(STUDIO_STORY="$ID" sh "$SELF_DIR/studio-state" get branch 2>/dev/null || true)"
   if [ -z "$BRANCH" ] || [ "$BRANCH" = "-" ]; then
-    _sy_mf="$(run_manifest)"
+    _sy_mf="$(run_manifest)" || return 1
     BRANCH=""; if [ -n "$_sy_mf" ]; then BRANCH="$(manifest_branch "$_sy_mf" "$ID")"; fi
     case "$BRANCH" in ''|-) echo "no branch for $ID: the story pointer has none and no run manifest has a row for it" >&2; return 1 ;; esac
   fi
@@ -690,7 +708,7 @@ cmd_sync() {
   ADOPT_BASE="$(resolve "$ADOPT_BASE")" || { echo "adopt-base does not name exactly one commit" >&2; return 1; }
   TIP="$(resolve HEAD)"
   DEFAULT="$(default_branch)" || return 1
-  TARGET="$(run_target)"
+  TARGET="$(run_target "$ID")" || return 1
   _sy_of="$(plan_file "$ORIG_PLAN")" || return 1
   N="$(task_count "$_sy_of")"
   [ "$N" -gt 0 ] || { echo "$ORIG_PLAN has no tasks" >&2; return 1; }
@@ -756,7 +774,7 @@ cmd_sync() {
 
   # D32-D33: the views, and the landed note.
   _sy_landed=""
-  _sy_mf="$(run_manifest)"
+  _sy_mf="$(run_manifest)" || return 1
   if [ -n "$_sy_mf" ]; then
     _sy_slug="$(sed -n 's/^# Run:[ 	]*//p' "$_sy_mf" | head -n 1 | sed -e 's/[ 	]#.*$//' -e 's/[ 	]*$//')"
     _sy_tsv="$STATE_ROOT/.studio/runs/$_sy_slug/landed.tsv"
