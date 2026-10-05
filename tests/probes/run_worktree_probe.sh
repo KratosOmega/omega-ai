@@ -75,7 +75,7 @@ grep -qxF '.claude/worktrees/' "$_gc/info/exclude" 2>/dev/null || printf '.claud
 # The studio-test shim: runs under the gate, records what the command sees.
 cat > "$D/bin/studio-test" <<SHIM
 #!/bin/sh
-exec studio-gate studio-test -- sh -c 'root=\$(studio-state root); if [ -d "\$root/.studio/gate.lock" ]; then l=yes; else l=no; fi; printf "root=%s\nlock=%s\n" "\$root" "\$l" > "$D/gate.seen"'
+exec $BIN/studio-gate studio-test -- sh -c 'root=\$($BIN/studio-state root); if [ -d "\$root/.studio/gate.lock" ]; then l=yes; else l=no; fi; printf "root=%s\nlock=%s\n" "\$root" "\$l" > "$D/gate.seen"'
 SHIM
 chmod +x "$D/bin/studio-test"
 
@@ -88,7 +88,7 @@ RULES_TXT="$(sh "$BIN/studio-overnight" deny-rules --dir "$RW" 2>"$D/deny-rules.
 P="You are a probe in a throwaway fixture. Do exactly these three steps, in order, and nothing else.
 1. Enter the story checkout $P_DIR/.claude/worktrees/x-b the way the execute skill's 'Enter the feature checkout' says: EnterWorktree with path: when that tool is offered, else cd. Then write a file probe.txt there (any one line of text), and run: git add probe.txt && git commit -m \"probe: story commit\"
 2. Run: STUDIO_STORY=x studio-state set task 1/3
-3. Run: studio-test
+3. Run: $D/bin/studio-test
 Then reply with exactly one line: 'PROBE: done' if all three steps ran, or 'PROBE: denied <step number>' for the first step a permission denial stopped."
 
 if [ -n "$ONLY" ]; then
