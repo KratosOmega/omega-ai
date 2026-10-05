@@ -14,6 +14,28 @@ approval page in `artifacts/`.
 
 ## Log
 
+### 2026-10-05 — A stage pointer per checkout (#42)
+
+- Each checkout holds its own stage pointer at `<work root>/.studio/STATE.md`; a
+  pointer-less linked worktree has no story and reads idle. A story planned in the
+  main checkout moves to its execute worktree with `studio-state handoff` (or
+  `studio-state take <spec>` from a worktree made by hand); `studio-state stories`
+  lists every checkout's story, so review, playtest and retro from main find it.
+  The overnight runner follows a story that moved. Exit 4 refuses a story switch
+  in a checkout; `--force` is the user's call.
+- Recovery for a worktree whose state was clobbered before the upgrade (it reads
+  idle), or a finished story whose main pointer was overwritten (no `handed` line,
+  so `stories` cannot see it and review from main asks): re-seed it with
+  `studio-state set spec`, `set plan`, `set stage`, `set task 0/<N>`, then
+  `studio-state check --rebuild`.
+- Not preventable: a pre-#42 `studio-state` run by path from a stale dev worktree
+  (the 2026-10-05 trigger was the #39 worktree's bin) still writes the main
+  pointer. Such worktrees pick up the new resolution when rebased.
+- The per-machine phoenix note
+  `~/.claude-gamedev/projects/-Users-xinli-GameDev-proj-phoenix/memory/studio-state-is-shared-across-stories.md`
+  (and its `_practice` copies) can be deleted once this lands and is reinstalled.
+- Reinstall only when `studio-overnight status` shows no live run.
+
 ### 2026-10-05 — Concurrent runs (#39)
 
 - Several manifest runs can be live in one project. Each holds its own lock at

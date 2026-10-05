@@ -31,14 +31,15 @@ finishes.
   `git rev-parse --abbrev-ref --symbolic-full-name @{upstream}`.
 - `git worktree list` — per-task worktrees the `parallel` mode created
   (`wt/task-<n>` on `parallel/<feature>/task-<n>`).
-- `studio-state show`, when `studio-state` is on `PATH`. Read it; never
-  change it.
+- `STUDIO_STATE_NO_ADOPT=1 studio-state show`, when `studio-state` is on
+  `PATH`. Read it; never change it. Every `studio-state` read here runs
+  with `STUDIO_STATE_NO_ADOPT=1`, so reading never moves a story (studio-state AC18).
 - The SDD ledger under `.superpowers/sdd/`, when present. It is gitignored
   in most projects, so its rulings go into the handoff file, not into git.
 - `omega-mode show` — the active modes.
 - The spec path, the plan path and the task pointer the invoking skill
-  uses: `studio-state get spec`, `get plan`, `get task`, or the plan's
-  checkboxes.
+  uses: `STUDIO_STATE_NO_ADOPT=1 studio-state get spec`, `get plan`,
+  `get task`, or the plan's checkboxes.
 - `gh pr view --json number,url,baseRefName`, when a PR exists.
 - The integration branch, when `omega-mode show` has an `integration` line.
 
@@ -80,7 +81,7 @@ name becomes `-`. Sections, in this order:
 7. **Red** — the `wip:` commit's failing tests and unfinished files, or
    "none".
 8. **Verify** — the commands that prove the state: the test command,
-   `git log --oneline -5`, `studio-state show`.
+   `git log --oneline -5`, `STUDIO_STATE_NO_ADOPT=1 studio-state show`.
 9. **Resume prompt** — the block from §5.
 
 When `autopilot` is among the modes, the section after *Where* is the
