@@ -211,7 +211,7 @@ test_adopt_explicit_base() {
   adopt_repo eb 6 3
   inspect_s1 --base "$C1"
   assert_eq 1 "$AD_STATUS" "base after T1's start: mismatch"
-  assert_contains "$TMP/ad.err" "T1" "names T1"
+  assert_contains "$TMP/ad.err" "Task 1" "names Task 1"
   inspect_s1 --base "$BASE"
   assert_eq 0 "$AD_STATUS" "explicit fork base: clean"
   inspect_s1 --base nope
@@ -260,7 +260,8 @@ test_adopt_rewritten_history_message() {
   ( cd "$W" && git commit -q --amend -m "feat: step 3 reworded" ) >/dev/null 2>&1
   inspect_s1
   assert_eq 1 "$AD_STATUS" "a claim whose end left the branch: exit 1"
-  assert_contains "$TMP/ad.err" "history of S1-b was rewritten after T2 — re-adopt: studio-adopt seed S1 --reset" "AC10b wording"
+  assert_contains "$TMP/ad.err" "Task 3: the claim" "a stale claim is a plain mismatch naming the claim"
+  assert_not_contains "$TMP/ad.err" "seed S1 --reset" "and does not advise the command that fails again"
 }
 
 # ledger_texts — $W's story ledger as texts (date stripped), in order.
@@ -352,6 +353,8 @@ test_adopt_seed_reset_after_rebase() {
   ( cd "$W" && git fetch -q origin && git rebase -q --onto "$_new" "$BASE" ) >/dev/null 2>&1
   adopt "$W" seed S1
   assert_eq 1 "$AD_STATUS" "old claims no longer chain: exit 1"
+  assert_contains "$TMP/ad.err" "the claim" "seed names the stale claim"
+  assert_not_contains "$TMP/ad.err" "seed S1 --reset" "seed's advice is not the --reset that fails again"
   _l="$(git -C "$W" rev-list --reverse "$_new..HEAD" | head -n 3)"
   _n1="$(printf '%s\n' "$_l" | sed -n 1p)"; _n2="$(printf '%s\n' "$_l" | sed -n 2p)"; _n3="$(printf '%s\n' "$_l" | sed -n 3p)"
   set_claims "Task 1: complete (commits $(s7 "$_new")..$(s7 "$_n1"), review clean)" \
@@ -710,7 +713,21 @@ test_sync_bad_new_claim_is_plain_mismatch() {
   assert_not_contains "$TMP/ad.err" "--reset" "no reset advice"
 }
 
-run_tests test_sync_failed_commit_restores test_sync_bad_new_claim_is_plain_mismatch test_sync_already_in_synctest_sync_accepts_claims test_sync_all_or_nothing test_sync_claim_end_differs \
+test_adopt_from_subdirectory() {
+  sync_repo sub1
+  mkdir -p "$W/sub/dir"
+  claim_t4
+  adopt "$W/sub/dir" sync S1
+  assert_eq 0 "$AD_STATUS" "sync from a subdirectory exits 0"
+  assert_eq "chore(studio): ledger (sync)" "$(git -C "$W" log -1 --format=%s)" "its commit lands"
+  adopt_repo sub2 6 3
+  mkdir -p "$W/sub/dir"
+  adopt "$W/sub/dir" seed S1
+  assert_eq 0 "$AD_STATUS" "seed from a subdirectory exits 0"
+  assert_eq "chore(studio): ledger (adopt)" "$(git -C "$W" log -1 --format=%s)" "its commit lands"
+}
+
+run_tests test_sync_failed_commit_restores test_sync_bad_new_claim_is_plain_mismatch test_adopt_from_subdirectory test_sync_already_in_sync test_sync_accepts_claims test_sync_all_or_nothing test_sync_claim_end_differs \
   test_sync_truth_mismatches test_sync_ambiguous_short_sha test_sync_rewrite_message test_sync_views_keep_other_lines \
   test_sync_carries_rulings_once test_sync_landed_note test_sync_live_run_refusal test_sync_own_unit_exempt \
   test_sync_diverged_and_behind test_sync_preconditions test_adopt_workspace_lookup_two_trees test_sync_push_failure_warns \

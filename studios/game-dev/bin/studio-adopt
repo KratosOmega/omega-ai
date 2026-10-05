@@ -250,11 +250,15 @@ truth_lines() {
 docs_paths() {
   _dp_r="$(state_root)"
   _dp_l="$_dp_r/.studio/ledger/$1.md"
-  [ -f "$_dp_l" ] || return 0
+  _dp_t="$TMPD/sd.truth"   # the current tree's truth lines (sync, seed), dates stripped
+  [ -f "$_dp_t" ] || _dp_t=/dev/null
+  [ -f "$_dp_l" ] || _dp_l=/dev/null
   _dp_c=""
   {
     sed -n 's/^- [0-9-]* adopted \(.*\) -> \(.*\)$/\1\n\2/p' "$_dp_l"
     sed -n 's/^- [0-9-]* source \([^ ]*\) spec \([^ ]*\).*$/\1\n\2/p' "$_dp_l"
+    sed -n 's/^adopted \(.*\) -> \(.*\)$/\1\n\2/p' "$_dp_t"
+    sed -n 's/^source \([^ ]*\) spec \([^ ]*\).*$/\1\n\2/p' "$_dp_t"
   } | grep -v '^-$' | sort -u > "$TMPD/docs"
   while IFS= read -r _dp_p; do
     _dp_c="$_dp_c $_dp_p"
@@ -291,7 +295,7 @@ adopt_evidence() {
   merged_claims "$1" > "$TMPD/chain" || return 1
   _ae_over="$(awk -v n="$2" '$1 + 0 > n { print $1; exit }' "$TMPD/chain")"
   [ -z "$_ae_over" ] || { echo "claim for Task $_ae_over but $1 has $2 tasks" >&2; return 1; }
-  chain_check "$TMPD/chain" "$BASE_SHA" 1 "$TIP" || return 1
+  chain_check "$TMPD/chain" "$BASE_SHA" 1 "$TIP" claim || return 1
   K="$(awk 'END { print $1 + 0 }' "$TMPD/chain")"
   FROM="$BASE_SHA"
   [ "$K" -eq 0 ] || FROM="$(awk 'END { print $3 }' "$TMPD/chain")"
@@ -405,6 +409,7 @@ cmd_seed() {
   STATE_ROOT="$(state_root)"
   TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null || true)"
   [ -n "$TOPLEVEL" ] || { echo "not in a git checkout" >&2; return 1; }
+  cd "$TOPLEVEL" || return 1
   _sd_src="$STATE_ROOT/.studio/ledger/$ID.md"
   _sd_adopted=""; _sd_source=""
   if [ -f "$_sd_src" ]; then
@@ -624,6 +629,7 @@ cmd_sync() {
   STATE_ROOT="$(state_root)"
   TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null || true)"
   [ -n "$TOPLEVEL" ] || { echo "not in a git checkout" >&2; return 1; }
+  cd "$TOPLEVEL" || return 1
   : > "$TMPD/sy.rep"; : > "$TMPD/sy.rep3"
 
   # D29: preconditions.
@@ -651,7 +657,7 @@ cmd_sync() {
     if [ -n "$_sy_o" ] && [ "$_sy_o" != "$_sy_h" ]; then
       if git merge-base --is-ancestor "$_sy_h" "$_sy_o" 2>/dev/null; then
         git merge -q --ff-only "origin/$BRANCH" >/dev/null 2>"$TMPD/gr.err" \
-          || { echo "cannot fast-forward $BRANCH to origin/$BRANCH: $(head -n 1 "$TMPD/gr.err")" >&2; return 1; }
+          || { echo "cannot fast-forward $BRANCH to origin/$BRANCH: $(head -n 1 "$TMPD/gr.err") — if it names .studio/ledger/$ID.md, commit or drop the local ledger lines, then sync" >&2; return 1; }
       elif ! git merge-base --is-ancestor "$_sy_o" "$_sy_h" 2>/dev/null; then
         echo "$BRANCH has diverged from origin/$BRANCH — reconcile it by hand, then sync" >&2; return 1
       fi
