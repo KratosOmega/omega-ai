@@ -260,7 +260,7 @@ test_adopt_rewritten_history_message() {
   ( cd "$W" && git commit -q --amend -m "feat: step 3 reworded" ) >/dev/null 2>&1
   inspect_s1
   assert_eq 1 "$AD_STATUS" "a claim whose end left the branch: exit 1"
-  assert_contains "$TMP/ad.err" "history of S1-b was rewritten after T3 — re-adopt: studio-adopt seed S1 --reset" "AC10b wording"
+  assert_contains "$TMP/ad.err" "history of S1-b was rewritten after T2 — re-adopt: studio-adopt seed S1 --reset" "AC10b wording"
 }
 
 # ledger_texts — $W's story ledger as texts (date stripped), in order.
@@ -301,7 +301,7 @@ test_adopt_seed_check_requested() {
 
 test_adopt_seed_refuses_changed_title() {
   adopt_repo st 6 3
-  sed 's/^### Task 2: step 2$/### Task 2: other/' "$P/$CONV" > "$TMP/st.conv" && cp "$TMP/st.conv" "$W/$CONV"
+  sed "s/^### Task 2: step 2$/### Task 2: other/" "$P/$CONV" > "$TMP/st.conv" && cp "$TMP/st.conv" "$P/$CONV"
   _h="$(git -C "$W" rev-parse HEAD)"
   adopt "$W" seed S1
   assert_eq 1 "$AD_STATUS" "changed title: exit 1"
@@ -373,7 +373,45 @@ test_adopt_seed_reset_after_rebase() {
   assert_not_contains "$TMP/rb.truth" "$C1" "no pre-reset T line in the truth region"
 }
 
-run_tests test_adopt_help_and_usage test_adopt_inspect_clean_chain test_adopt_inspect_from_any_checkout \
+test_adopt_seed_no_workspace_refused() {
+  adopt_repo nws 6 3; rm -rf "$W/.superpowers"; _h="$(git -C "$W" rev-parse HEAD)"
+  adopt "$W" seed S1
+  assert_eq 1 "$AD_STATUS" "work but no workspace: seed exits 1"
+  assert_contains "$TMP/ad.err" "no SDD ledger for $ORIG" "inspect's message"
+  assert_eq "$_h" "$(git -C "$W" rev-parse HEAD)" "no commit"
+  assert_missing "$W/.studio/ledger/S1.md" "ledger not written"
+}
+
+test_adopt_seed_existing_range_differs() {
+  adopt_repo sx 6 3; adopt "$W" seed S1
+  sed "s/^\(- [0-9-]* \)T2 complete .*/\1T2 complete $C1..$C3/" "$W/.studio/ledger/S1.md" > "$TMP/sx.led" && cp "$TMP/sx.led" "$W/.studio/ledger/S1.md"
+  adopt "$W" seed S1
+  assert_eq 1 "$AD_STATUS" "an existing T line with another range: exit 1"
+  assert_contains "$TMP/ad.err" "T2" "names T2"
+}
+
+test_adopt_seed_no_adopted_line() {
+  adopt_repo sa 6 3; printf '# Ledger — S1\n\n' > "$P/.studio/ledger/S1.md"
+  adopt "$W" seed S1
+  assert_eq 1 "$AD_STATUS" "no adopted line: exit 1"
+  assert_contains "$TMP/ad.err" "no adopted line" "says so"
+}
+
+test_adopt_seed_failed_commit_restores() {
+  adopt_repo sf 6 3; _h="$(git -C "$W" rev-parse HEAD)"
+  _hd="$TMP/sf-hooks"; mkdir -p "$_hd"
+  printf '#!/bin/sh\necho hook-says-no >&2\nexit 1\n' > "$_hd/pre-commit"; chmod +x "$_hd/pre-commit"
+  git -C "$W" config core.hooksPath "$_hd"
+  adopt "$W" seed S1
+  assert_eq 1 "$AD_STATUS" "failed commit: exit 1"
+  assert_contains "$TMP/ad.err" "ledger restored" "says restored"
+  assert_contains "$TMP/ad.err" "hook-says-no" "shows git's stderr"
+  assert_missing "$W/.studio/ledger/S1.md" "ledger removed"
+  assert_eq "$_h" "$(git -C "$W" rev-parse HEAD)" "no commit"
+}
+
+run_tests test_adopt_seed_no_workspace_refused test_adopt_seed_existing_range_differs test_adopt_seed_no_adopted_line test_adopt_seed_failed_commit_restores \
+  test_adopt_help_and_usage test_adopt_inspect_clean_chain test_adopt_inspect_from_any_checkout \
   test_adopt_inspect_not_started test_adopt_inspect_no_workspace test_adopt_main_merged_between_tasks \
   test_adopt_claim_tokens test_adopt_claim_gaps_and_order test_adopt_short_sha_lines_parse \
   test_adopt_part_done_filter test_adopt_post_task_commits test_adopt_explicit_base \

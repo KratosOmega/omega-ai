@@ -82,8 +82,10 @@ state_root() {
 # checkout (D25).
 plan_file() {
   _pf_w="${TOPLEVEL:-$(git rev-parse --show-toplevel 2>/dev/null || true)}"
-  if [ -n "$_pf_w" ] && [ -f "$_pf_w/$1" ]; then printf '%s\n' "$_pf_w/$1"; return 0; fi
   _pf_r="$(state_root)"
+  # $2 = root: the start checkout first (the converted plan's approved copy).
+  if [ "${2:-}" = root ] && [ -n "$_pf_r" ] && [ -f "$_pf_r/$1" ]; then printf '%s\n' "$_pf_r/$1"; return 0; fi
+  if [ -n "$_pf_w" ] && [ -f "$_pf_w/$1" ]; then printf '%s\n' "$_pf_w/$1"; return 0; fi
   if [ -n "$_pf_r" ] && [ -f "$_pf_r/$1" ]; then printf '%s\n' "$_pf_r/$1"; return 0; fi
   echo "plan $1 not found in this tree or in the start checkout" >&2
   return 1
@@ -160,6 +162,13 @@ touches_work() {
     | grep -v '^$' | grep -qv '^\.studio/'
 }
 
+# rewritten_msg N — D31: a rewrite is reported after T<n-1>, or after the
+# adopt base when N is 1 (or 0).
+rewritten_msg() {
+  if [ "$1" -le 1 ]; then echo "history of $BRANCH was rewritten after its adopt base — re-adopt: studio-adopt seed $ID --reset" >&2
+  else echo "history of $BRANCH was rewritten after T$(($1 - 1)) — re-adopt: studio-adopt seed $ID --reset" >&2; fi
+}
+
 # chain_check FILE PREV START TIP — FILE holds `<n> <a> <b>` (full shas) by n;
 # n must run START, START+1, …; PREV is the adopt-base or T<START-1>'s end.
 # AC10b's rules; the first failure on stderr, status 1.
@@ -171,7 +180,7 @@ chain_check() {
     git merge-base --is-ancestor "$_cc_a" "$_cc_b" 2>/dev/null \
       || { echo "T$_cc_n: $(s7 "$_cc_a") is not an ancestor of $(s7 "$_cc_b")" >&2; return 1; }
     git merge-base --is-ancestor "$_cc_b" "$4" 2>/dev/null \
-      || { echo "T$_cc_n: $(s7 "$_cc_b") is not on $BRANCH — history of $BRANCH was rewritten after T$_cc_n — re-adopt: studio-adopt seed $ID --reset" >&2; return 1; }
+      || { rewritten_msg "$_cc_n"; return 1; }
     git merge-base --is-ancestor "$_cc_p" "$_cc_a" 2>/dev/null \
       || { echo "T$_cc_n: $(s7 "$_cc_a") does not follow $(s7 "$_cc_p")" >&2; return 1; }
     touches_work "$_cc_a" "$_cc_b" \
@@ -262,6 +271,27 @@ build_checkset() {
 
 valid_id() { printf '%s' "$1" | grep -Eq '^[A-Za-z0-9._-]+$'; }
 
+# adopt_evidence PLAN N — inspect's checks, shared by inspect and seed (AC9):
+# the claims chain from BASE_SHA to TIP, and the work on the branch past it.
+# Needs BRANCH, ID, BASE_SHA, TIP, DEFAULT, TARGET and the checkset. Sets K,
+# FROM, WS_LIST, DOCS and $TMPD/{chain,pd}.
+adopt_evidence() {
+  git merge-base --is-ancestor "$BASE_SHA" "$TIP" 2>/dev/null || { rewritten_msg 0; return 1; }
+  merged_claims "$1" > "$TMPD/chain" || return 1
+  _ae_over="$(awk -v n="$2" '$1 + 0 > n { print $1; exit }' "$TMPD/chain")"
+  [ -z "$_ae_over" ] || { echo "claim for Task $_ae_over but $1 has $2 tasks" >&2; return 1; }
+  chain_check "$TMPD/chain" "$BASE_SHA" 1 "$TIP" || return 1
+  K="$(awk 'END { print $1 + 0 }' "$TMPD/chain")"
+  FROM="$BASE_SHA"
+  [ "$K" -eq 0 ] || FROM="$(awk 'END { print $3 }' "$TMPD/chain")"
+  DOCS="$1 $(docs_paths "$ID")"
+  part_done "$FROM" "$TIP" "$DOCS" > "$TMPD/pd"
+  if [ -z "$WS_LIST" ] && [ -s "$TMPD/pd" ]; then
+    echo "work on $BRANCH past $(s7 "$BASE_SHA") but no SDD ledger for $1 in any worktree — restore it, or write one in SDD's format, and inspect again" >&2
+    return 1
+  fi
+}
+
 cmd_inspect() {
   ID="${1:-}"; [ -n "$ID" ] && valid_id "$ID" || usage
   shift
@@ -304,20 +334,7 @@ cmd_inspect() {
       || { echo "$BRANCH shares no history with origin/$DEFAULT — pass --base <sha>" >&2; return 1; }
   fi
 
-  merged_claims "$_in_plan" > "$TMPD/chain" || return 1
-  _in_over="$(awk -v n="$N" '$1 + 0 > n { print $1; exit }' "$TMPD/chain")"
-  [ -z "$_in_over" ] || { echo "claim for Task $_in_over but $_in_plan has $N tasks" >&2; return 1; }
-  chain_check "$TMPD/chain" "$BASE_SHA" 1 "$TIP" || return 1
-  K="$(awk 'END { print $1 + 0 }' "$TMPD/chain")"
-  FROM="$BASE_SHA"
-  [ "$K" -eq 0 ] || FROM="$(awk 'END { print $3 }' "$TMPD/chain")"
-
-  DOCS="$_in_plan $(docs_paths "$ID")"
-  part_done "$FROM" "$TIP" "$DOCS" > "$TMPD/pd"
-  if [ -z "$WS_LIST" ] && [ -s "$TMPD/pd" ]; then
-    echo "work on $BRANCH past $(s7 "$BASE_SHA") but no SDD ledger for $_in_plan in any worktree — restore it, or write one in SDD's format, and inspect again" >&2
-    return 1
-  fi
+  adopt_evidence "$_in_plan" "$N" || return 1
 
   printf 'story: %s\nbranch: %s\nbase: %s\n' "$ID" "$BRANCH" "$BASE_SHA"
   if [ -n "$WS_LIST" ]; then printf '%s' "$WS_LIST" | sed 's/^/workspace: /'; else echo "workspace: none"; fi
@@ -414,15 +431,14 @@ cmd_seed() {
   fi
 
   _sd_of="$(plan_file "$_sd_orig")" || return 1
-  _sd_cf="$(plan_file "$_sd_conv")" || return 1
+  _sd_cf="$(plan_file "$_sd_conv" root)" || return 1
   N="$(task_count "$_sd_of")"
   [ "$N" -gt 0 ] || { echo "$_sd_orig has no tasks" >&2; return 1; }
-  merged_claims "$_sd_orig" > "$TMPD/chain" || return 1
+  [ -n "${DEFAULT:-}" ] || DEFAULT="$(default_branch)" || return 1
+  TARGET="$(run_target)"
+  build_checkset "$ID" "$TIP"
+  adopt_evidence "$_sd_orig" "$N" || return 1
   workspaces "$_sd_orig" > "$TMPD/ws"
-  _sd_over="$(awk -v n="$N" '$1 + 0 > n { print $1; exit }' "$TMPD/chain")"
-  [ -z "$_sd_over" ] || { echo "claim for Task $_sd_over but $_sd_orig has $N tasks" >&2; return 1; }
-  chain_check "$TMPD/chain" "$BASE_SHA" 1 "$TIP" || return 1
-  K="$(awk 'END { print $1 + 0 }' "$TMPD/chain")"
 
   _sd_i=1
   while [ "$_sd_i" -le "$K" ]; do
@@ -459,11 +475,12 @@ cmd_seed() {
   done < "$TMPD/sd.out"
   if [ "$_sd_ok" -eq 1 ]; then
     { git add -- ".studio/ledger/$ID.md" \
-      && git commit -q -m "chore(studio): ledger (adopt)" -- ".studio/ledger/$ID.md"; } >/dev/null 2>&1 || _sd_ok=0
+      && git commit -q -m "chore(studio): ledger (adopt)" -- ".studio/ledger/$ID.md"; } >/dev/null 2>"$TMPD/sd.err" || _sd_ok=0
   fi
   if [ "$_sd_ok" -eq 0 ]; then
     git reset -q -- ".studio/ledger/$ID.md" >/dev/null 2>&1 || true
     if [ "$_sd_had" -eq 1 ]; then cp "$TMPD/sd.backup" "$_sd_led"; else rm -f "$_sd_led"; fi
+    cat "$TMPD/sd.err" >&2 2>/dev/null || true
     echo "could not write the adopt lines for $ID — ledger restored" >&2
     return 1
   fi
