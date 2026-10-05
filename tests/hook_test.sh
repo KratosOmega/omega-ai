@@ -122,7 +122,11 @@ test_hook_files() {
     "hooks.json runs session-start.sh from the plugin root"
   if command -v jq >/dev/null 2>&1; then
     assert_status 0 "hooks.json is valid JSON" -- jq -e . "$STUDIO_DIR/hooks/hooks.json"
+    assert_eq 'startup|compact' "$(jq -r '.hooks.SessionStart[] | select(.hooks[0].command | contains("hooks/peer-runs.sh")) | .matcher' "$STUDIO_DIR/hooks/hooks.json")" \
+      "the peer-runs entry matches startup and compact"
   fi
+  assert_contains "$STUDIO_DIR/hooks/hooks.json" 'CLAUDE_PLUGIN_ROOT}/hooks/peer-runs.sh' "hooks.json runs peer-runs.sh from the plugin root"
+  assert_eq 1 "$(grep -c 'hooks/peer-runs.sh' "$STUDIO_DIR/hooks/hooks.json")" "peer-runs.sh is registered once"
   assert_file "$STUDIO_DIR/hooks/bootstrap.md" "bootstrap.md exists"
   assert_contains "$STUDIO_DIR/hooks/bootstrap.md" "stage skills own the workflow" "bootstrap carries the precedence rule"
   assert_contains "$STUDIO_DIR/hooks/bootstrap.md" 'invoke `game-dev:brainstorm` instead' \
