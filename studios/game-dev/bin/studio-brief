@@ -167,6 +167,7 @@ context_part() {
   [ -n "$_cp_l" ] || return 0
   printf '## Context files\n'
   _cp_t=0; _cp_over=""
+  set -f   # a `*` in a Context path is a name, not a glob
   for _cp_f in $(printf '%s\n' "$_cp_l" | tr ',' '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//'); do
     [ -f "$_cp_f" ] || fail "Context file $_cp_f not found"
     _cp_c="$(wc -c < "$_cp_f" | tr -d ' ')"
@@ -178,6 +179,7 @@ context_part() {
       [ -n "$_cp_over" ] || printf 'Read these as well:\n'; _cp_over=1; printf -- '- %s\n' "$_cp_f"
     fi
   done
+  set +f
 }
 
 # plan_head — the plan's Global Constraints and Decisions (or a note each).

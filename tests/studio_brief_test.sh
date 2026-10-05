@@ -270,6 +270,13 @@ test_brief_context_missing_file() {
   assert_eq 1 "$st" "a missing Context file exits 1"
   assert_contains "$TMP/cm.err" "Context file docs/nope.md not found" "names the file"
 }
+test_brief_context_no_glob() {
+  Q="$TMP/projcg"; ctx_fixture "$Q"
+  sed -i.bak 's|^Context: .*|Context: docs/c*.md|' "$Q/docs/plan.md"; rm -f "$Q/docs/plan.md.bak"
+  brief_in "$Q" task 1 > /dev/null 2> "$TMP/cg.err"; st=$?
+  assert_eq 1 "$st" "a * in a Context path is a name, not a glob"
+  assert_contains "$TMP/cg.err" "Context file docs/c[*].md not found" "names the literal path"
+}
 test_brief_final_plan_acceptance() {
   Q="$TMP/projpa"; build_fixture "$Q"
   printf '# Spec\n\n## Purpose\nx\n' > "$Q/docs/spec.md"
@@ -342,4 +349,4 @@ test_brief_usage_names_check() {
   assert_contains "$TMP/u.err" "check <k>" "usage names check"
 }
 
-run_tests test_brief_task test_brief_final test_brief_refusals test_brief_missing_sections test_brief_directives_task test_brief_directives_final test_brief_directive_text_not_ruling test_brief_directive_edge_cases test_brief_no_directives_no_part test_brief_context_appended test_brief_context_cap test_brief_context_missing_file test_brief_final_plan_acceptance test_brief_check_verb test_brief_check_uses_truth_region test_brief_final_reads_check_rulings test_brief_original_plan_item test_brief_usage_names_check
+run_tests test_brief_task test_brief_final test_brief_refusals test_brief_missing_sections test_brief_directives_task test_brief_directives_final test_brief_directive_text_not_ruling test_brief_directive_edge_cases test_brief_no_directives_no_part test_brief_context_appended test_brief_context_cap test_brief_context_missing_file test_brief_context_no_glob test_brief_final_plan_acceptance test_brief_check_verb test_brief_check_uses_truth_region test_brief_final_reads_check_rulings test_brief_original_plan_item test_brief_usage_names_check
