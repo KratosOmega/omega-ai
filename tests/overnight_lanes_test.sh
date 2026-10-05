@@ -3696,7 +3696,7 @@ test_lanes_round_trip_sync_conflict() {
   assert_not_contains "$P/.studio/runs/alpha/landed.tsv" 'stopped' "stopped appears nowhere in alpha's landed.tsv"
 }
 
-run_tests test_lanes_chain_ruletest_lanes_manifest_refusals test_lanes_preflight_backlog_tasks test_lanes_manifest_header_refusals \
+run_tests test_lanes_chain_rule test_lanes_manifest_refusals test_lanes_preflight_backlog_tasks test_lanes_manifest_header_refusals \
   test_lanes_preflight_story_checks test_lanes_preflight_story_state test_lanes_docs_unreachable \
   test_lanes_git_too_old test_lanes_sourced_only test_lanes_next \
   test_lanes_next_all_planned_and_ambiguous test_lanes_next_plan_before_autopilot \
