@@ -158,7 +158,7 @@ model_for() {
     T*) UNIT_MODEL="$MODEL_TASK" ;;
     final-review|check) UNIT_MODEL="$MODEL_FINAL" ;;
     finish) UNIT_MODEL="$MODEL_FINISH" ;;
-    repair|final-repair|gate-repair) UNIT_MODEL="$MODEL_REPAIR" ;;
+    repair|final-repair|gate-repair|sync-repair) UNIT_MODEL="$MODEL_REPAIR" ;;
     progress) UNIT_MODEL="$MODEL_PROGRESS" ;;
     *) say "no model for unit $1"; exit 3 ;;
   esac
@@ -194,16 +194,17 @@ lock_live() {
   [ -n "$_p" ] && kill -0 "$_p" 2>/dev/null \
     && ps -o args= -p "$_p" 2>/dev/null | grep -q studio-overnight
 }
-# take_lock RUN_DIR — noclobber, so two starts cannot both win.
+# take_lock RUN_DIR — noclobber, so two starts cannot both win. The lock
+# records the run's start dir (start=, D7).
 take_lock() {
   ( set -C
-    printf 'pid=%s\nrun=%s\nstarted=%s\n' "$$" "$1" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$LOCK"
+    printf 'pid=%s\nrun=%s\nstarted=%s\nstart=%s\n' "$$" "$1" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$START_DIR" > "$LOCK"
   ) 2>/dev/null
 }
 
 usage() {
   cat <<EOF
-usage: $SELF_ABS start [--dry-run | --detach] [<manifest>] | status [--follow] | watch [<seconds>] | stop [--run <run>] | next [<manifest>] | activity <unit.jsonl> | deny-rules [--dir <path>]
+usage: $SELF_ABS start [--dry-run | --detach] [<manifest>] | status [--run <slug>] | status --follow | watch [--run <slug>] [<seconds>] | stop | stop --run <slug> | stop --all | next [<manifest>] | activity <unit.jsonl> | deny-rules [--dir <path>]
        $SELF_ABS say|said|unsay|hold|resume|stop <story> [--run <run>] … (talking to a live run; below)
 
   start [--dry-run]  preflight, then run the approved plan one unit per fresh
@@ -247,9 +248,19 @@ usage: $SELF_ABS start [--dry-run | --detach] [<manifest>] | status [--follow] |
                      else the last ended one, else where it looked.
                      Exit 0 this project's run is live, 1 no run, 3 (outside
                      a project) a run is live elsewhere.
-  watch [<seconds>]  status every <seconds> (default 5) until Ctrl-C; the same
-                     as status --follow. Exit 0.
-  stop               end the run after the running unit (exit 1: no run)
+                     Several runs may be live in one project (each with its own
+                     lock under .studio/runs/): status prints one block per run,
+                     oldest first, each headed "== <slug> (<kind>, pid <pid>)".
+                     status --run <slug> shows one (a slug or a run dir
+                     basename); exit 1 "no live run <slug>" if it is not live.
+  watch [--run <slug>] [<seconds>]
+                     status every <seconds> (default 5) until Ctrl-C, like
+                     status --follow; --run applies to watch only (it watches
+                     one run). Exit 0.
+  stop               end the run after the running unit (exit 1: no run); with
+                     two or more live runs it stops none and lists them
+  stop --run <slug>  end that run only (its own stop flag)
+  stop --all         end every live run after its running unit
   activity <unit.jsonl>
                      one unit log's last activity in one line, as status shows it
 
@@ -280,6 +291,12 @@ Talking to a live run (<story> is - in a single-plan run; every verb takes
   Events: <run dir>/events.jsonl, schema v1 (docs/game-dev/overnight-events.md).
 
 Exit: start 0 done, 1 any other ending, 2 refused.
+
+Run selection: a story verb (say, said, unsay, hold, resume, stop <story>) acts
+on the live run that lists the story; with two or more live runs and none
+listing it, it refuses ("no live run lists <story>"). --run <slug or run dir
+basename> picks the run explicitly.
+install or pull omega-ai only when \`studio-overnight status\` shows no live run (a run reads the plugin while it runs)
 
 The run may: commit, push the feature branch, open a draft PR.
 The run may not: merge, force-push, delete a remote branch, read or write secrets.
@@ -315,6 +332,8 @@ Config: .studio/config.json "overnight" (defaults, ranges):
                                     0 = a red gate stops the story
   kill_grace_seconds   30    5-120    TERM-to-KILL grace
   max_lanes            0     0-8      lane processes (0 = one per chain)
+  max_sessions         6     1-8      claude sessions running at once across every live run
+                                    in the project (read from the main checkout's config)
   model_task           sonnet   model for task units      (^[a-z0-9.-]+$)
   model_final          opus     model for the final review
   model_finish         sonnet   model for the finish
@@ -343,6 +362,8 @@ Environment:
 Test hooks (tests only; never set them for a real run; --detach strips them):
   STUDIO_OVERNIGHT_POLL_SECONDS — test hook: a whole number of seconds between
                      a lane's polls of a wait or a lock (default 5)
+  STUDIO_OVERNIGHT_SLOT_POLL_SECONDS — test hook: seconds between a unit's
+                     tries for a session slot (default 2)
   STUDIO_OVERNIGHT_LAND_HOOK — test hook: shell text evaluated after a landing's
                      push and before it is recorded (the crash-after-push test)
   STUDIO_OVERNIGHT_GATE_CMD — test hook: shell text that replaces the final
@@ -383,6 +404,11 @@ CONFIG="$START_DIR/.studio/config.json"
 LOCK="$STATE_ROOT/.studio/overnight.lock"
 STOP_FILE="$STATE_ROOT/.studio/overnight.stop"
 REPORTS="$STATE_ROOT/.studio/reports"
+RUN_SLUG=""   # a manifest run's slug (run_paths); empty for a single-plan run
+# The project's live runs (#39): runs_live, runs_match, runs_stop_of, mx_*.
+. "$SELF_DIR/overnight-runs.sh"
+# The project-wide session cap (#39 AC27): sess_*; slots are taken by manifest units only (D19).
+. "$SELF_DIR/overnight-sessions.sh"
 
 # preflight [manifest] — bundle 2's checks. With `manifest`, the single-plan
 # checks (spec, plan, ledger, stage on STATE.md) are skipped and a failure
@@ -439,6 +465,14 @@ preflight() {
   awk -v v="${RUN_USD:-0}" 'BEGIN { exit !(v > 0 && v < 1) }' \
     && refuse "config overnight.run_usd must be 0 (no run-wide cap) or from 1 to 5000, got $RUN_USD"
   cfg max_lanes 0 0 8 int
+  if [ -n "$_pf_mf" ]; then
+    # #39 AC27: one cap for every run, from the main checkout's config (D21: the start value is the fallback).
+    _pf_ms="$(CONFIG="$STATE_ROOT/.studio/config.json"; cfg_raw max_sessions)"
+    case "${_pf_ms:-6}" in
+      [1-8]) SESS_START_CAP="${_pf_ms:-6}" ;;
+      *) refuse "overnight.max_sessions must be an integer 1-8 in $STATE_ROOT/.studio/config.json" ;;
+    esac
+  fi
   cfg_str model_task sonnet '^[a-z0-9.-]+$'
   cfg_str model_final opus '^[a-z0-9.-]+$'
   cfg_str model_finish sonnet '^[a-z0-9.-]+$'
@@ -469,6 +503,9 @@ preflight() {
   GRACE="${KILL_GRACE_SECONDS:-30}"
   if lock_live; then
     refuse "a run is live (pid $(lock_pid)) — $(sq "$SELF_ABS") status"
+  elif [ -z "$_pf_mf" ] && ! lock_recheck; then
+    # AC5: a single-plan run excludes every live run, per-run locks included.
+    refuse "$RECHECK_WHY"
   fi
   env_line
   [ -n "$_pf_mf" ] || [ "$FAILED" -eq 0 ] || exit 2
@@ -932,12 +969,13 @@ reg_live() {
   _rl_p="$(reg_get pid "$1")"
   [ -n "$_rl_p" ] && kill -0 "$_rl_p" 2>/dev/null && ps -o args= -p "$_rl_p" 2>/dev/null | grep -q studio-overnight
 }
-# reg_write — this run's entry (RUN_DIR, this pid); any other entry for the
-# same project (a SIGKILLed run's) is dropped. Never fails the run.
+# reg_write — this run's entry (RUN_DIR, this pid); another entry for the
+# same project is dropped only when its runner is dead (a SIGKILLed run's),
+# so a live sibling run keeps its entry (AC6, D11). Never fails the run.
 reg_write() {
   mkdir -p "$REGISTRY" 2>/dev/null || return 0
   for _rw in "$REGISTRY"/overnight-*; do
-    [ -f "$_rw" ] && [ "$(reg_get root "$_rw")" = "$STATE_ROOT" ] && rm -f "$_rw"
+    [ -f "$_rw" ] && [ "$(reg_get root "$_rw")" = "$STATE_ROOT" ] && ! reg_live "$_rw" && rm -f "$_rw"
   done
   REG_ENTRY="$REGISTRY/$(basename "$RUN_DIR")-$$"
   { printf 'root=%s\nstart=%s\nrun=%s\npid=%s\nstarted=%s\n' "$STATE_ROOT" "$START_DIR" "$RUN_DIR" "$$" \
@@ -959,18 +997,33 @@ reg_end() {
 # Under a lane (LDIR set) the pid is also written to LDIR/cpid. The session
 # starts in UNIT_CWD when set (manifest mode's final-step units), else in
 # START_DIR. STUDIO_UNIT_TAG (UNIT_TAG) marks every studio-gate the session
-# starts, so unit_reap can end the ones it leaves behind.
+# starts, so unit_reap can end the ones it leaves behind. STUDIO_START_DIR is
+# the run's start dir, for every unit (AC30, D42).
 start_session() {
   set -m 2>/dev/null || true   # own process group: a terminal Ctrl-C reaches only the runner (D6; a lane subshell too, D1c)
   ( cd "${UNIT_CWD:-$START_DIR}" && unset STUDIO_GATE_HELD && eval "export ${LAUNCH_ENV:-OMEGA_AUTOPILOT=1}" \
       && STUDIO_UNIT_TAG="$UNIT_TAG" && export STUDIO_UNIT_TAG \
-      && STUDIO_RUN_DIR="$RUN_DIR" && export STUDIO_RUN_DIR && exec claude-gd -p "$@" ) \
+      && STUDIO_RUN_DIR="$RUN_DIR" && export STUDIO_RUN_DIR \
+      && STUDIO_START_DIR="$START_DIR" && export STUDIO_START_DIR && exec claude-gd -p "$@" ) \
     > "$UNIT_DIR/$UNIT_STEM.jsonl" 2> "$UNIT_DIR/$UNIT_STEM.err" < /dev/null &
   CPID=$!
   set +m 2>/dev/null || true
   [ -z "${LDIR:-}" ] || printf '%s\n' "$CPID" > "$LDIR/cpid"
 }
+# Session slots (#39 AC27) are a manifest run's (D19): a single-plan run
+# excludes every other run, so here they are no-ops. overnight-lanes.sh
+# redefines them. session_acquire LABEL returns 1 on a halt during the wait.
+session_acquire() { :; }
+session_started() { :; }
+session_release() { :; }
+# unit_pre LABEL — the hook story_units runs before a unit (#39 D34): a
+# no-op here; overnight-lanes.sh redefines it as the sync check. 1 ends the
+# story with ENDING set.
+unit_pre() { return 0; }
 # run_unit N LABEL — one session, waited for; sets UNIT_* (D7's wait loop).
+# It first takes a session slot (session_acquire, D23): a halt while it waits
+# sets UNIT_HALTED=1 and returns at once, with no row, event or session; the
+# caller ends on the halt (D22). The slot goes once the session is reaped.
 # CUR_ID (empty in single-plan mode) names the story: stem N-ID-LABEL, and
 # $UNIT_DIR/current reads "ID LABEL". The model comes from the bare LABEL.
 # While it runs, $UNIT_DIR/unit.now reads "<start epoch> <stem>" (status and
@@ -981,11 +1034,13 @@ run_unit() {
   UNIT_TAG="$(printf '%s' "$(basename "$RUN_DIR")-${LANE_K:-0}-$UNIT_STEM" | tr -c 'A-Za-z0-9._-' '_')"
   [ -z "${LDIR:-}" ] || printf '%s\n' "$UNIT_TAG" > "$LDIR/utag"
   model_for "$2"
+  UNIT_HALTED=0; session_acquire "$2" || { UNIT_HALTED=1; [ -z "${LDIR:-}" ] || rm -f "$LDIR/utag"; return 0; }
   run_event unit_started "story=${CUR_ID:--}" "unit=$UNIT_TAG" "label=$2" "model=$UNIT_MODEL"
   _t0="$(date +%s)"
   printf '%s %s\n' "$_t0" "$UNIT_STEM" > "$UNIT_DIR/unit.now"
   say "${CUR_ID:+$CUR_ID }$2 · started${LANE_K:+ (lane $LANE_K)}"
   with_launch_args start_session
+  session_started "$CPID"
   heartbeat_start
   _secs="${STUDIO_OVERNIGHT_SESSION_SECONDS:-$((SESSION_MINUTES * 60))}"
   _claim="$UNIT_DIR/$UNIT_STEM.ended"; rmdir "$_claim" 2>/dev/null
@@ -1014,6 +1069,7 @@ run_unit() {
     kill -0 "$CPID" 2>/dev/null || break
   done
   CPID=""; [ -z "${LDIR:-}" ] || rm -f "$LDIR/cpid"   # reaped: never signal a reused pid
+  session_release
   heartbeat_stop; rm -f "$UNIT_DIR/unit.now"
   UNIT_EXIT="$_st"; UNIT_TIMED_OUT=0
   mkdir "$_claim" 2>/dev/null || UNIT_TIMED_OUT=1
@@ -1086,7 +1142,9 @@ write_report() {
 unlock() {
   [ -z "${INHIB_PID:-}" ] || kill "$INHIB_PID" 2>/dev/null
   INHIB_PID=""
-  rm -f "$LOCK" "$STOP_FILE"
+  # Only what this run holds (D11): the lock while it names this pid, and its own stop flag.
+  [ "$(lock_pid)" != "$$" ] || rm -f "$LOCK"
+  rm -f "$STOP_FILE"
   reg_end
 }
 # finish_run REASON — report, unlock, exit (0 only for done).
@@ -1100,10 +1158,11 @@ finish_run() {
 # end_session — TERM the live session's group, poll up to GRACE seconds,
 # then KILL it, so no session outlives the lock (pkill -P/kill when there is
 # no group, as the watchdog does). The watchdog goes first: it must not act.
+# Then the unit's session slot or wait entry is released (session_release).
 end_session() {
   [ -z "${WPID:-}" ] || { kill "$WPID" 2>/dev/null; wait "$WPID" 2>/dev/null; }
   heartbeat_stop
-  { [ -n "${CPID:-}" ] && kill -0 "$CPID" 2>/dev/null; } || { unit_reap "${UNIT_TAG:-}"; return 0; }
+  { [ -n "${CPID:-}" ] && kill -0 "$CPID" 2>/dev/null; } || { unit_reap "${UNIT_TAG:-}"; session_release; return 0; }
   kill -TERM -"$CPID" 2>/dev/null || { pkill -TERM -P "$CPID"; kill -TERM "$CPID"; } 2>/dev/null
   _g=0
   while { kill -0 -"$CPID" 2>/dev/null || kill -0 "$CPID" 2>/dev/null; } && [ "$_g" -lt "${GRACE:-30}" ]; do
@@ -1112,6 +1171,7 @@ end_session() {
   kill -KILL -"$CPID" 2>/dev/null || { pkill -KILL -P "$CPID"; kill -KILL "$CPID"; } 2>/dev/null
   wait "$CPID" 2>/dev/null
   unit_reap "${UNIT_TAG:-}"
+  session_release   # the session is gone: its slot (or a wait entry) goes (#39 AC27)
 }
 # on_exit CODE — the EXIT trap (D18): an ending that never reached
 # finish_run is a runner error, or a closed terminal (HUP_REQ). Any live
@@ -1122,6 +1182,7 @@ on_exit() {
   [ "$REPORTED" = 1 ] && return 0
   trap '' HUP INT TERM
   end_session
+  session_release
   # A story held when the runner died keeps its why (AC25); its report is
   # written, so the held record goes (R25).
   _oe_h=""
@@ -1143,7 +1204,8 @@ on_exit() {
 # ENDING set: done · stopped by user · stopped by operator · held by
 # operator · directive <id> not recorded · stop: <reason> · stop: run budget ·
 # no progress on <label> [(orphaned: …)] · timed out on <label> (…) ·
-# stop: unexpected stage <s>. Its scratch files
+# stop: unexpected stage <s> · unit_pre's (lanes: sync repair: <reason>, or
+# the halt reason). Its scratch files
 # live in UNIT_DIR (the run dir; a lane's own dir in manifest mode). Unit
 # numbers run on from the caller's n (0 when unset), so a second call for the
 # same story (after a gate repair) never reuses a unit's file names.
@@ -1158,8 +1220,11 @@ story_units() {
     _stage="$SIG_STAGE"
     case "$_stage" in plan|execute) ;; *) ENDING="stop: unexpected stage $_stage"; return 0 ;; esac
     if run_budget_out; then ENDING="stop: run budget"; return 0; fi
-    _before="$SIG"; _base="${STUDIO_OVERNIGHT_LABEL:-$(label_for)}"
+    _base="${STUDIO_OVERNIGHT_LABEL:-$(label_for)}"
+    unit_pre "$_base" || return 0
+    _before="$SIG"
     n=$((n + 1)); run_unit "$n" "$_base$suffix"
+    [ "$UNIT_HALTED" = 0 ] || { ENDING="$(halt_reason)"; return 0; }   # halted waiting for a slot (D22)
     snapshot "$UNIT_DIR/stops.after"
     take_new_stop "$UNIT_DIR/stops.before" "$UNIT_DIR/stops.after"
     if [ -n "$NEW_STOP" ]; then row "$n" "$_base$suffix" stop; ENDING="$STOP_ENDING"; return 0; fi
@@ -1200,7 +1265,12 @@ detach_start() {
   preflight manifest
   ( . "$SELF_DIR/overnight-lanes.sh"; lanes_start --dry-run "$_dm" ) > /dev/null || exit 2
   _dmf="$_dm"; case "$_dmf" in /*) ;; *) _dmf="$START_DIR/$_dmf" ;; esac
-  _dslug="$(sed -n 's/^# Run:[ \t]*//p' "$_dmf" | head -n 1 | sed -e 's/[ \t]#.*$//' -e 's/[ \t]*$//')"
+  _dslug="$(runs_mf_slug "$_dmf")"
+  # The dry run checked it (mf_check); checked again here, since it names a path.
+  printf '%s\n' "$_dslug" | grep -Eq '^[A-Za-z0-9._-]+$' \
+    || { say "manifest: '# Run: <slug>' must name a slug of [A-Za-z0-9._-], got '$_dslug'"; exit 2; }
+  # The child's own lock (AC4): detach waits on it and on `status --run`, never on any live run.
+  LOCK="$STATE_ROOT/.studio/runs/$_dslug/lock"
   _dcmd="cd $(sq "$(pwd)") && $(sq "$SELF_ABS") start $(sq "$_dm")"
   if ! command -v perl >/dev/null 2>&1; then
     say "--detach is not available on this machine — run the printed command"
@@ -1217,11 +1287,11 @@ detach_start() {
   _di=0
   while [ "$_di" -lt 10 ]; do
     if kill -0 "$_dpid" 2>/dev/null; then
-      if { if [ -n "$_dhs" ]; then eval "$_dhs"; else sh "$SELF_ABS" status; fi; } >/dev/null 2>&1 && [ "$(lock_pid)" = "$_dpid" ]; then
+      if { if [ -n "$_dhs" ]; then eval "$_dhs"; else sh "$SELF_ABS" status --run "$_dslug"; fi; } >/dev/null 2>&1 && [ "$(lock_pid)" = "$_dpid" ]; then
         _drun="$(sed -n 's/^run=//p' "$LOCK" 2>/dev/null | head -n 1)"
         [ -z "$_drun" ] || ln -sf "$_dlog" "$_drun/runner.log" 2>/dev/null || true
         echo "detached: pid $_dpid, log $_dlog"
-        echo "watch: $(sq "$SELF_ABS") watch · status: $(sq "$SELF_ABS") status (from any directory)"
+        echo "watch: $(sq "$SELF_ABS") watch --run $_dslug · status: $(sq "$SELF_ABS") status --run $_dslug (from the project; plain status from anywhere)"
         return 0
       fi
     else
@@ -1235,7 +1305,7 @@ detach_start() {
   done
   if lock_live && [ "$(lock_pid)" = "$_dpid" ]; then
     # The child holds the run lock: the run is live, only status was slow.
-    say "the detached run is live (pid $_dpid, log $_dlog) but did not answer status in 10 s — $(sq "$SELF_ABS") status, or $(sq "$SELF_ABS") stop"
+    say "the detached run is live (pid $_dpid, log $_dlog) but did not answer status in 10 s — $(sq "$SELF_ABS") status --run $_dslug, or $(sq "$SELF_ABS") stop --run $_dslug"
     return 1
   fi
   # No lock: end the child's process group (setsid made it the group leader).
@@ -1313,13 +1383,23 @@ cmd_start() {
 # RUN_DIR itself; exit 2 when another start holds it. Both modes (D18).
 acquire_run_lock() {
   if [ -f "$LOCK" ]; then
+    # Only a dead holder's lock is reclaimed: a live one (a second start of
+    # the same slug shares its lock path) refuses, and nothing of it is touched.
+    if runs_lock_live "$LOCK"; then say "$(lock_held_by "$LOCK")"; exit 2; fi
     _stale="$(lock_pid)"
     say "reclaiming stale lock (pid $_stale)"
     # Test hook: runs between reading the stale pid and removing the lock.
     [ -z "${STUDIO_OVERNIGHT_RACE_HOOK:-}" ] || eval "$STUDIO_OVERNIGHT_RACE_HOOK"
-    # mv is atomic: only one starter gets the stale file. If it no longer
-    # names the dead pid we read, another start already retook the lock.
+    # mv is atomic: only one starter gets the stale file. If its holder is
+    # live, or it no longer names the dead pid we read, another start already
+    # retook the lock: it goes back, untouched.
     if mv "$LOCK" "$LOCK.stale.$$" 2>/dev/null; then
+      if runs_lock_live "$LOCK.stale.$$"; then
+        _why="$(lock_held_by "$LOCK" "$LOCK.stale.$$")"
+        ln "$LOCK.stale.$$" "$LOCK" 2>/dev/null || true
+        rm -f "$LOCK.stale.$$"
+        say "lock taken by another start: $_why"; exit 2
+      fi
       _got="$(sed -n 's/^pid=//p' "$LOCK.stale.$$" | head -n 1)"
       if [ "$_got" != "$_stale" ]; then
         ln "$LOCK.stale.$$" "$LOCK" 2>/dev/null || true
@@ -1329,18 +1409,72 @@ acquire_run_lock() {
       rm -f "$LOCK.stale.$$"
     fi
   fi
+  # The run's state paths are kept out of git before the lock exists (D6).
+  run_excludes
   # A stop file left over from an earlier run goes before the lock, so a
   # `stop` issued once this run holds the lock is never lost.
   rm -f "$STOP_FILE"
   mkdir -p "$(dirname "$LOCK")"
+  # Test hook (D10): runs after the preflight, just before the lock is taken.
+  [ -z "${STUDIO_OVERNIGHT_LOCK_HOOK:-}" ] || eval "$STUDIO_OVERNIGHT_LOCK_HOOK"
   take_lock "$RUN_DIR" || { say "lock taken by another start"; exit 2; }
   # The run dir only once the lock is ours: a lost race leaves nothing behind.
   mkdir -p "$RUN_DIR" || { rm -f "$LOCK"; say "cannot create $RUN_DIR"; exit 2; }
+  run_populate || lock_lost "cannot populate $RUN_DIR"
+  # AC8/AC5 re-check (D8, D9): the lock first, so of two starts the later re-check sees the earlier.
+  mx_take "$STATE_ROOT/.studio/runs.mutex" "$$" || lock_lost "$STATE_ROOT/.studio/runs.mutex is busy — start again"
+  lock_recheck || lock_lost "$RECHECK_WHY"
+  mx_drop "$STATE_ROOT/.studio/runs.mutex" "$$"
   reg_write
-  say "run $RUN_DIR started (pid $$) — watch: $(sq "$SELF_ABS") watch · status: $(sq "$SELF_ABS") status · stop: $(sq "$SELF_ABS") stop"
+  say "run $RUN_DIR started (pid $$) — watch: $(sq "$SELF_ABS") watch · status: $(sq "$SELF_ABS") status${RUN_SLUG:+ --run $RUN_SLUG} · stop: $(sq "$SELF_ABS") stop${RUN_SLUG:+ --run $RUN_SLUG}"
+}
+# lock_recheck — after take_lock, under runs.mutex (D8): 0 when this start
+# may run; 1 with RECHECK_WHY. A single-plan run excludes every other run.
+# overnight-lanes.sh redefines it for manifest runs.
+lock_recheck() {
+  _lc="$(runs_live "$STATE_ROOT" | awk -F'\t' -v me="$LOCK" '$7 != me' | head -n 1)"
+  [ -n "$_lc" ] || return 0
+  RECHECK_WHY="a run is live: $(printf '%s\n' "$_lc" | awk -F'\t' '{ print ($2 == "-" ? "single-plan" : $2) " (" $5 ", pid " $4 ")" }') — $(sq "$SELF_ABS") status"
+  return 1
+}
+# lock_held_by LOCKPATH [FILE] — the refusal text for a live run's lock
+# (lock_recheck's form): `a run is live: <slug> (<run dir>, pid <pid>) —
+# status [--run <slug>]`. The slug comes from LOCKPATH, the rest from FILE
+# (default LOCKPATH; a moved copy of it during a reclaim).
+lock_held_by() {
+  _lh_f="${2:-$1}"; _lh_d="$(runs_kv run "$_lh_f")"
+  case "$1" in
+    */.studio/overnight.lock)
+      if [ -f "$_lh_d/manifest.md" ]; then _lh_s="$(runs_mf_slug "$_lh_d/manifest.md")"; else _lh_s=single-plan; fi ;;
+    *) _lh_s="${1%/lock}"; _lh_s="${_lh_s##*/}" ;;
+  esac
+  _lh_r=""; [ "$_lh_s" = single-plan ] || _lh_r=" --run $_lh_s"
+  printf 'a run is live: %s (%s, pid %s) — %s status%s\n' "$_lh_s" "$_lh_d" "$(runs_kv pid "$_lh_f")" "$(sq "$SELF_ABS")" "$_lh_r"
+}
+run_populate() { :; }   # overnight-lanes.sh fills the run dir before the re-check (D9)
+# lock_lost WHY — this start lost: its lock, run dir and empty record dir go, the mutex is dropped, exit 2.
+lock_lost() {
+  [ "$(lock_pid)" != "$$" ] || rm -f "$LOCK"
+  rm -rf "$RUN_DIR"
+  [ "$LOCK" = "$STATE_ROOT/.studio/overnight.lock" ] || rmdir "$(dirname "$LOCK")" 2>/dev/null
+  mx_drop "$STATE_ROOT/.studio/runs.mutex" "$$"
+  say "$1"; exit 2
+}
+# run_excludes — the run's machine-local paths into the common git dir's
+# info/exclude, each once (D6): the single-plan lock and stop flag, the
+# per-run records and locks, the session slots, both mutexes and their reap
+# locks (mx_reap), and the final step's worktrees. Sets _excl.
+run_excludes() {
+  _excl="$(git -C "$START_DIR" rev-parse --path-format=absolute --git-common-dir)/info/exclude"
+  mkdir -p "$(dirname "$_excl")"
+  for _e in .studio/overnight.lock .studio/overnight.stop .studio/runs/ .studio/sessions/ \
+            .studio/runs.mutex .studio/sessions.mutex .studio/runs.mutex.reap/ .studio/sessions.mutex.reap/ \
+            .claude/worktrees/; do
+    grep -qxF "$_e" "$_excl" 2>/dev/null || printf '%s\n' "$_e" >> "$_excl"
+  done
 }
 # run_setup — once the lock and traps are in place: the sleep inhibitor, the
-# reports dir's .gitignore, and the lock and stop files kept out of git.
+# reports dir's .gitignore, and the run's paths kept out of git.
 run_setup() {
   printf 'hold_minutes=%s\ndirective_chars=%s\n' "$HOLD_MINUTES" "$DIRECTIVE_CHARS" > "$RUN_DIR/channel" \
     || say "cannot write $RUN_DIR/channel — the operator verbs will refuse this run"
@@ -1359,11 +1493,7 @@ run_setup() {
   esac
   [ -n "$INHIB_PID" ] || say "no sleep inhibitor (caffeinate or systemd-inhibit) — the machine may sleep; the run resumes with studio-overnight start"
   [ -f "$REPORTS/.gitignore" ] || printf '*\n' > "$REPORTS/.gitignore"
-  _excl="$(git -C "$START_DIR" rev-parse --path-format=absolute --git-common-dir)/info/exclude"
-  mkdir -p "$(dirname "$_excl")"
-  for _e in .studio/overnight.lock .studio/overnight.stop; do
-    grep -qxF "$_e" "$_excl" 2>/dev/null || printf '%s\n' "$_e" >> "$_excl"
-  done
+  run_excludes
 }
 
 # ---- status and watch ----
@@ -1391,35 +1521,88 @@ ended_line() {
   _el_c="$(awk '/^## Resume$/ { f = 1; next } f && NF { print; exit }' "$1")"
   printf 'ended (%s)%s — report: %s%s\n' "$_el_e" "${_el_s:+ — $_el_s}" "$1" "${_el_c:+ — resume: $_el_c}"
 }
+# single_status DIR — a live single-plan run's block: run, unit, task,
+# spend, pid (LOCK's), the running unit's last activity (now:), the gate
+# lock and the resource readout. Returns 0.
+single_status() {
+  RUN_DIR="$1"
+  { progress_compute single 1 || true; progress_overall; progress_done; }
+  printf 'run: %s\nunit: %s\ntask: %s\nspent: $%s\npid: %s\n' "$RUN_DIR" \
+    "$(cat "$RUN_DIR/current" 2>/dev/null)" "$(state get task 2>/dev/null)" "$(spent)" "$(lock_pid)"
+  if [ -f "$RUN_DIR/control/-.held" ]; then held_line "$(cat "$RUN_DIR/control/-.held")" -
+  else _ps_now="$(unit_now_line "$RUN_DIR")"; [ -z "$_ps_now" ] || printf 'now: %s\n' "$_ps_now"; fi
+  gate_line "$RUN_DIR"
+  env_line "$(lock_pid)"
+  return 0
+}
+# status_reap_dead — D12/AC31: every dead lock (a per-run lock, or the
+# old-style .studio/overnight.lock) whose run dir has manifest.md and no
+# report.md is reaped as lanes_reap_stale does: in a subshell, with LOCK set
+# to it and START_DIR from its recorded start dir, so the report's Resume
+# line changes into the run's own checkout (AC7). A run whose lanes still
+# run is left alone (lanes_reap refuses).
+status_reap_dead() {
+  for _sr_l in "$STATE_ROOT"/.studio/runs/*/lock "$STATE_ROOT/.studio/overnight.lock"; do
+    [ -f "$_sr_l" ] && ! runs_lock_live "$_sr_l" || continue
+    _sr_d="$(runs_kv run "$_sr_l")"
+    [ -n "$_sr_d" ] && [ -f "$_sr_d/manifest.md" ] && [ ! -f "$_sr_d/report.md" ] || continue
+    _sr_sd="$(runs_start_dir "$_sr_l")"; [ -n "$_sr_sd" ] && [ -d "$_sr_sd" ] || _sr_sd="$START_DIR"
+    ( LOCK="$_sr_l"; START_DIR="$_sr_sd"; . "$SELF_DIR/overnight-lanes.sh"
+      lanes_load_run "$_sr_d"; lanes_reap ) || true
+  done
+}
 # project_status — status inside a project (STATE_ROOT/.studio exists).
-# Manifest mode (T12): the run is the lock's run dir; with no live run, a
-# stale lock's run dir, else the newest run dir. A manifest run (its dir
-# holds manifest.md) prints per story (lanes_status, which also reaps a
-# SIGKILLed run). A single-plan run prints run, unit, task, spend, pid, the
-# running unit's last activity (now:) and the gate lock. With no live run,
-# the last run's ended_line, else where it looked. Returns 0 live, 1 not.
+# Dead runs are reaped first (status_reap_dead). Then one block per live run
+# (runs_live, oldest first); RUN_SEL (`status --run <sel>`) keeps the one
+# runs_match picks, or prints `no live run <sel>` and returns 1. With a live
+# manifest run and no RUN_SEL, `sessions: <live>/<cap>` comes first (AC10,
+# D15). With two or more blocks each is headed `== <slug> (<kind>, pid <pid>) — <run dir>`
+# (D16). Each block runs in a subshell with that run's LOCK and start dir
+# (D12): a manifest run prints per story (lanes_status), a single-plan run
+# single_status. With no live run: the lock's or the newest run dir — a
+# manifest run's lanes_status, else the last run's ended_line, else where it
+# looked. Returns 0 live, 1 not.
 project_status() {
-  _sd="$(sed -n 's/^run=//p' "$LOCK" 2>/dev/null | head -n 1)"
-  if lock_live && [ -f "$_sd/manifest.md" ]; then
-    ( . "$SELF_DIR/overnight-lanes.sh"; lanes_status "$_sd" live ); return $?
+  status_reap_dead
+  _ps_all="$(runs_live "$STATE_ROOT")"
+  if [ -n "${RUN_SEL:-}" ]; then
+    _ps_all="$(printf '%s\n' "$_ps_all" | runs_match "$RUN_SEL")"
+    [ -n "$_ps_all" ] || { printf 'no live run %s\n' "$RUN_SEL"; return 1; }
   fi
-  if ! lock_live; then
-    { [ -n "$_sd" ] && [ -d "$_sd" ]; } || _sd="$(ls -dt "$REPORTS"/overnight-*/ 2>/dev/null | head -n 1)"
-    _sd="${_sd%/}"
-    if [ -n "$_sd" ] && [ -f "$_sd/manifest.md" ]; then
-      ( . "$SELF_DIR/overnight-lanes.sh"; lanes_status "$_sd" ); return $?
+  if [ -n "$_ps_all" ]; then
+    # AC10, D15: with a manifest run live (and no --run), the project's
+    # session slots first: the live ones (read, never reclaimed) over the cap.
+    if [ -z "${RUN_SEL:-}" ] && printf '%s\n' "$_ps_all" | cut -f3 | grep -qx manifest; then
+      sess_init; printf 'sessions: %s/%s\n' "$(sess_live_count)" "$(sess_cap)"
     fi
-  fi
-  if lock_live; then
-    RUN_DIR="$(sed -n 's/^run=//p' "$LOCK" | head -n 1)"
-    { progress_compute single 1 || true; progress_overall; progress_done; }
-    printf 'run: %s\nunit: %s\ntask: %s\nspent: $%s\npid: %s\n' "$RUN_DIR" \
-      "$(cat "$RUN_DIR/current" 2>/dev/null)" "$(state get task 2>/dev/null)" "$(spent)" "$(lock_pid)"
-    if [ -f "$RUN_DIR/control/-.held" ]; then held_line "$(cat "$RUN_DIR/control/-.held")" -
-    else _ps_now="$(unit_now_line "$RUN_DIR")"; [ -z "$_ps_now" ] || printf 'now: %s\n' "$_ps_now"; fi
-    gate_line "$RUN_DIR"
-    env_line "$(lock_pid)"
+    _ps_n="$(printf '%s\n' "$_ps_all" | grep -c .)"; _ps_i=0
+    # Fields by cut, not `read`: a tab is IFS white space, so an empty field
+    # (an old lock's unknown start dir) would shift the ones after it.
+    printf '%s\n' "$_ps_all" | while IFS= read -r _ps_line; do
+      _ps_s="$(printf '%s\n' "$_ps_line" | cut -f2)"; _ps_k="$(printf '%s\n' "$_ps_line" | cut -f3)"
+      _ps_p="$(printf '%s\n' "$_ps_line" | cut -f4)"; _ps_d="$(printf '%s\n' "$_ps_line" | cut -f5)"
+      _ps_sd="$(printf '%s\n' "$_ps_line" | cut -f6)"; _ps_l="$(printf '%s\n' "$_ps_line" | cut -f7)"
+      _ps_i=$((_ps_i + 1))
+      if [ "$_ps_n" -gt 1 ]; then
+        [ "$_ps_i" -eq 1 ] || echo
+        printf '== %s (%s, pid %s) — %s\n' "$_ps_s" "$_ps_k" "$_ps_p" "$_ps_d"
+      fi
+      ( LOCK="$_ps_l"; START_DIR="${_ps_sd:-$START_DIR}"
+        if [ "$_ps_k" = manifest ]; then . "$SELF_DIR/overnight-lanes.sh"; lanes_status "$_ps_d" live
+        else single_status "$_ps_d"; fi )
+    done
     return 0
+  fi
+  # The lock's run dir, unless a newer run dir exists: a manifest run no
+  # longer rewrites .studio/overnight.lock, so a dead old lock must not mask
+  # every newer run (#39).
+  _sd="$(sed -n 's/^run=//p' "$LOCK" 2>/dev/null | head -n 1)"
+  { [ -n "$_sd" ] && [ -d "$_sd" ]; } || _sd=""
+  _sn="$(ls -dt "$REPORTS"/overnight-*/ 2>/dev/null | head -n 1)"; _sn="${_sn%/}"
+  if [ -z "$_sd" ] || { [ -n "$_sn" ] && [ "$_sn" -nt "$_sd" ]; }; then _sd="$_sn"; fi
+  _sd="${_sd%/}"
+  if [ -n "$_sd" ] && [ -f "$_sd/manifest.md" ]; then
+    ( . "$SELF_DIR/overnight-lanes.sh"; lanes_status "$_sd" ); return $?
   fi
   if [ -n "$_sd" ] && [ -f "$_sd/report.md" ]; then
     printf 'no run — the last run: %s\n' "$_sd"
@@ -1450,12 +1633,19 @@ reg_show() {
 # died); else where it looked. Returns 3 when a run is live elsewhere (0 is
 # kept for "this project's run is live", the skills' liveness test), else 1.
 registry_status() {
-  _rs_n=0
+  _rs_n=0; _rs_seen=""
   for _rs_f in "$REGISTRY"/overnight-*; do
     [ -f "$_rs_f" ] && reg_live "$_rs_f" || continue
-    _rs_n=$((_rs_n + 1)); [ "$_rs_n" = 1 ] || echo
     _rs_root="$(reg_get root "$_rs_f")"
-    printf '== %s — %s\n' "$(reg_get run "$_rs_f" | sed 's|.*/||')" "$_rs_root"
+    case "$_rs_seen" in *"|$_rs_root|"*) continue ;; esac     # D17: each root once
+    _rs_seen="$_rs_seen|$_rs_root|"
+    _rs_names=""
+    for _rs_g in "$REGISTRY"/overnight-*; do
+      [ -f "$_rs_g" ] && reg_live "$_rs_g" && [ "$(reg_get root "$_rs_g")" = "$_rs_root" ] || continue
+      _rs_names="${_rs_names:+$_rs_names, }$(reg_get run "$_rs_g" | sed 's|.*/||')"
+    done
+    _rs_n=$((_rs_n + 1)); [ "$_rs_n" = 1 ] || echo
+    printf '== %s — %s\n' "$_rs_names" "$_rs_root"
     reg_show "$_rs_root"
   done
   [ "$_rs_n" -eq 0 ] || return 3
@@ -1521,10 +1711,17 @@ case "$1" in
     shift
     case "${1:-}" in
       '') cmd_status; exit $? ;;
+      --run) [ "$#" -eq 2 ] && [ -n "$2" ] || { usage >&2; exit 2; }
+             RUN_SEL="$2"; cmd_status; exit $? ;;
       --follow|-f) shift; cmd_watch "$@" ;;
       *) usage >&2; exit 2 ;;
     esac ;;
-  watch)  shift; [ "$#" -le 1 ] || { usage >&2; exit 2; }; cmd_watch "$@" ;;
+  watch)  shift
+          if [ "${1:-}" = --run ]; then
+            [ "$#" -ge 2 ] && [ -n "$2" ] || { usage >&2; exit 2; }
+            RUN_SEL="$2"; shift 2
+          fi
+          [ "$#" -le 1 ] || { usage >&2; exit 2; }; cmd_watch "$@" ;;
   activity)
     [ "$#" -eq 2 ] && [ -f "$2" ] || { usage >&2; exit 2; }
     unit_activity "$2"; exit 0 ;;
@@ -1542,10 +1739,34 @@ case "$1" in
     exit $? ;;
   say|said|unsay|hold|resume) chan_main "$@" ;;
   stop)
-    [ "$#" -eq 1 ] || chan_main "$@"
-    if lock_live; then
-      : > "$STOP_FILE"
-      echo "stop requested: the run ends after its running unit (pid $(lock_pid))"
+    [ "$#" -eq 1 ] || {
+      # stop --all: every live run's own flag (D13); anything else is the channel's.
+      [ "${2:-}" = --all ] || chan_main "$@"
+      [ "$#" -eq 2 ] || { usage >&2; exit 2; }
+      _sp_l="$( { [ -z "$STATE_ROOT" ] || runs_live "$STATE_ROOT"; } )"
+      [ -n "$_sp_l" ] || { echo "no run in ${STATE_ROOT:-$(pwd)} — stop runs from the run's project ($(sq "$SELF_ABS") status lists live runs)"; exit 1; }
+      printf '%s\n' "$_sp_l" | while IFS= read -r _sp_e; do
+        _sp_k="$(printf '%s\n' "$_sp_e" | cut -f7)"; _sp_s="$(printf '%s\n' "$_sp_e" | cut -f2)"
+        runs_lock_live "$_sp_k" || continue
+        : > "$(runs_stop_of "$_sp_k")"
+        [ "$_sp_s" != - ] || _sp_s="$(basename "$(printf '%s\n' "$_sp_e" | cut -f5)")"
+        printf 'stop requested: %s (pid %s)\n' "$_sp_s" "$(printf '%s\n' "$_sp_e" | cut -f4)"
+      done
+      exit 0
+    }
+    # The live run's own flag (D5): a per-run lock's stop, or .studio/overnight.stop.
+    # Two or more live runs list them and stop none (D13).
+    _sp_l="$( { [ -z "$STATE_ROOT" ] || runs_live "$STATE_ROOT"; } )"
+    _sp_n="$(printf '%s\n' "$_sp_l" | grep -c .)"
+    if [ "$_sp_n" -gt 1 ]; then
+      printf '%s runs are live — nothing stopped:\n' "$_sp_n"
+      printf '%s\n' "$_sp_l" | awk -F'\t' '{ b = $5; sub(/.*\//, "", b); printf "  %s  %s\n", ($2 == "-" ? b : $2), $5 }'
+      printf 'stop one: %s stop --run <slug> · stop all: %s stop --all\n' "$(sq "$SELF_ABS")" "$(sq "$SELF_ABS")"
+      exit 1
+    fi
+    if [ "$_sp_n" -eq 1 ]; then
+      : > "$(runs_stop_of "$(printf '%s\n' "$_sp_l" | cut -f7)")"
+      echo "stop requested: the run ends after its running unit (pid $(printf '%s\n' "$_sp_l" | cut -f4))"
       exit 0
     fi
     echo "no run in ${STATE_ROOT:-$(pwd)} — stop runs from the run's project ($(sq "$SELF_ABS") status lists live runs)"; exit 1 ;;

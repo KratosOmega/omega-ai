@@ -341,10 +341,20 @@ test_manifest_remove_skips_mcp_lines() {
   assert_missing "$TMP/mm/mcp godot" "an mcp line never becomes a relative path to delete"
 }
 
+test_run_tests_unknown_name() {
+  _rt=0
+  ( cd "$TMP" && TESTS_ONLY='' sh -c '. "$1/tests/assert.sh"; run_tests no_such_test_fn' sh "$REPO_ROOT" ) \
+    > "$TMP/rt.out" 2>&1 || _rt=$?
+  assert_eq 1 "$_rt" "run_tests exits non-zero when a listed name is not a function"
+  assert_contains "$TMP/rt.out" "FAIL no test function no_such_test_fn" "run_tests names the missing test function"
+  assert_contains "$TMP/rt.out" "1 assertions, 1 failed" "a missing test function counts as a failed assertion"
+}
+
 run_tests test_json_field test_expand_path test_canon_path test_guard_target_rejects \
   test_guard_target_rejects_descendants_of_dot_claude test_guard_target_accepts \
   test_guard_target_derefs_symlinked_target test_guard_target_rejects_symlinked_dot_claude \
   test_need_value test_resolve_studio_target test_requires_of test_run_dry \
   test_manifest_remove test_manifest_remove_through_symlinked_root \
   test_manifest_remove_skips_trailing_slash test_studio_arg test_manifest_header \
-  test_engine_dir test_node_major test_manifest_mcp_servers test_manifest_remove_skips_mcp_lines
+  test_engine_dir test_node_major test_manifest_mcp_servers test_manifest_remove_skips_mcp_lines \
+  test_run_tests_unknown_name

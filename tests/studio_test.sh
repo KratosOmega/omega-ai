@@ -446,10 +446,39 @@ test_execute_one_contract() {
 
 test_router_overnight_lock() {
   S="$REPO_ROOT/studios/game-dev/skills/studio/SKILL.md"
-  assert_contains "$S" ".studio/overnight.lock" "the router checks the runner's lock"
-  assert_contains "$S" "Overnight run in progress (pid <pid>) — studio-overnight status" "the router names status when a run is live"
-  assert_contains "$S" "routes nothing else" "a live run blocks routing"
-  assert_contains "$S" "\`studio-overnight status\`; exit 0 is the liveness test" "the router tests liveness with status exit 0"
+  assert_contains "$S" '`studio-overnight status`' "the router lists live runs with status"
+  assert_not_contains "$S" ".studio/overnight.lock" "the router does not read the runner's lock file"
+  assert_contains "$S" "A live run does not make the project busy" "a live run does not block routing"
+}
+
+test_execute_sync_repair_form() {
+  E="$REPO_ROOT/studios/game-dev/skills/execute/SKILL.md"
+  assert_contains "$E" 'STUDIO_REPAIR=sync:<ref>' "§9 names the sync repair form"
+  assert_contains "$E" '`--land`.*sync:' "§1 lists --land with sync:"
+  assert_contains "$E" 'stage execute' "§9 sync: precondition is stage execute"
+  assert_contains "$E" 'fix(sync): <summary>' "the sync repair commit subject"
+  assert_contains "$E" 'Synced: <summary>' "the sync repair ledger line"
+  assert_contains "$E" 'Stop: sync repair red — <failing line>' "a red sync repair stops"
+  assert_contains "$E" 'studio-test <paths>' "the sync gate is scoped to the touched paths"
+}
+
+test_execute_peers_brief_rule() {
+  E="$REPO_ROOT/studios/game-dev/skills/execute/SKILL.md"
+  assert_contains "$E" 'Other live runs' "§2 names the peer-runs block"
+  assert_contains "$E" 'every implementer and fixer brief' "§2 copies the block into every brief"
+}
+
+test_plan_brainstorm_slug_form() {
+  PL="$REPO_ROOT/studios/game-dev/skills/plan/SKILL.md"
+  BR="$REPO_ROOT/studios/game-dev/skills/brainstorm/SKILL.md"
+  assert_contains "$PL" '/game-dev:plan <slug>/<id>' "plan has the slug/id form"
+  assert_contains "$BR" '/game-dev:brainstorm <slug>/<id>' "brainstorm has the slug/id form"
+  for f in "$PL" "$BR"; do
+    assert_contains "$f" 'run/<slug>' "$f finds the run branch checkout"
+    assert_contains "$f" 'studio-state show. after entering' "$f prints state after entering"
+    assert_contains "$f" 'no checkout holds run/<slug>' "$f refuses when no checkout holds the run"
+    assert_contains "$f" 'The bare `<id>` form' "$f keeps the bare id form"
+  done
 }
 
 test_execute_lanes() {
@@ -699,4 +728,5 @@ run_tests test_plugin_manifests test_skill_frontmatter test_agent_frontmatter \
   test_review_contract test_on_demand_skills_keep_stage test_playtest_contract test_retro_contract \
   test_no_ship_references test_superpowers_requires_referenced test_no_last_playtest_callers \
   test_execute_one_contract test_router_overnight_lock test_execute_lanes test_execute_lane_gate_foreground test_execute_land_and_progress test_execute_gate_repair test_execute_operator_messages test_execute_adopt test_final_wave_contracts \
-  test_plan_brainstorm_lanes test_sdd_script_references
+  test_plan_brainstorm_lanes test_execute_sync_repair_form test_execute_peers_brief_rule test_plan_brainstorm_slug_form \
+  test_sdd_script_references

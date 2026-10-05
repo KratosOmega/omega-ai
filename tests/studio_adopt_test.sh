@@ -238,7 +238,8 @@ test_adopt_check_done_on_branch_ledger() {
 test_adopt_workspaces_status() {
   adopt_repo wsx 6 3
   mkdir -p "$W/.superpowers/sdd/zz-other"; printf 'docs/other.md\n' > "$W/.superpowers/sdd/zz-other/plan-path"
-  sed '$d' "$ADOPT" > "$TMP/adopt.lib"
+  # the sourced copy's $0 is the test shell, so point SELF_DIR at the real bin dir
+  sed -e '$d' -e "s|^SELF_DIR=.*|SELF_DIR=\"$(dirname "$ADOPT")\"|" "$ADOPT" > "$TMP/adopt.lib"
   ( cd "$P" && . "$TMP/adopt.lib" && TMPD="$TMP/wsd" && workspaces "$ORIG" > "$TMP/ws.out"; echo "$?" > "$TMP/ws.st" ) 2>/dev/null
   assert_eq 0 "$(cat "$TMP/ws.st")" "a matching workspace printed: status 0 though the last scanned names another plan"
   assert_eq 1 "$(wc -l < "$TMP/ws.out" | tr -d ' ')" "only the matching workspace is printed"
@@ -583,6 +584,144 @@ test_sync_landed_note() {
   assert_not_contains "$W/$WS/progress.md" "^Landed:" "no record, no note"
 }
 
+# run_wt NAME BRANCH — a run worktree $TMP/NAME on BRANCH whose .studio/run
+# names a manifest `# Run: alpha` listing S1.
+run_wt() {
+  git -C "$P" worktree add -q -b "$2" "$TMP/$1" main >/dev/null 2>&1
+  mkdir -p "$TMP/$1/docs/runs" "$TMP/$1/.studio"
+  printf '# Run: alpha\nTarget: integration/demo\n\n| Story | Branch |\n|---|---|\n| S1 | S1-b |\n' > "$TMP/$1/docs/runs/alpha.md"
+  printf 'docs/runs/alpha.md\n' > "$TMP/$1/.studio/run"
+}
+
+test_adopt_start_checkout_from_run_worktree() {
+  sync_repo sc
+  run_wt run-alpha run/alpha
+  mkdir -p "$P/.studio/runs/alpha"; printf 'S1\tintegration/demo\tabc1234\t1\n' > "$P/.studio/runs/alpha/landed.tsv"
+  adopt "$W" sync S1
+  assert_eq 0 "$AD_STATUS" "sync exits 0"
+  assert_eq "Landed: integration/demo at abc1234 — continue dependent stories from there" "$(tail -n 1 "$W/$WS/progress.md")" "manifest found in the run worktree"
+  move_adoption_lines "$P" "$TMP/run-alpha"
+  adopt "$W" seed S1
+  assert_eq 0 "$AD_STATUS" "seed exits 0, reading the adopted line from the run worktree"
+}
+
+# A run worktree whose path has a space (a spaced project path): start_checkout
+# must not word-split it (#39 final review, N1).
+test_adopt_start_checkout_spaced_path() {
+  sync_repo ssp
+  run_wt "run alpha sp" run/alpha
+  mkdir -p "$P/.studio/runs/alpha"; printf 'S1\tintegration/demo\tabc1234\t1\n' > "$P/.studio/runs/alpha/landed.tsv"
+  adopt "$W" sync S1
+  assert_eq 0 "$AD_STATUS" "sync exits 0"
+  assert_eq "Landed: integration/demo at abc1234 — continue dependent stories from there" "$(tail -n 1 "$W/$WS/progress.md")" "manifest found in the spaced run worktree"
+  sed -e '$d' -e "s|^SELF_DIR=.*|SELF_DIR=\"$(dirname "$ADOPT")\"|" "$ADOPT" > "$TMP/adopt.lib"
+  ( cd "$P" && . "$TMP/adopt.lib" && start_checkout S1 > "$TMP/ssp.sc" ) 2>/dev/null
+  assert_eq "$TMP/run alpha sp" "$(cat "$TMP/ssp.sc")" "start_checkout names the spaced run worktree"
+  run_wt "run beta sp" run/beta
+  adopt "$W" sync S1
+  assert_eq 1 "$AD_STATUS" "two spaced listings still refuse"
+  assert_contains "$TMP/ad.err" "story S1 is listed by two run worktrees: $TMP/run alpha sp, $TMP/run beta sp" "and name both whole paths"
+}
+
+test_adopt_start_checkout_two_listings_refuse() {
+  sync_repo s2
+  run_wt run-a2 run/alpha; run_wt run-b2 run/beta
+  adopt "$W" seed S1
+  assert_eq 1 "$AD_STATUS" "two listings: exit 1"
+  assert_contains "$TMP/ad.err" "story S1 is listed by two run worktrees:" "message names the story"
+  adopt "$W" sync S1
+  assert_eq 1 "$AD_STATUS" "sync too: exit 1"
+  assert_contains "$TMP/ad.err" "story S1 is listed by two run worktrees:" "sync message"
+}
+
+test_adopt_start_checkout_none_falls_back() {
+  sync_repo s3
+  mkdir -p "$P/docs/runs" "$P/.studio/runs/demo"
+  printf '# Run: demo\nTarget: integration/demo\n' > "$P/docs/runs/demo.md"
+  printf 'docs/runs/demo.md\n' > "$P/.studio/run"
+  printf 'S1\tintegration/demo\tabc1234\t1\n' > "$P/.studio/runs/demo/landed.tsv"
+  adopt "$W" sync S1
+  assert_eq 0 "$AD_STATUS" "sync exits 0"
+  assert_eq "Landed: integration/demo at abc1234 — continue dependent stories from there" "$(tail -n 1 "$W/$WS/progress.md")" "state root manifest used"
+}
+
+# move_adoption_lines FROMDIR TODIR — the adopted/source ledger lines of S1 move
+# from one checkout's ledger to the other (studio-state keeps them at WORK_ROOT).
+move_adoption_lines() {
+  mkdir -p "$2/.studio/ledger"
+  grep -E '^- [0-9-]+ (adopted|source) ' "$1/.studio/ledger/S1.md" >> "$2/.studio/ledger/S1.md"
+  grep -vE '^- [0-9-]+ (adopted|source) ' "$1/.studio/ledger/S1.md" > "$TMP/mv.led"; cp "$TMP/mv.led" "$1/.studio/ledger/S1.md"
+}
+
+test_adopt_seed_reads_ledger_from_run_worktree() {
+  adopt_repo sl 6 3
+  run_wt run-sl run/alpha
+  move_adoption_lines "$P" "$TMP/run-sl"
+  adopt "$W" seed S1
+  assert_eq 0 "$AD_STATUS" "seed finds the adopted line in the run worktree's ledger"
+  assert_eq "seeded: 6 lines" "$(cat "$TMP/ad.out")" "seeded count"
+}
+
+test_adopt_seed_start_dir_wins() {
+  adopt_repo sd 6 3
+  run_wt run-sd run/alpha
+  mkdir -p "$TMP/sd-start"; move_adoption_lines "$P" "$TMP/sd-start"
+  STUDIO_START_DIR="$TMP/sd-start"; export STUDIO_START_DIR
+  adopt "$W" seed S1
+  unset STUDIO_START_DIR
+  assert_eq 0 "$AD_STATUS" "STUDIO_START_DIR holds the ledger; the run worktree has none"
+  assert_eq "seeded: 6 lines" "$(cat "$TMP/ad.out")" "seeded count"
+}
+
+test_adopt_run_target_from_start_checkout() {
+  adopt_repo rt 6 3
+  printf '# Run: demo\nTarget: integration/demo\n' > "$P/docs-demo.md"
+  printf 'docs-demo.md\n' > "$P/.studio/run"
+  run_wt run-rt run/alpha
+  sed 's|^Target:.*|Target: integration/alpha-only|' "$TMP/run-rt/docs/runs/alpha.md" > "$TMP/alpha.md"; cp "$TMP/alpha.md" "$TMP/run-rt/docs/runs/alpha.md"
+  sed -e '$d' -e "s|^SELF_DIR=.*|SELF_DIR=\"$(dirname "$ADOPT")\"|" "$ADOPT" > "$TMP/adopt.lib"
+  ( cd "$P" && . "$TMP/adopt.lib" && TMPD="$TMP/rtd" && start_checkout S1 > "$TMP/rt.sc"; run_target S1 > "$TMP/rt.out"; run_target > "$TMP/rt.none" ) 2>/dev/null
+  assert_eq "$TMP/run-rt" "$(cat "$TMP/rt.sc")" "start_checkout names the run worktree"
+  assert_eq "integration/alpha-only" "$(cat "$TMP/rt.out")" "run_target S1 reads the run worktree's manifest"
+  assert_eq "integration/demo" "$(cat "$TMP/rt.none")" "no id: the state root's manifest"
+}
+
+# per_run_lock STATE — a live per-run lock .studio/runs/alpha/lock holding S1.
+per_run_lock() {
+  mkdir -p "$TMP/run2/stories" "$P/.studio/runs/alpha"
+  printf 'S1\n' > "$TMP/run2/rows.tsv"; printf '%s\n' "$1" > "$TMP/run2/stories/S1"
+  sh -c 'sleep 60; :' studio-overnight >/dev/null 2>&1 &
+  DUMMY=$!
+  printf 'pid=%s\nrun=%s\nstarted=x\n' "$DUMMY" "$TMP/run2" > "$P/.studio/runs/alpha/lock"
+}
+
+test_adopt_live_run_check_per_run_lock() {
+  sync_repo pl
+  per_run_lock sync-repair; adopt "$W" sync S1
+  assert_eq 1 "$AD_STATUS" "sync-repair: exit 1"
+  assert_eq "story S1 is in a live run — /hold it or wait for it to end" "$(cat "$TMP/ad.err")" "message"
+  printf 'running\n' > "$TMP/run2/stories/S1"; adopt "$W" sync S1
+  assert_eq 1 "$AD_STATUS" "running: exit 1"
+  STUDIO_RUN="$TMP/run2/manifest.md"; STUDIO_STORY=S1; STUDIO_RUN_DIR="$TMP/run2"; export STUDIO_RUN STUDIO_STORY STUDIO_RUN_DIR
+  adopt "$W" sync S1
+  assert_eq 0 "$AD_STATUS" "own unit: exit 0"
+  unset STUDIO_RUN STUDIO_STORY STUDIO_RUN_DIR
+  printf 'queued\n' > "$TMP/run2/stories/S1"; adopt "$W" sync S1
+  assert_eq 0 "$AD_STATUS" "queued: exit 0"
+  live_done
+}
+
+test_adopt_part_done_ignores_sync() {
+  adopt_repo ps 6 3
+  wt_commit "wip a" wa.txt; _wa="$(git -C "$W" rev-parse HEAD)"
+  inspect_s1
+  assert_contains "$TMP/ad.out" "^T4 in progress: $_wa\.\.$_wa$" "baseline"
+  wt_commit "chore(sync): merge origin/main into S1-b" ws1.txt
+  wt_commit "fix(sync): resolve x" ws2.txt
+  inspect_s1
+  assert_contains "$TMP/ad.out" "^T4 in progress: $_wa\.\.$_wa$" "sync commits do not count"
+}
+
 # live_lock STATE… — a live dummy run holding S1 in state STATE.
 live_lock() {
   mkdir -p "$TMP/run1/stories"; printf '# Run: x\n' > "$TMP/run1/manifest.md"; printf '%s\n' "$1" > "$TMP/run1/stories/S1"
@@ -775,7 +914,7 @@ test_sync_view_write_failure_commits_nothing() {
   assert_eq "$_o" "$(git -C "$W" rev-parse origin/S1-b)" "nothing pushed"
 }
 
-run_tests test_adopt_seed_short_sha_line_same_range test_sync_short_sha_truth_line test_sync_view_collision_counter test_sync_view_write_failure_commits_nothing test_sync_failed_commit_restores test_sync_bad_new_claim_is_plain_mismatch test_adopt_from_subdirectory test_sync_already_in_sync test_sync_accepts_claims test_sync_all_or_nothing test_sync_claim_end_differs \
+run_tests test_adopt_start_checkout_spaced_path test_adopt_seed_reads_ledger_from_run_worktree test_adopt_seed_start_dir_wins test_adopt_run_target_from_start_checkout test_adopt_start_checkout_from_run_worktree test_adopt_start_checkout_two_listings_refuse test_adopt_start_checkout_none_falls_back test_adopt_live_run_check_per_run_lock test_adopt_part_done_ignores_sync test_adopt_seed_short_sha_line_same_range test_sync_short_sha_truth_line test_sync_view_collision_counter test_sync_view_write_failure_commits_nothing test_sync_failed_commit_restores test_sync_bad_new_claim_is_plain_mismatch test_adopt_from_subdirectory test_sync_already_in_sync test_sync_accepts_claims test_sync_all_or_nothing test_sync_claim_end_differs \
   test_sync_truth_mismatches test_sync_ambiguous_short_sha test_sync_rewrite_message test_sync_views_keep_other_lines \
   test_sync_carries_rulings_once test_sync_landed_note test_sync_live_run_refusal test_sync_own_unit_exempt \
   test_sync_diverged_and_behind test_sync_preconditions test_adopt_workspace_lookup_two_trees test_sync_push_failure_warns \

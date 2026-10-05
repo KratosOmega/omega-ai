@@ -8,7 +8,8 @@
 # run_unit, row, snapshot, story_units, acquire_run_lock, run_setup, unlock)
 # are defined and its preflight has run; never run on its own. Reads studio
 # state and the manifest; never writes either. It redefines stop_requested,
-# spent_all and spent for manifest mode.
+# spent_all, spent, run_populate, lock_recheck and the session_* slot calls
+# (#39 D19) for manifest mode.
 [ -n "${SELF_DIR:-}" ] || { echo "overnight-lanes.sh: sourced by studio-overnight" >&2; exit 2; }
 
 # git_retry ARGS… — git ARGS, retried up to three times (sleeps 1, 2, 4 s)
@@ -80,11 +81,106 @@ git_version_ok() {
     | awk '{ exit !($1 > 2 || ($1 == 2 && $2 >= 38)) } END { if (NR == 0) exit 1 }'
 }
 
+# mf_rows_clash ROWS HOW — a story id or branch of MF_ROWS that ROWS uses too.
+# The NR == FNR pass reads the other run's rows first, then flags this run's.
+mf_rows_clash() {
+  awk -F'\t' -v how="$2" 'NR == FNR { id[$1] = 1; br[$2] = 1; next }
+    ($1 in id) { printf "story %s is used by %s id\n", $1, how }
+    ($2 in br) { printf "branch %s is used by %s branch\n", $2, how }' "$1" "$MF_ROWS" 2>/dev/null
+}
+# mf_conflicts LIVE_ONLY — this manifest (MF_SLUG, MF_ROWS) against the
+# other runs (#39 AC8, D39): live runs' rows.tsv and Target, and with
+# LIVE_ONLY=0 also stopped records (landed.tsv, no done; rows from the
+# newest report dir) and a done record of this slug. One line per conflict.
+mf_conflicts() {
+  # cut, not IFS=<tab> read: a tab is IFS whitespace, so an empty column (a
+  # lock without start=) would collapse and shift the lock path out of field 7.
+  runs_live "$STATE_ROOT" | while IFS= read -r _mc_e; do
+    _mc_s="$(printf '%s\n' "$_mc_e" | cut -f2)"; _mc_k="$(printf '%s\n' "$_mc_e" | cut -f3)"
+    _mc_p="$(printf '%s\n' "$_mc_e" | cut -f4)"; _mc_d="$(printf '%s\n' "$_mc_e" | cut -f5)"
+    _mc_l="$(printf '%s\n' "$_mc_e" | cut -f7)"
+    [ "$1" = 0 ] || [ "$_mc_l" != "$LOCK" ] || continue   # own lock: only once it is held (re-check)
+    [ "$_mc_k" = manifest ] || continue
+    _mc_how="live run $_mc_s ($_mc_d, pid $_mc_p) — stop it ($(sq "$SELF_ABS") stop --run $_mc_s) or pick another"
+    [ "$_mc_s" != "$MF_SLUG" ] || printf 'slug %s is used by %s slug\n' "$MF_SLUG" "$_mc_how"
+    mf_rows_clash "$_mc_d/rows.tsv" "$_mc_how"
+    _mc_t="$(runs_mf_header "$_mc_d/manifest.md" Target)"
+    if [ -n "$_mc_t" ] && cut -f2 "$MF_ROWS" | grep -qxF -- "$_mc_t"; then
+      printf 'branch %s is the Target of %s branch\n' "$_mc_t" "$_mc_how"
+    fi
+  done
+  [ "$1" = 1 ] && return 0
+  for _mc_r in "$STATE_ROOT"/.studio/runs/*/landed.tsv; do
+    [ -f "$_mc_r" ] || continue
+    _mc_s="${_mc_r%/landed.tsv}"; _mc_s="${_mc_s##*/}"
+    if [ "$_mc_s" = "$MF_SLUG" ]; then
+      if runs_record_done "$STATE_ROOT" "$_mc_s"; then
+        printf 'run %s is done: archive its record first: mv %s %s.<utc ts>\n' \
+          "$_mc_s" "$(sq "$STATE_ROOT/.studio/runs/$_mc_s")" "$(sq "$STATE_ROOT/.studio/runs/$_mc_s")"
+      fi
+      continue                                    # own open record: a resume
+    fi
+    runs_record_open "$STATE_ROOT" "$_mc_s" || continue
+    runs_live "$STATE_ROOT" | runs_match "$_mc_s" | grep -q . && continue   # counted above
+    _mc_rows="$(runs_rows "$STATE_ROOT" "$_mc_s")" || continue
+    # The way out (AC8): resume from its newest report's manifest path (the
+    # report's own fallback when unrecorded), or abandon it by archiving the
+    # record as a done one is archived.
+    _mc_rd="${_mc_rows%/rows.tsv}"; _mc_rec="$STATE_ROOT/.studio/runs/$_mc_s"
+    _mc_mf="$(head -n 1 "$_mc_rd/manifest.path" 2>/dev/null)"; [ -n "$_mc_mf" ] || _mc_mf="docs/runs/$_mc_s.md"
+    mf_rows_clash "$_mc_rows" "stopped run $_mc_s (record $_mc_rec, report $_mc_rd) — resume it ($(sq "$SELF_ABS") start $_mc_mf) or abandon it (mv $(sq "$_mc_rec") $(sq "$_mc_rec").<utc ts>) or pick another"
+  done
+}
+# mf_overlap_warn — warn (D38, AC9) for each other live run whose unfinished
+# tasks' Files: this run's unfinished tasks also name. At most 20 paths per
+# run, then `and N more`. Only warns: any failure prints nothing.
+mf_overlap_warn() {
+  _ow_mine="$MF_TMP/ow-mine"; _ow_peers="$MF_TMP/ow-peers"; : > "$_ow_mine"
+  while IFS="$(printf '\t')" read -r _ow_id _ow_b _ow_t _ow_sp _ow_plan _; do
+    [ -n "$_ow_id" ] && [ -n "$_ow_plan" ] && [ "$_ow_plan" != - ] || continue
+    _ow_k="$(sed -n 's/^task:[[:blank:]]*//p' "$STATE_ROOT/.studio/stories/$_ow_id.md" 2>/dev/null | head -n 1)"
+    _ow_k="${_ow_k%%/*}"; case "$_ow_k" in ''|*[!0-9]*) _ow_k=0 ;; esac
+    git -C "$START_DIR" show "$MF_DOCS:$_ow_plan" 2>/dev/null | runs_plan_files "$_ow_k" >> "$_ow_mine"
+  done < "$MF_ROWS"
+  LC_ALL=C sort -u "$_ow_mine" > "$_ow_mine.s" 2>/dev/null || return 0
+  [ -s "$_ow_mine.s" ] || return 0
+  sh "$SELF_DIR/studio-peers" --files 2>/dev/null | grep -v '^[^ ]*: unreadable$' | awk 'NF' > "$_ow_peers" || return 0
+  for _ow_s in $(cut -d' ' -f1 "$_ow_peers" | LC_ALL=C sort -u); do
+    awk -v s="$_ow_s" 'index($0, s " ") == 1 { print substr($0, length(s) + 2) }' "$_ow_peers" | LC_ALL=C sort -u > "$_ow_peers.s"
+    LC_ALL=C comm -12 "$_ow_mine.s" "$_ow_peers.s" > "$_ow_peers.c"
+    _ow_n="$(wc -l < "$_ow_peers.c" | tr -d ' ')"
+    [ "$_ow_n" -gt 0 ] || continue
+    say "warning — live run $_ow_s is changing files this run's unfinished tasks change too:"
+    head -n 20 "$_ow_peers.c" | sed 's/^/  /' >&2
+    [ "$_ow_n" -le 20 ] || printf '  and %s more\n' $((_ow_n - 20)) >&2
+  done
+  return 0
+}
+
 # mf_check — the manifest preflight: one refuse per failure (spec 806-815).
 mf_check() {
   git_version_ok || refuse "git 2.38 or newer is required (git merge-tree --write-tree); found $(git --version 2>/dev/null)"
   printf '%s\n' "$MF_SLUG" | grep -Eq '^[A-Za-z0-9._-]+$' \
     || refuse "manifest: '# Run: <slug>' must name a slug of [A-Za-z0-9._-], got '$MF_SLUG'"
+  case "$MF_SLUG" in
+    off) refuse "slug off is reserved (/omega:autopilot off) — pick another" ;;
+    *[!0-9]*) ;;
+    *) refuse "slug $MF_SLUG is all digits (it reads as a story id) — pick another" ;;
+  esac
+  # A branch whose / -> - form starts like a run's own branches would collide with them (#39).
+  # A Branch that is the default branch or the Target: its story worktree
+  # would be the main checkout, and a sync or landing would push to it.
+  while IFS="$(printf '\t')" read -r _bf_id _bf_b _; do
+    if [ -n "$_bf_b" ] && { [ "$_bf_b" = "$DEFAULT_BRANCH" ] || [ "$_bf_b" = "$MF_TARGET" ]; }; then
+      refuse "manifest: $_bf_id: branch $_bf_b is the default branch or the run's Target — pick another"
+    fi
+    case "$(printf '%s' "$_bf_b" | tr / -)" in
+      run-*|integration-*|progress-*) refuse "manifest: $_bf_id: branch $_bf_b collides with a run, integration or progress branch (its / -> - form starts run-, integration- or progress-) — pick another" ;;
+    esac
+  done < "$MF_ROWS"
+  while IFS= read -r _l; do [ -z "$_l" ] || refuse "$_l"; done <<EOF_MC
+$(mf_conflicts 0)
+EOF_MC
   case "$MF_MODE" in
     integration) _want="integration/$MF_SLUG" ;;
     direct)
@@ -184,6 +280,7 @@ mf_check() {
     done
     set +f
   done < "$MF_TMP/stories"
+  mf_overlap_warn
 }
 
 # build_chains — $CHAINS from $MF_ROWS by the chain rule (spec 479-487), one
@@ -501,6 +598,7 @@ land_repair() {
   PROMPT="/game-dev:execute --land"; LAUNCH_ENV="$LAUNCH_ENV STUDIO_REPAIR=$(sq "$LAND_REPAIR")"
   n=$((${n:-0} + 1)); run_unit "$n" repair
   PROMPT="$_lr_p"; LAUNCH_ENV="$_lr_e"
+  if [ "$UNIT_HALTED" != 0 ]; then story_write "$1" "stopped $(lane_halt_reason)"; return 1; fi   # D22
   snapshot "$UNIT_DIR/stops.after"
   _lr_new="$(new_stop "$UNIT_DIR/stops.before" "$UNIT_DIR/stops.after")"
   _lr_a="$(ledger_of "$FEATURE_DIR" | grep -c '^- [0-9-]* Repair: ')"
@@ -553,6 +651,7 @@ gate_repair() {
   LAUNCH_ENV="$LAUNCH_ENV STUDIO_REPAIR=$(sq "gate:$(gate_log_of "$FEATURE_DIR")")"
   n=$((${n:-0} + 1)); run_unit "$n" gate-repair
   PROMPT="$_gr_p"; LAUNCH_ENV="$_gr_e"
+  if [ "$UNIT_HALTED" != 0 ]; then ENDING="$(lane_halt_reason)"; return 1; fi   # D22
   snapshot "$UNIT_DIR/stops.after"
   take_new_stop "$UNIT_DIR/stops.before" "$UNIT_DIR/stops.after"
   _gr_a="$(ledger_of "$FEATURE_DIR" | grep -c '^- [0-9-]* Repair: ')"
@@ -561,6 +660,107 @@ gate_repair() {
   _gr_o="$(unit_outcome)"
   if [ "$_gr_o" != "timed out" ]; then row "$n" gate-repair "$_gr_o"; ENDING="gate repair made no progress$(orphan_note "$_gr_o")"
   else row "$n" gate-repair "timed out"; ENDING="gate repair timed out (session_minutes $SESSION_MINUTES)"; fi
+  # A halt that ended the unit (or arrived while it ran) names the story's end.
+  ! lane_halt || ENDING="$(lane_halt_reason)"
+  return 1
+}
+
+# ---- The sync check (#39 AC24-26; D28-D34) ----
+# unit_pre LABEL — the sync check before a task unit and the final-review
+# unit of a story (retries included); never before a repair unit, the
+# finish, landing or the final step (D34), and not once the lane must halt.
+# 1 when the story must end (ENDING set).
+unit_pre() {
+  [ -n "${CUR_ID:-}" ] && [ -n "${LDIR:-}" ] || return 0
+  case "$1" in T[0-9]*|final-review) ;; *) return 0 ;; esac
+  ! lane_halt || return 0
+  sync_check "$CUR_ID"
+}
+# sync_emit ID MERGED — the merged story_synced event (refs in merge order,
+# sha the worktree's new head), when MERGED (comma-joined refs) is not empty.
+sync_emit() { [ -z "$2" ] || run_event story_synced "story=$1" "refs[]=$2" "sha=$(git -C "$SY_W" rev-parse HEAD)"; }
+# sync_check ID — merge each sync ref (origin/<Target>, then origin/<default>
+# when the Target is not the default) that moved past the story branch into
+# the story worktree, one `chore(sync): merge <ref> into <Branch>` each, and
+# push it to origin/<Branch> (AC24-25). It runs only when the story worktree
+# exists on <Branch> (else skipped=no-worktree), is clean (skipped=dirty) and
+# is not ahead of origin/<Branch> (skipped=ahead, also when there is none:
+# D29). A ref that does not resolve is failed=merge-tree (D28); a refused
+# merge is aborted and failed=merge (D31). A skip or failure is a
+# story_synced event and never stops the story; a conflict (merge-tree exit
+# 1) launches one sync repair and ends the check (D33). Writes no studio
+# state. Returns sync_repair's status after a conflict, else 0.
+sync_check() {
+  _sy_b="$(row_field "$1" branch)"
+  SY_W="$(story_state "$1" worktree 2>/dev/null)" && [ -n "$SY_W" ] \
+    && [ "$(git -C "$SY_W" symbolic-ref -q --short HEAD 2>/dev/null)" = "$_sy_b" ] \
+    || { run_event story_synced "story=$1" skipped=no-worktree; return 0; }
+  [ -z "$(git -C "$SY_W" status --porcelain 2>/dev/null)" ] || { run_event story_synced "story=$1" skipped=dirty; return 0; }
+  git_retry -C "$SY_W" fetch -q origin || { run_event story_synced "story=$1" failed=fetch; return 0; }
+  _sy_a="$(git -C "$SY_W" rev-list --count "refs/remotes/origin/$_sy_b..HEAD" 2>/dev/null)" || _sy_a=x
+  [ "$_sy_a" = 0 ] || { run_event story_synced "story=$1" skipped=ahead; return 0; }
+  _sy_refs="origin/$MF_TARGET"; [ "$MF_TARGET" = "$DEFAULT_BRANCH" ] || _sy_refs="$_sy_refs origin/$DEFAULT_BRANCH"
+  _sy_done=""
+  for _sy_r in $_sy_refs; do
+    git -C "$SY_W" rev-parse -q --verify "refs/remotes/$_sy_r^{commit}" >/dev/null \
+      || { sync_emit "$1" "$_sy_done"; run_event story_synced "story=$1" failed=merge-tree; return 0; }
+    ! git -C "$SY_W" merge-base --is-ancestor "refs/remotes/$_sy_r" HEAD || continue
+    _sy_rc=0; git -C "$SY_W" merge-tree --write-tree HEAD "refs/remotes/$_sy_r" >/dev/null 2>&1 || _sy_rc=$?
+    case "$_sy_rc" in
+      0) if ! git -C "$SY_W" merge -q --no-ff --no-edit -m "chore(sync): merge $_sy_r into $_sy_b" "refs/remotes/$_sy_r" >/dev/null 2>&1; then
+           git -C "$SY_W" merge --abort >/dev/null 2>&1
+           [ -z "$(git -C "$SY_W" status --porcelain 2>/dev/null)" ] \
+             || say "sync: $SY_W is not clean after merge --abort — left as is for the next unit"
+           sync_emit "$1" "$_sy_done"; run_event story_synced "story=$1" failed=merge; return 0
+         fi
+         _sy_done="$_sy_done${_sy_done:+,}$_sy_r"
+         git_retry -C "$SY_W" push -q origin "HEAD:refs/heads/$_sy_b" \
+           || { sync_emit "$1" "$_sy_done"; run_event story_synced "story=$1" failed=push; return 0; } ;;
+      1) sync_emit "$1" "$_sy_done"; sync_repair "$1" "$_sy_r"; return $? ;;
+      *) sync_emit "$1" "$_sy_done"; run_event story_synced "story=$1" failed=merge-tree; return 0 ;;
+    esac
+  done
+  sync_emit "$1" "$_sy_done"
+  return 0
+}
+# sync_repair ID REF — one sync-repair unit (AC26) through the landing-repair
+# path: stories/ID = sync-repair, then `/game-dev:execute --land` (label
+# sync-repair, model_repair) with STUDIO_REPAIR=sync:REF added to the story's
+# env words. Returns 0 when the feature ledger gained a `Synced:` line: the
+# record goes back to running, stops.before is taken again, and the story's
+# next unit runs, once op_boundary, the run budget and the stage (plan or
+# execute) are checked again (story_units checked them before the repair;
+# their endings are story_units'). Else returns 1 with ENDING set, and the
+# story stops at once (no retry, no hold): the halt reason; `stop: run budget`; `sync repair:
+# stop: <reason>` for a new Stop: line; `sync repair: no progress [(orphaned:
+# …)]`; `sync repair: timed out (session_minutes N)` (D32).
+sync_repair() {
+  if lane_halt; then ENDING="$(lane_halt_reason)"; return 1; fi
+  if run_budget_out; then ENDING="stop: run budget"; return 1; fi
+  story_write "$1" sync-repair
+  snapshot "$UNIT_DIR/sync.before"
+  _sr_b="$(ledger_of "$FEATURE_DIR" | grep -c '^- [0-9-]* Synced: ')"
+  _sr_p="$PROMPT"; _sr_e="$LAUNCH_ENV"
+  PROMPT="/game-dev:execute --land"; LAUNCH_ENV="$LAUNCH_ENV STUDIO_REPAIR=$(sq "sync:$2")"
+  n=$((${n:-0} + 1)); run_unit "$n" sync-repair
+  PROMPT="$_sr_p"; LAUNCH_ENV="$_sr_e"
+  if [ "$UNIT_HALTED" != 0 ]; then ENDING="$(lane_halt_reason)"; return 1; fi   # D22
+  snapshot "$UNIT_DIR/sync.after"
+  take_new_stop "$UNIT_DIR/sync.before" "$UNIT_DIR/sync.after"
+  _sr_a="$(ledger_of "$FEATURE_DIR" | grep -c '^- [0-9-]* Synced: ')"
+  if [ -n "$NEW_STOP" ]; then row "$n" sync-repair stop; ENDING="sync repair: $STOP_ENDING"; return 1; fi
+  if [ "$_sr_a" -gt "$_sr_b" ]; then
+    row "$n" sync-repair progress; story_write "$1" running; snapshot "$UNIT_DIR/stops.before"
+    # story_units checked these before the repair; the repair took time,
+    # money and maybe the stage, so check them again before the next unit.
+    op_boundary "$1" || return 1
+    if run_budget_out; then ENDING="stop: run budget"; return 1; fi
+    case "$SIG_STAGE" in plan|execute) ;; *) ENDING="stop: unexpected stage $SIG_STAGE"; return 1 ;; esac
+    return 0
+  fi
+  _sr_o="$(unit_outcome)"
+  if [ "$_sr_o" != "timed out" ]; then row "$n" sync-repair "$_sr_o"; ENDING="sync repair: no progress$(orphan_note "$_sr_o")"
+  else row "$n" sync-repair "timed out"; ENDING="sync repair: timed out (session_minutes $SESSION_MINUTES)"; fi
   # A halt that ended the unit (or arrived while it ran) names the story's end.
   ! lane_halt || ENDING="$(lane_halt_reason)"
   return 1
@@ -636,6 +836,50 @@ lane_halt_reason() {
 # record is the story's record, stories/<id> (R4).
 halt_reason() { lane_halt_reason; }
 hold_record() { story_write "$1" "$2"; }
+
+# ---- Session slots (#39 AC27, AC28; D19-D25) ----
+# slot_halt — a wait ends only on a halt (D22): lane_halt in a lane, the stop file for the final step.
+slot_halt() { if [ -n "${LANE_PID:-}" ]; then lane_halt; else [ -e "$STOP_FILE" ]; fi; }
+# session_acquire LABEL — queue for a project session slot before the unit
+# starts (#39 AC27): FIFO, taken before unit_started and the clocks. 1 on a
+# halt (the wait entry removed); a queueing that fails is retried, never a
+# halt. The first failed try writes slotwait and
+# the session_wait event. The key (SESS_ME) is the lane's pid, the runner's
+# for a final-step unit, so no two lanes share a mutex key or a wait entry;
+# an entry of this key left from an earlier wait goes before queueing.
+session_acquire() {
+  SESS_ME="${LANE_PID:-$$}"; SESS_RUN="$RUN_DIR"; sess_init
+  _sa_story="${CUR_ID:--}"; _sa_lane="${LANE_K:-final}"; _sa_waited=0
+  rm -f "$SESS_DIR"/wait/[0-9]*-"$SESS_ME"; SESS_WAIT=""
+  # A failed first queueing is not a halt: say it, and the loop queues again.
+  sess_enqueue "$_sa_story" "$1" || { SESS_WAIT=""; say "sessions: cannot queue in $STATE_ROOT/.studio/sessions — retrying"; }
+  while :; do
+    if slot_halt; then sess_wait_cancel; rm -f "$UNIT_DIR/slotwait"; return 1; fi
+    if sess_try "$1"; then rm -f "$UNIT_DIR/slotwait"; return 0; fi
+    [ -n "$SESS_WAIT" ] || sess_enqueue "$_sa_story" "$1"     # swept: re-queue at the tail
+    if [ "$_sa_waited" = 0 ]; then
+      _sa_waited=1; date +%H:%M > "$UNIT_DIR/slotwait"
+      run_event session_wait "lane=$_sa_lane" "story=$_sa_story" "since=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    fi
+    sleep "${STUDIO_OVERNIGHT_SLOT_POLL_SECONDS:-2}"
+  done
+}
+# session_started PID — the slot's owner names the unit's session pid too.
+session_started() { sess_session "$1"; }
+# session_release — this lane's slot (owner-checked), any wait entry and its
+# slotwait go (a HUP or runner error mid-wait must not leave a stale wait).
+session_release() { sess_release; sess_wait_cancel; [ -z "${UNIT_DIR:-}" ] || rm -f "$UNIT_DIR/slotwait"; }
+# lane_slot_drop K — lanes_end_sessions' part for a dead lane K (AC27): its
+# slot and wait entry go, keyed by its pid. Called only after the lane's
+# session was ended; a lane still alive releases its own (lane_exit), so a
+# slot is never freed under a session that may yet start.
+lane_slot_drop() {
+  _ld_p="$(cat "$RUN_DIR/lanes/$1/pid" 2>/dev/null)"
+  [ -n "$_ld_p" ] && [ -n "${STATE_ROOT:-}" ] && ! pid_live "$_ld_p" || return 0
+  SESS_DIR="$STATE_ROOT/.studio/sessions"; SESS_MX="$STATE_ROOT/.studio/sessions.mutex"
+  [ -d "$SESS_DIR" ] || return 0
+  SESS_ME=$$; sess_drop_owner "$_ld_p"
+}
 # last_stop_gate_red — the feature ledger's latest Stop: line is a red finish
 # gate, `Stop: gate red — …` (the resume's precondition; AC20, R29).
 last_stop_gate_red() {
@@ -663,6 +907,7 @@ chain_skip_after() {
 lane_exit() {
   trap '' INT TERM HUP
   end_session
+  session_release   # #39 AC27: every exit path, signals included
   land_lock_release
   [ -z "${LDIR:-}" ] || rm -f "$LDIR/cpid" "$LDIR/wpid"   # ended and reaped: never signal a reused pid
   if [ -n "${CUR_ID:-}" ] && ! is_ending "$(story_get "$CUR_ID")"; then
@@ -845,6 +1090,8 @@ lanes_wait() {
 # are ended first, so a dead lane's watchdog never outlives it to signal a
 # reused pgid at its deadline. The gates each lane's session left behind are
 # reaped in parallel, so the teardown waits one grace, not one per lane.
+# Once its session is ended, a dead lane's session slot and wait entry go
+# (lane_slot_drop, #39 AC27); a live lane releases its own on exit.
 # Used by the runner's exit path (lanes then see the stop and end) and by
 # the sweep for a lane that died with its session live. Paths are quoted
 # throughout (a project path may hold a space); lane names are numbers.
@@ -889,6 +1136,7 @@ lanes_end_sessions() {
     _es_t="$(cat "$RUN_DIR/lanes/$_es_k/utag" 2>/dev/null)"
     if [ -n "$_es_t" ]; then unit_reap "$_es_t" & _es_r="$_es_r $!"; fi
     rm -f "$RUN_DIR/lanes/$_es_k/utag"
+    lane_slot_drop "$_es_k"   # its session is ended: a dead lane's slot and wait entry go (AC27)
   done
   if [ -n "$_es_r" ]; then
     wait $_es_r 2>/dev/null
@@ -903,6 +1151,8 @@ lanes_end_sessions() {
 # later one `skipped <that id>`; every story of an unclaimed chain is
 # `skipped: run stopped`. Lane rcs are LANE_RC_<k>, set by the wait loop.
 # SWEEP_WHY, when set, replaces the crash text (lanes_reap: the runner died).
+# Every dead lane's session slot and wait entry go (lane_slot_drop), only
+# once its session is ended (a lane with a cpid left is ended above first).
 lanes_sweep() {
   for _sw_c in $(cut -f1 "$CHAINS"); do
     if [ -d "$RUN_DIR/claims/$_sw_c" ]; then
@@ -930,6 +1180,11 @@ lanes_sweep() {
         is_ending "$(story_get "$_sw_id")" || story_write "$_sw_id" "skipped: run stopped"
       done
     fi
+  done
+  # A dead lane with no session left (no cpid) still frees its slot and wait entry (#39 AC27).
+  for _sw_d in "$RUN_DIR"/lanes/*; do
+    [ -d "$_sw_d" ] && [ ! -f "$_sw_d/cpid" ] || continue
+    lane_slot_drop "${_sw_d##*/}"
   done
 }
 # lanes_wait_all — lanes_wait each of LANE_PIDS (lane k is the k-th), its rc
@@ -1014,7 +1269,7 @@ story_ledger_lines() { story_ledger_text "$1" | grep -E '^- [0-9-]+ (([^ ]+ )?Ru
 # `<id>-<unit label>`) as a markdown table; `(no units)` when none ran.
 story_units_table() {
   cat "$RUN_DIR"/lanes/*/units.tsv 2>/dev/null | awk -F'\t' -v p="$1-" '
-    index($2, p) == 1 && substr($2, length(p) + 1) ~ /^(T[0-9]+|check|final-review|finish|repair|gate-repair)(-retry)?$/ {
+    index($2, p) == 1 && substr($2, length(p) + 1) ~ /^(T[0-9]+|check|final-review|finish|repair|gate-repair|sync-repair)(-retry)?$/ {
       if (!n++) print "| # | Unit | Exit | Cost | Minutes | Timed out | Outcome |\n|---|------|------|------|---------|-----------|---------|"
       printf "| %s | %s | %s | %s | %s | %s | %s |\n", $1, $2, $3, $4, $5, $6, $7 }
     END { if (!n) print "(no units)" }'
@@ -1186,24 +1441,34 @@ lanes_reap() {
   SWEEP_WHY=""
   lanes_report "stop: runner gone"
 }
-# lanes_reap_stale — before a start takes the lock: a stale lock (its
-# holder dead) naming a manifest run with no report.md gets lanes_reap, in a
-# subshell (it loads that run's own variables). Returns 1 after a refusal
-# while that run's lanes still run.
-lanes_reap_stale() {
-  [ -f "$LOCK" ] && ! lock_live || return 0
-  _rs_d="$(sed -n 's/^run=//p' "$LOCK" 2>/dev/null | head -n 1)"
+# lanes_reap_at LOCKFILE — a stale lock (its holder dead) naming a manifest
+# run with no report.md gets lanes_reap, in a subshell (it loads that run's
+# own variables) with LOCK set to LOCKFILE and START_DIR from the run's
+# recorded start dir (D12), so its Resume line names its own checkout.
+# Returns 1 after a refusal while that run's lanes still run.
+lanes_reap_at() {
+  [ -f "$1" ] && ! runs_lock_live "$1" || return 0
+  _rs_d="$(runs_kv run "$1")"
   [ -n "$_rs_d" ] && [ -f "$_rs_d/manifest.md" ] && [ ! -f "$_rs_d/report.md" ] || return 0
-  ( lanes_load_run "$_rs_d"
+  _rs_sd="$(runs_start_dir "$1")"; [ -n "$_rs_sd" ] && [ -d "$_rs_sd" ] || _rs_sd="$START_DIR"
+  ( LOCK="$1"; START_DIR="$_rs_sd"; lanes_load_run "$_rs_d"
     lanes_reap || { say "the last run's lanes still run (pids $LR_LIVE) — start again once they end"; exit 1; } )
 }
+# lanes_reap_stale — before a start takes the lock: this run's own per-run
+# lock (after run_paths), reaped when stale (lanes_reap_at).
+lanes_reap_stale() { lanes_reap_at "$LOCK"; }
+# lanes_reap_old — the same for a dead old-style manifest run on
+# .studio/overnight.lock (AC31).
+lanes_reap_old() { lanes_reap_at "$STATE_ROOT/.studio/overnight.lock"; }
 # lanes_status_lines — one line per story in manifest order: `<id>  lane
 # <k|->  <state>  unit <label|->  task <k/N|->`. The lane is its chain's
 # claim; the state, the first word of stories/<id>; the unit, lanes/<k>/current
 # as written when it names this story and the story has no ending; the task,
 # the story's studio state. A story whose unit is running gets a second line,
 # indented: `    <unit> · <elapsed> · <last activity>` (unit_now_line); a
-# final-step unit, `final: …`. Then the gate lock (gate_line) and the spend.
+# final-step unit, `final: …`. A unit waiting for a session slot (its lane's
+# slotwait, #39 D23) gets `    waiting for a session slot since <hh:mm>`
+# instead (`final: waiting …`). Then the gate lock (gate_line) and the spend.
 lanes_status_lines() {
   # $1 is 1 for a live run: the progress line (first) then has an ETA, and
   # each story line ends with its own bar (progress_story, #37).
@@ -1222,13 +1487,19 @@ lanes_status_lines() {
     printf '%s  lane %s  %s  unit %s  task %s%s\n' "$_st_id" "$_st_k" "$_st_s" "$_st_u" "$_st_t" "$(progress_story "$_st_id")"
     case "$_st_r" in
       "held "*) printf '    %s\n' "$(held_line "$_st_r" "$_st_id")" ;;
-      *) if [ "$_st_u" != - ]; then
+      *) if [ "$_st_u" != - ] && [ -f "$RUN_DIR/lanes/$_st_k/slotwait" ]; then
+           printf '    waiting for a session slot since %s\n' "$(cat "$RUN_DIR/lanes/$_st_k/slotwait" 2>/dev/null)"
+         elif [ "$_st_u" != - ]; then
            _st_n="$(unit_now_line "$RUN_DIR/lanes/$_st_k")"
            [ -z "$_st_n" ] || printf '    %s\n' "$_st_n"
          fi ;;
     esac
   done
-  _st_n="$(unit_now_line "$RUN_DIR/final")"; [ -z "$_st_n" ] || printf 'final: %s\n' "$_st_n"
+  if [ -f "$RUN_DIR/final/slotwait" ]; then
+    printf 'final: waiting for a session slot since %s\n' "$(cat "$RUN_DIR/final/slotwait" 2>/dev/null)"
+  else
+    _st_n="$(unit_now_line "$RUN_DIR/final")"; [ -z "$_st_n" ] || printf 'final: %s\n' "$_st_n"
+  fi
   gate_line "$RUN_DIR"
   printf 'spent: $%s\n' "$(spent_all)"
   progress_done
@@ -1270,6 +1541,7 @@ lanes_on_exit() {
   else _oe_why="stop: runner error (exit $1)"; fi
   printf '%s\n' "$_oe_why" > "$STOP_FILE"
   end_session   # a final-step unit the runner itself is waiting on
+  session_release
   lanes_end_sessions
   lanes_wait_all
   lanes_sweep
@@ -1313,7 +1585,8 @@ final_stopped() {
 # final/units.tsv is `progress` when FINAL_W's HEAD moved, else `noprog`
 # (`timed out` when the session cap ended it, `orphaned` when print mode
 # killed its background work).
-# Returns 1, launching nothing, when a stop was requested or the run budget
+# Returns 1, launching nothing, when a stop was requested (before the unit or
+# while it waited for a session slot, `stopped before <label>`) or the run budget
 # (story_units' rule: spent_all + SESSION_USD > RUN_USD) refuses it, with a
 # note. Returns 2 when the unit left FINAL_W dirty: the uncommitted work is
 # discarded (reset --hard, clean -fd) and the step is red, so no gate ever
@@ -1332,6 +1605,8 @@ final_unit() {
   _fu_h0="$(git -C "$FINAL_W" rev-parse HEAD 2>/dev/null)"
   FINAL_N=$((${FINAL_N:-0} + 1)); run_unit "$FINAL_N" "$1"
   PROMPT="$_fu_p"; UNIT_CWD=""; LAUNCH_ENV=""
+  # A stop while it waited for a session slot (D22): nothing ran.
+  if [ "$UNIT_HALTED" != 0 ]; then FINAL_COLOR=red; final_note "stopped before $1"; return 1; fi
   if [ "$(git -C "$FINAL_W" rev-parse HEAD 2>/dev/null)" != "$_fu_h0" ]; then row "$FINAL_N" "$1" progress
   else row "$FINAL_N" "$1" "$(unit_outcome)"; fi
   if [ -n "$(git -C "$FINAL_W" status --porcelain 2>&1)" ]; then
@@ -1629,13 +1904,39 @@ final_step() {
   fi
 }
 
+# run_paths SLUG — a manifest run's own lock and stop flag (AC4, D5):
+# .studio/runs/SLUG/lock and .studio/runs/SLUG/stop. SLUG is mf_check's.
+run_paths() {
+  LOCK="$STATE_ROOT/.studio/runs/$1/lock"; STOP_FILE="$STATE_ROOT/.studio/runs/$1/stop"; RUN_SLUG="$1"
+}
+# run_populate — acquire_run_lock's step between take_lock and the re-check
+# (D9): the run dir's claims, stories and lanes dirs, and its own copies of
+# the manifest, rows and chains, so a later start's re-check sees them.
+run_populate() {
+  mkdir -p "$RUN_DIR/claims" "$RUN_DIR/stories" "$RUN_DIR/lanes" \
+    && cp "$MF" "$RUN_DIR/manifest.md" && cp "$MF_ROWS" "$RUN_DIR/rows.tsv" && cp "$CHAINS" "$RUN_DIR/chains"
+}
+# lock_recheck — the manifest run's re-check under runs.mutex (D8): a live
+# single-plan run (any lock but this one) refuses this start with today's
+# text, then the live runs' slug, ids and branches (mf_conflicts 1); either
+# sets RECHECK_WHY.
+lock_recheck() {
+  _lc="$(runs_live "$STATE_ROOT" | awk -F'\t' -v me="$LOCK" '$7 != me && $3 == "single"' | head -n 1)"
+  if [ -n "$_lc" ]; then
+    RECHECK_WHY="a run is live (pid $(printf '%s\n' "$_lc" | cut -f4)) — $(sq "$SELF_ABS") status"
+    return 1
+  fi
+  _rc="$(mf_conflicts 1)"
+  [ -n "$_rc" ] || return 0
+  RECHECK_WHY="lost the start race: $(printf '%s\n' "$_rc" | head -n 1)"
+  return 1
+}
+
 # lanes_run — the run path, once the manifest preflight passed.
 lanes_run() {
   lanes_reap_stale || exit 2
+  lanes_reap_old || exit 2
   acquire_run_lock
-  mkdir -p "$RUN_DIR/claims" "$RUN_DIR/stories" "$RUN_DIR/lanes" \
-    && cp "$MF" "$RUN_DIR/manifest.md" && cp "$MF_ROWS" "$RUN_DIR/rows.tsv" && cp "$CHAINS" "$RUN_DIR/chains" \
-    || { rm -f "$LOCK"; say "cannot populate $RUN_DIR"; exit 2; }
   printf '%s\n' "${MF#"$START_DIR"/}" > "$RUN_DIR/manifest.path"   # the report's resume command
   MF_ROWS="$RUN_DIR/rows.tsv"; CHAINS="$RUN_DIR/chains"
   rm -rf "$MF_TMP"; MF_TMP=""
@@ -1646,11 +1947,7 @@ lanes_run() {
   LANES_LIVE=1; LANE_PIDS=""
   trap '[ -e "$STOP_FILE" ] || : > "$STOP_FILE"' INT TERM
   trap 'HUP_REQ=1; exit 129' HUP
-  run_setup
-  # The record is this machine's run state, like the lock: kept out of git.
-  grep -qxF .studio/runs/ "$_excl" 2>/dev/null || printf '%s\n' .studio/runs/ >> "$_excl"
-  # The final step's worktrees live inside the checkout: never untracked noise.
-  grep -qxF .claude/worktrees/ "$_excl" 2>/dev/null || printf '%s\n' .claude/worktrees/ >> "$_excl"
+  run_setup   # its run_excludes keeps the record (.studio/runs/) and the final step's worktrees out of git
   RUNNER_PID=$$
   _nch="$(wc -l < "$CHAINS" | tr -d ' ')"
   _L="$_nch"
@@ -1688,6 +1985,7 @@ lanes_start() {
   MF_ROWS="$MF_TMP/rows.tsv"; CHAINS="$MF_TMP/chains"
   if mf_load "$_ls_mf"; then mf_check; fi
   [ "$FAILED" -eq 0 ] || exit 2
+  run_paths "$MF_SLUG"
   build_chains
   RUN_DIR="$REPORTS/overnight-$MF_SLUG-$(date +%Y%m%d-%H%M%S)"
   if [ "$_ls_dry" -eq 1 ]; then
@@ -1755,8 +2053,8 @@ lanes_next() {
       plan) [ -n "$_ln_pl" ] || _ln_pl="$_ln_id" ;;
     esac
   done < "$MF_ROWS"
-  if [ -n "$_ln_bs" ]; then echo "next: /game-dev:brainstorm $_ln_bs"
-  elif [ -n "$_ln_pl" ]; then echo "next: /game-dev:plan $_ln_pl"
-  else echo "next: /omega:autopilot"; fi
+  if [ -n "$_ln_bs" ]; then echo "next: /game-dev:brainstorm $MF_SLUG/$_ln_bs"
+  elif [ -n "$_ln_pl" ]; then echo "next: /game-dev:plan $MF_SLUG/$_ln_pl"
+  else echo "next: /omega:autopilot $MF_SLUG"; fi
   rm -f "$MF_ROWS"
 }

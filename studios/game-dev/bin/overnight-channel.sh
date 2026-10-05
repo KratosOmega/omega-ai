@@ -97,22 +97,49 @@ chan_args() {
   done
 }
 
-# chan_find_run — R2: CH_RUN, CH_ROOT, CH_START, CH_PID of the one live run
-# this verb acts on, or exit 1. Inside a project: the lock's run, which
-# --run must name exactly. Outside: the live registry entries, filtered by
-# --run.
+# chan_find_run — R2: CH_RUN, CH_ROOT, CH_START, CH_PID and CH_LOCK of the
+# one live run this verb acts on, or exit 1. Inside a project: a live run of
+# runs_live, the one --run names (its slug or run dir basename, runs_match),
+# its start dir the run's recorded one (D12). Outside: the live registry
+# entries, filtered by --run; CH_LOCK from that root's runs_live.
 chan_find_run() {
-  CH_RUN=""; CH_ROOT=""; CH_START=""; CH_PID=""
+  CH_RUN=""; CH_ROOT=""; CH_START=""; CH_PID=""; CH_LOCK=""
   if [ -n "$STATE_ROOT" ] && [ -d "$STATE_ROOT/.studio" ]; then
-    if lock_live; then CH_RUN="$(sed -n 's/^run=//p' "$LOCK" | head -n 1)"; CH_PID="$(lock_pid)"; fi
-    if [ -n "$A_RUN" ] && [ "${CH_RUN##*/}" != "$A_RUN" ]; then chan_fail 1 "run $A_RUN is not live"; fi
-    [ -n "$CH_RUN" ] || chan_fail 1 "no live run in $STATE_ROOT"
-    CH_ROOT="$STATE_ROOT"; CH_START="$START_DIR"
-    for _cf_e in "$REGISTRY"/overnight-*; do
-      [ -f "$_cf_e" ] && [ "$(reg_get run "$_cf_e")" = "$CH_RUN" ] || continue
-      _cf_s="$(reg_get start "$_cf_e")"; [ -z "$_cf_s" ] || CH_START="$_cf_s"
-      break
-    done
+    _cf_live="$(runs_live "$STATE_ROOT")"
+    if [ -n "$A_RUN" ]; then
+      _cf_l="$(printf '%s\n' "$_cf_live" | runs_match "$A_RUN")"
+      [ -n "$_cf_l" ] || chan_fail 1 "run $A_RUN is not live"
+    else
+      _cf_n="$(printf '%s\n' "$_cf_live" | grep -c .)"
+      [ "$_cf_n" -gt 0 ] || chan_fail 1 "no live run in $STATE_ROOT"
+      # AC13: the live run that lists the story (oldest first); none lists it:
+      # the only live run (chan_open then refuses with its own text), else a
+      # failure. A verb with no story uses the only-live-run rule.
+      _cf_l=""
+      if [ -n "$A_P1" ]; then
+        # Every run listing it, by cut (see below): two or more is a refusal.
+        _cf_hits=""; _cf_names=""; _cf_k=0
+        while IFS= read -r _cf_ln; do
+          [ -n "$_cf_ln" ] || continue
+          _cf_d="$(printf '%s\n' "$_cf_ln" | cut -f5)"
+          awk -F'\t' -v s="$A_P1" '$1 == s { f = 1 } END { exit !f }' "$_cf_d/rows.tsv" 2>/dev/null || continue
+          _cf_k=$((_cf_k + 1)); _cf_l="$_cf_ln"
+          _cf_names="${_cf_names:+$_cf_names, }$(printf '%s\n' "$_cf_ln" | cut -f2)"
+        done <<EOF
+$_cf_live
+EOF
+        [ "$_cf_k" -lt 2 ] || chan_fail 1 "$A_P1 is in $_cf_k live runs ($_cf_names) — use --run <slug>"
+      fi
+      if [ -z "$_cf_l" ]; then
+        [ "$_cf_n" = 1 ] || chan_fail 1 "no live run lists ${A_P1:-that story}"
+        _cf_l="$_cf_live"
+      fi
+    fi
+    # Fields by cut, not `read`: a tab is IFS white space, so an empty start
+    # dir would shift the lock path into its place.
+    CH_PID="$(printf '%s\n' "$_cf_l" | cut -f4)"; CH_RUN="$(printf '%s\n' "$_cf_l" | cut -f5)"
+    _cf_sd="$(printf '%s\n' "$_cf_l" | cut -f6)"; CH_LOCK="$(printf '%s\n' "$_cf_l" | cut -f7)"
+    CH_ROOT="$STATE_ROOT"; CH_START="${_cf_sd:-$START_DIR}"
     return 0
   fi
   _cf_n=0; _cf_names=""
@@ -128,6 +155,7 @@ chan_find_run() {
     chan_fail 1 "no live run (run the verb in the run's project, or name the run with --run)"
   fi
   [ "$_cf_n" -eq 1 ] || chan_fail 1 "$_cf_n live runs ($_cf_names): name one with --run"
+  CH_LOCK="$(runs_live "$CH_ROOT" | runs_match "${CH_RUN##*/}" | cut -f7)"
 }
 # chan_open VERB STORY — R3, AC4, AC6: the run's channel file, the story's
 # membership and record (CH_REC), and its paths. Exit 1 on any refusal.
@@ -292,9 +320,12 @@ chan_unsay() {
   done
   chan_fail 1 "no message or directive $1 for story $CH_STORY"
 }
-# chan_stop_run — bare `stop --run <run>`: today's stop, aimed by --run.
+# chan_stop_run — bare `stop --run <run>`: today's stop, aimed by --run, on
+# the run's own flag (D5: runs_stop_of its lock; .studio/overnight.stop when
+# the run's lock is unknown).
 chan_stop_run() {
-  { : > "$CH_ROOT/.studio/overnight.stop"; } 2>/dev/null || chan_fail 1 "cannot write $CH_ROOT/.studio/overnight.stop"
+  if [ -n "${CH_LOCK:-}" ]; then _cs_f="$(runs_stop_of "$CH_LOCK")"; else _cs_f="$CH_ROOT/.studio/overnight.stop"; fi
+  { : > "$_cs_f"; } 2>/dev/null || chan_fail 1 "cannot write $_cs_f"
   echo "stop requested: the run ends after its running unit (pid $CH_PID)"
 }
 

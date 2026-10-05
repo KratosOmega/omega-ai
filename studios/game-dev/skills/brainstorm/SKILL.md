@@ -210,6 +210,21 @@ What could sink this and the cheapest way to find out early. `n/a` when none.
 An explicit list. Anything cut in step 4 goes here with a one-line reason.
 ```
 
+**`<slug>/<id>` form.** Invoked as `/game-dev:brainstorm <slug>/<id>`:
+
+1. Find the checkout of `run/<slug>`: `git worktree list --porcelain`, the
+   `worktree` whose `branch refs/heads/run/<slug>`.
+2. When none holds it, stop with "no checkout holds run/<slug> —
+   /omega:autopilot <slug> creates its run worktree".
+3. Enter it with execute's **Enter the feature checkout** procedure
+   (`EnterWorktree path:`, else `cd`), and check it with
+   `git rev-parse --show-toplevel`.
+4. Run `studio-state show` after entering and print it.
+5. Continue as the `<id>` form under that worktree's `.studio/run`, with
+   every file path absolute under it.
+
+The bare `<id>` form keeps today's meaning in the current checkout.
+
 **Epic under a manifest.** Invoked with an id under an active manifest
 (`.studio/run` names a manifest that lists it), write one spec for the whole
 epic, and add this section after `## Not doing`, with one row per manifest
@@ -255,7 +270,8 @@ spec, its artifact (§6) and the state that must travel with them —
 `git add <spec path> docs/game-dev/artifacts/YYYY-MM-DD-<topic>.html .gitignore .studio/ledger .studio/config.json && git commit -m "docs(specs): approve <topic>"` —
 and print `Next: run /clear, then /game-dev:plan`. Under a manifest
 (an id and an active manifest, §5), print `/clear` and then the command
-`studio-overnight next` prints instead. Without studio
+`studio-overnight next` prints instead, in the `<slug>/<id>` form when
+invoked from one. Without studio
 state (§0), drop `.gitignore` and the two `.studio/` paths from that
 `git add`; the spec and its artifact still commit. Do not invoke the next
 command yourself.

@@ -6,12 +6,17 @@ Story #27 defines it; #28 (the Multica bridge) builds on it. Spec:
 
 ## Finding a run
 
-- Inside a project, the live run is the one holding the project's lock
-  (`.studio/overnight.lock`: `pid=`, `run=`, `started=`).
+- Inside a project, a live run holds a lock. Several manifest runs may be live
+  in one project at once, each with its own lock at
+  `<root>/.studio/runs/<slug>/lock` (`pid=`, `run=`, `started=`, `start=`). A
+  single-plan run holds `.studio/overnight.lock` (`pid=`, `run=`, `started=`).
+  These locks are the source of truth for which runs are live.
 - From anywhere, the user-level registry `~/.claude-gamedev/runs/` holds one
   file per run whose runner started, `<run name>-<pid>` (the run name starts
-  `overnight-`). A run is live only while its `pid` is alive and is a
-  studio-overnight; a runner killed with SIGKILL leaves its entry. The lines:
+  `overnight-`). One root may hold several live entries. A run is live only
+  while its `pid` is alive and is a studio-overnight; a runner killed with
+  SIGKILL leaves its entry. A new run drops another entry of the same root only
+  when that entry's runner is not live. The lines:
 
   ```
   root=<project root>
@@ -22,12 +27,28 @@ Story #27 defines it; #28 (the Multica bridge) builds on it. Spec:
   ```
 
   An entry may also hold `origin=<value>` after `started=`, copied from
-  `STUDIO_RUN_ORIGIN` at start (AC1a of #28: 1–200 characters of
+  `STUDIO_RUN_ORIGIN` at start (AC1a of #28: 1-200 characters of
   A-Z a-z 0-9 . _ : -, else left out with a warning); it stays when the entry
   moves to `runs/last`; the core never interprets it.
 
-  The run dir's basename is the run's name; every verb's `--run <run>` takes
-  it. `last` is the newest ended run (it also has `ended=`) and is never live.
+  The run dir's basename is the run's name. Every verb's `--run <run>` takes
+  it. Inside the run's project, `--run` also takes the run's slug
+  (`<slug|run dir basename>`). Outside a project, the channel verbs and
+  `stop --run` take only the run dir basename, and `status --run` and
+  `watch --run` ignore the selector and show every live run of the registry.
+  A channel verb or `stop --run` refuses a name that is not live:
+  `run <name> is not live`. In the project, `status --run <slug>` with no
+  such live run prints `no live run <slug>` and exits 1. `last` is the
+  newest ended run (it also has `ended=`) and is never live.
+- The channel verbs `say`, `unsay`, `hold`, `resume`, `said` and
+  `stop <story>` resolve the run in this order: `--run <slug|run dir
+  basename>` when given; otherwise the one live run of the project whose
+  `rows.tsv` lists the story; otherwise, with exactly one live run, that run.
+  No match refuses with `no live run lists <story>`. The in-project channel
+  accepts any live run of the project.
+- `stop` ends the run after its running unit. With two or more live runs it
+  stops none and lists them. `stop --run <slug>` writes that run's own stop
+  flag and ends only that run; `stop --all` writes every live run's flag.
 - A run dir holds `channel` (`hold_minutes=<N>`, `directive_chars=<N>`; the
   effective values) when it speaks this contract. A run without it predates
   the channel: every verb refuses it.
@@ -52,7 +73,8 @@ envelope, in this order:
   know the value (for example a unit's `usd`). Single-plan runs use
   `"story":"-"`; the final step's units do too.
 - Optional fields: `why` appears only for `held`, `stopped` and `skipped`;
-  `until` only for `held`. No other field is optional, except that a line
+  `until` only for `held`. `story_synced` carries either `refs` and `sha`,
+  or `skipped`, or `failed`. No other field is optional, except that a line
   carrying `"cut":true` may be missing any trailing field, so a reader
   tolerates that.
 - `why` is free display text taken from the story's record. Never match on
@@ -69,9 +91,11 @@ envelope, in this order:
 |---|---|---|
 | `run_started` | `mode`, `max_lanes`, `hold_minutes` | `mode`: `single`, `integration`, `direct`; `max_lanes` and `hold_minutes` are numbers |
 | `story_listed` | `story`, `chain`, `depends` | `chain` is a number; `depends` is an array of story ids; one per story, right after `run_started`; together they are the queue |
-| `story_state` | `story`, `state`, `why`, `until` | `state`: `queued`, `waiting`, `running`, `repair`, `gate-repair`, `held`, `landing`, `landed`, `stopped`, `skipped`; `why` only for held, stopped, skipped; `until` only for held (ISO-8601 UTC) |
+| `story_state` | `story`, `state`, `why`, `until` | `state`: `queued`, `waiting`, `running`, `repair`, `gate-repair`, `sync-repair`, `held`, `landing`, `landed`, `stopped`, `skipped`; `why` only for held, stopped, skipped; `until` only for held (ISO-8601 UTC) |
+| `story_synced` | `story`, `refs`, `sha`, `skipped`, `failed` | merged: `refs` (array, in merge order) and `sha` (the new head); `skipped`: `no-worktree`, `dirty`, `ahead`; `failed`: `fetch`, `merge-tree`, `merge`, `push`; no event when every ref is already merged; a merged line comes before a later `failed` one |
 | `unit_started` | `story`, `unit`, `label`, `model` | `unit` is the unit tag; `label` is for example `repair`, without the story id |
 | `unit_ended` | `story`, `unit`, `label`, `outcome`, `usd` | `outcome`: `progress`, `done`, `stop`, `noprog`, `timed out`, `orphaned`; `usd` is a number or `null` |
+| `session_wait` | `lane`, `story`, `since` | `lane` is the lane number or `final`; `story` is `-` for a final-step unit; `since` is ISO-8601 UTC; once per wait, when the first slot request fails; the unit's own `unit_started` follows when it gets a slot |
 | `message_queued` | `story`, `id`, `scope` | `id` is a number; `scope`: `story`, `unit`, `retire` |
 | `message_delivered` | `story`, `id`, `scope`, `unit`, `via` | `via`: `session_start`, `tool_call`; a compact re-show of a delivered message is not logged |
 | `message_requeued` | `story`, `id`, `unit`, `requeues` | `id` and `requeues` are numbers |
@@ -105,7 +129,9 @@ envelope, in this order:
 
 `studio-overnight <verb> …`; `<story>` is `-` in a single-plan run. Every verb
 takes `--run <run>` anywhere before `--`: it then acts only on that live run
-and otherwise exits 1 with `run <name> is not live` — never another run.
+and otherwise exits 1 with `run <name> is not live` — never another run
+(`status --run` in a project says `no live run <slug>`; outside one it
+ignores the selector — see the registry above).
 
 | verb | does | stdout on 0 |
 |---|---|---|

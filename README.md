@@ -97,7 +97,7 @@ The shim puts `studios/game-dev/bin/` on `PATH`. From a Godot project root:
 | `studio-run [--scene S] [--seconds N] [--windowed]` | Boots the project for N seconds and scans the log for script errors | 0 clean · 1 errors or a failed import · 2 no Godot |
 | `studio-lint [PATH]` | `gdlint` and `gdformat --check` when gdtoolkit is installed | 0 clean · 1 findings · 3 not installed |
 | `studio-state …` | Reads and writes `.studio/STATE.md` | 0 · 1 |
-| `studio-overnight start [<manifest>] \| status \| watch \| stop \| next \| say \| said \| unsay \| hold \| resume` | Runs approved plans unattended, one fresh headless session per unit, and takes messages and holds while it runs; see below | start: 0 done · 1 other ending · 2 refused; the channel verbs: 0 · 1 refused · 2 usage |
+| `studio-overnight start [<manifest>] \| status [--run] \| watch [--run] \| stop [--run \| --all] \| next \| say \| said \| unsay \| hold \| resume` | Runs approved plans unattended, one fresh headless session per unit, and takes messages and holds while it runs; see below | start: 0 done · 1 other ending · 2 refused; the channel verbs: 0 · 1 refused · 2 usage |
 
 The verbs never name Godot; `studios/game-dev/engines/godot/` does. Godot is
 found through `GODOT_PATH`, then `/Applications/Godot*.app`, then `godot` on
@@ -120,6 +120,9 @@ reported with the script it was running, or as one at shutdown.
 manifest (`docs/runs/<slug>.md`, written by `/omega:autopilot`) it runs several
 stories as parallel lanes of dependency chains:
 
+- Another run can be planned and started while one is live (several runs per
+  project; `status`, `watch` and `stop` take `--run <slug>`, `stop --all` ends
+  every run; `overnight.max_sessions`, default 6, caps sessions project-wide).
 - `studio-overnight start <manifest>` runs the stories; `--dry-run` prints the
   chains and launch lines; `--detach` preflights in the foreground, then starts
   the runner in its own session, free of the chat's `CLAUDE*`, `OMEGA_*` and
