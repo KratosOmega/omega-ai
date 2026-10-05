@@ -20,6 +20,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BIN="$REPO_ROOT/studios/game-dev/bin"
 RUNNER="$BIN/studio-overnight"
 STATE_BIN="$BIN/studio-state"
+ADOPT_BIN="$BIN/studio-adopt"
 TMP="$(cd "$(mktemp -d)" && pwd -P)"
 trap 'rm -rf "$TMP"' EXIT
 # The runner's user-level registry lives under $HOME: never the real one.
@@ -2504,6 +2505,100 @@ adopt_docs() {
     >> "$P/.studio/ledger/$1.md"
 }
 
+# adopt_lanes_fixture NAME — lanes_fixture NAME integration S1:-, then S1 made an
+# adopted, half-done story as autopilot step 3 leaves it:
+# - a 6-task original plan $AO and a 6-task converted plan (Story: S1, Source:)
+#   in the manifest's Plan cell;
+# - branch S1-b off origin/main with T1-T3 done the standard way (one commit each,
+#   plus SDD claims in the worktree's $AWS for $AO), pushed;
+# - the worktree $AW at $P/.claude/worktrees/S1-b;
+# - `studio-adopt seed S1` committed, `check --rebuild` = 3/6, stage execute;
+# - Docs: re-pointed at the new docs commit. Exports AO, AW, AWS.
+adopt_lanes_fixture() {
+  lanes_fixture "$1" integration S1:-
+  AO=docs/superpowers/plans/2026-09-01-demo.md; AW="$P/.claude/worktrees/S1-b"; AWS=.superpowers/sdd/2026-09-01-demo
+  export AO AW AWS
+  _alf_c=docs/game-dev/plans/2026-10-01-S1.md
+  ( set -e; cd "$P"
+    mkdir -p "$(dirname "$AO")"
+    { printf '# Demo\n\n'; for i in 1 2 3 4 5 6; do printf '### Task %s: step %s\n\nFiles: s%s.txt\n\n' "$i" "$i" "$i"; done; } > "$AO"
+    { printf '# Plan: S1\n\nStory: S1\nSource: %s\n\n## Global Constraints\n\n- none\n\n## Decisions\n\n- none\n\n## Acceptance criteria\n\n1. works\n\n' "$AO"
+      for i in 1 2 3 4 5 6; do printf '### Task %s: step %s\n\nSpec: %s:L3-4\nReview: final\n\n' "$i" "$i" "$AO"; done
+      printf '## Backlog\n'; } > "$_alf_c"
+    git add -A; git commit -q -m "adopt: plans"; git push -q origin run/demo
+    git push -q origin "$(git rev-parse HEAD):refs/heads/main"   # the original is on main too
+    git fetch -q origin
+    STUDIO_STORY=S1; export STUDIO_STORY
+    sh "$STATE_BIN" set task 0/6
+    sh "$STATE_BIN" ledger "source $AO spec -"; sh "$STATE_BIN" ledger "adopted $AO -> $_alf_c"
+    git worktree add -q --no-track -b S1-b "$AW" origin/main
+    cd "$AW"; mkdir -p "$AWS"; printf '%s\n' "$AO" > "$AWS/plan-path"; printf '*\n' > .superpowers/sdd/.gitignore
+    printf '# SDD ledger — plan: %s\n' "$AO" > "$AWS/progress.md"
+    for i in 1 2 3; do
+      _a="$(git rev-parse --short HEAD)"; printf '%s\n' "$i" > "s$i.txt"; git add "s$i.txt"; git commit -q -m "feat: step $i"
+      printf 'Task %s: complete (commits %s..%s, review clean)\n' "$i" "$_a" "$(git rev-parse --short HEAD)" >> "$AWS/progress.md"
+    done
+    git push -q -u origin S1-b
+    sh "$STATE_BIN" set branch S1-b; sh "$STATE_BIN" set stage execute
+    sh "$ADOPT_BIN" seed S1; sh "$STATE_BIN" check --rebuild
+    cd "$P"; unset STUDIO_STORY
+    git add -A .studio/ledger; git commit -q -m "docs(run): demo planned"; git push -q origin run/demo
+    _d="$(git rev-parse HEAD)"; sed "s/^Docs: .*/Docs: $_d/" "$MFP" > "$MFP.t" && mv "$MFP.t" "$MFP"
+    git add "$MFP"; git commit -q -m "docs(run): demo docs"; git push -q origin run/demo ) >/dev/null 2>&1 \
+    || { TESTS_RUN=$((TESTS_RUN + 1)); _fail "adopt_lanes_fixture $1: setup failed"; }
+}
+
+test_lanes_adopt_seeded_runs_rest() {
+  adopt_lanes_fixture asr
+  run_lanes start "$MFP"
+  assert_eq 0 "$LS_STATUS" "the run is done"
+  assert_eq "1 S1-T4 progress,2 S1-T5 progress,3 S1-T6 progress,4 S1-final-review progress,5 S1-finish done," "$(story_rows S1)" "a seeded 3/6 story runs T4-T6, then the final review and finish"
+  git -C "$AW" log --format=%s origin/S1-b > "$TMP/asr.log"
+  for _t in 4 5 6; do
+    assert_eq 1 "$(grep -c "^feat(S1): T$_t\$" "$TMP/asr.log")" "one T$_t commit"
+  done
+  git -C "$AW" show origin/S1-b:.studio/ledger/S1.md > "$TMP/asr.led" 2>/dev/null
+  assert_eq 3 "$(grep -c '^- [0-9-]* T[456] complete [0-9a-f]\{40\}\.\.[0-9a-f]\{40\}$' "$TMP/asr.led")" "the ledger's T4-T6 lines are full-sha ranges"
+}
+
+test_lanes_adopt_round_trip() {
+  adopt_lanes_fixture art
+  lholds_on 120
+  printf 'auto\nstop broke\n' > "$SCEN/S1"
+  lanes_bg
+  wait_for 'is_held S1' 60
+  lverb stop
+  wait_pid_or_fail "$RPID" 60 "the run ends"
+  lholds_off
+  case "$(story_rows S1)" in
+    "1 S1-T4 progress,2 S1-T5"*) _pass_msg=ok ;;
+    *) _pass_msg="" ;;
+  esac
+  assert_eq ok "$_pass_msg" "the first run did T4 and started T5 ($(story_rows S1))"
+  assert_contains "$(last_lanes_dir)/stories/S1" "was held: stop: broke" "the held story's record"
+  # An operator resolves the Stop in the worktree, then syncs.
+  ( cd "$AW" && git commit -qam "ledger: stop" ) >/dev/null 2>&1
+  _art_s=0; ( cd "$AW" && STUDIO_STORY= sh "$ADOPT_BIN" sync S1 ) > "$TMP/art.out" 2> "$TMP/art.err" || _art_s=$?
+  assert_eq 0 "$_art_s" "the operator's sync succeeds ($(tail -n 1 "$TMP/art.err"))"
+  assert_contains "$AW/$AWS/progress.md" "^Task 4: complete (commits [0-9a-f]\{40\}\.\.[0-9a-f]\{40\}, review clean)$" "T4 is claimed in the original's SDD ledger"
+  # Standard-mode T5.
+  ( cd "$AW" && _a="$(git rev-parse --short HEAD)" && printf '5\n' > s5.txt && git add s5.txt && git commit -q -m "feat: step 5 (standard)" \
+    && printf 'Task 5: complete (commits %s..%s, review clean)\n' "$_a" "$(git rev-parse --short HEAD)" >> "$AWS/progress.md" ) >/dev/null 2>&1
+  printf 'auto\nauto\nauto\n' > "$SCEN/S1"; echo 0 > "$CALLS/m-S1"
+  run_lanes start "$MFP"
+  assert_eq 0 "$LS_STATUS" "the second run is done"
+  assert_eq "1 S1-T5 progress,2 S1-final-review progress,3 S1-finish done," "$(story_rows S1)" "the new run's units, the first labelled T5 (D38)"
+  git -C "$AW" log --format=%s origin/S1-b > "$TMP/art.log"
+  assert_eq 1 "$(grep -c '^feat: step 5 (standard)$' "$TMP/art.log")" "the standard T5 commit once"
+  assert_eq 0 "$(grep -c '^feat(S1): T5$' "$TMP/art.log")" "no studio T5 commit"
+  assert_eq 1 "$(grep -c '^feat(S1): T6$' "$TMP/art.log")" "one T6 commit"
+  _art_sync="$(git -C "$AW" log --format=%H --grep='^chore(studio): ledger (sync)$' origin/S1-b | head -n 1)"
+  [ -n "$_art_sync" ] || _art_sync=none
+  git -C "$AW" show "$_art_sync" > "$TMP/art.sync" 2>/dev/null
+  assert_contains "$TMP/art.sync" "^+- [0-9-]* T5 complete [0-9a-f]\{40\}\.\.[0-9a-f]\{40\}$" "a ledger (sync) commit adds the T5 claim"
+  assert_contains "$(last_lanes_dir)/stories/S1" "^landed " "the story landed"
+}
+
 test_lanes_next_adopted_planned() {
   lanes_fixture nad integration S1:- S2:-
   mkdir -p "$P/docs/superpowers/specs" "$P/docs/superpowers/plans"
@@ -2656,5 +2751,5 @@ run_tests test_lanes_chain_rule test_lanes_manifest_refusals test_lanes_prefligh
   test_lanes_final_step_no_delivery test_lanes_deadline \
   test_lanes_stop_at_done_never_lands test_lanes_stop_held_by_operator test_lanes_stop_pending_never_holds \
   test_lanes_gate_repair_own_stop_holds test_lanes_directive_cap_holds test_lanes_hold_during_last_unit_lands_and_clears \
-  test_lanes_next_adopted_planned test_lanes_context_preflight test_lanes_check_unit_first test_lanes_adopt_sync_fail_holds test_lanes_setup_fail_holds test_lanes_setup_fail_final_red test_lanes_gate_command_final test_lanes_gate_command_finish_red_repair test_lanes_report_adopted_lines \
+  test_lanes_next_adopted_planned test_lanes_context_preflight test_lanes_check_unit_first test_lanes_adopt_sync_fail_holds test_lanes_setup_fail_holds test_lanes_setup_fail_final_red test_lanes_gate_command_final test_lanes_gate_command_finish_red_repair test_lanes_report_adopted_lines test_lanes_adopt_seeded_runs_rest test_lanes_adopt_round_trip \
   test_lanes_no_orphans
