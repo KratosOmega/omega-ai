@@ -1,12 +1,13 @@
 #!/bin/sh
 # studio-state — read and write the studio's state the same way from every
-# skill. Two roots: the stage/task pointer (.studio/STATE.md) lives in the
-# project's main checkout, so a linked git worktree edits the same file and
-# one project has one stage — except that a run worktree (`init --local`)
-# keeps its own stage pointer. Everything else keyed on `root` (STUDIO_STORY
-# state, the gate lock, records, reports) stays project-wide; the feature
-# ledger, config.json and the spec and plan paths live in the checkout the
-# command runs in, so they travel with the branch.
+# skill. Every checkout has its own stage pointer (#42): the main checkout's
+# is <root>/.studio/STATE.md; a linked worktree's is its own git-excluded
+# .studio/STATE.md, created on its first write (until then it reads idle).
+# The milestone is project-wide, on the main pointer. Everything else keyed
+# on `root` (STUDIO_STORY state, the gate lock, state.mutex, records,
+# reports) stays project-wide; the feature ledger, config.json and the spec
+# and plan paths live in the checkout the command runs in, so they travel
+# with the branch.
 #
 #   studio-state root [--work]   print the project root (the main checkout; the gate lock, stories, records), or the working root
 #   studio-state init [--local]  create .studio/ (STATE.md, config.json, ledger/)
@@ -46,23 +47,37 @@ else
 fi
 [ -n "$STATE_ROOT" ] || STATE_ROOT="$(pwd -P)"
 [ -n "$WORK_ROOT" ] || WORK_ROOT="$(pwd -P)"
-# AC2 (#39): a linked worktree (its git dir is not the common one) that has
-# its own .studio/STATE.md — a run worktree after `init --local` — keeps its
-# stage there. Every other key stays at today's root: STUDIO_STORY state,
-# the gate lock, records and reports at STATE_ROOT; the ledger, config.json,
-# spec and plan at WORK_ROOT.
-STATE="$STATE_ROOT/.studio/STATE.md"
+# The pointer's own path, through symlinks, so st_lock can source the shared
+# mutex beside it (overnight-runs.sh; AC27: reused, never copied).
+_self="$0"
+while [ -L "$_self" ]; do _l="$(readlink "$_self")"
+  case "$_l" in /*) _self="$_l" ;; *) _self="$(dirname "$_self")/$_l" ;; esac
+done
+SELF_DIR="$(cd "$(dirname "$_self")" && pwd -P)"
+TAB="$(printf '\t')"
+# #42 AC1-AC5: every checkout resolves only its own stage pointer.
+# - the main checkout: <root>/.studio/STATE.md (MAIN);
+# - a linked worktree: <work root>/.studio/STATE.md (LOCAL) when it exists and git
+#   does not track it (AC4); otherwise the checkout is pointer-less, reads idle,
+#   and its first write creates LOCAL (AC6);
+# - STUDIO_STORY: <root>/.studio/stories/<id>.md, unchanged (AC5).
+MAIN="$STATE_ROOT/.studio/STATE.md"
+LOCAL="$WORK_ROOT/.studio/STATE.md"
 _gd="$(git rev-parse --path-format=absolute --git-dir 2>/dev/null || true)"
 _gcd="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
-if [ -n "$_gd" ] && [ "$_gd" != "$_gcd" ] && [ -f "$WORK_ROOT/.studio/STATE.md" ]; then
-  STATE="$WORK_ROOT/.studio/STATE.md"
-fi
 LINKED=0; [ -z "$_gd" ] || [ "$_gd" = "$_gcd" ] || LINKED=1
+TRACKED=0; POINTERLESS=0; STATE="$MAIN"
+if [ "$LINKED" = 1 ]; then
+  STATE="$LOCAL"
+  if ( cd "$WORK_ROOT" && git ls-files --error-unmatch .studio/STATE.md ) >/dev/null 2>&1; then TRACKED=1; fi
+  if [ ! -f "$LOCAL" ] || [ "$TRACKED" = 1 ]; then POINTERLESS=1; fi
+fi
 STORY="${STUDIO_STORY:-}"
 if [ -n "$STORY" ]; then
   printf '%s' "$STORY" | grep -Eq '^[A-Za-z0-9._-]+$' || { printf "studio-state: bad STUDIO_STORY '%s'\n" "$STORY" >&2; exit 1; }
-  STATE="$STATE_ROOT/.studio/stories/$STORY.md"
+  STATE="$STATE_ROOT/.studio/stories/$STORY.md"; POINTERLESS=0
 fi
+FORCE=0
 CONFIG="$WORK_ROOT/.studio/config.json"
 LEDGER_DIR="$WORK_ROOT/.studio/ledger"
 KEYS="stage spec plan task branch milestone"
@@ -76,32 +91,96 @@ usage() {
 
 fail() { printf 'studio-state: %s\n' "$*" >&2; exit 1; }
 
+today() { date +%Y-%m-%d; }
+hdr() { sed -n "s/^$2: //p" "$1" 2>/dev/null | head -n 1; }
+slug_of() { basename "$1" | sed -e 's/\.md$//' -e 's/^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}-//'; }
+# exclude_once LINE — append LINE to <common git dir>/info/exclude once,
+# repairing a missing final newline first (#39's rule, now shared).
+exclude_once() {
+  [ -n "$_gcd" ] || return 0
+  mkdir -p "$_gcd/info" || fail "cannot create $_gcd/info"
+  grep -qxF "$1" "$_gcd/info/exclude" 2>/dev/null && return 0
+  if [ -s "$_gcd/info/exclude" ] && [ -n "$(tail -c 1 "$_gcd/info/exclude")" ]; then printf '\n' >> "$_gcd/info/exclude"; fi
+  printf '%s\n' "$1" >> "$_gcd/info/exclude"
+}
+# st_lock — AC27: take <root>/.studio/state.mutex once per invocation. 0 when
+# held (now or already) or when <root>/.studio is missing (f3-N3: nothing to
+# race, nothing created); 1 when mx_take times out. The traps release it on
+# every exit; INT and TERM then exit 130/143, so a write never resumes unlocked.
+LOCKED=0; MUTEX="$STATE_ROOT/.studio/state.mutex"
+st_lock() {
+  [ "$LOCKED" = 0 ] || return 0
+  [ -d "$STATE_ROOT/.studio" ] || return 0
+  [ -f "$SELF_DIR/overnight-runs.sh" ] || fail "missing $SELF_DIR/overnight-runs.sh — reinstall the studio"
+  . "$SELF_DIR/overnight-runs.sh"
+  trap 'mx_drop "$MUTEX" $$' EXIT
+  trap 'mx_drop "$MUTEX" $$; exit 130' INT
+  trap 'mx_drop "$MUTEX" $$; exit 143' TERM
+  if mx_take "$MUTEX" $$; then LOCKED=1; exclude_once .studio/state.mutex; return 0; fi
+  return 1
+}
+mutex_pid() { readlink "$MUTEX" 2>/dev/null || printf '?'; }
+lock_or_fail() { st_lock || fail "$MUTEX is busy (pid $(mutex_pid))"; }
+# make_local_pointer DIR — AC6/AC8, the one function behind init --local and
+# auto-create: the idle template without a milestone line, written to a temp
+# file and hard-linked into place (never clobbers; a lost race keeps the winner's).
+make_local_pointer() {
+  mkdir -p "$1/.studio" || fail "cannot create $1/.studio"
+  _mk="$1/.studio/STATE.md.tmp.$$"
+  write_idle_state "$_mk" nomilestone || fail "cannot write $_mk"
+  ln "$_mk" "$1/.studio/STATE.md" 2>/dev/null || true
+  rm -f "$_mk"
+  [ -f "$1/.studio/STATE.md" ] || fail "cannot create $1/.studio/STATE.md"
+  exclude_once .studio/STATE.md
+}
+# auto_create — AC6: a pointer-less worktree's first write creates its pointer
+# (the caller holds the mutex); AC4: never into a tracked STATE.md.
+auto_create() {
+  [ "$TRACKED" = 0 ] || fail "$LOCAL is tracked by git — a tracked STATE.md is never a stage pointer; run git rm --cached .studio/STATE.md on this branch"
+  make_local_pointer "$WORK_ROOT"; STATE="$LOCAL"; POINTERLESS=0
+}
+# main_milestone — AC10/AC11: the project-wide milestone, read from the main
+# pointer; prototype when there is none.
+main_milestone() { if [ -f "$MAIN" ]; then hdr "$MAIN" milestone; else printf 'prototype\n'; fi; }
+# milestone_view FILE — FILE with every header milestone line dropped and
+# main's milestone printed after branch: (else after task:) — AC10's show.
+milestone_view() {
+  _mvk=task; grep -q '^branch: ' "$1" && _mvk=branch     # legacy pointers have no branch: line
+  ST_MS="$(main_milestone)" ST_K="$_mvk" awk '
+    /^## Ledger/ { inl = 1 }
+    !inl && /^milestone: / { next }
+    { print }
+    !inl && !done && index($0, ENVIRON["ST_K"] ": ") == 1 { print "milestone: " ENVIRON["ST_MS"]; done = 1 }' "$1"
+}
+# pre_verb VERB — runs first in get, set, show, ledger, check, reset and
+# worktree. Empty here; #42 T4 fills it.
+pre_verb() { :; }
+
 # in_list WORD LIST — succeed when WORD is one of the space-separated LIST.
 in_list() {
   for _w in $2; do [ "$_w" = "$1" ] && return 0; done
   return 1
 }
 
-# write_idle_state FILE — the idle template, shared by every init form.
+# write_idle_state FILE [nomilestone] — the idle template, shared by every
+# init form. Only the main pointer carries the milestone line (AC10): local
+# pointers and story files pass nomilestone.
 write_idle_state() {
-  cat > "$1" <<'EOF'
-# Studio State
-
-stage: idle
-spec: -
-plan: -
-task: -
-branch: -
-milestone: prototype
-
-## Ledger
-
-EOF
+  {
+    printf '# Studio State\n\nstage: idle\nspec: -\nplan: -\ntask: -\nbranch: -\n'
+    [ "${2:-}" = nomilestone ] || printf 'milestone: prototype\n'
+    printf '\n## Ledger\n\n'
+  } > "$1"
 }
 
 need_state() {
   if [ -n "$STORY" ]; then
     [ -f "$STATE" ] || fail "no story $STORY"
+    return 0
+  fi
+  # AC3: a pointer-less worktree needs only the main pointer.
+  if [ "$POINTERLESS" = 1 ]; then
+    [ -f "$MAIN" ] || fail "no $MAIN here — run 'studio-state init' in the project root"
     return 0
   fi
   [ -f "$STATE" ] || fail "no $STATE here — run 'studio-state init' in the project root"
@@ -152,15 +231,22 @@ shq() {
   printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
 }
 
-# field KEY — the current value of a header field.
-field() { sed -n "s/^$1: //p" "$STATE" | head -n 1; }
+# field KEY — the current value of a header field. A pointer-less worktree
+# has no story (AC3): stage idle, every other field -.
+field() {
+  if [ "$POINTERLESS" = 1 ]; then
+    if [ "$1" = stage ]; then printf 'idle\n'; else printf -- '-\n'; fi
+    return 0
+  fi
+  sed -n "s/^$1: //p" "$STATE" | head -n 1
+}
 
 # feature_slug — the ledger file stem for the current spec: its basename
 # without .md and without a leading YYYY-MM-DD-; empty when no spec is set.
 feature_slug() {
   _spec="$(field spec)"
   case "$_spec" in ''|-) return 0 ;; esac
-  basename "$_spec" | sed -e 's/\.md$//' -e 's/^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}-//'
+  slug_of "$_spec"
 }
 
 # ledger_file — where a ledger line goes: the feature ledger when a spec is
@@ -192,37 +278,28 @@ case "$cmd" in
     if [ "${2:-}" = --local ]; then
       [ -z "$STORY" ] || fail "init --local cannot be combined with STUDIO_STORY"
       [ "$LINKED" = 1 ] || fail "init --local: the main checkout keeps $STATE_ROOT/.studio/STATE.md — run it in a run worktree"
-      [ ! -f "$WORK_ROOT/.studio/STATE.md" ] || fail "init --local: $WORK_ROOT/.studio/STATE.md already exists"
-      mkdir -p "$WORK_ROOT/.studio"
-      write_idle_state "$WORK_ROOT/.studio/STATE.md"
-      mkdir -p "$_gcd/info"
-      grep -qxF '.studio/STATE.md' "$_gcd/info/exclude" 2>/dev/null || {
-        if [ -s "$_gcd/info/exclude" ] && [ -n "$(tail -c 1 "$_gcd/info/exclude")" ]; then printf '\n' >> "$_gcd/info/exclude"; fi
-        printf '.studio/STATE.md\n' >> "$_gcd/info/exclude"; }
-      printf 'initialised %s (local stage pointer)\n' "$WORK_ROOT/.studio/STATE.md"; exit 0
+      [ ! -f "$LOCAL" ] || fail "init --local: $LOCAL already exists"
+      # AC8: the explicit form of auto-create — the same function, under the
+      # mutex (a no-op when <root>/.studio is missing, f3-N3).
+      lock_or_fail
+      make_local_pointer "$WORK_ROOT"
+      printf 'initialised %s (local stage pointer)\n' "$LOCAL"; exit 0
     fi
     if [ -n "$STORY" ]; then
       mkdir -p "$STATE_ROOT/.studio/stories"
       if [ ! -f "$STATE" ]; then
-        write_idle_state "$STATE"
+        write_idle_state "$STATE" nomilestone
       fi
-      _gc="$(git rev-parse --git-common-dir 2>/dev/null || true)"
-      if [ -n "$_gc" ]; then
-        case "$_gc" in /*) ;; *) _gc="$WORK_ROOT/$_gc" ;; esac
-        mkdir -p "$_gc/info"
-        if ! grep -qxF '.studio/stories/' "$_gc/info/exclude" 2>/dev/null; then
-          if [ -s "$_gc/info/exclude" ] && [ -n "$(tail -c 1 "$_gc/info/exclude")" ]; then
-            printf '\n' >> "$_gc/info/exclude"
-          fi
-          printf '.studio/stories/\n' >> "$_gc/info/exclude"
-        fi
-      fi
+      exclude_once .studio/stories/
       printf 'initialised %s\n' "$STATE"
       exit 0
     fi
-    [ ! -f "$STATE" ] || fail "$STATE already exists"
+    # AC9: a linked worktree never creates the main pointer over an existing one;
+    # its own pointer comes from its first write or init --local.
+    [ "$LINKED" = 0 ] || [ ! -f "$MAIN" ] || fail "this is a linked worktree — its stage pointer is created on its first write; to create it now, run studio-state init --local"
+    [ ! -f "$MAIN" ] || fail "$MAIN already exists"
     mkdir -p "$STATE_ROOT/.studio" "$LEDGER_DIR"
-    write_idle_state "$STATE"
+    write_idle_state "$MAIN"
     # The studio defaults; the session hook reads this file for its identity
     # line and a project overrides keys here.
     if [ ! -f "$CONFIG" ]; then
@@ -240,15 +317,18 @@ case "$cmd" in
         printf '.studio/STATE.md\n' >> "$_gi"
       fi
     fi
-    printf 'initialised %s\n' "$STATE"
+    printf 'initialised %s\n' "$MAIN"
     ;;
   get)
+    pre_verb get
     need_state
     key="${2:-}"
     in_list "$key" "$KEYS" || usage
-    field "$key"
+    # AC10: the milestone is project-wide — the main pointer's, everywhere.
+    if [ "$key" = milestone ]; then main_milestone; else field "$key"; fi
     ;;
   set)
+    pre_verb set
     need_state
     [ $# -eq 3 ] || usage
     key="$2"
@@ -265,11 +345,38 @@ case "$cmd" in
           *) printf '%s' "$val" | grep -qE '^[0-9]+/[0-9]+$' || fail "task must be n/N or -" ;;
         esac ;;
     esac
+    # AC10/AC11/AC27: set milestone writes the main pointer, from every
+    # checkout and under STUDIO_STORY, under the mutex; it never auto-creates.
+    if [ "$key" = milestone ]; then
+      [ -f "$MAIN" ] || fail "no main pointer — run studio-state init in $STATE_ROOT"
+      lock_or_fail
+      STATE="$MAIN"
+      set_field milestone "$val"
+      exit 0
+    fi
+    # AC5: STUDIO_STORY writes are unchanged and unlocked. Every other write
+    # holds the mutex (AC27); a pointer-less worktree's first one creates its
+    # pointer (AC6).
+    if [ -z "$STORY" ]; then
+      lock_or_fail
+      [ "$POINTERLESS" = 0 ] || auto_create
+    fi
     if [ "$key" = branch ]; then set_branch "$val"; else set_field "$key" "$val"; fi
     ;;
   show)
+    pre_verb show
     need_state
-    cat "$STATE"
+    if [ "$POINTERLESS" = 1 ]; then
+      # AC3: the idle header with main's milestone, and no story. Built in a
+      # temp file outside the checkout: a read writes nothing here.
+      _iv="$(mktemp "${TMPDIR:-/tmp}/studio-state.XXXXXX")" || fail "cannot create a temp file"
+      write_idle_state "$_iv" nomilestone
+      milestone_view "$_iv"
+      rm -f "$_iv"
+      printf '(no story in this checkout)\n'
+      exit 0
+    fi
+    milestone_view "$STATE"
     _lf="$(ledger_file)"
     if [ "$_lf" != "$STATE" ] && [ -f "$_lf" ]; then
       printf '\n## Feature ledger: %s\n\n' "$(basename "$_lf" .md)"
@@ -277,24 +384,36 @@ case "$cmd" in
     fi
     ;;
   ledger)
+    pre_verb ledger
     need_state
     shift
     # All remaining words form the entry, so an unquoted call keeps its text;
     # an embedded newline is folded to a space so an entry stays one line.
     text="$(printf '%s' "$*" | tr '\n' ' ')"
     [ -n "$text" ] || usage
+    if [ -z "$STORY" ]; then
+      lock_or_fail
+      [ "$POINTERLESS" = 0 ] || auto_create
+    fi
     _lf="$(ledger_file)"
     if [ "$_lf" != "$STATE" ] && [ ! -f "$_lf" ]; then
       mkdir -p "$LEDGER_DIR"
       printf '# Ledger — %s\n\n' "$(basename "$_lf" .md)" > "$_lf"
     fi
-    printf -- '- %s %s\n' "$(date +%Y-%m-%d)" "$text" >> "$_lf"
+    printf -- '- %s %s\n' "$(today)" "$text" >> "$_lf"
     ;;
   check)
+    pre_verb check
     need_state
     [ $# -le 2 ] || usage
     rebuild=0
     case "${2:-}" in '') ;; --rebuild) rebuild=1 ;; *) usage ;; esac
+    # AC3/AC7: a pointer-less worktree has nothing to check or rebuild.
+    if [ "$POINTERLESS" = 1 ]; then
+      if [ "$rebuild" = 1 ]; then printf 'no story in this checkout\n'; else printf 'check: ok\n'; fi
+      exit 0
+    fi
+    [ "$rebuild" = 0 ] || [ -n "$STORY" ] || lock_or_fail
     if [ -n "$STORY" ] && [ "$rebuild" = "1" ]; then
       _task="$(field task)"
       case "$_task" in
@@ -362,15 +481,19 @@ case "$cmd" in
     exit "$problems"
     ;;
   reset)
+    pre_verb reset
     need_state
     [ $# -le 2 ] || usage
     keep=0
     case "${2:-}" in '') ;; --keep-ledger) keep=1 ;; *) usage ;; esac
+    # AC7: a pointer-less worktree has nothing to reset, and writes nothing.
+    if [ "$POINTERLESS" = 1 ]; then printf 'no story in this checkout\n'; exit 0; fi
+    [ -n "$STORY" ] || lock_or_fail
     spec="$(field spec)"
     _lf="$(ledger_file)"
     if [ "$_lf" != "$STATE" ]; then
       if [ "$keep" = "0" ] && [ -f "$_lf" ]; then rm -f "$_lf"; fi
-      printf -- '- %s abandoned %s\n' "$(date +%Y-%m-%d)" "$spec" >> "$STATE"
+      printf -- '- %s abandoned %s\n' "$(today)" "$spec" >> "$STATE"
     fi
     set_field stage idle
     set_field spec -
@@ -380,8 +503,11 @@ case "$cmd" in
     printf 'reset to idle\n'
     ;;
   worktree)
+    pre_verb worktree
     need_state
     [ $# -eq 1 ] || usage
+    # AC3: a pointer-less worktree has no story, so no branch.
+    [ "$POINTERLESS" = 0 ] || fail "no feature branch recorded"
     br="$(field branch)"
     case "$br" in ''|-) fail "no feature branch recorded" ;; esac
     git show-ref --verify --quiet "refs/heads/$br" 2>/dev/null || fail "branch $br no longer exists"
