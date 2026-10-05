@@ -31,6 +31,10 @@ Method:
 4. List the files to create and modify, each with its single responsibility.
 5. State the alternative you rejected and why, in one sentence each.
 
+## Finding tools
+
+Never search for a tool or script: no `find /`, `find ~`, `locate` or recursive `ls` from `/`, `~` or `$HOME`. `find .` or `git ls-files` inside the project, and `command -v`, are fine. A search can hang a headless unit for hours. Use `sdd-script` (superpowers scripts), a path the studio documents, or stop and report the tool as missing.
+
 ## Skills you may call
 
 - `godot-prompter:godot-brainstorming`, `godot-prompter:scene-organization`

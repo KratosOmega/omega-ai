@@ -273,7 +273,7 @@ test_execute_contract() {
   # is cleared before stage is written, the legacy stop does not isolate, and
   # review-package runs from the worktree root.
   for lit in "producer's gate result" 'A new run first runs `studio-state set branch -`' \
-             'then do not isolate' "run by its path in SDD's skill directory, from the worktree root"; do
+             'then do not isolate' 'run from the worktree root (`sdd-script` prints the script'"'"'s path'; do
     assert_contains "$E" "$lit" "execute carries: $lit"
   done
   assert_not_contains "$E" "run from SDD's skill directory" "execute no longer reads review-package's directory as a cwd"
@@ -701,6 +701,24 @@ test_execute_adopt() {
   assert_contains "$E" 'Direct mode runs no finish gate, so `gate_command` does not run there' "direct mode (AC20)"
 }
 
+# #41: SDD scripts are found with sdd-script, never by searching or by an
+# undefined "skill directory"; the no-search rule reaches execute and every agent.
+test_sdd_script_references() {
+  ex="$REPO_ROOT/studios/game-dev/skills/execute/SKILL.md"
+  assert_contains "$ex" 'sdd-script review-package' "execute finds review-package with sdd-script"
+  assert_not_contains "$ex" "SDD's skill directory" "execute no longer says 'SDD's skill directory'"
+  assert_not_contains "$ex" 'bash scripts/review-package' "execute has no bare scripts/review-package path"
+  assert_contains "$ex" 'Never search for a tool or script' "execute carries the no-search rule"
+  assert_contains "$ex" 'bash "$(sdd-script \[--skill <skill>\] <name>)"' "execute maps a superpowers skill's scripts/<name> to sdd-script"
+  assert_contains "$ex" 'reinstall omega-ai' "execute: sdd-script not found means reinstall omega-ai"
+  assert_contains "$ex" '"$(sdd-script task-brief)" <plan> <n>' "execute's task-brief call carries <plan> <n>"
+  assert_contains "$ex" '`find .` or `git ls-files` inside the project' "execute: searching inside the project is fine"
+  for f in "$REPO_ROOT"/studios/game-dev/agents/*.md; do
+    assert_contains "$f" 'Never search for a tool or script' "$(basename "$f") carries the no-search rule"
+    assert_contains "$f" '`find .` or `git ls-files` inside the project' "$(basename "$f") allows searching inside the project"
+  done
+}
+
 run_tests test_plugin_manifests test_skill_frontmatter test_agent_frontmatter \
   test_external_references_declared test_required_plugins_enabled test_bin_syntax \
   test_role_agents_exist test_stage_skill_contracts test_plan_skill_contract \
@@ -710,4 +728,5 @@ run_tests test_plugin_manifests test_skill_frontmatter test_agent_frontmatter \
   test_review_contract test_on_demand_skills_keep_stage test_playtest_contract test_retro_contract \
   test_no_ship_references test_superpowers_requires_referenced test_no_last_playtest_callers \
   test_execute_one_contract test_router_overnight_lock test_execute_lanes test_execute_lane_gate_foreground test_execute_land_and_progress test_execute_gate_repair test_execute_operator_messages test_execute_adopt test_final_wave_contracts \
-  test_plan_brainstorm_lanes test_execute_sync_repair_form test_execute_peers_brief_rule test_plan_brainstorm_slug_form
+  test_plan_brainstorm_lanes test_execute_sync_repair_form test_execute_peers_brief_rule test_plan_brainstorm_slug_form \
+  test_sdd_script_references
