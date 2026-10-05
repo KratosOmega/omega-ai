@@ -13,7 +13,8 @@
 #   studio-state init [--local]  create .studio/ (STATE.md, config.json, ledger/)
 #   studio-state show            print STATE.md, then the current feature ledger
 #   studio-state get KEY         print one field
-#   studio-state set KEY VALUE   replace one field; '-' clears it
+#   studio-state set [--force] KEY VALUE   replace one field; '-' clears it;
+#                                --force overrides a story-switch refusal
 #   studio-state ledger TEXT     append a dated line to the feature ledger
 #                                (.studio/ledger/<feature>.md when spec is set,
 #                                else STATE.md's own ledger)
@@ -26,7 +27,7 @@
 # Keys: stage spec plan task branch milestone
 # Exit: 0 ok · 1 no .studio/ (except init and root), bad key, bad value, bad
 # usage, or a check that found a mismatch · 3 worktree: the branch exists but
-# no worktree has it checked out
+# no worktree has it checked out · 4 refused: a story switch in this checkout, a story write after the story moved away, or a take/handoff onto another story or the wrong spec (--force overrides where stated)
 set -eu
 
 # The pointer's root is the main worktree, always listed first by
@@ -77,7 +78,8 @@ if [ -n "$STORY" ]; then
   printf '%s' "$STORY" | grep -Eq '^[A-Za-z0-9._-]+$' || { printf "studio-state: bad STUDIO_STORY '%s'\n" "$STORY" >&2; exit 1; }
   STATE="$STATE_ROOT/.studio/stories/$STORY.md"; POINTERLESS=0
 fi
-FORCE=0
+# AC25: --force (parsed per verb) or STUDIO_STATE_FORCE=1 overrides AC24's refusals.
+FORCE=0; [ "${STUDIO_STATE_FORCE:-}" != 1 ] || FORCE=1
 CONFIG="$WORK_ROOT/.studio/config.json"
 LEDGER_DIR="$WORK_ROOT/.studio/ledger"
 KEYS="stage spec plan task branch milestone"
@@ -85,11 +87,13 @@ STAGES="idle brainstorm plan execute"
 MILESTONES="prototype vertical-slice alpha beta gold"
 
 usage() {
-  printf 'usage: studio-state root [--work] | init [--local] | show | get KEY | set KEY VALUE | ledger TEXT | check [--rebuild] | reset [--keep-ledger] | worktree\nkeys: %s\n' "$KEYS" >&2
+  printf 'usage: studio-state root [--work] | init [--local] | show | get KEY | set [--force] KEY VALUE | ledger TEXT | check [--rebuild] | reset [--keep-ledger] | worktree\nkeys: %s\nexit: %s\n' "$KEYS" '4 refused: a story switch in this checkout, a story write after the story moved away, or a take/handoff onto another story or the wrong spec (--force overrides where stated)' >&2
   exit 1
 }
 
 fail() { printf 'studio-state: %s\n' "$*" >&2; exit 1; }
+# refuse4 MSG… — AC26: the one exit-4 path.
+refuse4() { printf 'studio-state: %s\n' "$*" >&2; exit 4; }
 
 today() { date +%Y-%m-%d; }
 hdr() { sed -n "s/^$2: //p" "$1" 2>/dev/null | head -n 1; }
@@ -151,6 +155,48 @@ milestone_view() {
     !inl && /^milestone: / { next }
     { print }
     !inl && !done && index($0, ENVIRON["ST_K"] ": ") == 1 { print "milestone: " ENVIRON["ST_MS"]; done = 1 }' "$1"
+}
+# rec_get LINE KEY — a move record's KEY= value (TAB-separated fields; path= last).
+rec_get() { printf '%s\n' "$1" | tr '\t' '\n' | sed -n "s/^$2=//p" | head -n 1; }
+# newest_rec FILE KINDS [SPEC] — FILE's newest `## Ledger` line whose kind (its
+# third word) is in KINDS ("handed|abandoned|restored"); with SPEC, only move
+# records with spec=SPEC. Values travel through the environment (no awk -v escapes).
+newest_rec() {
+  ST_KINDS="$2" ST_SPEC="${3:-}" awk -F'\t' '
+    BEGIN { n = split(ENVIRON["ST_KINDS"], k, "|"); for (i = 1; i <= n; i++) want[k[i]] = 1 }
+    /^## Ledger/ { inl = 1; next }
+    inl && /^- / { split($1, w, " "); if (!(w[3] in want)) next
+                   if (ENVIRON["ST_SPEC"] != "" && $2 != "spec=" ENVIRON["ST_SPEC"]) next
+                   last = $0 }
+    END { if (last != "") print last }' "$1" 2>/dev/null
+}
+# guard_set KEY VALUE — AC24 on this checkout's pointer (STUDIO_STORY unset, no
+# .studio/run here). Refuses with exit 4, or returns with FORCED_LINE set when
+# --force / STUDIO_STATE_FORCE=1 overrode a refusal (AC25).
+guard_set() {
+  FORCED_LINE=""
+  [ -z "$STORY" ] && [ ! -e "$WORK_ROOT/.studio/run" ] && [ "$POINTERLESS" = 0 ] || return 0
+  _gs="$(field stage)"; _gp="$(field spec)"; _gt="$(field task)"; _msg=""; _over="$_gp"
+  case "$1" in
+    stage) if [ "$2" = brainstorm ]; then case "$_gs" in plan|execute) _msg=switch ;; esac; fi ;;
+    # clearing (`set spec -`) is never a switch (AC24: `set … -` is allowed).
+    spec) [ "$2" = - ] || case "$_gp" in -|''|"$2") ;; *)
+            case "$_gs" in plan|execute) _msg=switch ;;
+              brainstorm) printf 'studio-state: replacing spec %s with %s at stage brainstorm\n' "$_gp" "$2" >&2 ;; esac ;; esac ;;
+  esac
+  if [ -z "$_msg" ] && [ "${_gp:--}" = - ] && [ "$2" != - ]; then
+    case "$1:$2" in stage:plan|stage:execute|plan:*|task:*)
+      _gl="$(newest_rec "$STATE" 'handed|abandoned|restored')"
+      case "$_gl" in "- "*" handed$TAB"*) _msg=moved; _over="$(rec_get "$_gl" spec)" ;; esac ;;
+    esac
+  fi
+  [ -n "$_msg" ] || return 0
+  if [ "$FORCE" = 1 ]; then FORCED_LINE="- $(today) forced $1=$2 over $_over (stage $_gs)"; return 0; fi
+  if [ "$_msg" = switch ]; then
+    refuse4 "this checkout is on story $(slug_of "$_gp") (stage $_gs, task $_gt) — finish or reset it first, start the new story in its own worktree (EnterWorktree), or pass --force"
+  fi
+  _gdt="$(printf '%s\n' "$_gl" | cut -d' ' -f2)"
+  refuse4 "this checkout holds no story — $(rec_get "$_gl" spec) moved to $(rec_get "$_gl" path) on $_gdt; continue it there, start a new story with /game-dev:brainstorm, or pass --force"
 }
 # pre_verb VERB — runs first in get, set, show, ledger, check, reset and
 # worktree. Empty here; #42 T4 fills it.
@@ -330,10 +376,14 @@ case "$cmd" in
   set)
     pre_verb set
     need_state
-    [ $# -eq 3 ] || usage
-    key="$2"
+    # AC25: --force only as `set --force KEY VALUE`; anywhere else it is usage.
+    shift
+    if [ "${1:-}" = --force ]; then FORCE=1; shift; fi
+    [ $# -eq 2 ] || usage
+    key="$1"
+    [ "$2" != --force ] || usage
     # A real newline in a value would split the header into two lines.
-    val="$(printf '%s' "$3" | tr '\n\r' '  ')"
+    val="$(printf '%s' "$2" | tr '\n\r' '  ')"
     in_list "$key" "$KEYS" || usage
     [ -n "$val" ] || usage
     case "$key" in
@@ -355,12 +405,17 @@ case "$cmd" in
       exit 0
     fi
     # AC5: STUDIO_STORY writes are unchanged and unlocked. Every other write
-    # holds the mutex (AC27); a pointer-less worktree's first one creates its
-    # pointer (AC6).
+    # holds the mutex (AC27), passes the story-switch guard on the resolved
+    # pointer (AC24; a pointer-less one never refuses), and a pointer-less
+    # worktree's first one creates its pointer (AC6). An overridden refusal is
+    # recorded before the write (AC25).
+    FORCED_LINE=""
     if [ -z "$STORY" ]; then
       lock_or_fail
+      guard_set "$key" "$val"
       [ "$POINTERLESS" = 0 ] || auto_create
     fi
+    [ -z "$FORCED_LINE" ] || printf '%s\n' "$FORCED_LINE" >> "$STATE"
     if [ "$key" = branch ]; then set_branch "$val"; else set_field "$key" "$val"; fi
     ;;
   show)
