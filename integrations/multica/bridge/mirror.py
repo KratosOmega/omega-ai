@@ -12,7 +12,7 @@ from . import multica_cli as mc
 from . import state, studio
 
 STATUS = {"queued": "todo", "waiting": "todo", "running": "in_progress", "repair": "in_progress",
-          "gate-repair": "in_progress", "landing": "in_progress", "held": "blocked",
+          "gate-repair": "in_progress", "sync-repair": "in_progress", "landing": "in_progress", "held": "blocked",
           "landed": "done", "stopped": "cancelled", "skipped": "cancelled"}
 TERMINAL_STATUS = ("done", "cancelled")
 TERMINAL_CATEGORIES = ("done", "cancelled", "closed")          # R14: with TERMINAL_STATUS, what counts as closed
@@ -64,6 +64,12 @@ def event_writes(st, ev):
         elif state_ in ("stopped", "skipped"):
             out.append(say("%s: %s" % (state_, ev.get("why", "?"))))
         return out
+    if e == "story_synced":
+        if ev.get("refs"):
+            return [say("synced %s (%s)" % (", ".join(map(str, ev.get("refs") or [])), str(ev.get("sha", "?"))[:7]))]
+        if ev.get("skipped"):
+            return [say("sync skipped: %s" % ev.get("skipped"))]
+        return [say("sync failed: %s" % ev.get("failed", "?"))]
     if e == "unit_started":
         return [say("unit %s (%s) started" % (ev.get("unit"), ev.get("label")))]
     if e == "unit_ended":
@@ -79,7 +85,7 @@ def event_writes(st, ev):
     if e == "run_ended":   # comment first: closing wakes the agent, which reads it (R17)
         return [("comment", "run", "studio: run ended: %s — report: %s" % (ev.get("ending"), ev.get("report"))),
                 ("status", "run", "done")]
-    return []
+    return []   # includes session_wait: not mirrored; the unit's own unit_started follows
 
 
 # ----- adoption --------------------------------------------------------------

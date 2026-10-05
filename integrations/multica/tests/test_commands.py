@@ -43,6 +43,8 @@ class ParseTest(unittest.TestCase):
             ("story said", story("said"), ("call", ["said", "--run", B, "A"])),
             ("run stop run", run("stop", "run"), ("call", ["stop", "--run", B])),
             ("run STOP RUN", run("stop", "RUN"), ("call", ["stop", "--run", B])),
+            ("run stop run, slug-style basename", commands.plan_call("stop", "run", "run", None, False, "overnight-alpha-20261004-0100"),
+             ("call", ["stop", "--run", "overnight-alpha-20261004-0100"])),
             ("single say", run("say", "t", True), ("call", ["say", "--run", B, "-", "--", "t"])),
             ("single bare stop", run("stop", "", True), ("call", ["stop", "--run", B, "-"])),
             ("single stop run", run("stop", "run", True), ("call", ["stop", "--run", B])),

@@ -6,12 +6,17 @@ Story #27 defines it; #28 (the Multica bridge) builds on it. Spec:
 
 ## Finding a run
 
-- Inside a project, the live run is the one holding the project's lock
-  (`.studio/overnight.lock`: `pid=`, `run=`, `started=`).
+- Inside a project, a live run holds a lock. Several manifest runs may be live
+  in one project at once, each with its own lock at
+  `<root>/.studio/runs/<slug>/lock` (`pid=`, `run=`, `started=`, `start=`). A
+  single-plan run holds `.studio/overnight.lock` (`pid=`, `run=`, `started=`).
+  These locks are the source of truth for which runs are live.
 - From anywhere, the user-level registry `~/.claude-gamedev/runs/` holds one
   file per run whose runner started, `<run name>-<pid>` (the run name starts
-  `overnight-`). A run is live only while its `pid` is alive and is a
-  studio-overnight; a runner killed with SIGKILL leaves its entry. The lines:
+  `overnight-`). One root may hold several live entries. A run is live only
+  while its `pid` is alive and is a studio-overnight; a runner killed with
+  SIGKILL leaves its entry. A new run drops another entry of the same root only
+  when that entry's runner is not live. The lines:
 
   ```
   root=<project root>
@@ -22,12 +27,24 @@ Story #27 defines it; #28 (the Multica bridge) builds on it. Spec:
   ```
 
   An entry may also hold `origin=<value>` after `started=`, copied from
-  `STUDIO_RUN_ORIGIN` at start (AC1a of #28: 1–200 characters of
+  `STUDIO_RUN_ORIGIN` at start (AC1a of #28: 1-200 characters of
   A-Z a-z 0-9 . _ : -, else left out with a warning); it stays when the entry
   moves to `runs/last`; the core never interprets it.
 
-  The run dir's basename is the run's name; every verb's `--run <run>` takes
-  it. `last` is the newest ended run (it also has `ended=`) and is never live.
+  The run dir's basename is the run's name. Every verb's `--run <run>` takes
+  it, and also the run's slug (`status --run`, `watch --run`, `stop --run`
+  take `<slug|run dir basename>`). A name that is not live is refused:
+  `run <name> is not live`. `last` is the newest ended run (it also has
+  `ended=`) and is never live.
+- The channel verbs `say`, `unsay`, `hold`, `resume`, `said` and
+  `stop <story>` resolve the run in this order: `--run <slug|run dir
+  basename>` when given; otherwise the one live run of the project whose
+  `rows.tsv` lists the story; otherwise, with exactly one live run, that run.
+  No match refuses with `no live run lists <story>`. The in-project channel
+  accepts any live run of the project.
+- `stop` ends the run after its running unit. With two or more live runs it
+  stops none and lists them. `stop --run <slug>` writes that run's own stop
+  flag and ends only that run; `stop --all` writes every live run's flag.
 - A run dir holds `channel` (`hold_minutes=<N>`, `directive_chars=<N>`; the
   effective values) when it speaks this contract. A run without it predates
   the channel: every verb refuses it.

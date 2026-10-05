@@ -14,6 +14,24 @@ approval page in `artifacts/`.
 
 ## Log
 
+### 2026-10-05 — Concurrent runs (#39)
+
+- Several manifest runs can be live in one project. Each holds its own lock at
+  `.studio/runs/<slug>/lock`; a same-root registry entry is dropped only when its
+  runner is not live. `status --run`, `watch --run` and `stop --run <slug>` act on
+  one run, `stop --all` on every run, and the channel verbs resolve the run by
+  `--run`, then by the story in `rows.tsv`, then by the only live run.
+- `overnight.max_sessions` (default 6, range 1-8) caps headless sessions across
+  the project; a unit that finds no slot waits in a FIFO queue and logs a
+  `session_wait` event. Before each task a story syncs with moved targets
+  (`story_synced`; a failed merge runs a `sync-repair` unit).
+- The events contract gains `story_synced` and `session_wait` and a rewritten
+  "Finding a run". The Multica bridge mirrors `story_synced` as a comment, maps
+  `sync-repair` to in progress, ignores `session_wait`, and mirrors two live runs
+  of one root.
+- Plan: `plans/2026-10-04-concurrent-runs.md`; spec:
+  `specs/2026-10-04-concurrent-runs.md`.
+
 ### 2026-10-04 — Multica integration (#28)
 
 - A bridge service mirrors live overnight runs onto a Multica board, so a run can

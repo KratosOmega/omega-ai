@@ -96,6 +96,18 @@ class MirrorRunsTest(MirrorCase):
             self.assertEqual(si["parent_issue_id"], ri["id"])
         self.assertNotEqual(self.run_issue(r1)["id"], self.run_issue(r2)["id"])
 
+    def test_two_runs_one_root_mirrored(self):
+        r1, r2 = self.mk(), self.mk(basename="overnight-20261003-2300")
+        self.assertNotEqual(self.key(r1), self.key(r2))
+        self.assertEqual(sorted(self.mirror.adopt(self.ctx)), sorted([self.key(r1), self.key(r2)]))
+        for r in (r1, r2):
+            r.append(ev("run_started", mode="integration"), ev("story_listed", story="A", chain=1, depends=[]))
+        self.poll()
+        for r in (r1, r2):
+            self.assertIsNotNone(self.run_issue(r))
+            self.assertIsNotNone(self.story_issue(r, "A"))
+        self.assertNotEqual(self.run_issue(r1)["id"], self.run_issue(r2)["id"])
+
     # ----- request issue -----------------------------------------------------
 
     def _request_issue(self, **kw):
@@ -284,6 +296,9 @@ class MirrorRunsTest(MirrorCase):
             (ev("story_state", story="A", state="gate-repair"), "in_progress", None),
             (ev("story_state", story="A", state="held", why="x", until=until), "blocked",
              "studio: held: x — until %s — /say, /resume or /stop" % until),
+            (ev("story_state", story="A", state="sync-repair"), "in_progress", None),
+            (ev("story_state", story="A", state="held", why="x", until=until), "blocked",
+             "studio: held: x — until %s — /say, /resume or /stop" % until),
             (ev("story_state", story="A", state="landing"), "in_progress", None),
             (ev("story_state", story="A", state="landed"), "done", None),
             (ev("story_state", story="A", state="stopped", why="by operator"), "cancelled",
@@ -299,6 +314,12 @@ class MirrorRunsTest(MirrorCase):
             (ev("message_requeued", story="B", id=3, unit="u1", requeues=1), None,
              "studio: message 3 not recorded by unit u1; requeued (1)"),
             (ev("control", story="B", action="hold"), None, "studio: hold by operator"),
+            (ev("story_synced", story="B", refs=["origin/main"], sha="abc1234"), None,
+             "studio: synced origin/main (abc1234)"),
+            (ev("story_synced", story="B", skipped="dirty"), None, "studio: sync skipped: dirty"),
+            (ev("story_synced", story="B", failed="merge"), None, "studio: sync failed: merge"),
+            # session_wait is not mirrored: the unit's own unit_started follows
+            (ev("session_wait", lane="1", story="B", since="2026-10-04T01:00:00Z"), None, None),
         ]
         for n, (e, status, comment) in enumerate(rows):
             with self.subTest(n=n, event=e["event"], state=e.get("state"), story=e["story"]):
