@@ -80,11 +80,92 @@ git_version_ok() {
     | awk '{ exit !($1 > 2 || ($1 == 2 && $2 >= 38)) } END { if (NR == 0) exit 1 }'
 }
 
+# mf_rows_clash ROWS HOW — a story id or branch of MF_ROWS that ROWS uses too.
+# The NR == FNR pass reads the other run's rows first, then flags this run's.
+mf_rows_clash() {
+  awk -F'\t' -v how="$2" 'NR == FNR { id[$1] = 1; br[$2] = 1; next }
+    ($1 in id) { printf "story %s is used by %s id\n", $1, how }
+    ($2 in br) { printf "branch %s is used by %s branch\n", $2, how }' "$1" "$MF_ROWS" 2>/dev/null
+}
+# mf_conflicts LIVE_ONLY — this manifest (MF_SLUG, MF_ROWS) against the
+# other runs (#39 AC8, D39): live runs' rows.tsv and Target, and with
+# LIVE_ONLY=0 also stopped records (landed.tsv, no done; rows from the
+# newest report dir) and a done record of this slug. One line per conflict.
+mf_conflicts() {
+  _mc_tab="$(printf '\t')"
+  runs_live "$STATE_ROOT" | while IFS="$_mc_tab" read -r _ _mc_s _mc_k _mc_p _mc_d _ _mc_l; do
+    [ "$_mc_l" != "$LOCK" ] || continue
+    [ "$_mc_k" = manifest ] || continue
+    _mc_how="live run $_mc_s ($_mc_d, pid $_mc_p) — stop it ($(sq "$SELF_ABS") stop --run $_mc_s) or pick another"
+    [ "$_mc_s" != "$MF_SLUG" ] || printf 'slug %s is used by %s slug\n' "$MF_SLUG" "$_mc_how"
+    mf_rows_clash "$_mc_d/rows.tsv" "$_mc_how"
+    _mc_t="$(runs_mf_header "$_mc_d/manifest.md" Target)"
+    if [ -n "$_mc_t" ] && cut -f2 "$MF_ROWS" | grep -qxF -- "$_mc_t"; then
+      printf 'branch %s is the Target of %s branch\n' "$_mc_t" "$_mc_how"
+    fi
+  done
+  [ "$1" = 1 ] && return 0
+  for _mc_r in "$STATE_ROOT"/.studio/runs/*/landed.tsv; do
+    [ -f "$_mc_r" ] || continue
+    _mc_s="${_mc_r%/landed.tsv}"; _mc_s="${_mc_s##*/}"
+    if [ "$_mc_s" = "$MF_SLUG" ]; then
+      if runs_record_done "$STATE_ROOT" "$_mc_s"; then
+        printf 'run %s is done: archive its record first: mv %s %s.<utc ts>\n' \
+          "$_mc_s" "$(sq "$STATE_ROOT/.studio/runs/$_mc_s")" "$(sq "$STATE_ROOT/.studio/runs/$_mc_s")"
+      fi
+      continue                                    # own open record: a resume
+    fi
+    runs_record_open "$STATE_ROOT" "$_mc_s" || continue
+    runs_live "$STATE_ROOT" | runs_match "$_mc_s" | grep -q . && continue   # counted above
+    _mc_rows="$(runs_rows "$STATE_ROOT" "$_mc_s")" || continue
+    mf_rows_clash "$_mc_rows" "stopped run $_mc_s (record $STATE_ROOT/.studio/runs/$_mc_s) — resume it ($(sq "$SELF_ABS") start <its manifest>) or pick another"
+  done
+}
+# mf_overlap_warn — warn (D38, AC9) for each other live run whose unfinished
+# tasks' Files: this run's unfinished tasks also name. At most 20 paths per
+# run, then `and N more`. Only warns: any failure prints nothing.
+mf_overlap_warn() {
+  _ow_mine="$MF_TMP/ow-mine"; _ow_peers="$MF_TMP/ow-peers"; : > "$_ow_mine"
+  while IFS="$(printf '\t')" read -r _ow_id _ow_b _ow_t _ow_sp _ow_plan _; do
+    [ -n "$_ow_id" ] && [ -n "$_ow_plan" ] && [ "$_ow_plan" != - ] || continue
+    _ow_k="$(sed -n 's/^task:[[:blank:]]*//p' "$STATE_ROOT/.studio/stories/$_ow_id.md" 2>/dev/null | head -n 1)"
+    _ow_k="${_ow_k%%/*}"; case "$_ow_k" in ''|*[!0-9]*) _ow_k=0 ;; esac
+    git -C "$START_DIR" show "$MF_DOCS:$_ow_plan" 2>/dev/null | runs_plan_files "$_ow_k" >> "$_ow_mine"
+  done < "$MF_ROWS"
+  LC_ALL=C sort -u "$_ow_mine" > "$_ow_mine.s" 2>/dev/null || return 0
+  [ -s "$_ow_mine.s" ] || return 0
+  sh "$SELF_DIR/studio-peers" --files 2>/dev/null | grep -v '^[^ ]*: unreadable$' | awk 'NF' > "$_ow_peers" || return 0
+  for _ow_s in $(cut -d' ' -f1 "$_ow_peers" | LC_ALL=C sort -u); do
+    awk -v s="$_ow_s" 'index($0, s " ") == 1 { print substr($0, length(s) + 2) }' "$_ow_peers" | LC_ALL=C sort -u > "$_ow_peers.s"
+    LC_ALL=C comm -12 "$_ow_mine.s" "$_ow_peers.s" > "$_ow_peers.c"
+    _ow_n="$(wc -l < "$_ow_peers.c" | tr -d ' ')"
+    [ "$_ow_n" -gt 0 ] || continue
+    say "warning — live run $_ow_s is changing files this run's unfinished tasks change too:"
+    head -n 20 "$_ow_peers.c" | sed 's/^/  /' >&2
+    [ "$_ow_n" -le 20 ] || printf '  and %s more\n' $((_ow_n - 20)) >&2
+  done
+  return 0
+}
+
 # mf_check — the manifest preflight: one refuse per failure (spec 806-815).
 mf_check() {
   git_version_ok || refuse "git 2.38 or newer is required (git merge-tree --write-tree); found $(git --version 2>/dev/null)"
   printf '%s\n' "$MF_SLUG" | grep -Eq '^[A-Za-z0-9._-]+$' \
     || refuse "manifest: '# Run: <slug>' must name a slug of [A-Za-z0-9._-], got '$MF_SLUG'"
+  case "$MF_SLUG" in
+    off) refuse "slug off is reserved (/omega:autopilot off) — pick another" ;;
+    *[!0-9]*) ;;
+    *) refuse "slug $MF_SLUG is all digits (it reads as a story id) — pick another" ;;
+  esac
+  # A branch whose / -> - form starts like a run's own branches would collide with them (#39).
+  while IFS="$(printf '\t')" read -r _bf_id _bf_b _; do
+    case "$(printf '%s' "$_bf_b" | tr / -)" in
+      run-*|integration-*|progress-*) refuse "manifest: $_bf_id: branch $_bf_b collides with a run, integration or progress branch (its / -> - form starts run-, integration- or progress-) — pick another" ;;
+    esac
+  done < "$MF_ROWS"
+  while IFS= read -r _l; do [ -z "$_l" ] || refuse "$_l"; done <<EOF_MC
+$(mf_conflicts 0)
+EOF_MC
   case "$MF_MODE" in
     integration) _want="integration/$MF_SLUG" ;;
     direct)
@@ -184,6 +265,7 @@ mf_check() {
     done
     set +f
   done < "$MF_TMP/stories"
+  mf_overlap_warn
 }
 
 # build_chains — $CHAINS from $MF_ROWS by the chain rule (spec 479-487), one
@@ -1651,11 +1733,17 @@ run_populate() {
 }
 # lock_recheck — the manifest run's re-check under runs.mutex (D8): a live
 # single-plan run (any lock but this one) refuses this start with today's
-# text, RECHECK_WHY. (T11 adds the run-overlap rules.)
+# text, then the live runs' slug, ids and branches (mf_conflicts 1); either
+# sets RECHECK_WHY.
 lock_recheck() {
   _lc="$(runs_live "$STATE_ROOT" | awk -F'\t' -v me="$LOCK" '$7 != me && $3 == "single"' | head -n 1)"
-  [ -n "$_lc" ] || return 0
-  RECHECK_WHY="a run is live (pid $(printf '%s\n' "$_lc" | cut -f4)) — $(sq "$SELF_ABS") status"
+  if [ -n "$_lc" ]; then
+    RECHECK_WHY="a run is live (pid $(printf '%s\n' "$_lc" | cut -f4)) — $(sq "$SELF_ABS") status"
+    return 1
+  fi
+  _rc="$(mf_conflicts 1)"
+  [ -n "$_rc" ] || return 0
+  RECHECK_WHY="lost the start race: $(printf '%s\n' "$_rc" | head -n 1)"
   return 1
 }
 
@@ -1780,8 +1868,8 @@ lanes_next() {
       plan) [ -n "$_ln_pl" ] || _ln_pl="$_ln_id" ;;
     esac
   done < "$MF_ROWS"
-  if [ -n "$_ln_bs" ]; then echo "next: /game-dev:brainstorm $_ln_bs"
-  elif [ -n "$_ln_pl" ]; then echo "next: /game-dev:plan $_ln_pl"
-  else echo "next: /omega:autopilot"; fi
+  if [ -n "$_ln_bs" ]; then echo "next: /game-dev:brainstorm $MF_SLUG/$_ln_bs"
+  elif [ -n "$_ln_pl" ]; then echo "next: /game-dev:plan $MF_SLUG/$_ln_pl"
+  else echo "next: /omega:autopilot $MF_SLUG"; fi
   rm -f "$MF_ROWS"
 }

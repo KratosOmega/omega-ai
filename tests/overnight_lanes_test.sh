@@ -743,10 +743,10 @@ test_lanes_next() {
   assert_contains "$LS_OUT" "^A  planned  spec=docs/game-dev/specs/2026-10-01-demo.md  plan=docs/game-dev/plans/2026-10-01-A.md$" "A resolved and planned"
   assert_contains "$LS_OUT" "^B  plan  " "B lacks its sweep line"
   assert_contains "$LS_OUT" "^C  brainstorm  spec=-  plan=-$" "C has no spec row"
-  assert_contains "$LS_OUT" "^next: /game-dev:brainstorm C$" "brainstorm comes before plan"
+  assert_contains "$LS_OUT" "^next: /game-dev:brainstorm demo/C$" "brainstorm comes before plan"
   printf '%s\n' "$MFP" > "$P/.studio/run"
   run_lanes next
-  assert_contains "$LS_OUT" "^next: /game-dev:brainstorm C$" "no argument reads .studio/run"
+  assert_contains "$LS_OUT" "^next: /game-dev:brainstorm demo/C$" "no argument reads .studio/run"
   rm "$P/.studio/run"; run_lanes next
   assert_eq 2 "$LS_STATUS" "no pointer and no argument exits 2"
   assert_contains "$LS_ERR" "no run manifest (.studio/run)" "and says why"
@@ -756,7 +756,7 @@ test_lanes_next_all_planned_and_ambiguous() {
   lanes_fixture nxt2 integration A:-
   printf -- '- 2026-10-01 spec approved docs/game-dev/specs/2026-10-01-demo.md\n- 2026-10-01 plan approved docs/game-dev/plans/2026-10-01-A.md\n- 2026-10-01 Decisions swept A\n' > "$P/.studio/ledger/demo.md"
   run_lanes next "$MFP"
-  assert_contains "$LS_OUT" "^next: /omega:autopilot$" "every row planned"
+  assert_contains "$LS_OUT" "^next: /omega:autopilot demo$" "every row planned"
   cp "$P/docs/game-dev/plans/2026-10-01-A.md" "$P/docs/game-dev/plans/2026-10-02-A2.md"
   ( cd "$P" && git add -A && git commit -qm dup ) >/dev/null 2>&1
   run_lanes next "$MFP"
@@ -769,7 +769,7 @@ test_lanes_next_plan_before_autopilot() {
   printf -- '- 2026-10-01 spec approved docs/game-dev/specs/2026-10-01-demo.md\n- 2026-10-01 plan approved docs/game-dev/plans/2026-10-01-A.md\n- 2026-10-01 Decisions swept A\n' > "$P/.studio/ledger/demo.md"
   run_lanes next "$MFP"
   assert_contains "$LS_OUT" "^B  plan  " "B has no plan approval"
-  assert_contains "$LS_OUT" "^next: /game-dev:plan B$" "plan comes when nothing needs brainstorming"
+  assert_contains "$LS_OUT" "^next: /game-dev:plan demo/B$" "plan comes when nothing needs brainstorming"
   _before="$(cd "$P" && git status --porcelain | wc -l | tr -d ' ')"
   run_lanes next "$MFP"
   assert_eq "$_before" "$(cd "$P" && git status --porcelain | wc -l | tr -d ' ')" "next writes nothing"
@@ -1497,7 +1497,9 @@ test_lanes_final_step_once() {
   assert_not_contains "$GH/calls" "^pr merge" "the final PR is never merged"
   assert_contains "$(last_lanes_dir)/report.md" "^Final PR: https://gh.test/pr/1 (green)$" "the report names the final PR"
   assert_eq "" "$(git -C "$P" status --porcelain)" "the integration worktree leaves the checkout clean"
-  # Resume with an unchanged head and the PR open: nothing more.
+  # Resume with an unchanged head and the PR open: nothing more. (A done record
+  # must be archived first, so the run is made a stopped one: #39 AC8.)
+  rm -f "$P/.studio/runs/demo/done"
   sleep 1
   run_lanes start "$MFP"
   assert_eq 0 "$LS_STATUS" "the resumed run is done"
@@ -1568,7 +1570,7 @@ test_lanes_final_resume_edits_pr() {
   lanes_fixture finedit integration A:-
   use_gate "echo gate >> '$CALLS/final-gates'"
   run_lanes start "$MFP"
-  rm -f "$P/.studio/runs/demo/final"; sleep 1
+  rm -f "$P/.studio/runs/demo/final" "$P/.studio/runs/demo/done"; sleep 1
   run_lanes start "$MFP"
   use_gate true
   assert_eq 1 "$(final_gates)" "the gate record names HEAD: no second gate"
@@ -2982,7 +2984,7 @@ test_lanes_same_slug_live_refused() {
   printf 'operator stop\n' > "$P/.studio/runs/demo/stop"   # the run stays live until its hung unit ends
   run_lanes start "$MFP"
   assert_eq 2 "$LS_STATUS" "a second start of a live slug exits 2"
-  assert_contains "$LS_ERR" "a run is live: demo .*pid $_lp" "and names the live run and its pid"
+  assert_contains "$LS_ERR" "slug demo is used by live run demo (.*pid $_lp)" "and names the live run and its pid"
   assert_not_contains "$LS_ERR" "reclaiming stale lock" "it never treats the live lock as stale"
   assert_contains "$P/.studio/runs/demo/lock" "^pid=$_lp\$" "the live run's lock is unchanged"
   assert_contains "$P/.studio/runs/demo/stop" "^operator stop\$" "its stop flag is left alone"
@@ -3032,6 +3034,147 @@ test_lanes_old_lock_reaped_by_start() {
   assert_eq 0 "$LS_STATUS" "and runs"
 }
 
+# ---- #39 T11: the manifest preflight — conflicts, re-check, overlap, next ----
+# live_alpha NAME — lanes_fixture NAME (demo, story A) with alpha (S1) added and
+# live: its S1 unit hangs. end_alpha stops it and ends its stub by temp path.
+live_alpha() {
+  lanes_fixture "$1" integration A:-
+  lanes_add_run alpha integration S1:-
+  printf 'hang\n' > "$SCEN/S1"
+  bg_lanes alpha "$RW" start "$RMF"
+  wait_for "[ -f '$CALLS/1.story' ]" 60
+}
+end_alpha() {
+  ( cd "$P" && sh "$RUNNER" stop --run alpha ) > /dev/null 2>&1
+  pkill -f "$TMP/fakebin/claude" 2>/dev/null
+  bg_wait alpha
+}
+test_lanes_preflight_refuses_live_slug_id_branch() {
+  live_alpha pfl
+  _ad="$(ls -d "$P"/.studio/reports/overnight-alpha-[0-9]* | tail -n 1)"
+  sed 's/S1/X1/g' "$RW/$RMF" > "$RW/docs/runs/m1.md"
+  sed -e 's/^# Run: alpha/# Run: beta/' -e 's/S1-b/X1-b/g' "$RW/$RMF" > "$RW/docs/runs/m2.md"
+  sed -e 's/^# Run: alpha/# Run: beta/' -e 's/| S1 | S1-b | S1 |/| X1 | S1-b | X1 |/' "$RW/$RMF" > "$RW/docs/runs/m3.md"
+  for _m in m1:slug:alpha m2:story:S1 m3:branch:S1-b; do
+    _f="${_m%%:*}"; _w="${_m#*:}"; _k="${_w%%:*}"; _v="${_w#*:}"
+    run_lanes_in "$RW" start --dry-run "docs/runs/$_f.md"
+    assert_eq 2 "$LS_STATUS" "$_f: a $_k shared with a live run refuses"
+    assert_contains "$LS_ERR" "$_k $_v is used by live run alpha ($_ad, pid [0-9]*)" "$_f: names the run and its dir"
+    assert_contains "$LS_ERR" "stop it ('.*studio-overnight' stop --run alpha) or pick another" "$_f: and the way out"
+  done
+  end_alpha
+}
+test_lanes_preflight_refuses_stopped_record() {
+  lanes_fixture pfs integration S1:-
+  mkdir -p "$P/.studio/runs/alpha" "$P/.studio/reports/overnight-alpha-20261004-210000"
+  : > "$P/.studio/runs/alpha/landed.tsv"
+  printf 'S1\tS1-b\tS1\t-\t-\t\n' > "$P/.studio/reports/overnight-alpha-20261004-210000/rows.tsv"
+  run_lanes start --dry-run "$MFP"
+  assert_eq 2 "$LS_STATUS" "a story of a stopped run's record refuses"
+  assert_contains "$LS_ERR" "story S1 is used by stopped run alpha (record $P/.studio/runs/alpha) — resume it" "names the run and its record"
+  assert_contains "$LS_ERR" "branch S1-b is used by stopped run alpha" "and its branch"
+  : > "$P/.studio/runs/alpha/done"
+  run_lanes start --dry-run "$MFP"
+  assert_eq 0 "$LS_STATUS" "a done record no longer conflicts"
+}
+test_lanes_preflight_done_record_needs_archive() {
+  lanes_fixture pfd integration A:-
+  mkdir -p "$P/.studio/runs/demo"; : > "$P/.studio/runs/demo/landed.tsv"; : > "$P/.studio/runs/demo/done"
+  run_lanes start --dry-run "$MFP"
+  assert_eq 2 "$LS_STATUS" "a new run named like a done record refuses"
+  assert_contains "$LS_ERR" "run demo is done: archive its record first: mv '$P/.studio/runs/demo' '$P/.studio/runs/demo'\.<utc ts>" "names the archive path"
+  mv "$P/.studio/runs/demo" "$P/.studio/runs/demo.20261004T000000Z"
+  run_lanes start --dry-run "$MFP"
+  assert_eq 0 "$LS_STATUS" "after the archive it passes"
+}
+test_lanes_preflight_branch_forms() {
+  lanes_fixture pfb integration A:-
+  for _b in run/x integration-x progress/y; do
+    sed "s#| A | A-b |#| A | $_b |#" "$P/$MFP" > "$P/docs/runs/bf.md"
+    run_lanes start --dry-run docs/runs/bf.md
+    assert_eq 2 "$LS_STATUS" "branch $_b refuses"
+    assert_contains "$LS_ERR" "branch $_b collides" "branch $_b names its form"
+  done
+  live_alpha pfb2
+  sed 's#| A | A-b |#| A | integration/alpha |#' "$P/$MFP" > "$P/docs/runs/bf.md"
+  run_lanes start --dry-run docs/runs/bf.md
+  assert_eq 2 "$LS_STATUS" "a live run's Target as a branch refuses"
+  assert_contains "$LS_ERR" "branch integration/alpha is the Target of live run alpha" "names it"
+  end_alpha
+}
+test_lanes_preflight_slug_off_and_digits() {
+  lanes_fixture pfo integration A:-
+  sed 's/^# Run: demo/# Run: off/' "$P/$MFP" > "$P/docs/runs/off.md"
+  run_lanes start --dry-run docs/runs/off.md
+  assert_eq 2 "$LS_STATUS" "slug off refuses"
+  assert_contains "$LS_ERR" "slug off is reserved (/omega:autopilot off)" "reserved"
+  sed 's/^# Run: demo/# Run: 123/' "$P/$MFP" > "$P/docs/runs/num.md"
+  run_lanes start --dry-run docs/runs/num.md
+  assert_eq 2 "$LS_STATUS" "an all-digit slug refuses"
+  assert_contains "$LS_ERR" "slug 123 is all digits" "reads as a story id"
+}
+test_lanes_preflight_resume_own_record() {
+  lanes_fixture pfr integration A:-
+  mkdir -p "$P/.studio/runs/demo"; : > "$P/.studio/runs/demo/landed.tsv"
+  run_lanes start --dry-run "$MFP"
+  assert_eq 0 "$LS_STATUS" "a stopped run's own record (no done) is a resume"
+}
+test_lanes_recheck_race_one_wins() {
+  lanes_fixture rcr integration A:-
+  lanes_add_run alpha integration S1:-; _aw="$RW"; _am="$RMF"
+  lanes_add_run gamma integration S1:-; _gw="$RW"; _gm="$RMF"
+  printf 'sleep 2\n' > "$SCEN/S1"
+  STUDIO_OVERNIGHT_LOCK_HOOK='sleep 2'; export STUDIO_OVERNIGHT_LOCK_HOOK
+  bg_lanes alpha "$_aw" start "$_am"; sleep 0.2; bg_lanes gamma "$_gw" start "$_gm"
+  unset STUDIO_OVERNIGHT_LOCK_HOOK
+  bg_wait alpha; _as=$BG_STATUS; bg_wait gamma; _gs=$BG_STATUS
+  if [ "$_as" = 0 ]; then _win=alpha; _lose=gamma; _ls=$_gs; else _win=gamma; _lose=alpha; _ls=$_as; fi
+  assert_eq 0 "$([ "$_as" = 0 ] || [ "$_gs" = 0 ] && echo 0 || echo 1)" "one of the two runs exits 0"
+  assert_eq 2 "$_ls" "the loser exits 2"
+  assert_contains "$TMP/bg-$_lose.err" "lost the start race: story S1 is used by live run $_win" "and names the winner"
+  assert_missing "$P/.studio/runs/$_lose/lock" "the loser left no lock"
+  assert_missing "$P/.studio/runs/$_lose" "no record dir"
+  assert_eq "" "$(ls -d "$P"/.studio/reports/overnight-$_lose-* 2>/dev/null)" "and no run dir"
+}
+# overlap_case NAME ALPHA_FILES DEMO_FILES — alpha (S1 task 2 names ALPHA_FILES)
+# is live; demo's A task 1 names DEMO_FILES; `start --dry-run` of demo.
+overlap_case() {
+  lanes_fixture "$1" integration A:-
+  lanes_add_run alpha integration S1:-
+  ( cd "$RW" && sed -i '' "s|^Files: \`S1-T2.txt\`|Files: $2|" docs/game-dev/plans/2026-10-01-S1.md \
+    && git add -A && git commit -qm files && git push -q origin run/alpha \
+    && _d="$(git rev-parse HEAD)" && sed "s/^Docs: .*/Docs: $_d/" "$RMF" > "$TMP/mf.new" && cp "$TMP/mf.new" "$RMF" \
+    && git add -A && git commit -qm manifest && git push -q origin run/alpha ) > /dev/null 2>&1
+  printf 'hang\n' > "$SCEN/S1"
+  bg_lanes alpha "$RW" start "$RMF"
+  wait_for "[ -f '$CALLS/1.story' ]" 60
+  printf 'Files: %s\n' "$3" >> "$P/docs/game-dev/plans/2026-10-01-A.md"
+  redocs
+  run_lanes start --dry-run "$MFP"
+}
+test_lanes_overlap_warning() {
+  overlap_case ovl '`shared.txt`, `only-alpha.txt`' '`shared.txt`, `only-demo.txt`'
+  assert_eq 0 "$LS_STATUS" "an overlap only warns"
+  assert_contains "$LS_ERR" "warning — live run alpha is changing files this run's unfinished tasks change too:" "the D38 header"
+  assert_contains "$LS_ERR" "^  shared.txt\$" "lists the shared path"
+  assert_not_contains "$LS_ERR" "only-alpha.txt" "and not the unshared ones"
+  end_alpha
+  _a=""; _d=""
+  for _i in $(seq 10 34); do _a="$_a\`shared$_i.txt\`, "; done
+  overlap_case ovl25 "$_a" "$_a"
+  assert_eq 0 "$LS_STATUS" "25 shared paths still only warn"
+  assert_eq 20 "$(grep -c '^  shared[0-9]*\.txt$' "$LS_ERR")" "at most 20 paths are listed"
+  assert_contains "$LS_ERR" "^  and 5 more\$" "then the rest as a count"
+  end_alpha
+}
+test_lanes_next_slug_forms() {
+  LANES_CELLS=dash; export LANES_CELLS
+  lanes_fixture nxs integration A:-
+  sed 's/^# Run: demo/# Run: alpha-2/' "$P/$MFP" > "$P/docs/runs/alpha-2.md"
+  run_lanes next docs/runs/alpha-2.md
+  assert_contains "$LS_OUT" "^next: /game-dev:brainstorm alpha-2/A\$" "the slug is part of the next command"
+}
+
 run_tests test_lanes_chain_rule test_lanes_manifest_refusals test_lanes_preflight_backlog_tasks test_lanes_manifest_header_refusals \
   test_lanes_preflight_story_checks test_lanes_preflight_story_state test_lanes_docs_unreachable \
   test_lanes_git_too_old test_lanes_sourced_only test_lanes_next \
@@ -3072,4 +3215,7 @@ run_tests test_lanes_chain_rule test_lanes_manifest_refusals test_lanes_prefligh
   test_lanes_status_run_not_live test_lanes_manifest_refuses_live_single test_lanes_lock_race_single_vs_manifest \
   test_lanes_reg_write_keeps_live_sibling test_lanes_detach_with_other_run_live test_lanes_units_get_start_dir \
   test_lanes_reap_resume_line_run_worktree test_lanes_old_lock_counts_live test_lanes_old_lock_reaped_by_start \
-  test_lanes_same_slug_live_refused test_lanes_no_orphans
+  test_lanes_same_slug_live_refused \
+  test_lanes_preflight_refuses_live_slug_id_branch test_lanes_preflight_refuses_stopped_record test_lanes_preflight_done_record_needs_archive \
+  test_lanes_preflight_branch_forms test_lanes_preflight_slug_off_and_digits test_lanes_preflight_resume_own_record \
+  test_lanes_recheck_race_one_wins test_lanes_overlap_warning test_lanes_next_slug_forms test_lanes_no_orphans
