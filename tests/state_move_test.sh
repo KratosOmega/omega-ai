@@ -140,7 +140,14 @@ test_state_move_record_parse() {
   assert_eq feat/w "$(sed -n "s/^- [0-9-]* handed${T}.*${T}branch=\([^$T]*\)${T}.*/\1/p" "$_f")" "its branch round-trips"
   assert_eq "$WX" "$(sed -n "s/^- [0-9-]* handed${T}.*${T}path=\(.*\)$/\1/p" "$_f")" "its path round-trips, last"
   assert_eq 1 "$(kind_n "$WX/.studio/STATE.md" handed)" "the target has the same record"
+  st "$P" stories > "$TMP/mrp.tsv"
+  assert_eq 1 "$(grep -cxF "$WX${T}feat/w${T}plan${T}$_sp${T}0/3${T}active" "$TMP/mrp.tsv")" "stories lists the space path intact"
+  ( cd "$WX" && printf w > w.txt && git add w.txt && g commit -qm w ) >/dev/null 2>&1   # feat/w unmerged
   git -C "$P" worktree remove "$WX" >/dev/null 2>&1
+  st_rc "$P" worktree
+  assert_eq 1 "$ST_RC" "worktree from P offers the removed story with exit 1"
+  assert_eq "$WX${T}feat/w${T}$_sp${T}removed${T}git worktree add '$WX' 'feat/w' && (cd '$WX' && studio-state take 'docs/a b to (c).md')" \
+    "$(sed -n 2p "$TMP/st.err")" "as a removed candidate with shq-quoted parts"
   git -C "$P" worktree add -q "$WX" feat/w >/dev/null 2>&1
   st_rc "$WX" take "$_sp"
   assert_eq 0 "$ST_RC" "take restores it after removal"
@@ -330,9 +337,15 @@ test_state_take_restores_removed_worktree() {
   git -C "$P" worktree remove "$WE" >/dev/null 2>&1
   assert_missing "$WE" "WE is removed"
   _s="$(sum "$P/.studio/STATE.md")"
-  _rc=0; ( git -C "$P" worktree add -q "$WE" feat/e && cd "$WE" && sh "$STATE_BIN" take docs/s.md ) > "$TMP/st.out" 2>&1 || _rc=$?
-  assert_eq 0 "$_rc" "re-add and take exit 0"
-  assert_eq "restored docs/s.md from the handed line" "$(cat "$TMP/st.out")" "take prints the restore"
+  st_rc "$P" worktree
+  assert_eq 1 "$ST_RC" "worktree from P exits 1 offering the removed story"
+  assert_eq 2 "$(wc -l < "$TMP/st.err" | tr -d ' ')" "with one candidate line"
+  assert_eq removed "$(sed -n 2p "$TMP/st.err" | cut -f4)" "marked removed"
+  _cmd="$(sed -n 2p "$TMP/st.err" | cut -f5-)"
+  mkdir -p "$TMP/trr-bin"; ln -sf "$STATE_BIN" "$TMP/trr-bin/studio-state"
+  _rc=0; ( cd "$P" && PATH="$TMP/trr-bin:$PATH" sh -c "$_cmd" ) > "$TMP/st.out" 2>/dev/null || _rc=$?
+  assert_eq 0 "$_rc" "its command re-adds WE and takes S, exit 0"
+  assert_contains "$TMP/st.out" '^restored docs/s.md from the handed line$' "take prints the restore"
   assert_eq "execute docs/s.md docs/p.md 2/3 feat/e" "$(fields "$WE")" "WE holds S with its progress"
   assert_eq 1 "$(grep -c '^- [0-9-]* restored docs/s\.md from the handed line$' "$WE/.studio/STATE.md")" "with a restored line"
   assert_eq "$_s" "$(sum "$P/.studio/STATE.md")" "P is unchanged"

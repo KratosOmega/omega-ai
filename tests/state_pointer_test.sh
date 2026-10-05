@@ -358,9 +358,13 @@ test_state_agent_worktree_isolated() {
   assert_file "$_A/.studio/STATE.md" "its first write auto-creates its pointer"
   assert_eq "$_s" "$(sum "$P/.studio/STATE.md")" "P's pointer is unchanged"
   assert_eq "$_sa" "$(sum "$WA/.studio/STATE.md")" "WA's pointer is unchanged"
+  st "$P" stories > "$TMP/awi.tsv"
+  assert_eq 1 "$(grep -c "^$_A$(printf '\t')" "$TMP/awi.tsv")" "stories lists the agent worktree's story"
   _rc=0; git -C "$P" worktree remove "$_A" >/dev/null 2>&1 || _rc=$?
   assert_eq 0 "$_rc" "git worktree remove succeeds without --force"
   assert_missing "$_A/.studio/STATE.md" "and the pointer is gone"
+  st "$P" stories > "$TMP/awi.tsv"
+  assert_eq 0 "$(grep -c "^$_A$(printf '\t')" "$TMP/awi.tsv")" "and stories no longer lists it"
 }
 
 test_state_legacy_pointer_resolves() {
