@@ -857,7 +857,19 @@ test_gate_wraps_test_and_run() {
   assert_contains "$BIN/studio-run" 'studio-gate" studio-run --' "studio-run goes through studio-gate"
 }
 
-run_tests test_gate_no_overlap test_gate_status_and_held test_gate_stale_reclaim_race \
+# #35 AC19: setup lines never push out studio-test lines.
+test_gate_times_window_per_who() {
+  gate_proj gtw
+  { i=1; while [ "$i" -le 10 ]; do echo "$i studio-test 7 0"; i=$((i + 1)); done
+    i=1; while [ "$i" -le 60 ]; do echo "$i setup 1 0"; i=$((i + 1)); done; } > "$GP/.studio/gate.times"
+  ( cd "$GP" && sh "$GATE" setup -- true ) >/dev/null 2>&1
+  assert_eq 10 "$(grep -c ' studio-test ' "$GP/.studio/gate.times")" "every studio-test line is kept"
+  assert_eq 50 "$(grep -c ' setup ' "$GP/.studio/gate.times")" "setup keeps its newest 50"
+  assert_contains "$GP/.studio/gate.times" '^[0-9][0-9]* setup [0-9][0-9]* 0$' "the new run is logged"
+  assert_not_contains "$GP/.studio/gate.times" '^11 setup ' "the oldest setup lines went"
+}
+
+run_tests test_gate_times_window_per_who test_gate_no_overlap test_gate_status_and_held test_gate_stale_reclaim_race \
   test_gate_waiting_message test_gate_records_pid_and_who test_gate_without_a_project_just_runs \
   test_gate_signal_waits_for_child_then_releases test_gate_three_reclaimers_never_overlap \
   test_gate_signal_reaches_the_grandchild test_gate_unit_registration_and_times test_gate_wraps_test_and_run \

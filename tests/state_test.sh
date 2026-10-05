@@ -583,7 +583,28 @@ test_state_story_rebuild_skips_backlog() {
   assert_eq 1/2 "$(cd "$P" && STUDIO_STORY=BL sh "$STATE_BIN" get task)" "N counts only the tasks above ## Backlog"
 }
 
-run_tests test_state_needs_init test_state_init test_state_get_set test_state_validation \
+# #35 AC9: T lines before the last `adopt reset` are not the truth.
+test_state_check_ignores_before_adopt_reset() {
+  P="$TMP/story-reset"; mkdir -p "$P/docs"
+  ( cd "$P" && git init -q -b main && git -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
+    printf '# P\n\n### Task 1: a\n\n### Task 2: b\n\n### Task 3: c\n' > docs/p.md
+    export STUDIO_STORY=RS; sh "$STATE_BIN" init
+    sh "$STATE_BIN" set plan docs/p.md; sh "$STATE_BIN" set task 0/3
+    sh "$STATE_BIN" ledger "T1 complete aaaa..bbbb"; sh "$STATE_BIN" ledger "T2 complete bbbb..cccc"
+    sh "$STATE_BIN" ledger "T3 complete cccc..dddd"
+    sh "$STATE_BIN" ledger "adopt reset 0123456789abcdef0123456789abcdef01234567"
+    sh "$STATE_BIN" ledger "T1 complete eeee..ffff" ) >/dev/null 2>&1
+  ( cd "$P" && STUDIO_STORY=RS sh "$STATE_BIN" check --rebuild ) >/dev/null 2>&1
+  assert_eq 1/3 "$(cd "$P" && STUDIO_STORY=RS sh "$STATE_BIN" get task)" "rebuild counts only the lines after the last adopt reset"
+  ( cd "$P" && STUDIO_STORY=RS sh "$STATE_BIN" set task 3/3 ) >/dev/null 2>&1
+  st=0; ( cd "$P" && STUDIO_STORY=RS sh "$STATE_BIN" check ) > "$TMP/out" 2>&1 || st=$?
+  assert_contains "$TMP/out" "note — ledger has T1 complete, task is 3/3" "plain check reads the highest T line after the reset too"
+  ( cd "$P" && STUDIO_STORY=RS sh "$STATE_BIN" ledger "adopt reset 1111111111111111111111111111111111111111" ) >/dev/null 2>&1
+  ( cd "$P" && STUDIO_STORY=RS sh "$STATE_BIN" set task 0/3 && STUDIO_STORY=RS sh "$STATE_BIN" check --rebuild ) >/dev/null 2>&1
+  assert_eq 0/3 "$(cd "$P" && STUDIO_STORY=RS sh "$STATE_BIN" get task)" "the last reset wins: nothing after it"
+}
+
+run_tests test_state_check_ignores_before_adopt_reset test_state_needs_init test_state_init test_state_get_set test_state_validation \
   test_state_ledger test_state_ledger_keeps_all_words test_state_ledger_folds_newlines \
   test_state_set_keeps_backslashes test_state_show test_state_resolves_to_main_checkout \
   test_state_init_writes_config_ledger_and_gitignore_once test_state_init_gitignore_appends_safely \
