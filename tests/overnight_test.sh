@@ -418,6 +418,23 @@ test_overnight_reclaim_race() {
   assert_contains "$P/.studio/overnight.lock" "^pid=$DUMMY$" "the other start's lock is not removed"
   assert_eq 0 "$(calls)" "the loser launches no session"
 }
+# A live run's lock found mid-reclaim (its holder took it after this start's
+# preflight) is put back and refused by name; its stop flag is left alone.
+test_overnight_reclaim_finds_live_lock() {
+  fixture racelive; live_dummy; export DUMMY
+  printf 'pid=999999\nrun=x\nstarted=y\n' > "$P/.studio/overnight.lock"
+  STUDIO_OVERNIGHT_RACE_HOOK='printf "pid=%s\nrun=z\nstarted=y\n" "$DUMMY" > "$LOCK"; printf "operator stop\n" > "$STOP_FILE"'
+  export STUDIO_OVERNIGHT_RACE_HOOK
+  run_start
+  unset STUDIO_OVERNIGHT_RACE_HOOK
+  kill "$DUMMY" 2>/dev/null; wait "$DUMMY" 2>/dev/null
+  assert_eq 2 "$RS_STATUS" "a live lock found mid-reclaim exits 2"
+  assert_contains "$RS_ERR" "a run is live: single-plan (z, pid $DUMMY)" "the refusal names the live run and its pid"
+  assert_contains "$P/.studio/overnight.lock" "^pid=$DUMMY$" "the live lock is put back unchanged"
+  assert_contains "$P/.studio/overnight.stop" "^operator stop$" "the live run's stop flag is left alone"
+  assert_eq "" "$(ls "$P"/.studio/overnight.lock.stale.* 2>/dev/null)" "no stale copy is left behind"
+  assert_eq 0 "$(calls)" "the loser launches no session"
+}
 
 test_overnight_first_use_ignores() {
   fixture ign
@@ -1832,7 +1849,7 @@ run_tests test_overnight_report_done test_overnight_report_not_done test_overnig
   test_overnight_preflight_refusals test_overnight_preflight_all_failures \
   test_overnight_config_refusals test_overnight_deny_file_required \
   test_overnight_lock test_overnight_first_use_ignores \
-  test_overnight_start_args test_overnight_reclaim_race \
+  test_overnight_start_args test_overnight_reclaim_race test_overnight_reclaim_finds_live_lock \
   test_overnight_sequence_to_done test_overnight_launch_argv test_overnight_ignores_inherited_lane_vars \
   test_overnight_retry_then_no_progress test_overnight_orphaned_unit test_overnight_progress_resets_retry \
   test_overnight_retries_zero test_overnight_stop_line test_overnight_copied_stop_not_new \

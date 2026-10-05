@@ -1252,7 +1252,7 @@ detach_start() {
   done
   if lock_live && [ "$(lock_pid)" = "$_dpid" ]; then
     # The child holds the run lock: the run is live, only status was slow.
-    say "the detached run is live (pid $_dpid, log $_dlog) but did not answer status in 10 s — $(sq "$SELF_ABS") status, or $(sq "$SELF_ABS") stop"
+    say "the detached run is live (pid $_dpid, log $_dlog) but did not answer status in 10 s — $(sq "$SELF_ABS") status --run $_dslug, or $(sq "$SELF_ABS") stop --run $_dslug"
     return 1
   fi
   # No lock: end the child's process group (setsid made it the group leader).
@@ -1330,13 +1330,23 @@ cmd_start() {
 # RUN_DIR itself; exit 2 when another start holds it. Both modes (D18).
 acquire_run_lock() {
   if [ -f "$LOCK" ]; then
+    # Only a dead holder's lock is reclaimed: a live one (a second start of
+    # the same slug shares its lock path) refuses, and nothing of it is touched.
+    if runs_lock_live "$LOCK"; then say "$(lock_held_by "$LOCK")"; exit 2; fi
     _stale="$(lock_pid)"
     say "reclaiming stale lock (pid $_stale)"
     # Test hook: runs between reading the stale pid and removing the lock.
     [ -z "${STUDIO_OVERNIGHT_RACE_HOOK:-}" ] || eval "$STUDIO_OVERNIGHT_RACE_HOOK"
-    # mv is atomic: only one starter gets the stale file. If it no longer
-    # names the dead pid we read, another start already retook the lock.
+    # mv is atomic: only one starter gets the stale file. If its holder is
+    # live, or it no longer names the dead pid we read, another start already
+    # retook the lock: it goes back, untouched.
     if mv "$LOCK" "$LOCK.stale.$$" 2>/dev/null; then
+      if runs_lock_live "$LOCK.stale.$$"; then
+        _why="$(lock_held_by "$LOCK" "$LOCK.stale.$$")"
+        ln "$LOCK.stale.$$" "$LOCK" 2>/dev/null || true
+        rm -f "$LOCK.stale.$$"
+        say "lock taken by another start: $_why"; exit 2
+      fi
       _got="$(sed -n 's/^pid=//p' "$LOCK.stale.$$" | head -n 1)"
       if [ "$_got" != "$_stale" ]; then
         ln "$LOCK.stale.$$" "$LOCK" 2>/dev/null || true
@@ -1373,6 +1383,20 @@ lock_recheck() {
   [ -n "$_lc" ] || return 0
   RECHECK_WHY="a run is live: $(printf '%s\n' "$_lc" | awk -F'\t' '{ print ($2 == "-" ? "single-plan" : $2) " (" $5 ", pid " $4 ")" }') — $(sq "$SELF_ABS") status"
   return 1
+}
+# lock_held_by LOCKPATH [FILE] — the refusal text for a live run's lock
+# (lock_recheck's form): `a run is live: <slug> (<run dir>, pid <pid>) —
+# status [--run <slug>]`. The slug comes from LOCKPATH, the rest from FILE
+# (default LOCKPATH; a moved copy of it during a reclaim).
+lock_held_by() {
+  _lh_f="${2:-$1}"; _lh_d="$(runs_kv run "$_lh_f")"
+  case "$1" in
+    */.studio/overnight.lock)
+      if [ -f "$_lh_d/manifest.md" ]; then _lh_s="$(runs_mf_slug "$_lh_d/manifest.md")"; else _lh_s=single-plan; fi ;;
+    *) _lh_s="${1%/lock}"; _lh_s="${_lh_s##*/}" ;;
+  esac
+  _lh_r=""; [ "$_lh_s" = single-plan ] || _lh_r=" --run $_lh_s"
+  printf 'a run is live: %s (%s, pid %s) — %s status%s\n' "$_lh_s" "$_lh_d" "$(runs_kv pid "$_lh_f")" "$(sq "$SELF_ABS")" "$_lh_r"
 }
 run_populate() { :; }   # overnight-lanes.sh fills the run dir before the re-check (D9)
 # lock_lost WHY — this start lost: its lock, run dir and empty record dir go, the mutex is dropped, exit 2.

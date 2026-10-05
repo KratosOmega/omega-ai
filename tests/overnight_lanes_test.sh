@@ -1997,6 +1997,7 @@ test_lanes_detach_timeout_lock_held_points_at_status() {
   assert_eq 1 "$st" "a status timeout exits 1"
   assert_contains "$TMP/dtl.out" "is live" "a lock-holding child is reported live"
   assert_contains "$TMP/dtl.out" "/studio-overnight' stop" "and stop is named, by its absolute path"
+  assert_contains "$TMP/dtl.out" "status --run demo, or .*/studio-overnight' stop --run demo$" "status and stop name the detached run (another run may be live)"
   assert_not_contains "$TMP/dtl.out" "run the plain command" "no plain start is offered"
   assert_eq 1 "$([ -f "$P/.studio/runs/demo/lock" ] && echo 1 || echo 0)" "the run still holds its lock"
   # The hung stub would hold the run past stop: end it, then wait the run out.
@@ -2950,16 +2951,45 @@ test_lanes_reg_write_keeps_live_sibling() {
 test_lanes_detach_with_other_run_live() {
   lanes_fixture det integration A:-
   lanes_add_run alpha integration S1:-
-  printf 'sleep 4\n' > "$SCEN/S1"; bg_lanes alpha "$RW" start "$RMF"
+  printf 'hang\n' > "$SCEN/S1"; bg_lanes alpha "$RW" start "$RMF"
   _i=0; while [ ! -f "$P/.studio/runs/alpha/lock" ] && [ "$_i" -lt 100 ]; do sleep 0.1; _i=$((_i + 1)); done
+  _ap="$(sed -n 's/^pid=//p' "$P/.studio/runs/alpha/lock")"
   printf 'hang\n' > "$SCEN/A"
   run_lanes start --detach "$MFP"
   assert_eq 0 "$LS_STATUS" "detach succeeds with another run live (waits on its own lock and status --run)"
   assert_contains "$LS_OUT" "^detached: pid " "detached"
-  # alpha ends on its own; then demo is the one live run: stop it and end its hung stub.
-  bg_wait alpha
-  ( cd "$P" && sh "$RUNNER" stop ) > /dev/null 2>&1; pkill -f "$TMP/fakebin/claude" 2>/dev/null
-  detach_stop
+  assert_eq "pid=$_ap" "$(grep '^pid=' "$P/.studio/runs/alpha/lock" 2>/dev/null)" "alpha still holds its lock when detach returns"
+  # Stop demo by name: alpha is untouched and stays live.
+  ( cd "$P" && sh "$RUNNER" stop --run demo ) > /dev/null 2>&1
+  assert_file "$P/.studio/runs/demo/stop" "stop --run demo writes demo's flag"
+  assert_missing "$P/.studio/runs/alpha/stop" "and not alpha's"
+  assert_eq "pid=$_ap" "$(grep '^pid=' "$P/.studio/runs/alpha/lock" 2>/dev/null)" "alpha still holds its lock after demo's stop"
+  assert_eq 1 "$(pid_alive "$_ap" && echo 1 || echo 0)" "and alpha's runner is still live"
+  # Then end both: stop alpha, end the hung stubs, wait both runs out.
+  ( cd "$P" && sh "$RUNNER" stop --run alpha ) > /dev/null 2>&1; pkill -f "$TMP/fakebin/claude" 2>/dev/null
+  detach_stop; bg_wait alpha
+}
+# Two starts of one slug share its lock path: a second start while the first
+# is live refuses (exit 2, naming it) and never reclaims, rewrites or removes
+# the live run's lock, stop flag or run dir.
+test_lanes_same_slug_live_refused() {
+  lanes_fixture same integration A:-
+  printf 'hang\n' > "$SCEN/A"
+  bg_lanes first "$P" start "$MFP"
+  wait_for "[ -f '$CALLS/1.story' ]" 60
+  _lp="$(sed -n 's/^pid=//p' "$P/.studio/runs/demo/lock")"
+  _ld="$(ls -d "$P"/.studio/reports/overnight-demo-[0-9]* 2>/dev/null)"
+  printf 'operator stop\n' > "$P/.studio/runs/demo/stop"   # the run stays live until its hung unit ends
+  run_lanes start "$MFP"
+  assert_eq 2 "$LS_STATUS" "a second start of a live slug exits 2"
+  assert_contains "$LS_ERR" "a run is live: demo .*pid $_lp" "and names the live run and its pid"
+  assert_not_contains "$LS_ERR" "reclaiming stale lock" "it never treats the live lock as stale"
+  assert_contains "$P/.studio/runs/demo/lock" "^pid=$_lp\$" "the live run's lock is unchanged"
+  assert_contains "$P/.studio/runs/demo/stop" "^operator stop\$" "its stop flag is left alone"
+  assert_eq "$_ld" "$(ls -d "$P"/.studio/reports/overnight-demo-[0-9]* 2>/dev/null)" "no second run dir"
+  assert_eq 1 "$([ -d "$_ld" ] && echo 1 || echo 0)" "the live run's dir is kept"
+  pkill -f "$TMP/fakebin/claude" 2>/dev/null
+  bg_wait first
 }
 test_lanes_units_get_start_dir() {
   lanes_fixture sdenv integration A:-
@@ -3002,7 +3032,7 @@ test_lanes_old_lock_reaped_by_start() {
   assert_eq 0 "$LS_STATUS" "and runs"
 }
 
-run_tests test_lanes_chain_rule test_lanes_manifest_refusalstest_lanes_preflight_backlog_tasks test_lanes_manifest_header_refusals \
+run_tests test_lanes_chain_rule test_lanes_manifest_refusals test_lanes_preflight_backlog_tasks test_lanes_manifest_header_refusals \
   test_lanes_preflight_story_checks test_lanes_preflight_story_state test_lanes_docs_unreachable \
   test_lanes_git_too_old test_lanes_sourced_only test_lanes_next \
   test_lanes_next_all_planned_and_ambiguous test_lanes_next_plan_before_autopilot \
@@ -3042,4 +3072,4 @@ run_tests test_lanes_chain_rule test_lanes_manifest_refusalstest_lanes_preflight
   test_lanes_status_run_not_live test_lanes_manifest_refuses_live_single test_lanes_lock_race_single_vs_manifest \
   test_lanes_reg_write_keeps_live_sibling test_lanes_detach_with_other_run_live test_lanes_units_get_start_dir \
   test_lanes_reap_resume_line_run_worktree test_lanes_old_lock_counts_live test_lanes_old_lock_reaped_by_start \
-  test_lanes_no_orphans
+  test_lanes_same_slug_live_refused test_lanes_no_orphans
