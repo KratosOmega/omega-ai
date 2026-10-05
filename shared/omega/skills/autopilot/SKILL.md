@@ -87,7 +87,7 @@ session (it is on `PATH` only inside a `claude-gd` session).
      ```
 
    - Write the pointer: `printf '%s\n' docs/runs/<slug>.md > .studio/run`.
-     Commit the manifest and the lane count on `run/<slug>`: `git add docs/runs/<slug>.md .studio/config.json && git commit -m "docs(run): <slug> manifest"` — a dirty `config.json` would stop each story's first unit at execute §0's clean-tree check.
+     Commit the manifest and the lane count on `run/<slug>`: `git add docs/runs/<slug>.md .studio/config.json .studio/ledger/<id>.md … && git commit -m "docs(run): <slug> manifest"` (every story's ledger, so the source lines are committed) — a dirty `config.json` or ledger would stop each story's first unit at execute §0's clean-tree check.
    - Check *Does not fit* now, before any planning stage.
    - **Adopt (step 1a)** — a story with a source plan was planned outside the studio (for example with superpowers). Each step below says what it does as it runs it, and the plan is converted, never rewritten. In order:
      1. `studio-adopt inspect <id> --branch <Branch> --plan <original>` reads the evidence (the plan's tasks, the SDD ledger, the commits on the branch) and prints it, changing nothing. A mismatch stops that story with inspect's line.
@@ -128,6 +128,7 @@ session (it is on `PATH` only inside a `claude-gd` session).
 
    The question sweep for manifest stories belongs to `/game-dev:plan` (it writes `## Decisions` and ledgers `Decisions swept <id>`); this skill does not repeat it.
 3. **Seed every story** once every row is `planned`, in manifest order. Every `studio-state` call below runs with `STUDIO_STORY=<id>`.
+   - A `plan` story that was adopted (its `<id>.md` holds `verdict plan`): first, with `STUDIO_STORY=<id>`, `studio-state ledger "adopted <original> -> <new plan>"` (`<new plan>` from `next`'s `plan=`), before the seeding below.
    - Each story, not-started and half-done alike, in this checkout (on `run/<slug>`), never in a story worktree: `studio-state init`; `set spec <spec>`; `set plan <plan>` (from `next`'s `spec=` and `plan=`); `set task 0/<N>` (`N` = `awk '/^## Backlog/ { exit } /^### Task [0-9]/ { n++ } END { print n + 0 }' <plan>` — the tasks above `## Backlog` only, since a task the producer cut keeps its heading there — run here where the plan exists — a story worktree's `check --rebuild` then takes `N` from the story file and never needs the plan); then the spec-slug ledger's `spec approved <spec>`, `plan approved <plan>` and `Decisions swept <id>` lines are re-ledgered through `studio-state ledger "<text after the date>"`, so each carries today's date.
      They land in this checkout's `.studio/ledger/<id>.md` — the file the runner's preflight reads, and the one it requires clean — and are committed on `run/<slug>` below.
    - **Not started** (no branch): in this checkout, `set stage plan`, `set branch -`.

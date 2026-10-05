@@ -115,6 +115,15 @@ test_autopilot_contract() {
     assert_contains "$S" "$lit" "autopilot adopt branch: $lit"
   done
   test_autopilot_adopt_order
+  # AC1: the manifest commit carries every story's ledger; AC3: step 3 ledgers `adopted` before seeding.
+  _a="$(grep -n -F -m1 -- 'git add docs/runs/<slug>.md .studio/config.json .studio/ledger/<id>.md … && git commit -m "docs(run): <slug> manifest"' "$S" | cut -d: -f1)"
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if [ -n "$_a" ]; then _pass "manifest commit adds the ledgers"; else _fail "manifest commit adds the ledgers"; fi
+  _a="$(grep -n -F -m1 -- 'studio-state ledger "adopted <original> -> <new plan>"' "$S" | cut -d: -f1)"
+  _b="$(grep -n -F -m1 -- 'Each story, not-started and half-done alike' "$S" | cut -d: -f1)"
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if [ -n "$_a" ] && [ -n "$_b" ] && [ "$_a" -lt "$_b" ]; then _pass "step 3 ledgers adopted before seeding"
+  else _fail "step 3 ledgers adopted before seeding ($_a, $_b)"; fi
 }
 
 # The AC5 order (spec): the five phrases appear in the skill in this order.
