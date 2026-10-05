@@ -123,7 +123,12 @@ mf_conflicts() {
     runs_record_open "$STATE_ROOT" "$_mc_s" || continue
     runs_live "$STATE_ROOT" | runs_match "$_mc_s" | grep -q . && continue   # counted above
     _mc_rows="$(runs_rows "$STATE_ROOT" "$_mc_s")" || continue
-    mf_rows_clash "$_mc_rows" "stopped run $_mc_s (record $STATE_ROOT/.studio/runs/$_mc_s) — resume it ($(sq "$SELF_ABS") start <its manifest>) or pick another"
+    # The way out (AC8): resume from its newest report's manifest path (the
+    # report's own fallback when unrecorded), or abandon it by archiving the
+    # record as a done one is archived.
+    _mc_rd="${_mc_rows%/rows.tsv}"; _mc_rec="$STATE_ROOT/.studio/runs/$_mc_s"
+    _mc_mf="$(head -n 1 "$_mc_rd/manifest.path" 2>/dev/null)"; [ -n "$_mc_mf" ] || _mc_mf="docs/runs/$_mc_s.md"
+    mf_rows_clash "$_mc_rows" "stopped run $_mc_s (record $_mc_rec, report $_mc_rd) — resume it ($(sq "$SELF_ABS") start $_mc_mf) or abandon it (mv $(sq "$_mc_rec") $(sq "$_mc_rec").<utc ts>) or pick another"
   done
 }
 # mf_overlap_warn — warn (D38, AC9) for each other live run whose unfinished
