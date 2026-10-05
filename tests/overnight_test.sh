@@ -1981,9 +1981,18 @@ test_verbs_channel_start_dir_from_lock() {
   assert_contains "$V_ERR" "uncommitted changes in $P/wt" "the dirty check ran in the lock's start dir"
   fake_run_end "$_pa"
 }
+test_verbs_channel_ambiguous_story_refused() {
+  fixture vca; FR_SEQ=1; fake_mrun alpha S1=running; _pa="$FR_PID"; FR_SEQ=2; fake_mrun beta S1=running
+  verb say S1 x
+  assert_eq 1 "$V_STATUS" "S1 is in two live runs"
+  assert_contains "$V_ERR" "S1 is in 2 live runs (alpha, beta)" "names both runs"
+  assert_contains "$V_ERR" "--run" "points at --run"
+  verb say --run beta S1 y; assert_eq 0 "$V_STATUS" "--run picks one"
+  fake_run_end "$FR_PID"; fake_run_end "$_pa"
+}
 test_help_names_concurrent_runs() {
   out="$(sh "$RUNNER" --help 2>&1)"; printf '%s\n' "$out" > "$TMP/help.txt"
-  for w in "status \[--run <slug>\]" "watch \[--run <slug>\]" "stop --run" "stop --all" "max_sessions" "install or pull omega-ai only when"; do
+  for w in "status \[--run <slug>\]" "watch \[--run <slug>\]" "stop --run" "stop --all" "max_sessions" 'install or pull omega-ai only when `studio-overnight status` shows no live run' "applies to watch only"; do
     assert_contains "$TMP/help.txt" "$w" "help names $w"
   done
 }
@@ -2062,4 +2071,4 @@ run_tests test_overnight_report_done test_overnight_report_not_done test_overnig
   test_status_two_runs_blocks_oldest_first test_status_run_not_live test_status_registry_root_once \
   test_watch_run_selects test_stop_two_runs_refuses test_stop_run_writes_own_flag test_stop_all_writes_each_flag \
   test_stop_story_unchanged test_verbs_channel_resolution_by_story test_verbs_channel_run_flag_slug_or_basename \
-  test_verbs_channel_no_run_lists_story test_verbs_channel_start_dir_from_lock test_help_names_concurrent_runs
+  test_verbs_channel_no_run_lists_story test_verbs_channel_ambiguous_story_refused test_verbs_channel_start_dir_from_lock test_help_names_concurrent_runs

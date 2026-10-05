@@ -117,10 +117,18 @@ chan_find_run() {
       # failure. A verb with no story uses the only-live-run rule.
       _cf_l=""
       if [ -n "$A_P1" ]; then
-        _cf_d="$(printf '%s\n' "$_cf_live" | while IFS="$(printf '\t')" read -r _ _ _ _ _d _ _; do
-                   awk -F'\t' -v s="$A_P1" '$1 == s { f = 1 } END { exit !f }' "$_d/rows.tsv" 2>/dev/null && { printf '%s\n' "$_d"; break; }
-                 done)"
-        [ -z "$_cf_d" ] || _cf_l="$(printf '%s\n' "$_cf_live" | awk -F'\t' -v d="$_cf_d" '$5 == d')"
+        # Every run listing it, by cut (see below): two or more is a refusal.
+        _cf_hits=""; _cf_names=""; _cf_k=0
+        while IFS= read -r _cf_ln; do
+          [ -n "$_cf_ln" ] || continue
+          _cf_d="$(printf '%s\n' "$_cf_ln" | cut -f5)"
+          awk -F'\t' -v s="$A_P1" '$1 == s { f = 1 } END { exit !f }' "$_cf_d/rows.tsv" 2>/dev/null || continue
+          _cf_k=$((_cf_k + 1)); _cf_l="$_cf_ln"
+          _cf_names="${_cf_names:+$_cf_names, }$(printf '%s\n' "$_cf_ln" | cut -f2)"
+        done <<EOF
+$_cf_live
+EOF
+        [ "$_cf_k" -lt 2 ] || chan_fail 1 "$A_P1 is in $_cf_k live runs ($_cf_names) — use --run <slug>"
       fi
       if [ -z "$_cf_l" ]; then
         [ "$_cf_n" = 1 ] || chan_fail 1 "no live run lists ${A_P1:-that story}"

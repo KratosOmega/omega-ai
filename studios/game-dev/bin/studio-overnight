@@ -254,8 +254,9 @@ usage: $SELF_ABS start [--dry-run | --detach] [<manifest>] | status [--run <slug
                      status --run <slug> shows one (a slug or a run dir
                      basename); exit 1 "no live run <slug>" if it is not live.
   watch [--run <slug>] [<seconds>]
-                     status every <seconds> (default 5) until Ctrl-C; the same
-                     as status --follow. --run watches one run. Exit 0.
+                     status every <seconds> (default 5) until Ctrl-C, like
+                     status --follow; --run applies to watch only (it watches
+                     one run). Exit 0.
   stop               end the run after the running unit (exit 1: no run); with
                      two or more live runs it stops none and lists them
   stop --run <slug>  end that run only (its own stop flag)
@@ -295,7 +296,7 @@ Run selection: a story verb (say, said, unsay, hold, resume, stop <story>) acts
 on the live run that lists the story; with two or more live runs and none
 listing it, it refuses ("no live run lists <story>"). --run <slug or run dir
 basename> picks the run explicitly.
-install or pull omega-ai only when `studio-overnight status` shows no live run (a run reads the plugin while it runs)
+install or pull omega-ai only when \`studio-overnight status\` shows no live run (a run reads the plugin while it runs)
 
 The run may: commit, push the feature branch, open a draft PR.
 The run may not: merge, force-push, delete a remote branch, read or write secrets.
