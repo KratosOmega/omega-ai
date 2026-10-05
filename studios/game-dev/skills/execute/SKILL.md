@@ -9,6 +9,16 @@ description: Use when an approved plan exists — dispatches a fresh role agent 
 "… in inline mode" when `--inline` was given, "… one unit (--one)" when
 `--one` was given).
 
+**Never search for a tool or script.** Do not run `find /`, `find ~`, `locate`
+or a recursive `ls` from `/`, `~` or `$HOME` to look for one: a search can hang
+a headless unit for hours. `find .` or `git ls-files` inside the project, and
+`command -v`, are fine. Find superpowers' scripts with `sdd-script` (below),
+use a path this studio documents, or stop and report the tool as missing.
+If `sdd-script` is command not found, run
+`"$(command -v sdd-script || echo "$OMEGA_STUDIO_ROOT/bin/sdd-script")"` in its
+place; if that is missing too, stop and report "reinstall omega-ai". Never look
+for it.
+
 ## 0. Preconditions and isolation
 
 Check these first, in the checkout you are in:
@@ -240,7 +250,10 @@ procedures, below).
 `superpowers:subagent-driven-development` and follow its loop for the
 per-task cycle: fresh implementer per task, task review after each, ledger.
 Its fix loop, its final review and its last step are replaced by §4a, §5 and
-§7 below. The studio rules in §2–§7 layer on top of it.
+§7 below. The studio rules in §2–§7 layer on top of it. When a superpowers
+skill says `scripts/<name>`, run `bash "$(sdd-script [--skill <skill>] <name>)" ...`
+(`--skill executing-plans` for task-start and task-done); if that fails, stop
+and report it (`sdd-script` not found: "reinstall omega-ai").
 Under `--one`, SDD's setup never reads the plan: the one task's text comes from `studio-brief task <n>`, and no other task is extracted.
 Under `--one`, see §8.
 
@@ -279,7 +292,7 @@ The `Role:` values are the studio's agents: `game-dev:gameplay-programmer`,
 `game-dev:producer`, `game-dev:playtester` and `game-dev:reviewer` never
 appear in `Role:`.
 
-Every brief also carries: the task text (via the skill's task-brief script),
+Every brief also carries: the task text (via the skill's task-brief script, ``bash "$(sdd-script task-brief)" <plan> <n>``),
 the spec sections the task cites, and the project `CLAUDE.md` architecture
 rules. The agent's own `## Skills you may call` section (in
 `agents/<role>.md`) names the skills it reads before writing code. A stuck
@@ -359,8 +372,9 @@ This overrides `superpowers:subagent-driven-development`'s fix loop (rounds 1–
    dispatch rule, the C# exception included). Its brief carries:
    - the findings, verbatim;
    - the diff as a file, never pasted inline: SDD's review package for the
-     task's commit range. `bash scripts/review-package <plan> <BASE> HEAD`,
-     run by its path in SDD's skill directory, from the worktree root, with
+     task's commit range. ``bash "$(sdd-script review-package)" <plan> <BASE> HEAD``,
+     run from the worktree root (`sdd-script` prints the script's path; if it
+     fails, stop and report its message, never search for the script), with
      `<BASE>` the commit the task started from, prints the file's path (the
      script runs git in its working directory); the file holds
      `git log --oneline`, `git diff --stat` and `git diff -U10` for the
@@ -412,8 +426,9 @@ the last task's review. Under `--one`, see §8: a task unit never starts it.
    (`requesting-code-review`'s `code-reviewer.md`). The brief:
    - `Scope: branch <name> vs <base>`;
    - the review package for `<merge-base>..HEAD`
-     (`bash scripts/review-package <plan> <merge-base> HEAD`, run by its
-     path in SDD's skill directory, from the worktree root), as SDD's final
+     (``bash "$(sdd-script review-package)" <plan> <merge-base> HEAD``, run
+     from the worktree root; a failing `sdd-script` means stop and report),
+     as SDD's final
      review gets one;
    - the spec path and the project `CLAUDE.md` path — report every
      acceptance criterion as met or unmet, in the agent's own
