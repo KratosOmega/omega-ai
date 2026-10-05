@@ -1462,13 +1462,14 @@ lock_lost() {
 }
 # run_excludes — the run's machine-local paths into the common git dir's
 # info/exclude, each once (D6): the single-plan lock and stop flag, the
-# per-run records and locks, the session slots, both mutexes, and the final
-# step's worktrees. Sets _excl.
+# per-run records and locks, the session slots, both mutexes and their reap
+# locks (mx_reap), and the final step's worktrees. Sets _excl.
 run_excludes() {
   _excl="$(git -C "$START_DIR" rev-parse --path-format=absolute --git-common-dir)/info/exclude"
   mkdir -p "$(dirname "$_excl")"
   for _e in .studio/overnight.lock .studio/overnight.stop .studio/runs/ .studio/sessions/ \
-            .studio/runs.mutex .studio/sessions.mutex .claude/worktrees/; do
+            .studio/runs.mutex .studio/sessions.mutex .studio/runs.mutex.reap/ .studio/sessions.mutex.reap/ \
+            .claude/worktrees/; do
     grep -qxF "$_e" "$_excl" 2>/dev/null || printf '%s\n' "$_e" >> "$_excl"
   done
 }

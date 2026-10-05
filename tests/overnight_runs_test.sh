@@ -113,7 +113,32 @@ test_mx_take_drop_and_dead_owner() {
   mx_take "$M" "$DUMMY"; assert_eq 0 $? "a dead owner's mutex is removed and retaken"
   mx_drop "$M" "$DUMMY"
 }
+# A dead-pid link and 6 takers at once, 20 rounds: the reap must never let two
+# takers hold the mutex together (#39 final review, known #1). Each holder
+# marks itself in $H, logs how many marks it sees, and unmarks before mx_drop.
+test_mutex_reap_race() {
+  M="$TMP/race.mutex"; H="$TMP/race.holders"; RL="$TMP/race.log"; mkdir -p "$H"; : > "$RL"
+  _taker='. "$1"; mx_take "$2" "$$" || { echo take-failed >> "$4"; exit 1; }
+    mkdir "$3/$$"; ls "$3" | wc -l | tr -d " " >> "$4"; sleep 0.05
+    ls "$3" | wc -l | tr -d " " >> "$4"; rmdir "$3/$$"; mx_drop "$2" "$$"'
+  _r=0
+  while [ "$_r" -lt 20 ]; do
+    dead_pid; rm -f "$M"; ln -s "$DEAD" "$M"
+    _k=0; _pids=""
+    while [ "$_k" -lt 6 ]; do
+      sh -c "$_taker" taker "$LIB" "$M" "$H" "$RL" & _pids="$_pids $!"; _k=$((_k + 1))
+    done
+    for _p in $_pids; do wait "$_p"; done
+    _r=$((_r + 1))
+  done
+  assert_eq 240 "$(grep -c . "$RL")" "every taker took the mutex and logged twice (20 rounds x 6)"
+  assert_eq 0 "$(grep -c take-failed "$RL")" "no taker timed out"
+  assert_eq "" "$(grep -vx 1 "$RL" | sort | uniq -c | tr -s ' \n' '  ')" "never more than one holder at once"
+  assert_missing "$M" "the last holder dropped it"
+  assert_missing "$M.reap" "no reap lock is left behind"
+}
 
 run_tests test_runs_live_per_run_and_old_lock test_runs_live_skips_dead_and_single test_runs_match_slug_or_basename \
   test_runs_stop_of test_runs_start_dir_lock_then_registry test_runs_records test_runs_rows_newest_report \
-  test_runs_worktree_of test_runs_plan_files_studio_form test_runs_plan_files_superpowers_form test_runs_plan_files_comma_line_list test_mx_take_drop_and_dead_owner
+  test_runs_worktree_of test_runs_plan_files_studio_form test_runs_plan_files_superpowers_form test_runs_plan_files_comma_line_list test_mx_take_drop_and_dead_owner \
+  test_mutex_reap_race

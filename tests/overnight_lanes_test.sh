@@ -3090,7 +3090,7 @@ test_lanes_excludes_before_lock() {
   _ex="$(git -C "$P" rev-parse --path-format=absolute --git-common-dir)/info/exclude"
   STUDIO_OVERNIGHT_LOCK_HOOK="cp '$_ex' '$TMP/excl.at-lock'"; export STUDIO_OVERNIGHT_LOCK_HOOK
   run_lanes start "$MFP"; unset STUDIO_OVERNIGHT_LOCK_HOOK
-  for _e in .studio/runs/ .studio/sessions/ .studio/runs.mutex .studio/sessions.mutex .studio/overnight.lock .studio/overnight.stop .claude/worktrees/; do
+  for _e in .studio/runs/ .studio/sessions/ .studio/runs.mutex .studio/sessions.mutex .studio/runs.mutex.reap/ .studio/sessions.mutex.reap/ .studio/overnight.lock .studio/overnight.stop .claude/worktrees/; do
     assert_contains "$TMP/excl.at-lock" "^$(printf '%s' "$_e" | sed 's/\./\\./g')\$" "$_e excluded before the lock (D6)"
   done
 }

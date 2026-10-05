@@ -95,16 +95,33 @@ runs_plan_files() {
   ' | sort -u
 }
 # mx_take PATH PID — take the symlink mutex for PID, reaping a dead owner's; 1 after ~10s (D25).
+# Every pass counts, a reap included, so a reap that cannot rm never spins forever.
 mx_take() {
   _mx_i=0
   while ! ln -s "$2" "$1" 2>/dev/null; do
     _mx_o="$(readlink "$1" 2>/dev/null)"
-    if [ -n "$_mx_o" ] && ! kill -0 "$_mx_o" 2>/dev/null && [ "$(readlink "$1" 2>/dev/null)" = "$_mx_o" ]; then
-      rm -f "$1"; continue
-    fi
     _mx_i=$((_mx_i + 1)); [ "$_mx_i" -lt 100 ] || return 1
+    if [ -n "$_mx_o" ] && ! kill -0 "$_mx_o" 2>/dev/null && mx_reap "$1" "$_mx_o"; then continue; fi
     sleep 0.1
   done
+}
+# mx_reap PATH DEAD — remove the mutex only if it still names the dead pid DEAD,
+# under the reap lock PATH.reap (mkdir), so two takers that both saw DEAD
+# cannot each remove the link (the second would remove the first's fresh
+# one). Waits ~1s for the reap lock and breaks one older than 5s (a reaper
+# killed mid-reap). 0 when it removed the link.
+mx_reap() {
+  _mr_i=0
+  while ! mkdir "$1.reap" 2>/dev/null; do
+    _mr_t="$(stat -c %Y "$1.reap" 2>/dev/null || stat -f %m "$1.reap" 2>/dev/null)"
+    if [ -n "$_mr_t" ] && [ $(($(date +%s) - _mr_t)) -gt 5 ]; then rmdir "$1.reap" 2>/dev/null; continue; fi
+    _mr_i=$((_mr_i + 1)); [ "$_mr_i" -lt 10 ] || return 1
+    sleep 0.1
+  done
+  _mr_rc=1
+  if [ "$(readlink "$1" 2>/dev/null)" = "$2" ] && ! kill -0 "$2" 2>/dev/null; then rm -f "$1" && _mr_rc=0; fi
+  rmdir "$1.reap" 2>/dev/null
+  return "$_mr_rc"
 }
 # mx_drop PATH PID — release the mutex only when PID owns it.
 mx_drop() { [ "$(readlink "$1" 2>/dev/null)" != "$2" ] || rm -f "$1"; return 0; }
