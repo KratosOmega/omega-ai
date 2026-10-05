@@ -97,22 +97,27 @@ chan_args() {
   done
 }
 
-# chan_find_run — R2: CH_RUN, CH_ROOT, CH_START, CH_PID of the one live run
-# this verb acts on, or exit 1. Inside a project: the lock's run, which
-# --run must name exactly. Outside: the live registry entries, filtered by
-# --run.
+# chan_find_run — R2: CH_RUN, CH_ROOT, CH_START, CH_PID and CH_LOCK of the
+# one live run this verb acts on, or exit 1. Inside a project: a live run of
+# runs_live, the one --run names (its slug or run dir basename, runs_match),
+# its start dir the run's recorded one (D12). Outside: the live registry
+# entries, filtered by --run; CH_LOCK from that root's runs_live.
 chan_find_run() {
-  CH_RUN=""; CH_ROOT=""; CH_START=""; CH_PID=""
+  CH_RUN=""; CH_ROOT=""; CH_START=""; CH_PID=""; CH_LOCK=""
   if [ -n "$STATE_ROOT" ] && [ -d "$STATE_ROOT/.studio" ]; then
-    if lock_live; then CH_RUN="$(sed -n 's/^run=//p' "$LOCK" | head -n 1)"; CH_PID="$(lock_pid)"; fi
-    if [ -n "$A_RUN" ] && [ "${CH_RUN##*/}" != "$A_RUN" ]; then chan_fail 1 "run $A_RUN is not live"; fi
-    [ -n "$CH_RUN" ] || chan_fail 1 "no live run in $STATE_ROOT"
-    CH_ROOT="$STATE_ROOT"; CH_START="$START_DIR"
-    for _cf_e in "$REGISTRY"/overnight-*; do
-      [ -f "$_cf_e" ] && [ "$(reg_get run "$_cf_e")" = "$CH_RUN" ] || continue
-      _cf_s="$(reg_get start "$_cf_e")"; [ -z "$_cf_s" ] || CH_START="$_cf_s"
-      break
-    done
+    _cf_live="$(runs_live "$STATE_ROOT")"
+    if [ -n "$A_RUN" ]; then
+      _cf_l="$(printf '%s\n' "$_cf_live" | runs_match "$A_RUN")"
+      [ -n "$_cf_l" ] || chan_fail 1 "run $A_RUN is not live"
+    else
+      [ -n "$_cf_live" ] || chan_fail 1 "no live run in $STATE_ROOT"
+      _cf_l="$(printf '%s\n' "$_cf_live" | head -n 1)"     # T10: AC13's resolution
+    fi
+    # Fields by cut, not `read`: a tab is IFS white space, so an empty start
+    # dir would shift the lock path into its place.
+    CH_PID="$(printf '%s\n' "$_cf_l" | cut -f4)"; CH_RUN="$(printf '%s\n' "$_cf_l" | cut -f5)"
+    _cf_sd="$(printf '%s\n' "$_cf_l" | cut -f6)"; CH_LOCK="$(printf '%s\n' "$_cf_l" | cut -f7)"
+    CH_ROOT="$STATE_ROOT"; CH_START="${_cf_sd:-$START_DIR}"
     return 0
   fi
   _cf_n=0; _cf_names=""
@@ -128,6 +133,7 @@ chan_find_run() {
     chan_fail 1 "no live run (run the verb in the run's project, or name the run with --run)"
   fi
   [ "$_cf_n" -eq 1 ] || chan_fail 1 "$_cf_n live runs ($_cf_names): name one with --run"
+  CH_LOCK="$(runs_live "$CH_ROOT" | runs_match "${CH_RUN##*/}" | cut -f7)"
 }
 # chan_open VERB STORY — R3, AC4, AC6: the run's channel file, the story's
 # membership and record (CH_REC), and its paths. Exit 1 on any refusal.
@@ -292,9 +298,12 @@ chan_unsay() {
   done
   chan_fail 1 "no message or directive $1 for story $CH_STORY"
 }
-# chan_stop_run — bare `stop --run <run>`: today's stop, aimed by --run.
+# chan_stop_run — bare `stop --run <run>`: today's stop, aimed by --run, on
+# the run's own flag (D5: runs_stop_of its lock; .studio/overnight.stop when
+# the run's lock is unknown).
 chan_stop_run() {
-  { : > "$CH_ROOT/.studio/overnight.stop"; } 2>/dev/null || chan_fail 1 "cannot write $CH_ROOT/.studio/overnight.stop"
+  if [ -n "${CH_LOCK:-}" ]; then _cs_f="$(runs_stop_of "$CH_LOCK")"; else _cs_f="$CH_ROOT/.studio/overnight.stop"; fi
+  { : > "$_cs_f"; } 2>/dev/null || chan_fail 1 "cannot write $_cs_f"
   echo "stop requested: the run ends after its running unit (pid $CH_PID)"
 }
 

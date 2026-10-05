@@ -543,6 +543,68 @@ run_lanes() {
     TESTS_RUN=$((TESTS_RUN + 1)); _fail "run_lanes $*: the runner ran past 120 s and was killed"
   fi
 }
+# lanes_add_run SLUG MODE ROW… — a second run in the current fixture $P
+# (after lanes_fixture): run worktree RW=$P/.claude/worktrees/run-SLUG on
+# run/SLUG from origin/main (studio-state init --local), .studio/config.json
+# from $LANES_CONFIG (default {}; MODE direct adds scripts/merge.sh and
+# merge_command), its own spec, one plan per story, story state at <root>
+# (stage plan, task 0/1, approved and swept), manifest RMF=docs/runs/SLUG.md,
+# all committed and pushed; integration/SLUG on origin for MODE integration.
+# Story ids must not clash with $P's run (A, B, …): use S1, S2, ….
+lanes_add_run() {
+  _ar_s="$1"; _ar_m="$2"; shift 2
+  RW="$P/.claude/worktrees/run-$_ar_s"; RMF="docs/runs/$_ar_s.md"; export RW RMF
+  _ar_cfg="${LANES_CONFIG:-}"; [ -n "$_ar_cfg" ] || _ar_cfg='{}'
+  _ar_spec="docs/game-dev/specs/2026-10-01-$_ar_s.md"
+  ( set -e
+    cd "$P"; git fetch -q origin
+    grep -qxF .claude/worktrees/ "$(git rev-parse --git-common-dir)/info/exclude" 2>/dev/null \
+      || printf '.claude/worktrees/\n' >> "$(git rev-parse --git-common-dir)/info/exclude"
+    git worktree add -q --no-track -b "run/$_ar_s" "$RW" origin/main
+    cd "$RW"; sh "$STATE_BIN" init --local >/dev/null
+    mkdir -p docs/game-dev/specs docs/game-dev/plans docs/runs .studio
+    if [ "$_ar_m" = direct ]; then
+      mkdir -p scripts && printf '#!/bin/sh\nexec sh %s "$@"\n' "'$FAKE/merge-stub'" > scripts/merge.sh && chmod +x scripts/merge.sh
+      _ar_cfg="$(printf '%s' "$_ar_cfg" | sed 's/^{ *}$/{"overnight": {}}/; s/"overnight": {/"overnight": {"merge_command": "scripts\/merge.sh <pr>", /; s/, }/}/')"
+    fi
+    printf '%s\n' "$_ar_cfg" > .studio/config.json
+    { printf '# Spec: %s\n\n## Stories\n\n| Story | Summary |\n|-------|---------|\n' "$_ar_s"
+      for _r in "$@"; do printf '| %s | story %s |\n' "${_r%%:*}" "${_r%%:*}"; done; } > "$_ar_spec"
+    for _r in "$@"; do
+      _id="${_r%%:*}"; _plan="docs/game-dev/plans/2026-10-01-$_id.md"
+      printf '# Plan: %s\n\nStory: %s\n\n## Decisions\n\n- none\n\n### Task 1: t\n\nSpec: %s:L1-2\nFiles: `%s-T1.txt`\n\n### Task 2: u\n\nSpec: %s:L1-2\nFiles: `%s-T2.txt`\n' \
+        "$_id" "$_id" "$_ar_spec" "$_id" "$_ar_spec" "$_id" > "$_plan"
+      STUDIO_STORY="$_id"; export STUDIO_STORY
+      sh "$STATE_BIN" init >/dev/null; sh "$STATE_BIN" set spec "$_ar_spec"; sh "$STATE_BIN" set plan "$_plan"
+      sh "$STATE_BIN" ledger "spec approved $_ar_spec"; sh "$STATE_BIN" ledger "plan approved $_plan"
+      sh "$STATE_BIN" ledger "Decisions swept $_id"; sh "$STATE_BIN" set stage plan; sh "$STATE_BIN" set task 0/2
+      unset STUDIO_STORY
+    done
+    git add -A && git commit -q -m docs && git push -q origin "run/$_ar_s"
+    _docs="$(git rev-parse HEAD)"
+    if [ "$_ar_m" = integration ]; then _t="integration/$_ar_s"; else _t=main; fi
+    { printf '# Run: %s\n\nMode: %s\nTarget: %s\nDocs: %s\nGoal: the %s goal\n\n' "$_ar_s" "$_ar_m" "$_t" "$_docs" "$_ar_s"
+      printf '| Story | Branch | Ticket | Spec | Plan | Depends on |\n|-------|--------|--------|------|------|------------|\n'
+      for _r in "$@"; do _id="${_r%%:*}"
+        printf '| %s | %s-b | %s | %s | docs/game-dev/plans/2026-10-01-%s.md | %s |\n' "$_id" "$_id" "$_id" "$_ar_spec" "$_id" "$(printf '%s' "${_r#*:}" | sed 's/,/, /g')"
+      done; } > "$RMF"
+    printf '%s\n' "$RMF" > .studio/run
+    git add -A && git commit -q -m manifest && git push -q origin "run/$_ar_s"
+    [ "$_ar_m" != integration ] || git push -q origin "origin/main:refs/heads/integration/$_ar_s"
+  ) >/dev/null 2>&1 || { TESTS_RUN=$((TESTS_RUN + 1)); _fail "lanes_add_run $_ar_s: setup failed"; }
+  unset LANES_CONFIG
+}
+# run_lanes_in DIR ARGS — run_lanes from DIR (same LS_* results and watchdog).
+run_lanes_in() { _rli="$P"; P="$1"; shift; run_lanes "$@"; P="$_rli"; }
+# bg_lanes NAME DIR ARGS — `studio-overnight ARGS` in DIR in the background:
+# $TMP/bg-NAME.{pid,out,err}. bg_wait NAME — wait up to 120 s; BG_STATUS.
+bg_lanes() { _bn="$1"; _bd="$2"; shift 2
+  ( cd "$_bd" && exec sh "$RUNNER" "$@" ) > "$TMP/bg-$_bn.out" 2> "$TMP/bg-$_bn.err" < /dev/null &
+  echo "$!" > "$TMP/bg-$_bn.pid"; }
+bg_wait() { _bp="$(cat "$TMP/bg-$1.pid")"; _bi=0
+  while kill -0 "$_bp" 2>/dev/null && [ "$_bi" -lt 1200 ]; do sleep 0.1; _bi=$((_bi + 1)); done
+  if kill -0 "$_bp" 2>/dev/null; then kill -TERM "$_bp"; TESTS_RUN=$((TESTS_RUN + 1)); _fail "bg run $1 ran past 120 s"; fi
+  BG_STATUS=0; wait "$_bp" 2>/dev/null || BG_STATUS=$?; }
 
 test_lanes_chain_rule() {
   lanes_fixture chains integration A:- B:- C:A D:A E:C,B F:E
@@ -561,6 +623,7 @@ test_lanes_chain_rule() {
   assert_contains "$LS_OUT" "^deny: [0-9][0-9]* rules$" "the deny rule count"
   assert_eq 0 "$(calls)" "dry run launches no session"
   assert_missing "$P/.studio/overnight.lock" "dry run takes no lock"
+  assert_missing "$P/.studio/runs/demo/lock" "nor a per-run lock"
   assert_eq "" "$(ls -d "$P"/.studio/tmp.* 2>/dev/null)" "dry run leaves no temp dir"
 }
 
@@ -1672,7 +1735,7 @@ test_lanes_final_conflict_then_red() {
 test_lanes_final_stop_before_setup() {
   LANES_CONFIG='{"worktree_setup": "case $(pwd -P) in */integration-*) : > '"$TMP"'/setup-ran-fstop;; esac"}'; export LANES_CONFIG
   lanes_fixture fstop integration A:-
-  printf '#!/bin/sh\ncase "$(pwd -P)" in */integration-*) : > "%s/.studio/overnight.stop";; esac\n' "$P" > "$P/.git/hooks/post-checkout"
+  printf '#!/bin/sh\ncase "$(pwd -P)" in */integration-*) : > "%s/.studio/runs/demo/stop";; esac\n' "$P" > "$P/.git/hooks/post-checkout"
   chmod +x "$P/.git/hooks/post-checkout"
   run_lanes start "$MFP"
   rm -f "$P/.git/hooks/post-checkout"
@@ -1686,7 +1749,7 @@ test_lanes_final_stop_before_setup() {
 # other exit (an engine crash's 139) is a red gate: recorded, repaired.
 test_lanes_final_gate_interrupted_not_recorded() {
   lanes_fixture fingint integration A:-
-  use_gate "echo gate >> '$CALLS/final-gates'; if [ ! -f '$CALLS/gate-once' ]; then : > '$CALLS/gate-once'; : > '$P/.studio/overnight.stop'; exit 130; fi"
+  use_gate "echo gate >> '$CALLS/final-gates'; if [ ! -f '$CALLS/gate-once' ]; then : > '$CALLS/gate-once'; : > '$P/.studio/runs/demo/stop'; exit 130; fi"
   run_lanes start "$MFP"
   assert_eq 1 "$(final_gates)" "the interrupted gate ran once"
   assert_missing "$P/.studio/runs/demo/gate" "a stopped gate records no result"
@@ -1874,7 +1937,7 @@ test_lanes_reap_names_final_pr() {
 # detach_stop — end a detached run: stop, then wait for the run lock to clear.
 detach_stop() {
   ( cd "$P" && sh "$RUNNER" stop ) > /dev/null 2>&1
-  wait_for "[ ! -f '$P/.studio/overnight.lock' ]" 60
+  wait_for "[ ! -f '$P/.studio/runs/demo/lock' ]" 60
   wait_for "[ -z \"\$(pgrep -f '$TMP'; pgrep -f '$RUNNER')\" ]" 20
 }
 test_lanes_detach_strips_env() {
@@ -1935,7 +1998,7 @@ test_lanes_detach_timeout_lock_held_points_at_status() {
   assert_contains "$TMP/dtl.out" "is live" "a lock-holding child is reported live"
   assert_contains "$TMP/dtl.out" "/studio-overnight' stop" "and stop is named, by its absolute path"
   assert_not_contains "$TMP/dtl.out" "run the plain command" "no plain start is offered"
-  assert_eq 1 "$([ -f "$P/.studio/overnight.lock" ] && echo 1 || echo 0)" "the run still holds its lock"
+  assert_eq 1 "$([ -f "$P/.studio/runs/demo/lock" ] && echo 1 || echo 0)" "the run still holds its lock"
   # The hung stub would hold the run past stop: end it, then wait the run out.
   ( cd "$P" && sh "$RUNNER" stop ) > /dev/null 2>&1; pkill -f "$TMP/fakebin/claude" 2>/dev/null
   detach_stop
@@ -2800,7 +2863,146 @@ test_lanes_report_adopted_lines() {
   assert_eq 2 "$(grep -c '^Adopted from ' "$R")" "a story that was not adopted has no line"
 }
 
-run_tests test_lanes_chain_rule test_lanes_manifest_refusals test_lanes_preflight_backlog_tasks test_lanes_manifest_header_refusals \
+# ---- #39 T7: per-run locks, run identity and the status loop ----
+test_lanes_per_run_lock_paths() {
+  lanes_fixture perrun integration A:-
+  printf 'sleep 3\n' > "$SCEN/A"
+  bg_lanes pr "$P" start "$MFP"
+  _i=0; while [ ! -f "$P/.studio/runs/demo/lock" ] && [ "$_i" -lt 50 ]; do sleep 0.1; _i=$((_i + 1)); done
+  assert_file "$P/.studio/runs/demo/lock" "the manifest run's lock is .studio/runs/<slug>/lock"
+  assert_contains "$P/.studio/runs/demo/lock" "^start=$P\$" "it records the start dir"
+  assert_missing "$P/.studio/overnight.lock" "no project-wide lock"
+  ( cd "$P" && sh "$RUNNER" stop ) > "$TMP/out" 2>&1
+  assert_file "$P/.studio/runs/demo/stop" "bare stop with one live run writes its own flag"
+  bg_wait pr
+  assert_missing "$P/.studio/runs/demo/lock" "unlocked at the end"
+  assert_missing "$P/.studio/runs/demo/stop" "and its stop flag removed"
+}
+test_lanes_excludes_before_lock() {
+  lanes_fixture excl integration A:-
+  _ex="$(git -C "$P" rev-parse --path-format=absolute --git-common-dir)/info/exclude"
+  STUDIO_OVERNIGHT_LOCK_HOOK="cp '$_ex' '$TMP/excl.at-lock'"; export STUDIO_OVERNIGHT_LOCK_HOOK
+  run_lanes start "$MFP"; unset STUDIO_OVERNIGHT_LOCK_HOOK
+  for _e in .studio/runs/ .studio/sessions/ .studio/runs.mutex .studio/sessions.mutex .studio/overnight.lock .studio/overnight.stop .claude/worktrees/; do
+    assert_contains "$TMP/excl.at-lock" "^$(printf '%s' "$_e" | sed 's/\./\\./g')\$" "$_e excluded before the lock (D6)"
+  done
+}
+test_lanes_two_runs_each_own_lock() {
+  lanes_fixture two integration A:-
+  lanes_add_run alpha integration S1:-
+  printf 'sleep 3\n' > "$SCEN/A"; printf 'sleep 3\n' > "$SCEN/S1"
+  bg_lanes demo "$P" start "$MFP"; bg_lanes alpha "$RW" start "$RMF"
+  # Both preflights run at once: wait for both locks (up to 10 s), not a fixed sleep.
+  _i=0; while { [ ! -f "$P/.studio/runs/demo/lock" ] || [ ! -f "$P/.studio/runs/alpha/lock" ]; } && [ "$_i" -lt 100 ]; do sleep 0.1; _i=$((_i + 1)); done
+  assert_file "$P/.studio/runs/demo/lock" "demo holds its lock"
+  assert_file "$P/.studio/runs/alpha/lock" "alpha holds its own"
+  ( cd "$P" && sh "$RUNNER" status ) > "$TMP/st.out" 2>&1; _st=$?
+  assert_eq 0 "$_st" "status exits 0 with runs live"
+  assert_contains "$TMP/st.out" '^== alpha (manifest, pid [0-9]*) — ' "a headed block per run (D16)"
+  assert_contains "$TMP/st.out" '^== demo (manifest, pid [0-9]*) — ' "both"
+  ( cd "$P" && sh "$RUNNER" status --run alpha ) > "$TMP/st1.out" 2>&1
+  assert_not_contains "$TMP/st1.out" '^== ' "status --run prints one block, no header"
+  assert_contains "$TMP/st1.out" "run: .*overnight-alpha-" "alpha's block"
+  bg_wait demo; bg_wait alpha
+  assert_eq 0 "$BG_STATUS" "alpha ran to its end beside demo"
+  assert_contains "$P/.studio/runs/alpha/landed.tsv" '^S1	' "and landed S1"
+}
+test_lanes_status_run_not_live() {
+  lanes_fixture nolive integration A:-
+  ( cd "$P" && sh "$RUNNER" status --run ghost ) > "$TMP/out" 2>&1; _st=$?
+  assert_eq 1 "$_st" "status --run <slug> exits 1 when that run is not live"
+  assert_contains "$TMP/out" '^no live run ghost$' "the fixed text"
+}
+test_lanes_manifest_refuses_live_single() {
+  lanes_fixture msingle integration A:-
+  sh -c 'sleep 30; :' studio-overnight >/dev/null 2>&1 & _d=$!
+  printf 'pid=%s\nrun=%s\nstarted=2026-10-04T21:00:00Z\n' "$_d" "$P/.studio/reports/overnight-20261004-210000" > "$P/.studio/overnight.lock"
+  run_lanes start "$MFP"
+  kill "$_d"; wait "$_d" 2>/dev/null; rm -f "$P/.studio/overnight.lock"
+  assert_eq 2 "$LS_STATUS" "a manifest start refuses while a single-plan run is live (AC5)"
+  assert_contains "$LS_ERR" "a run is live" "names it"
+}
+test_lanes_lock_race_single_vs_manifest() {
+  lanes_fixture race integration A:-
+  printf 'sleep 2\n' > "$SCEN/A"
+  STUDIO_OVERNIGHT_LOCK_HOOK='sleep 2'; export STUDIO_OVERNIGHT_LOCK_HOOK
+  bg_lanes m "$P" start "$MFP"; unset STUDIO_OVERNIGHT_LOCK_HOOK
+  sleep 0.5
+  # The single-plan start passed its preflight before the manifest run locked; the re-check catches it.
+  sh -c 'sleep 30; :' studio-overnight >/dev/null 2>&1 & _d=$!
+  printf 'pid=%s\nrun=%s\nstarted=2026-10-04T21:00:00Z\n' "$_d" "$P/.studio/reports/overnight-20261004-210000" > "$P/.studio/overnight.lock"
+  bg_wait m; kill "$_d"; wait "$_d" 2>/dev/null; rm -f "$P/.studio/overnight.lock"
+  assert_eq 2 "$BG_STATUS" "the manifest start that re-checks after a single-plan lock appears loses"
+  assert_missing "$P/.studio/runs/demo/lock" "the loser leaves no lock"
+  assert_eq "" "$(ls -d "$P"/.studio/reports/overnight-demo-* 2>/dev/null)" "and no run dir"
+}
+test_lanes_reg_write_keeps_live_sibling() {
+  lanes_fixture reg integration A:-
+  mkdir -p "$HOME/.claude-gamedev/runs"
+  sh -c 'sleep 30; :' studio-overnight >/dev/null 2>&1 & _d=$!
+  printf 'root=%s\nstart=%s\nrun=/x/overnight-sib\npid=%s\n' "$P" "$P" "$_d" > "$HOME/.claude-gamedev/runs/overnight-sib-$_d"
+  printf 'root=%s\nstart=%s\nrun=/x/overnight-dead\npid=999999\n' "$P" "$P" > "$HOME/.claude-gamedev/runs/overnight-dead-999999"
+  run_lanes start "$MFP"
+  assert_file "$HOME/.claude-gamedev/runs/overnight-sib-$_d" "a live sibling's entry is kept (AC6)"
+  assert_missing "$HOME/.claude-gamedev/runs/overnight-dead-999999" "a dead one is dropped"
+  kill "$_d"; wait "$_d" 2>/dev/null; rm -f "$HOME"/.claude-gamedev/runs/overnight-sib-*
+}
+test_lanes_detach_with_other_run_live() {
+  lanes_fixture det integration A:-
+  lanes_add_run alpha integration S1:-
+  printf 'sleep 4\n' > "$SCEN/S1"; bg_lanes alpha "$RW" start "$RMF"
+  _i=0; while [ ! -f "$P/.studio/runs/alpha/lock" ] && [ "$_i" -lt 100 ]; do sleep 0.1; _i=$((_i + 1)); done
+  printf 'hang\n' > "$SCEN/A"
+  run_lanes start --detach "$MFP"
+  assert_eq 0 "$LS_STATUS" "detach succeeds with another run live (waits on its own lock and status --run)"
+  assert_contains "$LS_OUT" "^detached: pid " "detached"
+  # alpha ends on its own; then demo is the one live run: stop it and end its hung stub.
+  bg_wait alpha
+  ( cd "$P" && sh "$RUNNER" stop ) > /dev/null 2>&1; pkill -f "$TMP/fakebin/claude" 2>/dev/null
+  detach_stop
+}
+test_lanes_units_get_start_dir() {
+  lanes_fixture sdenv integration A:-
+  lanes_add_run alpha integration S1:-
+  run_lanes_in "$RW" start "$RMF"
+  _n="$(grep -l '^S1$' "$CALLS"/*.story | head -n 1)"; _n="${_n%.story}"
+  assert_contains "$_n.fullenv" "^STUDIO_START_DIR=$RW\$" "every unit gets STUDIO_START_DIR (AC30)"
+}
+test_lanes_reap_resume_line_run_worktree() {
+  lanes_fixture reap integration A:-
+  lanes_add_run alpha integration S1:-
+  printf 'hang\n' > "$SCEN/S1"; bg_lanes alpha "$RW" start "$RMF"
+  # Wait for the hung unit (its session is running), not a fixed sleep.
+  _i=0; while [ ! -f "$CALLS/1.story" ] && [ "$_i" -lt 300 ]; do sleep 0.1; _i=$((_i + 1)); done
+  _rp="$(sed -n 's/^pid=//p' "$P/.studio/runs/alpha/lock")"
+  pkill -KILL -P "$_rp" 2>/dev/null; kill -KILL "$_rp"; bg_wait alpha
+  # The hung stub runs in its own process group: end it by its path.
+  pkill -KILL -f "$TMP/fakebin/claude" 2>/dev/null; sleep 1
+  ( cd "$P" && sh "$RUNNER" status ) > "$TMP/out" 2>&1
+  _rd="$(ls -d "$P"/.studio/reports/overnight-alpha-* | tail -n 1)"
+  assert_file "$_rd/report.md" "status from the main checkout reaped the dead run"
+  assert_contains "$_rd/report.md" "^cd '$RW' && " "its Resume line changes into the run worktree (AC7)"
+}
+test_lanes_old_lock_counts_live() {
+  lanes_fixture oldlive integration A:-
+  _od="$P/.studio/reports/overnight-old-20261003-210000"; mkdir -p "$_od"; printf '# Run: old\n' > "$_od/manifest.md"
+  sh -c 'sleep 30; :' studio-overnight >/dev/null 2>&1 & _d=$!
+  printf 'pid=%s\nrun=%s\nstarted=2026-10-03T21:00:00Z\n' "$_d" "$_od" > "$P/.studio/overnight.lock"
+  ( cd "$P" && sh "$RUNNER" status ) > "$TMP/out" 2>&1; _st=$?
+  kill "$_d"; wait "$_d" 2>/dev/null; rm -f "$P/.studio/overnight.lock"
+  assert_eq 0 "$_st" "an old-style manifest run on overnight.lock is live (AC31)"
+}
+test_lanes_old_lock_reaped_by_start() {
+  lanes_fixture oldreap integration A:-
+  _od="$P/.studio/reports/overnight-old-20261003-210000"; mkdir -p "$_od/stories" "$_od/lanes"
+  printf '# Run: old\n\nMode: integration\nTarget: integration/old\n' > "$_od/manifest.md"; : > "$_od/rows.tsv"; : > "$_od/chains"
+  printf 'pid=999999\nrun=%s\nstarted=2026-10-03T21:00:00Z\n' "$_od" > "$P/.studio/overnight.lock"
+  run_lanes start "$MFP"
+  assert_file "$_od/report.md" "start reaps a dead old-style manifest lock (AC31)"
+  assert_eq 0 "$LS_STATUS" "and runs"
+}
+
+run_tests test_lanes_chain_rule test_lanes_manifest_refusalstest_lanes_preflight_backlog_tasks test_lanes_manifest_header_refusals \
   test_lanes_preflight_story_checks test_lanes_preflight_story_state test_lanes_docs_unreachable \
   test_lanes_git_too_old test_lanes_sourced_only test_lanes_next \
   test_lanes_next_all_planned_and_ambiguous test_lanes_next_plan_before_autopilot \
@@ -2836,4 +3038,8 @@ run_tests test_lanes_chain_rule test_lanes_manifest_refusals test_lanes_prefligh
   test_lanes_stop_at_done_never_lands test_lanes_stop_held_by_operator test_lanes_stop_pending_never_holds \
   test_lanes_gate_repair_own_stop_holds test_lanes_directive_cap_holds test_lanes_hold_during_last_unit_lands_and_clears \
   test_lanes_next_adopted_planned test_lanes_context_preflight test_lanes_check_unit_first test_lanes_adopt_sync_fail_holds test_lanes_setup_fail_holds test_lanes_setup_fail_final_red test_lanes_setup_silent_fail_final_red test_lanes_setup_fail_path_specials test_lanes_direct_setup_fail_note test_lanes_gate_command_final test_lanes_gate_command_finish_red_repair test_lanes_report_adopted_lines test_lanes_adopt_seeded_runs_rest test_lanes_adopt_round_trip \
+  test_lanes_per_run_lock_paths test_lanes_excludes_before_lock test_lanes_two_runs_each_own_lock \
+  test_lanes_status_run_not_live test_lanes_manifest_refuses_live_single test_lanes_lock_race_single_vs_manifest \
+  test_lanes_reg_write_keeps_live_sibling test_lanes_detach_with_other_run_live test_lanes_units_get_start_dir \
+  test_lanes_reap_resume_line_run_worktree test_lanes_old_lock_counts_live test_lanes_old_lock_reaped_by_start \
   test_lanes_no_orphans

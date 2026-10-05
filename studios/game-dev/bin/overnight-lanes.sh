@@ -8,7 +8,7 @@
 # run_unit, row, snapshot, story_units, acquire_run_lock, run_setup, unlock)
 # are defined and its preflight has run; never run on its own. Reads studio
 # state and the manifest; never writes either. It redefines stop_requested,
-# spent_all and spent for manifest mode.
+# spent_all, spent, run_populate and lock_recheck for manifest mode.
 [ -n "${SELF_DIR:-}" ] || { echo "overnight-lanes.sh: sourced by studio-overnight" >&2; exit 2; }
 
 # git_retry ARGS… — git ARGS, retried up to three times (sleeps 1, 2, 4 s)
@@ -1186,17 +1186,25 @@ lanes_reap() {
   SWEEP_WHY=""
   lanes_report "stop: runner gone"
 }
-# lanes_reap_stale — before a start takes the lock: a stale lock (its
-# holder dead) naming a manifest run with no report.md gets lanes_reap, in a
-# subshell (it loads that run's own variables). Returns 1 after a refusal
-# while that run's lanes still run.
-lanes_reap_stale() {
-  [ -f "$LOCK" ] && ! lock_live || return 0
-  _rs_d="$(sed -n 's/^run=//p' "$LOCK" 2>/dev/null | head -n 1)"
+# lanes_reap_at LOCKFILE — a stale lock (its holder dead) naming a manifest
+# run with no report.md gets lanes_reap, in a subshell (it loads that run's
+# own variables) with LOCK set to LOCKFILE and START_DIR from the run's
+# recorded start dir (D12), so its Resume line names its own checkout.
+# Returns 1 after a refusal while that run's lanes still run.
+lanes_reap_at() {
+  [ -f "$1" ] && ! runs_lock_live "$1" || return 0
+  _rs_d="$(runs_kv run "$1")"
   [ -n "$_rs_d" ] && [ -f "$_rs_d/manifest.md" ] && [ ! -f "$_rs_d/report.md" ] || return 0
-  ( lanes_load_run "$_rs_d"
+  _rs_sd="$(runs_start_dir "$1")"; [ -n "$_rs_sd" ] && [ -d "$_rs_sd" ] || _rs_sd="$START_DIR"
+  ( LOCK="$1"; START_DIR="$_rs_sd"; lanes_load_run "$_rs_d"
     lanes_reap || { say "the last run's lanes still run (pids $LR_LIVE) — start again once they end"; exit 1; } )
 }
+# lanes_reap_stale — before a start takes the lock: this run's own per-run
+# lock (after run_paths), reaped when stale (lanes_reap_at).
+lanes_reap_stale() { lanes_reap_at "$LOCK"; }
+# lanes_reap_old — the same for a dead old-style manifest run on
+# .studio/overnight.lock (AC31).
+lanes_reap_old() { lanes_reap_at "$STATE_ROOT/.studio/overnight.lock"; }
 # lanes_status_lines — one line per story in manifest order: `<id>  lane
 # <k|->  <state>  unit <label|->  task <k/N|->`. The lane is its chain's
 # claim; the state, the first word of stories/<id>; the unit, lanes/<k>/current
@@ -1629,13 +1637,33 @@ final_step() {
   fi
 }
 
+# run_paths SLUG — a manifest run's own lock and stop flag (AC4, D5):
+# .studio/runs/SLUG/lock and .studio/runs/SLUG/stop. SLUG is mf_check's.
+run_paths() {
+  LOCK="$STATE_ROOT/.studio/runs/$1/lock"; STOP_FILE="$STATE_ROOT/.studio/runs/$1/stop"; RUN_SLUG="$1"
+}
+# run_populate — acquire_run_lock's step between take_lock and the re-check
+# (D9): the run dir's claims, stories and lanes dirs, and its own copies of
+# the manifest, rows and chains, so a later start's re-check sees them.
+run_populate() {
+  mkdir -p "$RUN_DIR/claims" "$RUN_DIR/stories" "$RUN_DIR/lanes" \
+    && cp "$MF" "$RUN_DIR/manifest.md" && cp "$MF_ROWS" "$RUN_DIR/rows.tsv" && cp "$CHAINS" "$RUN_DIR/chains"
+}
+# lock_recheck — the manifest run's re-check under runs.mutex (D8): a live
+# single-plan run (any lock but this one) refuses this start with today's
+# text, RECHECK_WHY. (T11 adds the run-overlap rules.)
+lock_recheck() {
+  _lc="$(runs_live "$STATE_ROOT" | awk -F'\t' -v me="$LOCK" '$7 != me && $3 == "single"' | head -n 1)"
+  [ -n "$_lc" ] || return 0
+  RECHECK_WHY="a run is live (pid $(printf '%s\n' "$_lc" | cut -f4)) — $(sq "$SELF_ABS") status"
+  return 1
+}
+
 # lanes_run — the run path, once the manifest preflight passed.
 lanes_run() {
   lanes_reap_stale || exit 2
+  lanes_reap_old || exit 2
   acquire_run_lock
-  mkdir -p "$RUN_DIR/claims" "$RUN_DIR/stories" "$RUN_DIR/lanes" \
-    && cp "$MF" "$RUN_DIR/manifest.md" && cp "$MF_ROWS" "$RUN_DIR/rows.tsv" && cp "$CHAINS" "$RUN_DIR/chains" \
-    || { rm -f "$LOCK"; say "cannot populate $RUN_DIR"; exit 2; }
   printf '%s\n' "${MF#"$START_DIR"/}" > "$RUN_DIR/manifest.path"   # the report's resume command
   MF_ROWS="$RUN_DIR/rows.tsv"; CHAINS="$RUN_DIR/chains"
   rm -rf "$MF_TMP"; MF_TMP=""
@@ -1646,11 +1674,7 @@ lanes_run() {
   LANES_LIVE=1; LANE_PIDS=""
   trap '[ -e "$STOP_FILE" ] || : > "$STOP_FILE"' INT TERM
   trap 'HUP_REQ=1; exit 129' HUP
-  run_setup
-  # The record is this machine's run state, like the lock: kept out of git.
-  grep -qxF .studio/runs/ "$_excl" 2>/dev/null || printf '%s\n' .studio/runs/ >> "$_excl"
-  # The final step's worktrees live inside the checkout: never untracked noise.
-  grep -qxF .claude/worktrees/ "$_excl" 2>/dev/null || printf '%s\n' .claude/worktrees/ >> "$_excl"
+  run_setup   # its run_excludes keeps the record (.studio/runs/) and the final step's worktrees out of git
   RUNNER_PID=$$
   _nch="$(wc -l < "$CHAINS" | tr -d ' ')"
   _L="$_nch"
@@ -1688,6 +1712,7 @@ lanes_start() {
   MF_ROWS="$MF_TMP/rows.tsv"; CHAINS="$MF_TMP/chains"
   if mf_load "$_ls_mf"; then mf_check; fi
   [ "$FAILED" -eq 0 ] || exit 2
+  run_paths "$MF_SLUG"
   build_chains
   RUN_DIR="$REPORTS/overnight-$MF_SLUG-$(date +%Y%m%d-%H%M%S)"
   if [ "$_ls_dry" -eq 1 ]; then

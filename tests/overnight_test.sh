@@ -151,13 +151,41 @@ fake_run() {
   done
   ( cd "$P" && git add -A .studio/ledger && git -c user.name=t -c user.email=t@t commit -qm stories ) >/dev/null 2>&1
 }
-# fake_run_end [PID] — end a fake run (default FR_PID): its dummy, lock and
-# registry entry.
+# fake_mrun SLUG [ID=RECORD]… — a live manifest run with a per-run lock
+# (#39): <root>/.studio/runs/SLUG/lock (pid, run, started, start=$P), its run
+# dir FR_DIR ($P/.studio/reports/overnight-SLUG-20261004-210000) with
+# manifest.md (`# Run: SLUG`), channel, rows.tsv and stories/, and a registry
+# entry. FR_PID is its live_dummy; FR_LOCK the lock.
+fake_mrun() {
+  _fm_s="$1"; shift
+  FR_DIR="$P/.studio/reports/overnight-$_fm_s-20261004-210000"; mkdir -p "$FR_DIR/stories" "$P/.studio/runs/$_fm_s"
+  printf '# Run: %s\n\nMode: integration\nTarget: integration/%s\n' "$_fm_s" "$_fm_s" > "$FR_DIR/manifest.md"
+  printf 'hold_minutes=%s\ndirective_chars=%s\n' "${FR_HOLD:-480}" "${FR_CHARS:-4000}" > "$FR_DIR/channel"
+  live_dummy; FR_PID="$DUMMY"; FR_LOCK="$P/.studio/runs/$_fm_s/lock"
+  printf 'pid=%s\nrun=%s\nstarted=2026-10-04T21:00:0%s\nstart=%s\n' "$FR_PID" "$FR_DIR" "${FR_SEQ:-0}" "$P" > "$FR_LOCK"
+  mkdir -p "$HOME/.claude-gamedev/runs"
+  printf 'root=%s\nstart=%s\nrun=%s\npid=%s\nstarted=2026-10-04T21:00:00Z\n' "$P" "$P" "$FR_DIR" "$FR_PID" \
+    > "$HOME/.claude-gamedev/runs/overnight-$_fm_s-$FR_PID"
+  : > "$FR_DIR/rows.tsv"
+  for _fm_r in "$@"; do
+    _fm_id="${_fm_r%%=*}"
+    printf '%s\t%s-b\t%s\t-\t-\t\n' "$_fm_id" "$_fm_id" "$_fm_id" >> "$FR_DIR/rows.tsv"
+    printf '%s\n' "${_fm_r#*=}" > "$FR_DIR/stories/$_fm_id"
+    ( cd "$P" && STUDIO_STORY="$_fm_id" && export STUDIO_STORY && sh "$STATE_BIN" init && sh "$STATE_BIN" ledger "plan approved x" ) >/dev/null 2>&1
+  done
+  ( cd "$P" && git add -A .studio/ledger && git -c user.name=t -c user.email=t@t commit -qm "stories $_fm_s" ) >/dev/null 2>&1
+}
+# fake_run_end [PID] — end a fake run (default FR_PID): its dummy, lock (the
+# project-wide one, or a per-run .studio/runs/*/lock) and registry entry.
 fake_run_end() {
   _fe_p="${1:-$FR_PID}"
   kill "$_fe_p" 2>/dev/null; wait "$_fe_p" 2>/dev/null
   rm -f "$HOME"/.claude-gamedev/runs/*-"$_fe_p"
   [ "$(sed -n 's/^pid=//p' "$P/.studio/overnight.lock" 2>/dev/null)" != "$_fe_p" ] || rm -f "$P/.studio/overnight.lock"
+  for _fe_l in "$P"/.studio/runs/*/lock; do
+    [ -f "$_fe_l" ] && [ "$(sed -n 's/^pid=//p' "$_fe_l")" = "$_fe_p" ] && rm -f "$_fe_l"
+  done
+  return 0
 }
 # verb_in DIR ARGS… — `studio-overnight ARGS` in DIR: V_STATUS; V_OUT and
 # V_ERR (file paths). verb ARGS… — the same in $P.
@@ -339,7 +367,7 @@ test_overnight_deny_file_required() {
   # The runner reads overnight-deny.txt beside itself: run a copy whose
   # sibling deny file holds only comments.
   fixture deny
-  mkdir -p "$TMP/denybin"; cp "$RUNNER" "$STATE_BIN" "$REPO_ROOT/studios/game-dev/bin/overnight-channel.sh" "$REPO_ROOT/studios/game-dev/bin/overnight-progress.sh" "$REPO_ROOT/studios/game-dev/bin/studio-env" "$TMP/denybin/"
+  mkdir -p "$TMP/denybin"; cp "$RUNNER" "$STATE_BIN" "$REPO_ROOT/studios/game-dev/bin/overnight-channel.sh" "$REPO_ROOT/studios/game-dev/bin/overnight-runs.sh" "$REPO_ROOT/studios/game-dev/bin/overnight-progress.sh" "$REPO_ROOT/studios/game-dev/bin/studio-env" "$TMP/denybin/"
   printf '# only a comment\n\n' > "$TMP/denybin/overnight-deny.txt"
   RS_STATUS=0; ( cd "$P" && sh "$TMP/denybin/studio-overnight" start ) > "$TMP/rs.out" 2> "$TMP/rs.err" || RS_STATUS=$?
   assert_eq 2 "$RS_STATUS" "a deny file with no rules refuses"
@@ -712,7 +740,7 @@ test_overnight_claim_without_run_dir() {
 make_minbin() {
   mkdir -p "$TMP/minbin"
   for u in sh git sed awk grep sort comm date ps pkill kill sleep cat mkdir rm touch \
-           head tail tr dirname basename readlink wc uname mktemp cp mv chmod env printf; do
+           head tail tr cut ln dirname basename readlink wc uname mktemp cp mv chmod env printf; do
     p="$(command -v "$u" 2>/dev/null)" && case "$p" in /*) ln -sf "$p" "$TMP/minbin/$u" ;; esac
   done
   for f in claude claude-gd gh; do ln -sf "$FAKE/$f" "$TMP/minbin/$f"; done
@@ -1417,6 +1445,28 @@ test_verbs_run_pinning() {
   assert_file "$PA/.studio/overnight.stop" "writes its stop file"
   fake_run_end "$PA_PID"
 }
+test_verbs_per_run_channel_and_stop_run() {
+  fixture perrun; FR_SEQ=1; fake_mrun alpha S1=running
+  verb say S1 hello
+  assert_eq 0 "$V_STATUS" "say finds the per-run run $(cat "$V_ERR")"
+  verb stop --run alpha
+  assert_file "$P/.studio/runs/alpha/stop" "stop --run writes the run's own flag (D5)"
+  assert_missing "$P/.studio/overnight.stop" "never the project-wide one"
+  fake_run_end
+}
+# AC5: a single-plan start refuses while a manifest run holds a per-run lock
+# (modelled on test_overnight_lock; the single-plan fixture passes every
+# earlier preflight check).
+test_overnight_lock_refuses_live_manifest() {
+  fixture smani; fake_mrun alpha S1=running
+  run_start
+  assert_eq 2 "$RS_STATUS" "a single-plan start refuses while a manifest run is live"
+  assert_contains "$RS_ERR" "alpha" "names the live run"
+  assert_contains "$RS_ERR" "pid $FR_PID" "and its pid"
+  assert_eq 0 "$(calls)" "no session"
+  assert_missing "$P/.studio/overnight.lock" "no lock left behind"
+  fake_run_end
+}
 test_inbox_lock_stale_broken() {
   fixture lk; fake_run overnight-lk-1 single
   mkdir -p "$FR_DIR/inbox/-/.lock"; touch -t 202001010000 "$FR_DIR/inbox/-/.lock"
@@ -1813,7 +1863,7 @@ run_tests test_overnight_report_done test_overnight_report_not_done test_overnig
   test_resume_refused_dirty_ledger \
   test_resume_from_feature_worktree \
   test_verbs_refusals \
-  test_verbs_run_pinning \
+  test_verbs_run_pinning test_verbs_per_run_channel_and_stop_run test_overnight_lock_refuses_live_manifest \
   test_inbox_lock_stale_broken \
   test_inbox_lock_busy \
   test_inbox_lock_released_on_signal \
