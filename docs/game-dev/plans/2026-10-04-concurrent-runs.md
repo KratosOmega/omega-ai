@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-Status: Draft — awaiting user review
+Status: Approved (operator, 2026-10-05; subagent-driven, waves; D1 and D2 ruled)
 
 **Goal:** Let several manifest runs live in one project at once. Each run is
 planned in its own run worktree, started from it, and lands on its own. The

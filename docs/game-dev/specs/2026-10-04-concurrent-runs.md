@@ -27,7 +27,7 @@ This spec builds on #35 (autopilot adopt) as merged. The plan is written after #
    - run `studio-test` under the gate lock at `<root>/.studio/gate.lock`.
 
    The probe follows `tests/probes/bash_timeout_probe.sh`. If any step is denied or lands in the wrong checkout, the plan stops and the design returns to the operator.
-2. `sh tests/run_all.sh` and `sh integrations/multica/tests/run.sh` are green. The existing suites keep every assertion, except assertions on the exact `next:` text, which change by AC14. The new cases are listed in Test strategy.
+2. `sh tests/run_all.sh` and `sh integrations/multica/tests/run.sh` are green. The existing suites keep every assertion, except those that encode the single-run behaviour this spec replaces (for example the exact `next:` text, which changes by AC14). Each rewritten assertion is listed in the plan. The new cases are listed in Test strategy.
 3. A fixture round trip, as a lanes test with stubbed units:
    - two manifest runs, `alpha` (integration) and `beta` (direct), are started from their own run worktrees in one fixture project, each while the other is live, with `max_sessions` 2;
    - the stub `claude` keeps a `mkdir` counter of live sessions and records its maximum, which is ≤ 2;
@@ -144,7 +144,7 @@ Run identity, locks and the preflight
 7. Each per-run verb, status block, reap and report sets its `START_DIR` from the run's recorded start dir (lock `start=`, else registry `start=`), never from the caller's cwd. A run reaped from the main checkout prints a Resume line that changes into its run worktree.
 8. The manifest preflight refuses:
    - a slug, story id or story branch already used by another live run, or by a run whose record (`.studio/runs/<slug>/`) exists without `done` (stopped, resumable);
-   - a slug whose record exists with `done`, unless that record is first archived to `.studio/runs/<slug>.<utc ts>` (autopilot does this at AC12);
+   - a slug whose record exists with `done`, unless that record is first archived to `.studio/runs/<slug>.<utc ts>` (autopilot does this at AC15);
    - a story branch whose worktree path form (`/` → `-`) starts with `run-`, `integration-` or `progress-`, or that equals another live run's Target;
    - an all-digit slug, and the slug `off`.
 
