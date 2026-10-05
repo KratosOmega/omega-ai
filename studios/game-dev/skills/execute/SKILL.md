@@ -78,16 +78,34 @@ is `STUDIO_STORY`:
   `git checkout $STUDIO_DOCS_REV -- <spec> <plan>`, and only when
   `git diff --cached --quiet` fails, commit
   `docs(<id>): plan at run docs <short sha>`. The ledger is never touched.
+  When the plan has a `Context:` header, the docs sync is
+  `git checkout $STUDIO_DOCS_REV -- <spec> <plan> <Context paths>` (the paths the header lists, each present in the run's docs commit).
+  A docs-sync commit on a branch that is behind `origin/<Branch>` diverges it:
+  `studio-adopt sync` then holds the story, and nothing repairs that by itself.
 - **New branch:**
   `git worktree add --no-track -b <Branch> <STATE_ROOT>/.claude/worktrees/<Branch with / → -> origin/<Target>`,
   then `EnterWorktree` with `path:`, then
   `git checkout $STUDIO_DOCS_REV -- <spec> <plan> .studio/ledger/<id>.md`,
-  and commit `docs(<id>): approved plan`.
+  and commit `docs(<id>): approved plan`. With a `Context:` header the checkout is
+  `git checkout $STUDIO_DOCS_REV -- <spec> <plan> .studio/ledger/<id>.md <Context paths>`.
 - Then `studio-state set branch <Branch>` and
   `studio-state ledger "base origin/<Target>"`. Every `git merge-base` in
   §4a, §5 and §7 uses `origin/<Target>` after a fetch; the bare `<Target>`
   is used only for `gh pr create --base`.
   A lane unit records operator messages after this line (see §8, Operator messages).
+  On the new-branch path, when the copied `.studio/ledger/<id>.md` has an `adopted` line,
+  record the adopted story's base after the `base` line:
+  `studio-state ledger "adopt-base $(git rev-parse HEAD)"`.
+- Then run `studio-setup` from the worktree root (`worktree_setup`; a no-op when
+  unset or already done). On exit 1:
+  `studio-state ledger "Stop: worktree setup failed — exit <n> — log <path>"`
+  (the path from its stderr line), committed as §8's stops are committed; end the turn.
+- Then, for a story whose feature ledger has an `adopted` line, run
+  `studio-adopt sync <id>` after the worktree is entered and set up, and
+  before *Where to start* reads `task`. On exit 1:
+  `studio-state ledger "Stop: adopt sync — <its stderr line>"`, committed the same way;
+  under a lane the runner holds the story. Keep its report: a
+  `T<k+1> in progress: <first>..<last>` line feeds the task brief (§8, Inputs).
 - **The gate runs in the foreground.** Run `studio-test` and `studio-run`
   as foreground Bash calls with `timeout` set to `$BASH_MAX_TIMEOUT_MS` (the
   runner exports it, `session_minutes` × 60000). A call that waits for the
@@ -154,6 +172,12 @@ is `STUDIO_STORY`:
   Never write the ledger before the fast-forward: an untracked ledger file
   makes it abort.
   Operator messages are recorded after this step (see §8, Operator messages).
+  Then, on a new run and on every resume that has entered the feature checkout,
+  run `studio-setup` from the worktree root (`worktree_setup`; a no-op when unset or
+  already done); on exit 1 stop with
+  `Stop: worktree setup failed — exit <n> — log <path>` as above. A story whose
+  feature ledger has an `adopted` line then runs `studio-adopt sync <id>` as above,
+  before *Where to start* reads `task`.
 
 **The base** — the PR's base, and the anchor for
 `git merge-base <base> HEAD` in §4a, §5 and §7 — is the noted branch on a
@@ -428,7 +452,8 @@ the last task's review. Under `--one`, see §8: a task unit never starts it.
 ## 6. State (both modes)
 
 - When a task is complete (§4a rule 6): `studio-state set task n/N` and
-  `studio-state ledger "T<n> complete <short commit range>"`.
+  `studio-state ledger "T<n> complete <full sha>..<full sha>"` (`git rev-parse` of HEAD
+  before the task, and of its last commit). Older short-sha lines still parse.
 - Every judgment call: `studio-state ledger "T<n> Ruling: <decision> — <why> — <cost if wrong>"`.
   The SDD ledger under `.superpowers/sdd/` remains the recovery map for the
   loop; the feature ledger (`.studio/ledger/<feature>.md`) carries the rulings
@@ -459,7 +484,9 @@ A finish records operator messages at §0's recording point and commits them wit
    - `studio-lint` — exit 0, or exit 3 (gdtoolkit not installed: noted in
      the gate line, not red);
    - `studio-run --seconds 10` — exit 0 (it exits 1 on `SCRIPT ERROR` or
-     `ERROR:` in the run log).
+     `ERROR:` in the run log);
+   - `studio-setup gate` — exit 0 (it runs the project's `gate_command` under the
+     gate lock; silent when unset). A non-zero exit is a red gate.
 
    Exit 2 from `studio-test` or `studio-run`: stop and show the printed
    message — usually `GODOT_PATH` is unset; `studio-dispatch` also exits 2
@@ -579,6 +606,10 @@ runner's (`STUDIO_RUN`'s header), and the base is `origin/<Target>`:
   `studio-state ledger "Stop: <the printed message>"` (not `gate red`), and ends as below.
   Any other non-zero exit is a red gate: the finish runs
   `studio-state ledger "Stop: gate red — <failing command and line>"`.
+  A non-zero `studio-setup gate` is the same red gate:
+  `studio-state ledger "Stop: gate red — gate_command exit <n> — log <path>"`
+  (the path from its stderr line). Outside a lane it takes step 1's three `fix(gate)`
+  rounds, then the draft PR.
   Each stop is committed as §8's stops are committed, writes no `shipped` line, pushes
   nothing further, and ends the turn; steps 2–6 do not run. A `gate red` stop
   is the one the runner repairs: it launches the gate-repair unit (§11), then
@@ -586,7 +617,8 @@ runner's (`STUDIO_RUN`'s header), and the base is `origin/<Target>`:
   times. Every other stop here is hard: the runner records the story stopped.
   Otherwise step 3 (PROGRESS) is skipped; step 4 pushes `<Branch>` and
   opens no PR; `studio-state ledger "shipped <Branch>"`.
-- **Direct:** step 1 is skipped (the runner's merge command is the gate);
+- **Direct:** step 1 is skipped (the runner's merge command is the gate).
+  Direct mode runs no finish gate, so `gate_command` does not run there;
   step 3 is skipped; step 4 pushes, then does this: open a **draft** PR into the default branch
   (`--base <Target>`); `studio-state ledger "shipped <url>"`.
 - Under a lane, step 5 still commits the ledger (`shipped …`) and pushes it
@@ -606,7 +638,9 @@ runs exactly one unit, writes its state, commits, pushes, and ends the turn.
 - **Inputs:**
   - the orchestrator reads only `studio-brief task <n>` (a task unit) or
     `studio-brief final` (the final review), plus the files its implementer
-    or reviewer reports name;
+    or reviewer reports name; a check unit reads only `studio-brief check <k>` (k from `task`);
+  - a task unit whose §0 sync reported `T<k+1> in progress: <first>..<last>` adds to the
+    implementer's brief: `commits already on the branch for this task: <first>..<last> — check and finish them; do not start over`;
   - it never reads the plan or the spec whole, and
     never runs SDD's pre-flight conflict scan
     (the plan session ran it, and its rulings are in `## Decisions`);
@@ -616,11 +650,24 @@ runs exactly one unit, writes its state, commits, pushes, and ends the turn.
     `Spec:`, `studio-brief` prints a one-line note and exits 0: use it all
     the same.
 - **Which unit:** exactly the one §0's *Where to start* picks.
+  - `check requested` without `check done` in the feature ledger: the check unit
+    (below), before any task, final review or finish.
   - `task k/N` with k < N: one SDD task, `T<k+1>`.
   - `N/N` without a `final review done` line: §5 as a whole, the fix wave
     included, through step 6; §7 is not started — it is the next unit.
   - `N/N` with that line: §7 steps 1–6.
   - Never more than one.
+- **Check unit:** the work an adopted story arrived with (tasks 1..k) is checked as a whole
+  before anything builds on it. It runs, in order:
+  1. `studio-test`, then `studio-setup gate`;
+  2. a review with the final-review rubric (§5's reviewer brief) of the range in
+     `studio-brief check <k>` against tasks 1..k;
+  3. fixes in this unit, each committed `fix(check): <summary>` with
+     `studio-state ledger "check Ruling: <decision> — <why> — <cost if wrong>"`;
+  4. then `studio-state ledger "check done <range of its fix commits, or none>"`, commit, push.
+
+  A finding it cannot fix, or a red gate it cannot make green:
+  `studio-state ledger "Stop: check — <reason>"`, committed as stops are. `k` never changes.
 - **Cutting SDD's loop:** invoke SDD as §1 says. Once the task is complete
   (§4a rule 6) and §6's writes are done (`set task n/N`, the `T<n> complete`
   line, the ledger committed), no next implementer is dispatched, and when
@@ -789,7 +836,9 @@ then launches a fresh finish, which runs the full gate once (§7).
   failure, the Stop line's failing line is the failure.
 - **Fix:** dispatch one fresh fixer (§5 step 5's owning role) with the
   failing output. It commits `fix(gate): <summary>`.
-- **Verify what failed, not the whole gate:** `studio-test <path>` for each
+- **Verify what failed, not the whole gate:** when the Stop names `gate_command`,
+  verify with the command that failed: `studio-setup gate`; otherwise
+  `studio-test <path>` for each
   failing test file; `studio-lint` or `studio-run --seconds 10` when that was
   the red command. Each runs as a foreground Bash call with `timeout` set to
   `$BASH_MAX_TIMEOUT_MS` (§7's lane rule). Up to three rounds, a round
