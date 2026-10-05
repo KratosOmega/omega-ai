@@ -2107,6 +2107,23 @@ test_lanes_gate_room_warning() {
   printf '1 studio-test 600 0\n' > "$P/.studio/gate.times"
   run_lanes start --dry-run "$MFP"
   assert_not_contains "$LS_ERR" "warning: the slowest" "a 10-minute gate fits 90 minutes"
+  printf '1 studio-test 3000 0\n2 gate 2400 0\n' > "$P/.studio/gate.times"
+  run_lanes start --dry-run "$MFP"
+  assert_contains "$LS_ERR" "the slowest of the last 10 studio-test runs plus the slowest of the last 10 gate_command runs took 90 min" "the sum names both gates"
+  assert_contains "$LS_ERR" "at least 118" "the minimum covers the sum"
+  printf '1 gate 600 0\n' > "$P/.studio/gate.times"
+  run_lanes start --dry-run "$MFP"
+  assert_not_contains "$LS_ERR" "warning: the slowest" "a 10-minute gate_command alone fits"
+}
+# D14: the gate-repair unit reads the log the Stop line names.
+test_lanes_gate_log_from_stop() {
+  LANES_CONFIG='{"overnight": {"gate_repairs": 1}}'; export LANES_CONFIG
+  lanes_fixture gatestop integration A:-
+  printf 'auto\nauto\ngatelog; stop gate red — gate_command exit 3 — log .studio/reports/gate-20261004-000000.log\n' > "$SCEN/A"
+  printf 'gaterepair\n' > "$SCEN/A.gate"
+  run_lanes start "$MFP"
+  n="$(gate_call)"; [ -n "$n" ] || n=0
+  assert_contains "$CALLS/$n.env" "^STUDIO_REPAIR=gate:/.*/A-b/\.studio/reports/gate-20261004-000000\.log$" "the Stop's log wins over the newer test log"
 }
 
 test_lanes_story_listed_events() {
@@ -2473,7 +2490,7 @@ run_tests test_lanes_chain_rule test_lanes_manifest_refusals test_lanes_prefligh
   test_lanes_origin_attached test_lanes_origin_detach test_lanes_origin_detach_refused \
   test_lanes_help_modes test_lanes_left_gate_reaped test_lanes_timed_out_outcome test_lanes_heartbeat \
   test_lanes_activity_verb test_lanes_status_anywhere test_lanes_status_ended_partial test_lanes_watch \
-  test_lanes_gate_room_warning test_lanes_story_listed_events test_lanes_unit_env_run_dir \
+  test_lanes_gate_room_warning test_lanes_gate_log_from_stop test_lanes_story_listed_events test_lanes_unit_env_run_dir \
   test_lanes_held_dependents_wait test_lanes_resume_after_gate_red_runs_gate_repair test_lanes_resume_gate_repairs_counted \
   test_lanes_resume_not_gate_red_no_repair_unit test_lanes_gate_repair_noprog_holds test_lanes_landing_never_holds \
   test_lanes_stop_queued_story test_lanes_stop_running_story test_lanes_stop_waiting_story \

@@ -222,7 +222,10 @@ story_launch_env() {
 story_first_label() {
   SIG_STAGE="$(story_state "$1" get stage 2>/dev/null)"; SIG_TASK="$(story_state "$1" get task 2>/dev/null)"
   [ "$SIG_STAGE" != idle ] || return 0
-  SIG_FRD="$(story_state "$1" show 2>/dev/null | grep -c '^- [0-9-]* final review done$')"
+  _sfl="$(story_state "$1" show 2>/dev/null)"
+  SIG_FRD="$(printf '%s\n' "$_sfl" | grep -c '^- [0-9-]* final review done$')"
+  SIG_CHK="$(printf '%s\n' "$_sfl" | grep -c '^- [0-9-]* check done')"
+  SIG_CHKREQ="$(printf '%s\n' "$_sfl" | grep -c '^- [0-9-]* check requested$')"
   label_for
 }
 
@@ -507,9 +510,13 @@ land_repair() {
   return 1
 }
 
-# gate_log_of DIR — the newest studio-test log under DIR/.studio/reports (the
-# adapter's test-<stamp>.log), absolute when DIR is; `-` when there is none.
+# gate_log_of DIR — the log of DIR's red gate (D14): the path the feature
+# ledger's newest `Stop:` line ends with (` — log <path>`; a relative path
+# is prefixed with DIR/), else the newest studio-test log under
+# DIR/.studio/reports (the adapter's test-<stamp>.log); `-` when there is none.
 gate_log_of() {
+  _gl="$(ledger_of "$1" | grep '^- [0-9-]* Stop: ' | tail -n 1 | sed -n 's/.* — log \(.*\)$/\1/p')"
+  case "$_gl" in '') ;; /*) printf '%s\n' "$_gl"; return ;; *) printf '%s\n' "$1/$_gl"; return ;; esac
   _gl="$(ls -t "$1"/.studio/reports/test-*.log 2>/dev/null | head -n 1)"
   printf '%s\n' "${_gl:--}"
 }
@@ -999,7 +1006,7 @@ story_ledger_lines() {
 # `<id>-<unit label>`) as a markdown table; `(no units)` when none ran.
 story_units_table() {
   cat "$RUN_DIR"/lanes/*/units.tsv 2>/dev/null | awk -F'\t' -v p="$1-" '
-    index($2, p) == 1 && substr($2, length(p) + 1) ~ /^(T[0-9]+|final-review|finish|repair|gate-repair)(-retry)?$/ {
+    index($2, p) == 1 && substr($2, length(p) + 1) ~ /^(T[0-9]+|check|final-review|finish|repair|gate-repair)(-retry)?$/ {
       if (!n++) print "| # | Unit | Exit | Cost | Minutes | Timed out | Outcome |\n|---|------|------|------|---------|-----------|---------|"
       printf "| %s | %s | %s | %s | %s | %s | %s |\n", $1, $2, $3, $4, $5, $6, $7 }
     END { if (!n) print "(no units)" }'
