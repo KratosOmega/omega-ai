@@ -98,6 +98,15 @@ export GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
 #                   runner error, exit 3)
 #   ruling <text>   modifier: ledgers <text> in the story worktree and
 #                   commits it, before auto runs
+#   gatecmd         terminal: in the story worktree, runs `studio-setup gate`;
+#                   a red one ledgers and commits `Stop: gate red — <its
+#                   stderr line>` (execute §7's gate_command step)
+#   Every auto (execute §0 and §6, D43): after the docs sync it runs the real
+#   `studio-setup`, then `studio-adopt sync` when the feature ledger has an
+#   `adopted` line; a failure of either ledgers and commits `Stop: …` and ends
+#   the unit. A ledger with `check requested` and no `check done` is a check
+#   unit: it ledgers `check done none`, commits and pushes. A task commit's
+#   ledger line is `T<k> complete <a>..<b>` (full shas).
 #   inbox           modifier: the operator-inbox hook as a startup session
 #                   runs it, its output in $CALLS/<n>.inbox
 #   say <text>      modifier: `studio-overnight say <id> -- <text>`
@@ -174,14 +183,27 @@ auto() {
   cd "$wt" || exit 9
   git checkout -q "$STUDIO_DOCS_REV" -- "$spec" "$plan"
   git diff --cached --quiet || git commit -qm "docs($id): plan at run docs $(printf '%.7s' "$STUDIO_DOCS_REV")"
+  if ! _se="$(sh "$(dirname "$STUB_STATE_BIN")/studio-setup" 2>&1 >/dev/null)"; then
+    st ledger "Stop: $_se"; commit_ledger setup-stop; return 0
+  fi
+  if grep -q '^- [0-9-]* adopted ' ".studio/ledger/$id.md" 2>/dev/null; then
+    if ! _sy="$(sh "$(dirname "$STUB_STATE_BIN")/studio-adopt" sync "$id" 2>&1 >/dev/null)"; then
+      st ledger "Stop: adopt sync — $(printf '%s\n' "$_sy" | tail -n 1)"; commit_ledger sync-stop; return 0
+    fi
+  fi
+  if grep -q '^- [0-9-]* check requested$' ".studio/ledger/$id.md" 2>/dev/null \
+     && ! grep -q '^- [0-9-]* check done' ".studio/ledger/$id.md"; then
+    st ledger "check done none"; commit_ledger check; sg push -q origin "$BRANCH"; return 0
+  fi
   task="$(st get task)"; k="${task%/*}"; N="${task#*/}"
   case "$k" in ''|-|*[!0-9]*) k=0 ;; esac
   case "$N" in ''|-|*[!0-9]*) N=1 ;; esac
   frd="$(grep -c 'final review done$' ".studio/ledger/$id.md" 2>/dev/null)"
   if [ "$k" -lt "$N" ]; then
     k=$((k + 1)); f="${conflict:-$id-T$k.txt}"
+    _a="$(git rev-parse HEAD)"
     printf '%s\n' "$id" > "$f"; git add "$f"; git commit -qm "feat($id): T$k"
-    st ledger "T$k complete"; commit_ledger "T$k complete"
+    st ledger "T$k complete $_a..$(git rev-parse HEAD)"; commit_ledger "T$k complete"
     sg push -q origin "$BRANCH"
     st set task "$k/$N"
   elif [ "${frd:-0}" -eq 0 ]; then
@@ -243,6 +265,9 @@ for act in "$@"; do
     fixgate)          terminal=1; : > fixed; git add fixed && git commit -qm "fix: the gate" ;;
     dirtyfix)         terminal=1; : > fixed ;;
     breakrow)         terminal=1; mkdir -p "$(dirname "$STUDIO_RUN")/final/units.tsv" ;;
+    gatecmd)          terminal=1; w="$(story_wt)"
+                      ( cd "$w" && { _g="$(sh "$(dirname "$STUB_STATE_BIN")/studio-setup" gate 2>&1 >/dev/null)" \
+                        || { st ledger "Stop: gate red — $_g"; commit_ledger gate-red; }; } ) ;;
     "ruling "*)       w="$(story_wt)"
                       ( cd "$w" && st ledger "${act#ruling }" && commit_ledger ruling ) ;;
     inbox)            printf '{"session_id":"s","hook_event_name":"SessionStart","source":"startup"}' \
@@ -1511,6 +1536,7 @@ test_lanes_final_gate_default() {
   printf '#!/bin/sh\necho test >> "%s/gd.log"\n' "$TMP" > "$_gb/studio-test"
   printf '#!/bin/sh\necho lint >> "%s/gd.log"; exit "${GD_LINT:-0}"\n' "$TMP" > "$_gb/studio-lint"
   printf '#!/bin/sh\necho "run $*" >> "%s/gd.log"\n' "$TMP" > "$_gb/studio-run"
+  printf '#!/bin/sh\necho "setup $*" >> "%s/gd.log"\n' "$TMP" > "$_gb/studio-setup"
   for _c in 0 3 1; do
     rm -f "$TMP/gd.log"
     _st="$( unset STUDIO_OVERNIGHT_GATE_CMD; SELF_DIR="$_gb"; GD_LINT="$_c"; export GD_LINT
@@ -1526,7 +1552,7 @@ test_lanes_final_gate_default() {
   ( unset STUDIO_OVERNIGHT_GATE_CMD; SELF_DIR="$_gb"
     sq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
     . "$BIN/overnight-lanes.sh"; sh -c "$(final_gate_cmds)" )
-  assert_eq "test lint run --seconds 10" "$(tr '\n' ' ' < "$TMP/gd.log" | sed 's/ $//')" "test, lint, then a 10 s run"
+  assert_eq "test lint run --seconds 10 setup gate" "$(tr '\n' ' ' < "$TMP/gd.log" | sed 's/ $//')" "test, lint, a 10 s run, then the project gate (D10)"
 }
 test_lanes_direct_progress_landing() {
   LANES_CONFIG='{"merge_command": "scripts/merge.sh <pr>"}'; LANES_PROGRESS=1; export LANES_CONFIG LANES_PROGRESS
@@ -2463,6 +2489,138 @@ test_lanes_no_orphans() {
   assert_eq "" "$_left" "no stub session, lane or runner outlives its test"
 }
 
+# ---- #35: autopilot adopts outside work ----
+# redocs — commit everything in $P and point the manifest's Docs: at that commit.
+redocs() {
+  ( cd "$P" && git add -A && git commit -q -m "docs: more" && git push -q origin run/demo \
+    && _rd="$(git rev-parse HEAD)" && sed "s/^Docs: .*/Docs: $_rd/" "$MFP" > "$TMP/mf.new" && cp "$TMP/mf.new" "$MFP" \
+    && git add -A && git commit -q -m manifest && git push -q origin run/demo ) >/dev/null 2>&1
+}
+# adopt_docs ID — ID's Docs ledger gets the adopted and adopt-base lines (the
+# original and converted plan are one file here, so the stub's sync passes).
+adopt_docs() {
+  _ad_p="docs/game-dev/plans/2026-10-01-$1.md"
+  printf -- '- 2026-10-01 adopted %s -> %s\n- 2026-10-01 adopt-base %s\n' "$_ad_p" "$_ad_p" "$(git -C "$P" rev-parse origin/integration/demo)" \
+    >> "$P/.studio/ledger/$1.md"
+}
+
+test_lanes_next_adopted_planned() {
+  lanes_fixture nad integration S1:- S2:-
+  mkdir -p "$P/docs/superpowers/specs" "$P/docs/superpowers/plans"
+  printf '# S1\n\nAn outside spec, no stories table.\n' > "$P/docs/superpowers/specs/2026-09-01-s1.md"
+  printf '# S2 plan\n\n### Task 1: t\n' > "$P/docs/superpowers/plans/2026-09-01-s2.md"
+  sed -e 's#^\(| S1 | S1-b | S1 | \)[^|]*|#\1docs/superpowers/specs/2026-09-01-s1.md |#' \
+      -e 's#^\(| S2 | S2-b | S2 | \)[^|]*|#\1docs/superpowers/plans/2026-09-01-s2.md |#' "$P/$MFP" > "$TMP/mf.s" && cp "$TMP/mf.s" "$P/$MFP"
+  printf -- '- 2026-10-01 spec approved docs/superpowers/specs/2026-09-01-s1.md\n- 2026-10-01 plan approved docs/game-dev/plans/2026-10-01-S1.md\n- 2026-10-01 Decisions swept S1\n' > "$P/.studio/ledger/s1.md"
+  printf -- '- 2026-10-01 spec approved docs/superpowers/plans/2026-09-01-s2.md\n- 2026-10-01 plan approved docs/game-dev/plans/2026-10-01-S2.md\n- 2026-10-01 Decisions swept S2\n' > "$P/.studio/ledger/s2.md"
+  ( cd "$P" && git add -A && git commit -qm planning-state ) >/dev/null 2>&1
+  run_lanes next "$MFP"
+  assert_eq 0 "$LS_STATUS" "next exits 0"
+  assert_contains "$LS_OUT" "^S1  planned  spec=docs/superpowers/specs/2026-09-01-s1.md  plan=" "an adopted story with a superpowers spec is planned"
+  assert_contains "$LS_OUT" "^S2  planned  spec=docs/superpowers/plans/2026-09-01-s2.md  plan=" "one with the original plan as its Spec cell is planned"
+}
+
+test_lanes_context_preflight() {
+  lanes_fixture ctx integration S1:-
+  sed 's#^Story: S1$#Story: S1\nContext: docs/game-dev/adopted/S1/carry.md#' "$P/docs/game-dev/plans/2026-10-01-S1.md" > "$TMP/p.s" \
+    && cp "$TMP/p.s" "$P/docs/game-dev/plans/2026-10-01-S1.md"
+  redocs
+  run_lanes start --dry-run "$MFP"
+  assert_eq 2 "$LS_STATUS" "a Context file missing from Docs is refused"
+  assert_contains "$LS_ERR" "S1: Context file docs/game-dev/adopted/S1/carry.md is not in Docs: $(sed -n 's/^Docs: //p' "$P/$MFP")$" "naming the path and the Docs sha"
+  mkdir -p "$P/docs/game-dev/adopted/S1" && printf 'carry\n' > "$P/docs/game-dev/adopted/S1/carry.md"
+  redocs
+  run_lanes start --dry-run "$MFP"
+  assert_eq 0 "$LS_STATUS" "the file in Docs passes"
+}
+
+test_lanes_check_unit_first() {
+  lanes_fixture chu integration A:-
+  printf -- '- 2026-10-01 check requested\n' >> "$P/.studio/ledger/A.md"
+  redocs
+  run_lanes start "$MFP"
+  assert_eq 0 "$LS_STATUS" "the run is done"
+  assert_eq "1 A-check progress,2 A-T1 progress,3 A-final-review progress,4 A-finish done," "$(story_rows A)" "a requested check is the story's first unit"
+  assert_contains "$(last_lanes_dir)/events.jsonl" '"event":"unit_started","story":"A",.*"label":"check","model":"opus"' "the check unit runs on opus"
+}
+
+test_lanes_adopt_sync_fail_holds() {
+  lanes_fixture asf integration S1:-
+  lholds_on 120
+  _x="$(git -C "$P" rev-parse origin/integration/demo)"
+  adopt_docs S1
+  printf -- '- 2026-10-01 T1 complete %s..%s\n' "$_x" "$_x" >> "$P/.studio/ledger/S1.md"
+  redocs
+  lanes_bg
+  wait_for 'is_held S1' 60
+  assert_contains "$(last_lanes_dir)/stories/S1" "^held stop: adopt sync — " "a failed sync holds the story"
+  assert_contains "$TMP_WT/S1-b/.studio/ledger/S1.md" "Stop: adopt sync — T1: empty range" "the feature ledger names the sync's stderr line"
+  assert_contains "$(last_lanes_dir)/events.jsonl" '"state":"held","why":"stop: adopt sync — ' "a held event"
+  lverb stop
+  wait_pid_or_fail "$RPID" 60 "the run ends"
+  lholds_off
+}
+
+test_lanes_setup_fail_holds() {
+  LANES_CONFIG='{"worktree_setup": "exit 5"}'; export LANES_CONFIG
+  lanes_fixture suf integration A:-
+  lholds_on 120
+  lanes_bg
+  wait_for 'is_held A' 60
+  assert_contains "$(last_lanes_dir)/stories/A" "^held stop: worktree setup failed — exit 5 — log .studio/reports/setup-" "a failed worktree_setup holds the story"
+  lverb stop
+  wait_pid_or_fail "$RPID" 60 "the run ends"
+  lholds_off
+}
+
+test_lanes_setup_fail_final_red() {
+  LANES_CONFIG='{"worktree_setup": "case $(pwd -P) in */integration-*) exit 4;; esac"}'; export LANES_CONFIG
+  lanes_fixture sff integration A:-
+  run_lanes start "$MFP"
+  R="$(last_lanes_dir)/report.md"
+  assert_contains "$R" "^Final PR: .* (red)$" "a failed final setup is a red final PR"
+  assert_contains "$R" "^Final note: .*worktree setup failed — exit 4 — log " "the note names the setup"
+  assert_missing "$(last_lanes_dir)/final-gate.log" "no gate ran"
+  assert_missing "$P/.studio/runs/demo/gate" "no gate record, so a resume re-runs setup"
+}
+
+test_lanes_gate_command_final() {
+  LANES_CONFIG='{"gate_command": "echo gc >> '"$TMP"'/calls-gcf/gc; exit 0"}'; export LANES_CONFIG
+  lanes_fixture gcf integration A:-
+  run_lanes start "$MFP"
+  assert_eq 1 "$(wc -l < "$CALLS/gc" 2>/dev/null | tr -d ' ')" "the final gate ran gate_command once"
+  assert_contains "$(last_lanes_dir)/report.md" "^Final PR: .* (green)$" "and is green"
+  LANES_CONFIG='{"gate_command": "echo gc >> '"$TMP"'/calls-gcr/gc; exit 2"}'; export LANES_CONFIG
+  lanes_fixture gcr integration A:-
+  printf 'noop\n' > "$SCEN/final-repair"
+  run_lanes start "$MFP"
+  assert_contains "$(last_lanes_dir)/final-gate.log" "gate_command exit 2 — log " "a red gate_command is a red final gate"
+  assert_contains "$(last_lanes_dir)/report.md" "^Final PR: .* (red)$" "and a red PR"
+}
+
+test_lanes_gate_command_finish_red_repair() {
+  LANES_CONFIG='{"gate_command": "exit 3", "overnight": {"gate_repairs": 1}}'; export LANES_CONFIG
+  lanes_fixture gcfr integration A:-
+  printf 'auto\nauto\ngatecmd\nauto\n' > "$SCEN/A"
+  printf 'gaterepair\n' > "$SCEN/A.gate"
+  run_lanes start "$MFP"
+  assert_eq 1 "$(gate_calls)" "one gate-repair unit"
+  n="$(gate_call)"; [ -n "$n" ] || n=0
+  assert_contains "$CALLS/$n.env" "^STUDIO_REPAIR=gate:/.*/A-b/\.studio/reports/gate-[0-9-]*\.log$" "the repair reads the Stop's own log"
+}
+
+test_lanes_report_adopted_lines() {
+  lanes_fixture rad integration A:- B:- C:-
+  adopt_docs A; adopt_docs B
+  redocs
+  printf 'auto\nstop broke\n' > "$SCEN/B"
+  run_lanes start "$MFP"
+  R="$(last_lanes_dir)/report.md"
+  assert_contains "$R" "^Adopted from docs/game-dev/plans/2026-10-01-A.md; landed on integration/demo — continue dependent stories from there$" "a landed adopted story"
+  assert_contains "$R" "^Adopted from docs/game-dev/plans/2026-10-01-B.md\. To continue the standard way: cd '.*' && '.*/studio-adopt' sync B$" "a stopped adopted story"
+  assert_eq 2 "$(grep -c '^Adopted from ' "$R")" "a story that was not adopted has no line"
+}
+
 run_tests test_lanes_chain_rule test_lanes_manifest_refusals test_lanes_preflight_backlog_tasks test_lanes_manifest_header_refusals \
   test_lanes_preflight_story_checks test_lanes_preflight_story_state test_lanes_docs_unreachable \
   test_lanes_git_too_old test_lanes_sourced_only test_lanes_next \
@@ -2498,4 +2656,5 @@ run_tests test_lanes_chain_rule test_lanes_manifest_refusals test_lanes_prefligh
   test_lanes_final_step_no_delivery test_lanes_deadline \
   test_lanes_stop_at_done_never_lands test_lanes_stop_held_by_operator test_lanes_stop_pending_never_holds \
   test_lanes_gate_repair_own_stop_holds test_lanes_directive_cap_holds test_lanes_hold_during_last_unit_lands_and_clears \
+  test_lanes_next_adopted_planned test_lanes_context_preflight test_lanes_check_unit_first test_lanes_adopt_sync_fail_holds test_lanes_setup_fail_holds test_lanes_setup_fail_final_red test_lanes_gate_command_final test_lanes_gate_command_finish_red_repair test_lanes_report_adopted_lines \
   test_lanes_no_orphans
