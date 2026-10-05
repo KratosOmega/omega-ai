@@ -381,9 +381,30 @@ test_retro_contract() {
   done
   # Final-review fix I2: exit 1 reads the current checkout's ledger (spec
   # Data migration), not STATE.md's alone.
-  assert_contains "$T" "At exit 1, use the current checkout's feature ledger" "retro reads the current checkout's ledger at exit 1"
-  for lit in 'AskUserQuestion' 'studio-state ledger' 'retro written' 'git commit'; do
+  assert_contains "$T" "At exit 1 with candidates, ask the user once which story" "retro asks once which story at exit 1"
+  assert_contains "$T" "the only question retro asks" "retro names its one question"
+  for lit in 'studio-state ledger' 'retro written' 'git commit'; do
     assert_not_contains "$T" "$lit" "retro no longer carries: $lit"
+  done
+}
+
+# AC34: review and playtest ask among story candidates at Exit 1.
+test_skill_review_playtest_ask_candidates() {
+  for sk in review playtest; do
+    T="$REPO_ROOT/studios/game-dev/skills/$sk/SKILL.md"
+    for lit in "more than one story fits, a removed story's worktree is offered, or none is recorded" \
+               'run its command, then enter the path it added' \
+               "this checkout's pointer moved on to the next feature"; do
+      assert_contains "$T" "$lit" "$sk carries: $lit"
+    done
+  done
+}
+
+# AC35: retro resolves its story with studio-state worktree.
+test_skill_retro_resolves_story() {
+  T="$REPO_ROOT/studios/game-dev/skills/retro/SKILL.md"
+  for lit in '(cd <path> && studio-state show)' '`removed` candidate' 'creates no worktree' 'one-time adopt'; do
+    assert_contains "$T" "$lit" "retro carries: $lit"
   done
 }
 
@@ -726,6 +747,7 @@ run_tests test_plugin_manifests test_skill_frontmatter test_agent_frontmatter \
   test_studio_skill_contract test_game_dev_agent_roster test_stage_skills_dispatch_agents \
   test_stage_chain test_execute_contract test_agent_contracts test_feature_checkout_copies test_next_lines \
   test_review_contract test_on_demand_skills_keep_stage test_playtest_contract test_retro_contract \
+  test_skill_review_playtest_ask_candidates test_skill_retro_resolves_story \
   test_no_ship_references test_superpowers_requires_referenced test_no_last_playtest_callers \
   test_execute_one_contract test_router_overnight_lock test_execute_lanes test_execute_lane_gate_foreground test_execute_land_and_progress test_execute_gate_repair test_execute_operator_messages test_execute_adopt test_final_wave_contracts \
   test_plan_brainstorm_lanes test_execute_sync_repair_form test_execute_peers_brief_rule test_plan_brainstorm_slug_form \

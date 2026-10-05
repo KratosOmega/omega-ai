@@ -24,10 +24,13 @@ the user asks. It never changes `stage`.
   - Exit 3: run the command on its stderr's second line (it unlocks and
     prunes a stale entry first when one holds the branch), then enter the
     new worktree, the path that command added, the same way.
-  - Exit 1: no feature branch is recorded, or it is gone. Ask the user once
-    which checkout to use, naming what was found: the `branch` value (or
-    that none is recorded) and the `git worktree list` paths; then
-    enter the chosen checkout the Exit 0 way.
+  - Exit 1:
+    more than one story fits, a removed story's worktree is offered, or none is recorded
+    (no branch recorded, or it is gone). Ask the user once which checkout to use, naming the
+    candidates `studio-state worktree` listed on stderr (or that none is
+    recorded) and the `git worktree list` paths. For a `removed` candidate
+    the user picks, run its command, then enter the path it added; never run
+    a `removed` command unasked. Then enter the chosen checkout the Exit 0 way.
   - If `EnterWorktree` refuses, stop and show its message; when another
     live session holds the worktree, close that session first. Never `cd`
     into a worktree another live session is using.
@@ -54,9 +57,9 @@ fixer, writes no ledger line, edits no plan, and commits and pushes nothing.
 - Otherwise **Enter the feature checkout**, and say which checkout.
 - **Which feature.** After the lookup, check that the checkout holds the
   ledger of the feature `spec` names: `<checkout>/.studio/ledger/<slug>.md`
-  (slug as `studio-state` derives it) exists. When it does not, `spec` and
-  `branch` name different features, and every ledger line written here would
-  land in a ledger named for the next feature. **Leave the feature
+  (slug as `studio-state` derives it) exists. When it does not, this checkout's pointer moved on to the next feature:
+  `spec` and `branch` name different features, and every ledger line
+  written here would land in a ledger named for the next feature. **Leave the feature
   checkout** if this command entered one, then stop with: "the studio
   pointers now name `<spec>`; the finished feature is `<branch>` — fix it on
   that branch by hand, or run this after `<spec>`'s finish".

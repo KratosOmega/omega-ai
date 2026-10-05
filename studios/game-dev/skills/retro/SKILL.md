@@ -13,24 +13,30 @@ every other studio and from `~/.claude` by construction — and nowhere else.
 
 ## 0. Read
 
-Retro is read-only on the repository: it asks the user nothing, enters no
-checkout, writes no ledger line, makes no commit, and changes no stage or
-pointer. It writes studio memory only.
+Retro is read-only on the repository: it asks at most one question (which
+story, below), enters no checkout, writes no ledger line, makes no commit,
+and changes no stage or pointer. It writes studio memory only. A pre-#42
+worktree's one-time adopt may move a story into that worktree when retro
+first reads it.
 
 - `studio-state show`: `STATE.md` with its own ledger, then the current
   checkout's feature ledger.
 - Find the recorded feature's ledger. The slug is the basename of
   `studio-state get spec`, without `.md` and without a leading
   `YYYY-MM-DD-`; the ledger is `.studio/ledger/<slug>.md`.
-  - Run `studio-state worktree`. At exit 0 it prints a checkout path; when
-    that is not the current checkout, read `<path>/.studio/ledger/<slug>.md`
-    there.
+  - Run `studio-state worktree` from the main checkout. At exit 0 it prints
+    a checkout path: read there with `(cd <path> && studio-state show)`;
+    the session does not move.
   - At exit 3 the branch exists but no worktree has it: read
     `git show <branch>:.studio/ledger/<slug>.md`, with `<branch>` from
     `studio-state get branch`. Create and enter no worktree.
-  - At exit 1, use the current checkout's feature ledger from
-    `studio-state show` when `<slug>.md` exists there; when it does not,
-    read only `STATE.md`'s ledger and say so.
+  - At exit 1 with candidates, ask the user once which story:
+    the only question retro asks. For a `removed` candidate, read
+    `git show <branch>:.studio/ledger/<slug>.md` with `<branch>` and
+    `<spec>` from that candidate line; retro creates no worktree.
+  - At exit 1 without candidates, use the current checkout's feature ledger
+    from `studio-state show` when `<slug>.md` exists there; when it does
+    not, read only `STATE.md`'s ledger and say so.
   - At exit 0 or 3, when that ledger does not exist, `spec` and `branch`
     name different features: read only `STATE.md`'s ledger, and say so.
 - Take every `Ruling:`, `Review:` and `B<n>` line. Read the spec only to
