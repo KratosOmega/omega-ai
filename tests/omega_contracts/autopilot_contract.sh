@@ -102,4 +102,53 @@ test_autopilot_contract() {
   assert_contains "$D" 'how many lanes' "and the lane count"
   assert_contains "$D" 'docs/runs/<slug>.md' "and the manifest"
   assert_contains "$D" "^\*2026-10-02: the studio criterion" "the 2026-10-02 note follows"
+  # Adopt branch (#35): the source-plan question, the gap check, conversion, seed, sync.
+  for lit in 'source plan' 'source spec' 'git ls-files --error-unmatch' 'STUDIO_STORY=<id> studio-state init' \
+    'source <plan> spec <spec or ->' \
+    'studio-adopt inspect <id> --branch <Branch> --plan <original>' 'gap check' \
+    '`adopt` or `plan: <gaps>`' 'verdict adopt' 'verdict plan' 'at most 4 stories per question' \
+    'adopted <original> -> <new plan>' "tasks 1..k keep the original's titles and boundaries" \
+    'never edits the original' 'Source: <original plan path>' 'Status: Draft (awaiting approval)' \
+    '1:1 with the original' '`<original>:L<a>-<b>`' 'pre-flight conflict scan' \
+    'studio-gate <who> -- <cmd>' 'docs/game-dev/adopted/<id>/' '\*\*check the built work?\*\*' 'check requested' \
+    'studio-adopt seed <id>' "after step 3.2's re-key and before" 'studio-adopt sync <id>' 'superpowers 6.4.1'; do
+    assert_contains "$S" "$lit" "autopilot adopt branch: $lit"
+  done
+  test_autopilot_adopt_order
+  # AC1: the manifest commit carries every story's ledger; AC3: step 3 ledgers `adopted` before seeding.
+  _a="$(grep -n -F -m1 -- 'git add docs/runs/<slug>.md .studio/config.json .studio/ledger/<id>.md … && git commit -m "docs(run): <slug> manifest"' "$S" | cut -d: -f1)"
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if [ -n "$_a" ]; then _pass "manifest commit adds the ledgers"; else _fail "manifest commit adds the ledgers"; fi
+  _a="$(grep -n -F -m1 -- 'studio-state ledger "adopted <original> -> <new plan>"' "$S" | cut -d: -f1)"
+  _b="$(grep -n -F -m1 -- 'Each story, not-started and half-done alike' "$S" | cut -d: -f1)"
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if [ -n "$_a" ] && [ -n "$_b" ] && [ "$_a" -lt "$_b" ]; then _pass "step 3 ledgers adopted before seeding"
+  else _fail "step 3 ledgers adopted before seeding ($_a, $_b)"; fi
+}
+
+# The AC5 order (spec): the five phrases appear in the skill in this order.
+test_autopilot_adopt_order() {
+  S="$REPO_ROOT/shared/omega/skills/autopilot/SKILL.md"
+  _prev=0
+  for _ph in '`studio-state set spec <spec>`, where `<spec>` is the source spec' \
+    'Spec and Plan cells are set to' \
+    'so `next_match` and `Docs:` see the plan' \
+    '`Decisions swept <id>` after asking' \
+    '`adopted <original> -> <converted plan>`'; do
+    _n="$(grep -n -F -m1 -- "$_ph" "$S" | cut -d: -f1)"
+    [ -n "$_n" ] || _n=0
+    TESTS_RUN=$((TESTS_RUN + 1))
+    if [ "$_n" -gt "$_prev" ]; then _pass "adopt order: $_ph"; else _fail "adopt order: $_ph (line $_n after $_prev)"; fi
+    _prev=$_n
+  done
+  # I1: seed needs the pointer's branch, so it runs after `set branch` and before the rebuild
+  # (all three sit in step 3.3, so compare offsets inside that line).
+  _l="$(grep -F -m1 -- 'In that worktree, only' "$S")"
+  _b="$(printf '%s' "$_l" | awk '{ print index($0, "`set branch <Branch>`") }')"
+  _s="$(printf '%s' "$_l" | awk '{ print index($0, "`studio-adopt seed <id>`") }')"
+  _r="$(printf '%s' "$_l" | awk '{ print index($0, "then `studio-state check --rebuild`") }')"
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if [ "$_b" -gt 0 ] && [ "$_s" -gt "$_b" ] && [ "$_r" -gt "$_s" ]; then
+    _pass "adopt order: set branch, then seed, then check --rebuild"
+  else _fail "adopt order: set branch ($_b), seed ($_s), check --rebuild ($_r)"; fi
 }

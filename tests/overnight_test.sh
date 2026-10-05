@@ -828,6 +828,48 @@ test_overnight_status() {
   assert_contains "$TMP/st.out" "^ended (stopped by user) — report: $P/.studio/reports/overnight-.*/report.md — resume: " "and how it ended, its report and how to resume"
 }
 
+test_overnight_check_unit() {
+  fixture chk
+  ( cd "$P" && sh "$STATE_BIN" set stage execute && sh "$STATE_BIN" set task 1/2 \
+      && sh "$STATE_BIN" ledger "check requested" \
+      && git add -A && git -c user.name=t -c user.email=t@t commit -qm chk ) >/dev/null 2>&1
+  scenario "ledger check done none" "task 2/2" "ledger final review done" "stage idle; task -; ledger shipped x"
+  run_start
+  assert_eq "check T2 final-review finish" "$(unit_col 2)" "a requested, undone check runs first, then T2"
+  assert_eq opus "$(sed -n '/^--model$/{n;p;}' "$CALLS/1.argv")" "the check unit gets model_final"
+  assert_eq "progress progress progress done" "$(unit_col 7)" "a check unit that ledgers check done is progress"
+  fixture chk2
+  ( cd "$P" && sh "$STATE_BIN" set stage execute && sh "$STATE_BIN" set task 1/2 \
+      && sh "$STATE_BIN" ledger "check requested" && sh "$STATE_BIN" ledger "check done none" \
+      && git add -A && git -c user.name=t -c user.email=t@t commit -qm chk ) >/dev/null 2>&1
+  scenario "task 2/2" "ledger final review done" "stage idle; task -; ledger shipped x"
+  run_start
+  assert_eq "T2 final-review finish" "$(unit_col 2)" "a done check is not run again"
+  fixture chk3
+  ( cd "$P" && sh "$STATE_BIN" set stage execute && sh "$STATE_BIN" set task 1/2 \
+      && sh "$STATE_BIN" ledger "check requested" && sh "$STATE_BIN" ledger "check done none" \
+      && sh "$STATE_BIN" ledger "adopt reset 2026-10-04" && sh "$STATE_BIN" ledger "check requested" \
+      && git add -A && git -c user.name=t -c user.email=t@t commit -qm chk ) >/dev/null 2>&1
+  scenario "ledger check done none" "task 2/2" "ledger final review done" "stage idle; task -; ledger shipped x"
+  run_start
+  assert_eq "check T2 final-review finish" "$(unit_col 2)" "a check done before an adopt reset does not suppress the re-requested check"
+}
+
+test_overnight_adopt_config_refusals() {
+  fixture adc '{"worktree_setup_minutes": 0}'
+  run_start --dry-run
+  assert_eq 2 "$RS_STATUS" "worktree_setup_minutes 0: exit 2"
+  assert_contains "$RS_ERR" "config overnight.worktree_setup_minutes must be from 1 to 120, got 0" "names the key and range"
+  fixture adc2 '{"gate_command": "a\\b"}'
+  run_start --dry-run
+  assert_eq 2 "$RS_STATUS" "a backslash in gate_command: exit 2"
+  assert_contains "$RS_ERR" "gate_command" "names gate_command"
+  assert_contains "$RS_ERR" "gate_command must not contain a backslash.*script" "the refusal names the reason and the way out"
+  fixture adc3 '{"gate_command": "make test", "worktree_setup": "make setup", "worktree_setup_minutes": 5}'
+  run_start --dry-run
+  assert_eq 0 "$RS_STATUS" "valid adopt keys pass"
+}
+
 test_overnight_models_by_unit() {
   fixture models '{"overnight": {"model_final": "opus-x", "model_finish": "son.1"}}'
   scenario "stage execute; task 1/1; ledger T1 complete" "ledger final review done" "ledger shipped https://x/pr/1; stage idle"
@@ -1746,7 +1788,7 @@ run_tests test_overnight_report_done test_overnight_report_not_done test_overnig
   test_overnight_retries_zero test_overnight_stop_line test_overnight_copied_stop_not_new \
   test_overnight_run_budget test_overnight_cost_unknown test_overnight_unexpected_stage \
   test_overnight_overhead test_overnight_unknown_label_stops \
-  test_overnight_models_by_unit test_overnight_config_refusals_v2 \
+  test_overnight_models_by_unit test_overnight_check_unit test_overnight_adopt_config_refusals test_overnight_config_refusals_v2 \
   test_overnight_default_branch_required test_overnight_deny_merge_basename \
   test_overnight_run_usd_default_uncapped \
   test_overnight_deny_rules_basic test_overnight_deny_rules_no_origin_head test_overnight_deny_rules_merge_basename \

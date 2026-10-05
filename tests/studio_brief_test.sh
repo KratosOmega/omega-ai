@@ -217,4 +217,136 @@ test_brief_no_directives_no_part() {
   assert_eq 1 "$(grep -c '^==> .*\.studio/ledger/' "$TMP/ndf.txt")" "final keeps only its rulings part"
 }
 
-run_tests test_brief_task test_brief_final test_brief_refusals test_brief_missing_sections test_brief_directives_task test_brief_directives_final test_brief_directive_text_not_ruling test_brief_directive_edge_cases test_brief_no_directives_no_part
+
+# ctx_fixture DIR — a fixture whose plan carries a Context: header.
+ctx_fixture() {
+  build_fixture "$1"
+  sed -i.bak 's|^# Plan$|# Plan\
+Context: docs/c1.md, docs/c2.md|' "$1/docs/plan.md"; rm -f "$1/docs/plan.md.bak"
+  printf 'MARK-C1\n' > "$1/docs/c1.md"; printf 'MARK-C2\n' > "$1/docs/c2.md"
+}
+# commit_fixture DIR — commits c0..c2 in DIR; sets S0 S1 S2 to their shas.
+commit_fixture() {
+  Q="$1"
+  ( cd "$Q" && git add -A && git -c user.email=t@t -c user.name=t commit -qm c0 \
+    && for i in 1 2; do echo "x$i" > "docs/x$i.txt"; git add -A; git -c user.email=t@t -c user.name=t commit -qm "c$i"; done ) >/dev/null 2>&1
+  S0="$(cd "$Q" && git rev-parse HEAD~2)"; S1="$(cd "$Q" && git rev-parse HEAD~1)"; S2="$(cd "$Q" && git rev-parse HEAD)"
+}
+brief_in() { _d="$1"; shift; ( cd "$_d" && STUDIO_STORY=S1 sh "$BRIEF" "$@" ); }
+ledger_in() { _d="$1"; shift; ( cd "$_d" && STUDIO_STORY=S1 sh "$STATE_BIN" ledger "$*" ) >/dev/null 2>&1; }
+
+test_brief_context_appended() {
+  Q="$TMP/projc"; ctx_fixture "$Q"; commit_fixture "$Q"
+  ledger_in "$Q" "adopt-base $S0"; ledger_in "$Q" "T1 complete $S0..$S1"
+  for v in "task 1" final "check 1"; do
+    # shellcheck disable=SC2086
+    brief_in "$Q" $v > "$TMP/ctx.out"; st=$?
+    assert_eq 0 "$st" "$v exits 0"
+    assert_contains "$TMP/ctx.out" "^## Context files$" "$v: the Context files part"
+    assert_contains "$TMP/ctx.out" "^==> docs/c1.md:L1-1$" "$v: c1 headed"
+    assert_contains "$TMP/ctx.out" "MARK-C1" "$v: c1 text"
+    assert_contains "$TMP/ctx.out" "MARK-C2" "$v: c2 text"
+  done
+  brief_in "$Q" final > "$TMP/ctx.out"
+  assert_eq 1 "$(tail -n 1 "$TMP/ctx.out" | grep -c '^diff: ')" "final: the last line is still diff:"
+  brief_in "$Q" check 1 > "$TMP/ctx.out"
+  assert_eq 1 "$(tail -n 1 "$TMP/ctx.out" | grep -c '^diff: ')" "check: the last line is still diff:"
+}
+test_brief_context_cap() {
+  Q="$TMP/projcap"; ctx_fixture "$Q"
+  awk 'BEGIN{for(i=0;i<110;i++) printf "%0100d\n", i}' > "$Q/docs/c1.md"
+  awk 'BEGIN{for(i=0;i<20;i++) printf "%099d\n", i}' > "$Q/docs/c2.md"
+  brief_in "$Q" task 1 > "$TMP/cap.out"; st=$?
+  assert_eq 0 "$st" "task 1 exits 0"
+  assert_contains "$TMP/cap.out" "^==> docs/c1.md:L1-110$" "c1 is included"
+  assert_not_contains "$TMP/cap.out" "^==> docs/c2.md" "c2 is over the cap"
+  assert_contains "$TMP/cap.out" "^Read these as well:$" "the overflow heading"
+  assert_contains "$TMP/cap.out" "^- docs/c2.md$" "c2 is listed"
+}
+test_brief_context_missing_file() {
+  Q="$TMP/projcm"; ctx_fixture "$Q"
+  sed -i.bak 's|^Context: .*|Context: docs/nope.md|' "$Q/docs/plan.md"; rm -f "$Q/docs/plan.md.bak"
+  brief_in "$Q" task 1 > /dev/null 2> "$TMP/cm.err"; st=$?
+  assert_eq 1 "$st" "a missing Context file exits 1"
+  assert_contains "$TMP/cm.err" "Context file docs/nope.md not found" "names the file"
+}
+test_brief_context_no_glob() {
+  Q="$TMP/projcg"; ctx_fixture "$Q"
+  sed -i.bak 's|^Context: .*|Context: docs/c*.md|' "$Q/docs/plan.md"; rm -f "$Q/docs/plan.md.bak"
+  brief_in "$Q" task 1 > /dev/null 2> "$TMP/cg.err"; st=$?
+  assert_eq 1 "$st" "a * in a Context path is a name, not a glob"
+  assert_contains "$TMP/cg.err" "Context file docs/c[*].md not found" "names the literal path"
+}
+test_brief_final_plan_acceptance() {
+  Q="$TMP/projpa"; build_fixture "$Q"
+  printf '# Spec\n\n## Purpose\nx\n' > "$Q/docs/spec.md"
+  printf '\n## Acceptance criteria\n1. MARK-PLAN-AC\n' >> "$Q/docs/plan.md"
+  brief_in "$Q" final > "$TMP/pa.out"; st=$?
+  assert_eq 0 "$st" "final falls back to the plan's acceptance criteria"
+  assert_contains "$TMP/pa.out" "^==> docs/plan.md:L" "headed by the plan"
+  assert_contains "$TMP/pa.out" "MARK-PLAN-AC" "the plan's criterion"
+  Q2="$TMP/projpb"; build_fixture "$Q2"
+  printf '# Spec\n\n## Purpose\nx\n' > "$Q2/docs/spec.md"
+  brief_in "$Q2" final > /dev/null 2> "$TMP/pb.err"; st=$?
+  assert_eq 1 "$st" "neither file has the section"
+  assert_contains "$TMP/pb.err" "## Acceptance criteria not found in" "today's failure text"
+}
+test_brief_check_verb() {
+  Q="$TMP/projk"; build_fixture "$Q"; commit_fixture "$Q"
+  ledger_in "$Q" "T1 complete $S0..$S1"
+  brief_in "$Q" check 1 > /dev/null 2> "$TMP/k.err"; st=$?
+  assert_eq 1 "$st" "no adopt-base exits 1"
+  assert_contains "$TMP/k.err" "adopt-base" "names adopt-base"
+  ledger_in "$Q" "adopt-base $S0"; ledger_in "$Q" "T2 complete $S1..$S2"
+  brief_in "$Q" check 2 > "$TMP/k2.out"; st=$?
+  assert_eq 0 "$st" "check 2 exits 0"
+  assert_contains "$TMP/k2.out" "^### Task 1:" "task 1 block"
+  assert_contains "$TMP/k2.out" "^### Task 2:" "task 2 block"
+  assert_not_contains "$TMP/k2.out" "^### Task 3:" "task 3 block absent"
+  assert_not_contains "$TMP/k2.out" "MARK-DATA" "task 3's spec part absent"
+  assert_contains "$TMP/k2.out" "MARK-PURPOSE" "task 1's spec part present"
+  assert_contains "$TMP/k2.out" "^range: $S0\.\.$S2$" "range"
+  assert_contains "$TMP/k2.out" "^diff: git diff $S0\.\.$S2$" "diff"
+  assert_contains "$TMP/k2.out" "^## Global Constraints" "GC part"
+  assert_contains "$TMP/k2.out" "^## Decisions" "Decisions part"
+  brief_in "$Q" check 0 > "$TMP/k0.out"; st=$?
+  assert_eq 0 "$st" "check 0 exits 0"
+  assert_contains "$TMP/k0.out" "^range: none — no finished task$" "check 0 range"
+  assert_not_contains "$TMP/k0.out" "^### Task" "check 0 has no task blocks"
+  brief_in "$Q" check 3 > /dev/null 2> "$TMP/k3.err"; st=$?
+  assert_eq 1 "$st" "check 3 exits 1"
+  assert_contains "$TMP/k3.err" "T3 complete" "names T3 complete"
+}
+test_brief_check_uses_truth_region() {
+  Q="$TMP/projkt"; build_fixture "$Q"; commit_fixture "$Q"
+  ledger_in "$Q" "adopt-base $S0"; ledger_in "$Q" "T1 complete $S0..$S1"
+  ledger_in "$Q" "adopt reset $S2"
+  ledger_in "$Q" "adopt-base $S1"; ledger_in "$Q" "T1 complete $S1..$S2"
+  brief_in "$Q" check 1 > "$TMP/kt.out"; st=$?
+  assert_eq 0 "$st" "check 1 exits 0"
+  assert_contains "$TMP/kt.out" "^range: $S1\.\.$S2$" "the range comes after the last reset"
+}
+test_brief_final_reads_check_rulings() {
+  Q="$TMP/projkr"; build_fixture "$Q"
+  ledger_in "$Q" "check Ruling: kept X — fine — low"
+  ledger_in "$Q" "minor (deferred) T2: y (standard mode)"
+  brief_in "$Q" final > "$TMP/kr.out"
+  assert_contains "$TMP/kr.out" "check Ruling: kept X — fine — low" "the check ruling"
+  assert_contains "$TMP/kr.out" "minor (deferred) T2: y (standard mode)" "the deferred minor"
+}
+test_brief_original_plan_item() {
+  Q="$TMP/projop"; build_fixture "$Q"
+  printf '# Orig\n\n### Task 1: o\nMARK-ORIG\nmore\n\n### Task 2: p\n' > "$Q/docs/orig.md"
+  sed -i.bak 's|^Spec: docs/spec.md:L3-4$|Spec: docs/orig.md:L3-5|' "$Q/docs/plan.md"; rm -f "$Q/docs/plan.md.bak"
+  brief_in "$Q" task 1 > "$TMP/op.out"; st=$?
+  assert_eq 0 "$st" "task 1 exits 0"
+  assert_contains "$TMP/op.out" "^==> docs/orig.md:L3-5$" "the original plan's lines"
+  assert_contains "$TMP/op.out" "MARK-ORIG" "its text"
+}
+test_brief_usage_names_check() {
+  sh "$BRIEF" bogus > /dev/null 2> "$TMP/u.err"; st=$?
+  assert_eq 2 "$st" "usage exits 2"
+  assert_contains "$TMP/u.err" "check <k>" "usage names check"
+}
+
+run_tests test_brief_task test_brief_final test_brief_refusals test_brief_missing_sections test_brief_directives_task test_brief_directives_final test_brief_directive_text_not_ruling test_brief_directive_edge_cases test_brief_no_directives_no_part test_brief_context_appended test_brief_context_cap test_brief_context_missing_file test_brief_context_no_glob test_brief_final_plan_acceptance test_brief_check_verb test_brief_check_uses_truth_region test_brief_final_reads_check_rulings test_brief_original_plan_item test_brief_usage_names_check

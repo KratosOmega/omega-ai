@@ -177,6 +177,12 @@ mf_check() {
       printf '%s\n' "$_id: plan task has no Spec: line ($_t)"
     done > "$MF_TMP/spec-refusals"
     while IFS= read -r _l; do refuse "$_l"; done < "$MF_TMP/spec-refusals"
+    # D40: each Context: path (a comma list in the header) is in the Docs revision.
+    set -f   # a `*` in a Context path is a name, not a glob
+    for _cx in $(sed -n '/^## /q; s/^Context:[[:space:]]*//p' "$MF_TMP/plan" | head -n 1 | tr ',' '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//'); do
+      git -C "$START_DIR" cat-file -e "$MF_DOCS:$_cx" 2>/dev/null || refuse "$_id: Context file $_cx is not in Docs: $MF_DOCS"
+    done
+    set +f
   done < "$MF_TMP/stories"
 }
 
@@ -222,7 +228,12 @@ story_launch_env() {
 story_first_label() {
   SIG_STAGE="$(story_state "$1" get stage 2>/dev/null)"; SIG_TASK="$(story_state "$1" get task 2>/dev/null)"
   [ "$SIG_STAGE" != idle ] || return 0
-  SIG_FRD="$(story_state "$1" show 2>/dev/null | grep -c '^- [0-9-]* final review done$')"
+  _sfl="$(story_state "$1" show 2>/dev/null)"
+  SIG_FRD="$(printf '%s\n' "$_sfl" | grep -c '^- [0-9-]* final review done$')"
+  # check lines count in D2's truth region: after the last `adopt reset` line.
+  _sfl="$(printf '%s\n' "$_sfl" | awk '/^- [0-9-]+ adopt reset /{ n = NR } { l[NR] = $0 } END { for (i = n + 1; i <= NR; i++) print l[i] }')"
+  SIG_CHK="$(printf '%s\n' "$_sfl" | grep -c '^- [0-9-]* check done')"
+  SIG_CHKREQ="$(printf '%s\n' "$_sfl" | grep -c '^- [0-9-]* check requested$')"
   label_for
 }
 
@@ -507,9 +518,13 @@ land_repair() {
   return 1
 }
 
-# gate_log_of DIR — the newest studio-test log under DIR/.studio/reports (the
-# adapter's test-<stamp>.log), absolute when DIR is; `-` when there is none.
+# gate_log_of DIR — the log of DIR's red gate (D14): the path the feature
+# ledger's newest `Stop:` line ends with (` — log <path>`; a relative path
+# is prefixed with DIR/), else the newest studio-test log under
+# DIR/.studio/reports (the adapter's test-<stamp>.log); `-` when there is none.
 gate_log_of() {
+  _gl="$(ledger_of "$1" | grep '^- [0-9-]* Stop: ' | tail -n 1 | sed -n 's/.* — log \(.*\)$/\1/p')"
+  case "$_gl" in '') ;; /*) printf '%s\n' "$_gl"; return ;; *) printf '%s\n' "$1/$_gl"; return ;; esac
   _gl="$(ls -t "$1"/.studio/reports/test-*.log 2>/dev/null | head -n 1)"
   printf '%s\n' "${_gl:--}"
 }
@@ -982,10 +997,9 @@ story_why() {
     *) printf 'no ending (%s)\n' "$1" ;;
   esac
 }
-# story_ledger_lines ID — the `Ruling:` and `P<k> Play:` lines of ID's ledger:
-# from its story worktree, else its branch (local, then origin), else its
+# story_ledger_text ID — ID's whole feature ledger: from its story worktree, else its branch (local, then origin), else its
 # merge commit's second parent, else the landed commit itself.
-story_ledger_lines() {
+story_ledger_text() {
   _sl_b="$(row_field "$1" branch)"; _sl_f=".studio/ledger/$1.md"; _sl_sha=""
   case "$(story_get "$1")" in "landed "*) _sl_sha="$(story_get "$1")"; _sl_sha="${_sl_sha#landed }" ;; esac
   _sl_w="$(story_state "$1" worktree 2>/dev/null)"
@@ -993,13 +1007,14 @@ story_ledger_lines() {
     else git -C "$START_DIR" show "refs/heads/$_sl_b:$_sl_f" \
       || git -C "$START_DIR" show "refs/remotes/origin/$_sl_b:$_sl_f" \
       || { [ -n "$_sl_sha" ] && { git -C "$START_DIR" show "$_sl_sha^2:$_sl_f" || git -C "$START_DIR" show "$_sl_sha:$_sl_f"; }; }
-    fi; } 2>/dev/null | grep -E '^- [0-9-]+ (([^ ]+ )?Ruling: |P[0-9]+ Play: )'
+    fi; } 2>/dev/null
 }
+story_ledger_lines() { story_ledger_text "$1" | grep -E '^- [0-9-]+ (([^ ]+ )?Ruling: |P[0-9]+ Play: )'; }
 # story_units_table ID — ID's rows of every lane's units.tsv (the label is
 # `<id>-<unit label>`) as a markdown table; `(no units)` when none ran.
 story_units_table() {
   cat "$RUN_DIR"/lanes/*/units.tsv 2>/dev/null | awk -F'\t' -v p="$1-" '
-    index($2, p) == 1 && substr($2, length(p) + 1) ~ /^(T[0-9]+|final-review|finish|repair|gate-repair)(-retry)?$/ {
+    index($2, p) == 1 && substr($2, length(p) + 1) ~ /^(T[0-9]+|check|final-review|finish|repair|gate-repair)(-retry)?$/ {
       if (!n++) print "| # | Unit | Exit | Cost | Minutes | Timed out | Outcome |\n|---|------|------|------|---------|-----------|---------|"
       printf "| %s | %s | %s | %s | %s | %s | %s |\n", $1, $2, $3, $4, $5, $6, $7 }
     END { if (!n) print "(no units)" }'
@@ -1066,6 +1081,16 @@ lanes_report() {
         "landed "*) printf 'Landed: %s\n' "${_r_s#landed }" ;;
         *) printf 'Not landed: %s\n' "$(story_why "$_r_s")" ;;
       esac
+      _r_orig="$(story_ledger_text "$_r_id" | sed -n 's/^- [0-9-]* adopted \(.*\) -> .*$/\1/p' | tail -n 1)"
+      if [ -n "$_r_orig" ]; then
+        case "$_r_s" in
+          "landed "*) printf 'Adopted from %s; landed on %s — continue dependent stories from there\n' "$_r_orig" "$MF_TARGET" ;;
+          *) _r_w="$(story_state "$_r_id" worktree 2>/dev/null)"
+             [ -n "$_r_w" ] || _r_w="$STATE_ROOT/.claude/worktrees/$(row_field "$_r_id" branch | tr / -)"
+             printf 'Adopted from %s. To continue the standard way: cd %s && %s sync %s\n' \
+               "$_r_orig" "$(sq "$_r_w")" "$(sq "$SELF_DIR/studio-adopt")" "$_r_id" ;;
+        esac
+      fi
       printf '\n'; story_units_table "$_r_id"
       _r_l="$(story_ledger_lines "$_r_id")"
       [ -z "$_r_l" ] || printf '\n%s\n' "$_r_l"
@@ -1321,11 +1346,16 @@ final_unit() {
 
 # final_gate_cmds — the full gate's shell text: execute §7 step 1's
 # commands and exit rules (studio-lint's exit 3, no linter, is not red).
-# The test hook STUDIO_OVERNIGHT_GATE_CMD replaces it.
+# The test hook STUDIO_OVERNIGHT_GATE_CMD replaces its engine part; the
+# project's gate_command (studio-setup gate) follows either way (D10).
 final_gate_cmds() {
-  if [ -n "${STUDIO_OVERNIGHT_GATE_CMD:-}" ]; then printf '%s\n' "$STUDIO_OVERNIGHT_GATE_CMD"; return; fi
-  printf 'sh %s && { sh %s; _lint=$?; [ "$_lint" -eq 0 ] || [ "$_lint" -eq 3 ]; } && sh %s --seconds 10\n' \
-    "$(sq "$SELF_DIR/studio-test")" "$(sq "$SELF_DIR/studio-lint")" "$(sq "$SELF_DIR/studio-run")"
+  if [ -n "${STUDIO_OVERNIGHT_GATE_CMD:-}" ]; then _fg_part="$STUDIO_OVERNIGHT_GATE_CMD"
+  else
+    _fg_part="$(printf 'sh %s && { sh %s; _lint=$?; [ "$_lint" -eq 0 ] || [ "$_lint" -eq 3 ]; } && sh %s --seconds 10' \
+      "$(sq "$SELF_DIR/studio-test")" "$(sq "$SELF_DIR/studio-lint")" "$(sq "$SELF_DIR/studio-run")")"
+  fi
+  # D10: the project's gate_command always follows (studio-setup gate is silent when unset).
+  printf '{ %s\n} && sh %s gate\n' "$_fg_part" "$(sq "$SELF_DIR/studio-setup")"
 }
 # gate_signalled RC — RC is studio-gate's own exit on a signal (HUP 129,
 # INT 130, TERM 143): an interrupted gate, not a result.
@@ -1399,6 +1429,20 @@ final_body() {
 # 4 push HEAD to <Target>. 5 the body; `gh pr edit` the open PR, else `gh pr
 #   create --draft` into the default branch; `[red] ` when red.
 # 6 RECORD/final = `<head> <url> <color>`.
+# setup_note STATUS TEXT — the note for a failed studio-setup (D11/D12): the
+# last line of its stderr TEXT (`worktree setup failed — exit <n> — log
+# <path>`) with a relative log path put under FINAL_W by parameter expansion
+# (a `#` or `&` in FINAL_W is no special case); when TEXT is empty (a signal
+# death), a note naming the exit STATUS. Never empty.
+setup_note() {
+  _sn_l="$(printf '%s\n' "$2" | tail -n 1)"
+  case $_sn_l in
+    "") printf 'worktree setup failed — exit %s — no output, log unknown\n' "$1" ;;
+    *" — log "[!/]*) printf '%s — log %s/%s\n' "${_sn_l%% — log *}" "$FINAL_W" "${_sn_l#* — log }" ;;
+    *) printf '%s\n' "$_sn_l" ;;
+  esac
+}
+
 final_integration() {
   _fi_rep=0
   _fi_b="$MF_TARGET"; _fi_rb="refs/remotes/origin/$MF_TARGET"; _fi_m="origin/$DEFAULT_BRANCH"
@@ -1442,6 +1486,13 @@ final_integration() {
       FINAL_COLOR=red; final_note "$_fi_m does not merge cleanly"
     fi
   fi
+  # D11: the project's worktree setup, once the worktree is in place. A
+  # failure is a red final gate (Step 3); Step 2 still runs.
+  # Failure is tracked by exit status (_fi_su), never by the note's text.
+  final_stopped "the worktree setup" && return 1
+  _fi_su=0; _fi_sn=""
+  _fi_se="$( cd "$FINAL_W" && sh "$SELF_DIR/studio-setup" 2>&1 >/dev/null )" \
+    || { _fi_su=$?; _fi_sn="$(setup_note "$_fi_su" "$_fi_se")"; }
   # Step 2.
   final_stopped "the progress unit" && return 1
   if progress_exists && ! git -C "$FINAL_W" log --format=%s HEAD | grep -qxF "docs(progress): $MF_SLUG"; then
@@ -1454,7 +1505,9 @@ final_integration() {
   _fi_h="$(git -C "$FINAL_W" rev-parse HEAD)"
   _fi_gs=""; _fi_gc=""
   [ ! -f "$RECORD/gate" ] || read -r _fi_gs _fi_gc < "$RECORD/gate"
-  if [ "$_fi_gs" = "$_fi_h" ] && [ -n "$_fi_gc" ]; then
+  if [ "$_fi_su" != 0 ]; then
+    FINAL_GATE=red; _fi_log="the setup log"; final_note "$_fi_sn"
+  elif [ "$_fi_gs" = "$_fi_h" ] && [ -n "$_fi_gc" ]; then
     FINAL_GATE="$_fi_gc"; _fi_log="(recorded)"
   else
     # An interrupted gate (a stop arrived, or studio-gate's own signal exit
@@ -1480,7 +1533,10 @@ final_integration() {
     _fi_h="$(git -C "$FINAL_W" rev-parse HEAD)"
     [ "$_fi_int" = 1 ] || printf '%s %s\n' "$_fi_h" "$FINAL_GATE" > "$RECORD/gate"
   fi
-  [ "$FINAL_GATE" = green ] || { FINAL_COLOR=red; final_note "the full gate is red (log: $_fi_log)"; }
+  if [ "$FINAL_GATE" != green ]; then
+    FINAL_COLOR=red
+    [ "$_fi_su" != 0 ] || final_note "the full gate is red (log: $_fi_log)"
+  fi
   final_stopped "the push" && return 1
   # Step 4.
   _fi_pushed=1
@@ -1531,6 +1587,9 @@ progress_direct() {
     [ -z "$(git -C "$FINAL_W" status --porcelain 2>&1)" ] \
       || { FINAL_COLOR=red; final_note "the worktree $FINAL_W is not clean"; return 1; }
   fi
+  # D12: the project's worktree setup; a failure is a red final, before any unit.
+  _pd_se="$( cd "$FINAL_W" && sh "$SELF_DIR/studio-setup" 2>&1 >/dev/null )" \
+    || { _pd_su=$?; FINAL_COLOR=red; final_note "$(setup_note "$_pd_su" "$_pd_se")"; return 1; }
   if ! git -C "$FINAL_W" log --format=%s HEAD | grep -qxF "docs(progress): $MF_SLUG"; then
     final_stopped "the progress unit" && return 1
     final_unit progress "/game-dev:execute --progress"

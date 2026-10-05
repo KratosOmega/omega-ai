@@ -141,6 +141,12 @@ ledger_file() {
   if [ -n "$_slug" ]; then printf '%s\n' "$LEDGER_DIR/$_slug.md"; else printf '%s\n' "$STATE"; fi
 }
 
+# truth_lines FILE — FILE's lines after its last `adopt reset` line (all of
+# them when there is none): the ledger studio-adopt and check read (#35 D2).
+truth_lines() {
+  awk '/^- [0-9-]+ adopt reset /{ n = NR } { l[NR] = $0 } END { for (i = n + 1; i <= NR; i++) print l[i] }' "$1"
+}
+
 cmd="${1:-}"
 [ -n "$cmd" ] || usage
 
@@ -288,7 +294,7 @@ EOF
       _k=0
       _max=0
       if [ -f "$_lf" ]; then
-        _nums="$(sed -n 's/^- [0-9-]* T\([0-9]*\) complete.*/\1/p' "$_lf" | sort -n -u)"
+        _nums="$(truth_lines "$_lf" | sed -n 's/^- [0-9-]* T\([0-9]*\) complete.*/\1/p' | sort -n -u)"
         for _m in $_nums; do
           if [ "$_m" -eq $((_k + 1)) ]; then _k="$_m"; fi
           _max="$_m"
@@ -313,7 +319,7 @@ EOF
     _lf="$(ledger_file)"
     done_n=0
     if [ -f "$_lf" ]; then
-      done_n="$(sed -n 's/^- [0-9-]* T\([0-9]*\) complete.*/\1/p' "$_lf" | sort -n | tail -n 1)"
+      done_n="$(truth_lines "$_lf" | sed -n 's/^- [0-9-]* T\([0-9]*\) complete.*/\1/p' | sort -n | tail -n 1)"
       done_n="${done_n:-0}"
     fi
     task="$(field task)"

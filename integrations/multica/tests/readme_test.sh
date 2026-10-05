@@ -54,6 +54,7 @@ finished runs get no reply
 assigned to an agent are ignored
 studio-overnight start --detach
 delete the integrations/multica folder
+or point autopilot at an existing plan
 PHRASES
 }
 
@@ -150,7 +151,11 @@ test_readme_names_every_linked_command() {
   done
 }
 
-run_tests test_readme_sections test_readme_teaching_phrases test_readme_flags_match_install \
+test_agent_instructions_adopted_line() {
+  assert_contains "$M/agent-instructions.md" "^- For adopted stories, include the report's studio-adopt line in your summary\.$" "AC23"
+}
+
+run_tests test_agent_instructions_adopted_line test_readme_sections test_readme_teaching_phrases test_readme_flags_match_install \
   test_readme_flags_exist test_readme_commands_match_code test_readme_status_table_matches_code \
   test_readme_deny_list_by_reference test_readme_known_risks test_readme_p5_text_matches_install \
   test_readme_names_every_linked_command

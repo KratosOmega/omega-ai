@@ -20,7 +20,7 @@
 #
 # Gate times: every command that ran appends `<epoch> <who> <seconds> <rc>`
 # (rc 128+n when a signal ended it) to STATE_ROOT/.studio/gate.times (the
-# newest 50 lines are kept); studio-overnight's preflight checks the slowest
+# newest 50 lines per `who` are kept); studio-overnight's preflight checks the slowest
 # recent studio-test against session_minutes.
 # Exit: the command's status · 2 usage · 128+n when TERM/INT/HUP ended it.
 # With no .studio/ project there is nothing to protect: the command just runs.
@@ -218,9 +218,11 @@ CHILD=""
 # seconds are a lower bound, and the overruns are what the preflight's
 # session_minutes check most needs to see.
 _times="$ROOT/.studio/gate.times"
-{ [ -f "$_times" ] && tail -n 49 "$_times"
+{ [ -f "$_times" ] && cat "$_times"
   printf '%s %s %s %s\n' "$(date +%s)" "$WHO" "$(( $(date +%s) - T0 ))" "${SIGSTATUS:-$rc}"
-} > "$_times.$$" 2>/dev/null && mv -f "$_times.$$" "$_times" 2>/dev/null
+} | awk '{ w[NR] = $2; l[NR] = $0 }
+    END { for (i = NR; i >= 1; i--) keep[i] = (++c[w[i]] <= 50); for (i = 1; i <= NR; i++) if (keep[i]) print l[i] }' \
+  > "$_times.$$" 2>/dev/null && mv -f "$_times.$$" "$_times" 2>/dev/null
 rm -f "$_times.$$"
 release
 if [ -n "$SIGSTATUS" ]; then exit "$SIGSTATUS"; fi
