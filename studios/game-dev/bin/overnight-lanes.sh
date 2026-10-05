@@ -228,6 +228,8 @@ story_first_label() {
   [ "$SIG_STAGE" != idle ] || return 0
   _sfl="$(story_state "$1" show 2>/dev/null)"
   SIG_FRD="$(printf '%s\n' "$_sfl" | grep -c '^- [0-9-]* final review done$')"
+  # check lines count in D2's truth region: after the last `adopt reset` line.
+  _sfl="$(printf '%s\n' "$_sfl" | awk '/^- [0-9-]+ adopt reset /{ n = NR } { l[NR] = $0 } END { for (i = n + 1; i <= NR; i++) print l[i] }')"
   SIG_CHK="$(printf '%s\n' "$_sfl" | grep -c '^- [0-9-]* check done')"
   SIG_CHKREQ="$(printf '%s\n' "$_sfl" | grep -c '^- [0-9-]* check requested$')"
   label_for

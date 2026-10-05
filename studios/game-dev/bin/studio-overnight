@@ -92,6 +92,15 @@ cfg_str() {
     || { refuse "config $1 must match $3, got $_v"; return; }
   eval "$(printf '%s' "$1" | tr 'a-z' 'A-Z')=\$_v"
 }
+# cfg_nobs KEY — cfg_str for a command line: unset is empty, and a backslash
+# is refused (the reader would not decode it as a JSON escape).
+cfg_nobs() {
+  if [ -f "$CONFIG" ] && sed -n 's/.*"'"$1"'"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$CONFIG" | head -n 1 | grep -q '\\'; then
+    refuse "config $1 must not contain a backslash (a JSON escape is not decoded); write the command without one, or put it in a script and name the script"
+    return
+  fi
+  cfg_str "$1" '' '^[^\]*$'
+}
 # sub_escape TEXT — TEXT safe as a sed replacement with the | delimiter.
 sub_escape() { printf '%s' "$1" | sed 's/[\\&|]/\\&/g'; }
 # deny_rules — the deny file's rules, one per line: comments and blanks
@@ -295,6 +304,11 @@ Config: .studio/config.json "overnight" (defaults, ranges):
                                     also the Bash timeout cap a session's foreground gate
                                     runs under. The preflight warns when the slowest recent
                                     studio-test (.studio/gate.times) × 1.2 + 10 min exceeds it.
+  worktree_setup       ""             command run once per new worktree under the gate lock
+                                    (studio-setup); no backslash. Unset = nothing runs
+  worktree_setup_minutes 20  1-120    cap on one worktree_setup run
+  gate_command         ""             command the finish gate runs after the tests
+                                    (studio-setup gate); no backslash. Unset = none
   retries              1     0-3      retries of an unchanged unit
   gate_repairs         2     0-3      lanes: gate-repair units per story after a red finish gate,
                                     each followed by a fresh finish (the full gate again);
@@ -431,8 +445,8 @@ preflight() {
   cfg_str model_repair opus '^[a-z0-9.-]+$'
   cfg_str model_progress sonnet '^[a-z0-9.-]+$'
   cfg_str merge_command '' '.*'
-  cfg_str worktree_setup '' '^[^\]*$'
-  cfg_str gate_command '' '^[^\]*$'
+  cfg_nobs worktree_setup
+  cfg_nobs gate_command
   cfg worktree_setup_minutes 20 1 120 int
   MERGE_BASENAME=""
   if [ -n "${MERGE_COMMAND:-}" ]; then
@@ -474,10 +488,10 @@ env_line() {
 # out` (D13).
 gate_room_check() {
   _gr_t="$(awk '$2 == "studio-test" { s[++n] = $3 }
-    END { m = 0; for (i = (n > 10 ? n - 9 : 1); i <= n; i++) if (s[i] + 0 > m) m = s[i] + 0; print m }' \
+    END { m = 0; for (i = (n > 10 ? n - 9 : 1); i <= n; i++) if (s[i] ~ /^[0-9]+$/ && s[i] + 0 > m) m = s[i] + 0; print m }' \
     "$STATE_ROOT/.studio/gate.times" 2>/dev/null)"
   _gr_g="$(awk '$2 == "gate" { s[++n] = $3 }
-    END { m = 0; for (i = (n > 10 ? n - 9 : 1); i <= n; i++) if (s[i] + 0 > m) m = s[i] + 0; print m }' \
+    END { m = 0; for (i = (n > 10 ? n - 9 : 1); i <= n; i++) if (s[i] ~ /^[0-9]+$/ && s[i] + 0 > m) m = s[i] + 0; print m }' \
     "$STATE_ROOT/.studio/gate.times" 2>/dev/null)"
   _gr_s=$(( ${_gr_t:-0} + ${_gr_g:-0} ))
   [ "$_gr_s" -gt 0 ] 2>/dev/null || return 0
@@ -512,8 +526,10 @@ snapshot() {
   SIG_STAGE="$(state get stage)"; SIG_TASK="$(state get task)"
   SIG_FRD="$(printf '%s\n' "$_l" | grep -c '^- [0-9-]* final review done$')"
   SIG_SHIPPED="$(printf '%s\n' "$_l" | grep -c '^- [0-9-]* shipped ')"
-  SIG_CHK="$(printf '%s\n' "$_l" | grep -c '^- [0-9-]* check done')"
-  SIG_CHKREQ="$(printf '%s\n' "$_l" | grep -c '^- [0-9-]* check requested$')"
+  # check lines count in D2's truth region: after the last `adopt reset` line.
+  _lt="$(printf '%s\n' "$_l" | awk '/^- [0-9-]+ adopt reset /{ n = NR } { l[NR] = $0 } END { for (i = n + 1; i <= NR; i++) print l[i] }')"
+  SIG_CHK="$(printf '%s\n' "$_lt" | grep -c '^- [0-9-]* check done')"
+  SIG_CHKREQ="$(printf '%s\n' "$_lt" | grep -c '^- [0-9-]* check requested$')"
   SIG="stage=$SIG_STAGE;task=$SIG_TASK;frd=$SIG_FRD;shipped=$SIG_SHIPPED;chk=$SIG_CHK"
   # $1.start: the start checkout's Stop: lines (the whole set before
   # isolation, when one ledger is both), so take_new_stop can tell a Stop

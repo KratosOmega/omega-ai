@@ -654,7 +654,8 @@ runs exactly one unit, writes its state, commits, pushes, and ends the turn.
     the same.
 - **Which unit:** exactly the one §0's *Where to start* picks (the check unit
   first when `check requested` stands, else the task, review or finish case).
-  - `check requested` without `check done` in the feature ledger: the check unit
+  - `check requested` without `check done`, both read in the feature ledger's truth
+    region (after the last `adopt reset` line): the check unit
     (below), before any task, final review or finish.
   - `task k/N` with k < N: one SDD task, `T<k+1>`.
   - `N/N` without a `final review done` line: §5 as a whole, the fix wave

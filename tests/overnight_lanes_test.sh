@@ -547,7 +547,7 @@ run_lanes() {
 test_lanes_chain_rule() {
   lanes_fixture chains integration A:- B:- C:A D:A E:C,B F:E
   run_lanes start --dry-run "$MFP"
-  assert_eq 0 "$LS_STATUS" "dry run exits 0"
+  assert_eq 0 "$LS_STATUS" "dry run exits 0 $(cat "$LS_ERR")"
   assert_contains "$LS_OUT" "^chain 1: A C$" "a single dependency on a chain's last story appends"
   assert_contains "$LS_OUT" "^chain 2: B$" "an independent row opens a chain"
   assert_contains "$LS_OUT" "^chain 3 (waits on A): D$" "a fork opens a waiting chain"
@@ -2142,6 +2142,30 @@ test_lanes_gate_room_warning() {
   run_lanes start --dry-run "$MFP"
   assert_not_contains "$LS_ERR" "warning: the slowest" "a 10-minute gate_command alone fits"
 }
+# gate.times tolerates a non-integer duration: it is skipped, not fatal.
+test_lanes_gate_times_non_integer() {
+  lanes_fixture gtni integration A:-
+  printf '1 studio-test 12.5 0\n2 studio-test abc 0\n3 gate 1e3 0\n' > "$P/.studio/gate.times"
+  run_lanes start --dry-run "$MFP"
+  assert_eq 0 "$LS_STATUS" "non-integer gate.times values do not abort the preflight"
+  assert_not_contains "$LS_ERR" "syntax\|arithmetic\|warning: the slowest" "skipped, no shell error, no warning"
+  printf '1 studio-test 12.5 0\n2 studio-test 5400 0\n' > "$P/.studio/gate.times"
+  run_lanes start --dry-run "$MFP"
+  assert_contains "$LS_ERR" "warning: the slowest of the last 10 studio-test runs took 90 min" "integer rows still count beside a skipped one"
+}
+# D2: check lines count after the last adopt reset only, so an old `check
+# done` does not hide a re-ledgered `check requested`.
+test_lanes_check_truth_region() {
+  lanes_fixture ctr integration A:- B:-
+  for _t in "A:check requested" "A:check done none" "B:check requested" "B:check done none" "B:adopt reset 2026-10-04" "B:check requested"; do
+    ( cd "$P" && STUDIO_STORY="${_t%%:*}" sh "$STATE_BIN" ledger "${_t#*:}" ) >/dev/null 2>&1
+  done
+  ( cd "$P" && git add -A && git -c user.name=t -c user.email=t@t commit -qm chk ) >/dev/null 2>&1
+  run_lanes start --dry-run "$MFP"
+  assert_eq 0 "$LS_STATUS" "dry run exits 0"
+  assert_eq 1 "$(grep -c "STUDIO_STORY='B'.*'--model' 'opus'" "$LS_OUT")" "B (check requested after its reset) gets the check unit's model"
+  assert_eq 0 "$(grep -c "STUDIO_STORY='A'.*'--model' 'opus'" "$LS_OUT")" "A (its check done) does not"
+}
 # D14: the gate-repair unit reads the log the Stop line names.
 test_lanes_gate_log_from_stop() {
   LANES_CONFIG='{"overnight": {"gate_repairs": 1}}'; export LANES_CONFIG
@@ -2743,7 +2767,7 @@ run_tests test_lanes_chain_rule test_lanes_manifest_refusals test_lanes_prefligh
   test_lanes_origin_attached test_lanes_origin_detach test_lanes_origin_detach_refused \
   test_lanes_help_modes test_lanes_left_gate_reaped test_lanes_timed_out_outcome test_lanes_heartbeat \
   test_lanes_activity_verb test_lanes_status_anywhere test_lanes_status_ended_partial test_lanes_watch \
-  test_lanes_gate_room_warning test_lanes_gate_log_from_stop test_lanes_story_listed_events test_lanes_unit_env_run_dir \
+  test_lanes_gate_room_warning test_lanes_gate_times_non_integer test_lanes_check_truth_region test_lanes_gate_log_from_stop test_lanes_story_listed_events test_lanes_unit_env_run_dir \
   test_lanes_held_dependents_wait test_lanes_resume_after_gate_red_runs_gate_repair test_lanes_resume_gate_repairs_counted \
   test_lanes_resume_not_gate_red_no_repair_unit test_lanes_gate_repair_noprog_holds test_lanes_landing_never_holds \
   test_lanes_stop_queued_story test_lanes_stop_running_story test_lanes_stop_waiting_story \

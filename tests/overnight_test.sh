@@ -845,6 +845,14 @@ test_overnight_check_unit() {
   scenario "task 2/2" "ledger final review done" "stage idle; task -; ledger shipped x"
   run_start
   assert_eq "T2 final-review finish" "$(unit_col 2)" "a done check is not run again"
+  fixture chk3
+  ( cd "$P" && sh "$STATE_BIN" set stage execute && sh "$STATE_BIN" set task 1/2 \
+      && sh "$STATE_BIN" ledger "check requested" && sh "$STATE_BIN" ledger "check done none" \
+      && sh "$STATE_BIN" ledger "adopt reset 2026-10-04" && sh "$STATE_BIN" ledger "check requested" \
+      && git add -A && git -c user.name=t -c user.email=t@t commit -qm chk ) >/dev/null 2>&1
+  scenario "ledger check done none" "task 2/2" "ledger final review done" "stage idle; task -; ledger shipped x"
+  run_start
+  assert_eq "check T2 final-review finish" "$(unit_col 2)" "a check done before an adopt reset does not suppress the re-requested check"
 }
 
 test_overnight_adopt_config_refusals() {
@@ -856,6 +864,7 @@ test_overnight_adopt_config_refusals() {
   run_start --dry-run
   assert_eq 2 "$RS_STATUS" "a backslash in gate_command: exit 2"
   assert_contains "$RS_ERR" "gate_command" "names gate_command"
+  assert_contains "$RS_ERR" "gate_command must not contain a backslash.*script" "the refusal names the reason and the way out"
   fixture adc3 '{"gate_command": "make test", "worktree_setup": "make setup", "worktree_setup_minutes": 5}'
   run_start --dry-run
   assert_eq 0 "$RS_STATUS" "valid adopt keys pass"
