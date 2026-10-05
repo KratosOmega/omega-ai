@@ -63,7 +63,9 @@ test_progress_fresh_no_data() {
   st
   assert_contains "$TMP/st.out" "^progress: \[                    \] 0%  0/6 units · ETA: after the first unit$" "5 units for A (3 tasks, final review, finish) plus the final step; no data, no ETA"
   assert_contains "$TMP/st.out" "^A  lane -  running  unit -  task 0/3   \[              \] 0%$" "A's own 14-wide bar"
-  assert_eq progress "$(sed -n 1p "$TMP/st.out" | cut -c1-8)" "the progress line comes first"
+  # A live (old-style) manifest run: the sessions line is line 1 (#39 AC10, D15).
+  assert_eq sessions "$(sed -n 1p "$TMP/st.out" | cut -c1-8)" "the sessions line comes first (#39 AC10)"
+  assert_eq progress "$(sed -n 2p "$TMP/st.out" | cut -c1-8)" "the progress line comes first in the run's block"
 }
 test_progress_mid_run_eta() {
   proj mid; story A - running "3/6"; chain 1 - A; live

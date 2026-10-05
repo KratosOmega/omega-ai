@@ -8,7 +8,8 @@
 # run_unit, row, snapshot, story_units, acquire_run_lock, run_setup, unlock)
 # are defined and its preflight has run; never run on its own. Reads studio
 # state and the manifest; never writes either. It redefines stop_requested,
-# spent_all, spent, run_populate and lock_recheck for manifest mode.
+# spent_all, spent, run_populate, lock_recheck and the session_* slot calls
+# (#39 D19) for manifest mode.
 [ -n "${SELF_DIR:-}" ] || { echo "overnight-lanes.sh: sourced by studio-overnight" >&2; exit 2; }
 
 # git_retry ARGS… — git ARGS, retried up to three times (sleeps 1, 2, 4 s)
@@ -583,6 +584,7 @@ land_repair() {
   PROMPT="/game-dev:execute --land"; LAUNCH_ENV="$LAUNCH_ENV STUDIO_REPAIR=$(sq "$LAND_REPAIR")"
   n=$((${n:-0} + 1)); run_unit "$n" repair
   PROMPT="$_lr_p"; LAUNCH_ENV="$_lr_e"
+  if [ "$UNIT_HALTED" != 0 ]; then story_write "$1" "stopped $(lane_halt_reason)"; return 1; fi   # D22
   snapshot "$UNIT_DIR/stops.after"
   _lr_new="$(new_stop "$UNIT_DIR/stops.before" "$UNIT_DIR/stops.after")"
   _lr_a="$(ledger_of "$FEATURE_DIR" | grep -c '^- [0-9-]* Repair: ')"
@@ -635,6 +637,7 @@ gate_repair() {
   LAUNCH_ENV="$LAUNCH_ENV STUDIO_REPAIR=$(sq "gate:$(gate_log_of "$FEATURE_DIR")")"
   n=$((${n:-0} + 1)); run_unit "$n" gate-repair
   PROMPT="$_gr_p"; LAUNCH_ENV="$_gr_e"
+  if [ "$UNIT_HALTED" != 0 ]; then ENDING="$(lane_halt_reason)"; return 1; fi   # D22
   snapshot "$UNIT_DIR/stops.after"
   take_new_stop "$UNIT_DIR/stops.before" "$UNIT_DIR/stops.after"
   _gr_a="$(ledger_of "$FEATURE_DIR" | grep -c '^- [0-9-]* Repair: ')"
@@ -718,6 +721,47 @@ lane_halt_reason() {
 # record is the story's record, stories/<id> (R4).
 halt_reason() { lane_halt_reason; }
 hold_record() { story_write "$1" "$2"; }
+
+# ---- Session slots (#39 AC27, AC28; D19-D25) ----
+# slot_halt — a wait ends only on a halt (D22): lane_halt in a lane, the stop file for the final step.
+slot_halt() { if [ -n "${LANE_PID:-}" ]; then lane_halt; else [ -e "$STOP_FILE" ]; fi; }
+# session_acquire LABEL — queue for a project session slot before the unit
+# starts (#39 AC27): FIFO, taken before unit_started and the clocks. 1 on a
+# halt (the wait entry removed). The first failed try writes slotwait and
+# the session_wait event. The key (SESS_ME) is the lane's pid, the runner's
+# for a final-step unit, so no two lanes share a mutex key or a wait entry;
+# an entry of this key left from an earlier wait goes before queueing.
+session_acquire() {
+  SESS_ME="${LANE_PID:-$$}"; SESS_RUN="$RUN_DIR"; sess_init
+  _sa_story="${CUR_ID:--}"; _sa_lane="${LANE_K:-final}"; _sa_waited=0
+  rm -f "$SESS_DIR"/wait/[0-9]*-"$SESS_ME"
+  sess_enqueue "$_sa_story" "$1" || { say "sessions: cannot queue in $STATE_ROOT/.studio/sessions"; return 1; }
+  while :; do
+    if slot_halt; then sess_wait_cancel; rm -f "$UNIT_DIR/slotwait"; return 1; fi
+    if sess_try "$1"; then rm -f "$UNIT_DIR/slotwait"; return 0; fi
+    [ -n "$SESS_WAIT" ] || sess_enqueue "$_sa_story" "$1"     # swept: re-queue at the tail
+    if [ "$_sa_waited" = 0 ]; then
+      _sa_waited=1; date +%H:%M > "$UNIT_DIR/slotwait"
+      run_event session_wait "lane=$_sa_lane" "story=$_sa_story" "since=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    fi
+    sleep "${STUDIO_OVERNIGHT_SLOT_POLL_SECONDS:-2}"
+  done
+}
+# session_started PID — the slot's owner names the unit's session pid too.
+session_started() { sess_session "$1"; }
+# session_release — this lane's slot (owner-checked) and any wait entry go.
+session_release() { sess_release; sess_wait_cancel; }
+# lane_slot_drop K — lanes_end_sessions' part for a dead lane K (AC27): its
+# slot and wait entry go, keyed by its pid. Called only after the lane's
+# session was ended; a lane still alive releases its own (lane_exit), so a
+# slot is never freed under a session that may yet start.
+lane_slot_drop() {
+  _ld_p="$(cat "$RUN_DIR/lanes/$1/pid" 2>/dev/null)"
+  [ -n "$_ld_p" ] && [ -n "${STATE_ROOT:-}" ] && ! pid_live "$_ld_p" || return 0
+  SESS_DIR="$STATE_ROOT/.studio/sessions"; SESS_MX="$STATE_ROOT/.studio/sessions.mutex"
+  [ -d "$SESS_DIR" ] || return 0
+  SESS_ME=$$; sess_drop_owner "$_ld_p"
+}
 # last_stop_gate_red — the feature ledger's latest Stop: line is a red finish
 # gate, `Stop: gate red — …` (the resume's precondition; AC20, R29).
 last_stop_gate_red() {
@@ -745,6 +789,7 @@ chain_skip_after() {
 lane_exit() {
   trap '' INT TERM HUP
   end_session
+  session_release   # #39 AC27: every exit path, signals included
   land_lock_release
   [ -z "${LDIR:-}" ] || rm -f "$LDIR/cpid" "$LDIR/wpid"   # ended and reaped: never signal a reused pid
   if [ -n "${CUR_ID:-}" ] && ! is_ending "$(story_get "$CUR_ID")"; then
@@ -927,6 +972,8 @@ lanes_wait() {
 # are ended first, so a dead lane's watchdog never outlives it to signal a
 # reused pgid at its deadline. The gates each lane's session left behind are
 # reaped in parallel, so the teardown waits one grace, not one per lane.
+# Once its session is ended, a dead lane's session slot and wait entry go
+# (lane_slot_drop, #39 AC27); a live lane releases its own on exit.
 # Used by the runner's exit path (lanes then see the stop and end) and by
 # the sweep for a lane that died with its session live. Paths are quoted
 # throughout (a project path may hold a space); lane names are numbers.
@@ -971,6 +1018,7 @@ lanes_end_sessions() {
     _es_t="$(cat "$RUN_DIR/lanes/$_es_k/utag" 2>/dev/null)"
     if [ -n "$_es_t" ]; then unit_reap "$_es_t" & _es_r="$_es_r $!"; fi
     rm -f "$RUN_DIR/lanes/$_es_k/utag"
+    lane_slot_drop "$_es_k"   # its session is ended: a dead lane's slot and wait entry go (AC27)
   done
   if [ -n "$_es_r" ]; then
     wait $_es_r 2>/dev/null
@@ -985,6 +1033,8 @@ lanes_end_sessions() {
 # later one `skipped <that id>`; every story of an unclaimed chain is
 # `skipped: run stopped`. Lane rcs are LANE_RC_<k>, set by the wait loop.
 # SWEEP_WHY, when set, replaces the crash text (lanes_reap: the runner died).
+# Every dead lane's session slot and wait entry go (lane_slot_drop), only
+# once its session is ended (a lane with a cpid left is ended above first).
 lanes_sweep() {
   for _sw_c in $(cut -f1 "$CHAINS"); do
     if [ -d "$RUN_DIR/claims/$_sw_c" ]; then
@@ -1012,6 +1062,11 @@ lanes_sweep() {
         is_ending "$(story_get "$_sw_id")" || story_write "$_sw_id" "skipped: run stopped"
       done
     fi
+  done
+  # A dead lane with no session left (no cpid) still frees its slot and wait entry (#39 AC27).
+  for _sw_d in "$RUN_DIR"/lanes/*; do
+    [ -d "$_sw_d" ] && [ ! -f "$_sw_d/cpid" ] || continue
+    lane_slot_drop "${_sw_d##*/}"
   done
 }
 # lanes_wait_all — lanes_wait each of LANE_PIDS (lane k is the k-th), its rc
@@ -1293,7 +1348,9 @@ lanes_reap_old() { lanes_reap_at "$STATE_ROOT/.studio/overnight.lock"; }
 # as written when it names this story and the story has no ending; the task,
 # the story's studio state. A story whose unit is running gets a second line,
 # indented: `    <unit> · <elapsed> · <last activity>` (unit_now_line); a
-# final-step unit, `final: …`. Then the gate lock (gate_line) and the spend.
+# final-step unit, `final: …`. A unit waiting for a session slot (its lane's
+# slotwait, #39 D23) gets `    waiting for a session slot since <hh:mm>`
+# instead (`final: waiting …`). Then the gate lock (gate_line) and the spend.
 lanes_status_lines() {
   # $1 is 1 for a live run: the progress line (first) then has an ETA, and
   # each story line ends with its own bar (progress_story, #37).
@@ -1312,13 +1369,19 @@ lanes_status_lines() {
     printf '%s  lane %s  %s  unit %s  task %s%s\n' "$_st_id" "$_st_k" "$_st_s" "$_st_u" "$_st_t" "$(progress_story "$_st_id")"
     case "$_st_r" in
       "held "*) printf '    %s\n' "$(held_line "$_st_r" "$_st_id")" ;;
-      *) if [ "$_st_u" != - ]; then
+      *) if [ "$_st_u" != - ] && [ -f "$RUN_DIR/lanes/$_st_k/slotwait" ]; then
+           printf '    waiting for a session slot since %s\n' "$(cat "$RUN_DIR/lanes/$_st_k/slotwait" 2>/dev/null)"
+         elif [ "$_st_u" != - ]; then
            _st_n="$(unit_now_line "$RUN_DIR/lanes/$_st_k")"
            [ -z "$_st_n" ] || printf '    %s\n' "$_st_n"
          fi ;;
     esac
   done
-  _st_n="$(unit_now_line "$RUN_DIR/final")"; [ -z "$_st_n" ] || printf 'final: %s\n' "$_st_n"
+  if [ -f "$RUN_DIR/final/slotwait" ]; then
+    printf 'final: waiting for a session slot since %s\n' "$(cat "$RUN_DIR/final/slotwait" 2>/dev/null)"
+  else
+    _st_n="$(unit_now_line "$RUN_DIR/final")"; [ -z "$_st_n" ] || printf 'final: %s\n' "$_st_n"
+  fi
   gate_line "$RUN_DIR"
   printf 'spent: $%s\n' "$(spent_all)"
   progress_done
@@ -1360,6 +1423,7 @@ lanes_on_exit() {
   else _oe_why="stop: runner error (exit $1)"; fi
   printf '%s\n' "$_oe_why" > "$STOP_FILE"
   end_session   # a final-step unit the runner itself is waiting on
+  session_release
   lanes_end_sessions
   lanes_wait_all
   lanes_sweep
@@ -1403,7 +1467,8 @@ final_stopped() {
 # final/units.tsv is `progress` when FINAL_W's HEAD moved, else `noprog`
 # (`timed out` when the session cap ended it, `orphaned` when print mode
 # killed its background work).
-# Returns 1, launching nothing, when a stop was requested or the run budget
+# Returns 1, launching nothing, when a stop was requested (before the unit or
+# while it waited for a session slot, `stopped before <label>`) or the run budget
 # (story_units' rule: spent_all + SESSION_USD > RUN_USD) refuses it, with a
 # note. Returns 2 when the unit left FINAL_W dirty: the uncommitted work is
 # discarded (reset --hard, clean -fd) and the step is red, so no gate ever
@@ -1422,6 +1487,8 @@ final_unit() {
   _fu_h0="$(git -C "$FINAL_W" rev-parse HEAD 2>/dev/null)"
   FINAL_N=$((${FINAL_N:-0} + 1)); run_unit "$FINAL_N" "$1"
   PROMPT="$_fu_p"; UNIT_CWD=""; LAUNCH_ENV=""
+  # A stop while it waited for a session slot (D22): nothing ran.
+  if [ "$UNIT_HALTED" != 0 ]; then FINAL_COLOR=red; final_note "stopped before $1"; return 1; fi
   if [ "$(git -C "$FINAL_W" rev-parse HEAD 2>/dev/null)" != "$_fu_h0" ]; then row "$FINAL_N" "$1" progress
   else row "$FINAL_N" "$1" "$(unit_outcome)"; fi
   if [ -n "$(git -C "$FINAL_W" status --porcelain 2>&1)" ]; then

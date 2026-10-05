@@ -37,6 +37,8 @@ export GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
 #   $CALLS/<n>.argv (one element per line), .story, .prompt, .pid, .pwd,
 #   .env (OMEGA_AUTOPILOT, STUDIO_RUN, STUDIO_DOCS_REV, STUDIO_REPAIR,
 #   STUDIO_GATE_HELD as KEY=value lines), .t0 and .t1 (epoch seconds).
+# - Live count (#39): $CALLS/live/<pid> while a call runs; $CALLS/max holds
+#   the most calls seen running at once.
 # - Scenario: line m of $SCEN/<id> (unit prompts), $SCEN/<id>.land
 #   (`--land`), $SCEN/<id>.gate (`--gate-repair`), $SCEN/progress
 #   (`--progress`) or $SCEN/final-repair
@@ -129,6 +131,15 @@ while ! mkdir "$CALLS/n.lock" 2>/dev/null; do sleep 0.1; done
 n=$(( $(cat "$CALLS/count" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$CALLS/count"
 m=$(( $(cat "$CALLS/m-$kind" 2>/dev/null || echo 0) + 1 )); echo "$m" > "$CALLS/m-$kind"
 rmdir "$CALLS/n.lock"
+# #39: live-session counter. live/<pid> while this session runs; max holds the
+# largest count seen (updated under n.lock).
+mkdir -p "$CALLS/live"; : > "$CALLS/live/$$"
+trap 'rm -f "$CALLS/live/$$"' EXIT; trap 'rm -f "$CALLS/live/$$"; exit 143' TERM
+while ! mkdir "$CALLS/n.lock" 2>/dev/null; do sleep 0.1; done
+_lv="$(ls "$CALLS/live" | grep -c .)"; _mx="$(cat "$CALLS/max" 2>/dev/null || echo 0)"
+[ "$_lv" -le "$_mx" ] || echo "$_lv" > "$CALLS/max"
+rmdir "$CALLS/n.lock"
+printf '%s\n' "$(date +%s)" > "$CALLS/$n.t0w"      # wall start, for the session_minutes test
 date +%s > "$CALLS/$n.t0"
 echo "$$" > "$CALLS/$n.pid"
 for a in "$@"; do printf '%s\n' "$a"; done > "$CALLS/$n.argv"
@@ -1790,7 +1801,8 @@ test_lanes_status_per_story() {
   ( cd "$P" && sh "$RUNNER" status ) > "$TMP/st.out"; st=$?
   wait_pid_or_fail "$RPID" 60 "the run ends"
   assert_eq 0 "$st" "status exits 0 during a run"
-  assert_eq "A B C" "$(awk '!/^ / && !/^progress:/ { if (++r > 3) exit; printf "%s%s", s, $1; s=" " }' "$TMP/st.out")" "stories in manifest order"
+  # The run's block follows the project's sessions line (#39 AC10, D15).
+  assert_eq "A B C" "$(awk '!/^ / && !/^progress:/ && !/^sessions:/ { if (++r > 3) exit; printf "%s%s", s, $1; s=" " }' "$TMP/st.out")" "stories in manifest order"
   assert_contains "$TMP/st.out" "^A  lane [12]  running  unit A T1  task 0/1   \[[= ]*\] [0-9]*%$" "A is running T1"
   assert_contains "$TMP/st.out" "^B  lane [12]  queued  unit -  task 0/1   \[[= ]*\] [0-9]*%$" "B waits in A's chain, on A's lane"
   assert_contains "$TMP/st.out" "^C  lane [12]  " "C has its own lane"
@@ -3193,6 +3205,192 @@ test_lanes_next_slug_forms() {
   assert_contains "$LS_OUT" "^next: /game-dev:brainstorm alpha-2/A\$" "the slug is part of the next command"
 }
 
+# ---- #39 T12: the project-wide session cap (AC27, AC28) ----
+# sess_left — the slot dirs and wait entries left under $P/.studio/sessions ("" when none).
+sess_left() { ls -d "$P"/.studio/sessions/[0-9]* "$P"/.studio/sessions/wait/[0-9]* 2>/dev/null; }
+# lane_of ID — the number of the demo run's lane whose current unit names ID.
+lane_of() {
+  for _lo in "$(last_lanes_dir)"/lanes/*/current; do
+    case "$(cat "$_lo" 2>/dev/null)" in "$1 "*) _lo="${_lo%/current}"; printf '%s\n' "${_lo##*/}"; return 0 ;; esac
+  done
+  return 1
+}
+# slot_waiting ID — ID's lane is waiting for a session slot (lanes/<k>/slotwait).
+slot_waiting() { _sw_k="$(lane_of "$1")" && [ -f "$(last_lanes_dir)/lanes/$_sw_k/slotwait" ]; }
+# n_calls ID — how many sessions ran for story ID.
+n_calls() { story_calls "$1" | wc -l | tr -d ' '; }
+slot_poll() { STUDIO_OVERNIGHT_SLOT_POLL_SECONDS=1; export STUDIO_OVERNIGHT_SLOT_POLL_SECONDS; }
+
+test_lanes_slot_cap_two_across_runs() {
+  LANES_CONFIG='{"overnight": {"max_lanes": 2, "max_sessions": 2}}'; export LANES_CONFIG
+  lanes_fixture cap2 integration A:- B:-
+  LANES_CONFIG='{"overnight": {"max_lanes": 2}}'; export LANES_CONFIG
+  lanes_add_run alpha integration S1:- S2:-
+  for _id in A B S1 S2; do printf 'sleep 2\n' > "$SCEN/$_id"; done
+  slot_poll
+  bg_lanes demo "$P" start "$MFP"; bg_lanes alpha "$RW" start "$RMF"
+  bg_wait demo; _ds="$BG_STATUS"; bg_wait alpha
+  unset STUDIO_OVERNIGHT_SLOT_POLL_SECONDS
+  assert_eq 0 "$_ds" "demo runs to its end under the cap"
+  assert_eq 0 "$BG_STATUS" "and so does alpha"
+  assert_eq 2 "$(cat "$CALLS/max" 2>/dev/null)" "four lanes in two runs, never more than two sessions at once (cap 2)"
+  for _id in A B; do assert_contains "$P/.studio/runs/demo/landed.tsv" "^$_id	" "$_id lands"; done
+  for _id in S1 S2; do assert_contains "$P/.studio/runs/alpha/landed.tsv" "^$_id	" "$_id lands"; done
+  assert_eq "" "$(sess_left)" "no slot or wait entry is left"
+}
+test_lanes_slot_cap_one_alternates() {
+  LANES_CONFIG='{"overnight": {"max_sessions": 1}}'; export LANES_CONFIG
+  lanes_fixture alt integration A:-
+  lanes_add_run alpha integration S1:-
+  # A's first unit is long enough for alpha to start and queue behind it.
+  printf 'sleep 6\nsleep 1\n' > "$SCEN/A"; printf 'sleep 1\nsleep 1\n' > "$SCEN/S1"
+  slot_poll
+  bg_lanes demo "$P" start "$MFP"
+  wait_for "[ -f '$CALLS/1.story' ]" 60
+  bg_lanes alpha "$RW" start "$RMF"
+  bg_wait demo; _ds="$BG_STATUS"; bg_wait alpha
+  unset STUDIO_OVERNIGHT_SLOT_POLL_SECONDS
+  assert_eq 0 "$_ds" "demo lands"; assert_eq 0 "$BG_STATUS" "alpha lands"
+  _seq="$(_i=1; while [ "$_i" -le "$(calls)" ]; do cat "$CALLS/$_i.story"; _i=$((_i + 1)); done | tr '\n' ' ')"
+  assert_eq "A S1" "$(printf '%s\n' "$_seq" | cut -d' ' -f1-2)" "the waiting run's lane takes the slot A's first unit frees (FIFO)"
+  # No story runs three units in a row while the other still has one to run.
+  _run3="$(printf '%s\n' "$_seq" | awk '{ for (i = 1; i + 2 <= NF; i++) if ($i == $(i+1) && $i == $(i+2)) for (j = i + 3; j <= NF; j++) if ($j != $i) { print i; exit } }')"
+  assert_eq "" "$_run3" "the two runs alternate under cap 1 (calls: $_seq)"
+  assert_eq 1 "$(cat "$CALLS/max" 2>/dev/null)" "never two sessions at once"
+}
+test_lanes_slot_kill9_lane_reclaimed() {
+  LANES_CONFIG='{"overnight": {"max_lanes": 2, "max_sessions": 1}}'; export LANES_CONFIG
+  lanes_fixture slk9 integration A:- B:-
+  printf 'hang\n' > "$SCEN/A"
+  slot_poll; KILL_GRACE_SECONDS=2; export KILL_GRACE_SECONDS
+  bg_lanes demo "$P" start "$MFP"
+  unset STUDIO_OVERNIGHT_SLOT_POLL_SECONDS KILL_GRACE_SECONDS
+  wait_for "[ -n \"\$(story_calls A)\" ] && lane_of A > /dev/null" 60
+  R="$(last_lanes_dir)"; _k="$(lane_of A)"
+  _lp="$(cat "$R/lanes/${_k:-0}/pid" 2>/dev/null)"; _sp="$(cat "$CALLS/$(story_calls A | head -n 1).pid" 2>/dev/null)"
+  _b0="$(n_calls B)"
+  kill -9 "${_lp:-0}" "${_sp:-0}"
+  bg_wait demo
+  assert_eq 1 "$BG_STATUS" "the run ends, partial (A's lane crashed)"
+  assert_eq 1 "$([ "$(n_calls B)" -gt "$_b0" ] && echo 1 || echo 0)" "B's next unit gets the dead lane's slot (reclaimed by liveness)"
+  assert_contains "$R/stories/B" "^landed " "and B lands"
+  assert_contains "$R/stories/A" "^stopped: lane crashed (137)$" "A's story names the crash"
+  assert_eq "" "$(sess_left)" "no slot or wait entry is left"
+}
+test_lanes_slot_stop_ends_wait() {
+  LANES_CONFIG='{"overnight": {"max_lanes": 2, "max_sessions": 1}}'; export LANES_CONFIG
+  lanes_fixture slstop integration A:- B:-
+  printf 'sleep 4\n' > "$SCEN/A"
+  slot_poll
+  bg_lanes demo "$P" start "$MFP"
+  unset STUDIO_OVERNIGHT_SLOT_POLL_SECONDS
+  wait_for "slot_waiting B" 60
+  R="$(last_lanes_dir)"; _k="$(lane_of B)"
+  assert_file "$R/lanes/${_k:-0}/slotwait" "B's lane waits for a slot: lanes/<k>/slotwait"
+  ( cd "$P" && sh "$RUNNER" status ) > "$TMP/st.out" 2>&1
+  assert_contains "$TMP/st.out" "^    waiting for a session slot since [0-9][0-9]:[0-9][0-9]\$" "status shows the wait"
+  _b0="$(n_calls B)"
+  ( cd "$P" && sh "$RUNNER" stop ) > /dev/null 2>&1
+  bg_wait demo
+  assert_contains "$R/stories/B" "^stopped stopped by user\$" "a stop ends the wait: B ends stopped by user"
+  assert_eq "$_b0" "$(n_calls B)" "no session is launched for B after the stop"
+  assert_missing "$R/lanes/${_k:-0}/slotwait" "slotwait goes"
+  assert_eq "" "$(sess_left)" "the wait entry is gone and no slot is left"
+}
+test_lanes_slot_released_every_exit() {
+  LANES_CONFIG='{"overnight": {"max_sessions": 1}}'; export LANES_CONFIG
+  lanes_fixture slx1 integration A:-
+  run_lanes start "$MFP"
+  assert_eq 0 "$LS_STATUS" "a normal end"
+  assert_eq "" "$(sess_left)" "a normal end leaves no slot or wait entry"
+  LANES_CONFIG='{"overnight": {"max_sessions": 1}}'; export LANES_CONFIG
+  lanes_fixture slx2 integration A:-
+  printf 'sleep 3\n' > "$SCEN/A"
+  bg_lanes x "$P" start "$MFP"; wait_for "[ -f '$CALLS/1.t0' ]" 60
+  ( cd "$P" && sh "$RUNNER" stop ) > /dev/null 2>&1; bg_wait x
+  assert_eq "" "$(sess_left)" "a stop mid-unit leaves no slot or wait entry"
+  LANES_CONFIG='{"overnight": {"max_sessions": 1}}'; export LANES_CONFIG
+  lanes_fixture slx3 integration A:-
+  printf 'sleep 3\n' > "$SCEN/A"
+  bg_lanes x "$P" start "$MFP"; wait_for "[ -f '$CALLS/1.t0' ]" 60
+  kill -TERM "$(cat "$TMP/bg-x.pid")"; bg_wait x
+  assert_eq "" "$(sess_left)" "a SIGTERM to the runner leaves no slot or wait entry"
+  LANES_CONFIG='{"overnight": {"max_sessions": 1}}'; export LANES_CONFIG
+  lanes_fixture slx4 integration A:-
+  printf 'hang\n' > "$SCEN/A"
+  KILL_GRACE_SECONDS=2; export KILL_GRACE_SECONDS
+  bg_lanes x "$P" start "$MFP"; unset KILL_GRACE_SECONDS
+  wait_for "[ -f '$CALLS/1.story' ] && [ -s \"\$(last_lanes_dir)/lanes/1/cpid\" ]" 60
+  kill -9 "$(cat "$(last_lanes_dir)/lanes/1/pid" 2>/dev/null)"; bg_wait x
+  assert_eq "" "$(pgrep -f "$TMP/fakebin/claude" 2>/dev/null)" "the killed lane's session is ended by the sweep"
+  assert_eq "" "$(sess_left)" "and the sweep frees the dead lane's slot"
+}
+test_lanes_slot_wait_not_in_session_minutes() {
+  LANES_CONFIG='{"overnight": {"max_lanes": 2, "max_sessions": 1}}'; export LANES_CONFIG
+  lanes_fixture slmin integration A:- B:-
+  printf 'sleep 3\n' > "$SCEN/A"
+  slot_poll; run_lanes start "$MFP"
+  EV="$(last_lanes_dir)/events.jsonl"
+  assert_eq 0 "$LS_STATUS" "both land under cap 1"
+  _w="$(grep -n '"event":"session_wait".*"story":"B"' "$EV" | head -n 1 | cut -d: -f1)"
+  _u="$(awk -v w="${_w:-0}" 'NR > w && /"event":"unit_started"/ && /"story":"B"/ { print NR; exit }' "$EV")"
+  assert_eq 1 "$([ -n "$_w" ] && [ -n "$_u" ] && echo 1 || echo 0)" "B's session_wait comes before the unit_started of the unit it waited for"
+  # Cap 1: each session starts at or after the previous one's end (wall clock),
+  # so B's unit (its clock, unit.now and watchdog) began once A's had ended.
+  _ov=""; _i=2
+  while [ "$_i" -le "$(calls)" ]; do
+    [ "$(cat "$CALLS/$_i.t0w")" -ge "$(cat "$CALLS/$((_i - 1)).t1")" ] || _ov="$_ov $_i"
+    _i=$((_i + 1))
+  done
+  assert_eq "" "$_ov" "no session starts before the one holding the slot ends"
+  _bn="$(story_calls B | sort -n | while read -r _c; do [ "$_c" -gt 1 ] && [ "$(cat "$CALLS/$((_c - 1)).story")" = A ] && { echo "$_c"; break; }; done)"
+  assert_eq 1 "$([ -n "$_bn" ] && [ "$(cat "$CALLS/$_bn.t0w")" -ge "$(cat "$CALLS/$((_bn - 1)).t1")" ] && echo 1 || echo 0)" "B's unit after A's starts at or after A's end (t0 >= t1)"
+  # The session limit (STUDIO_OVERNIGHT_SESSION_SECONDS, 5 s) is shorter than an
+  # 8 s wait behind another run's slot: B never times out.
+  LANES_CONFIG='{"overnight": {"max_sessions": 1}}'; export LANES_CONFIG
+  lanes_fixture slmin2 integration B:-
+  mkdir -p "$P/.studio/sessions/1"
+  sh -c 'sleep 8; :' studio-overnight >/dev/null 2>&1 & _hold=$!
+  printf 'lane=%s\nsession=\nrun=other\nunit=hold\n' "$_hold" > "$P/.studio/sessions/1/owner"
+  STUDIO_OVERNIGHT_SESSION_SECONDS=5; export STUDIO_OVERNIGHT_SESSION_SECONDS
+  run_lanes start "$MFP"
+  unset STUDIO_OVERNIGHT_SESSION_SECONDS STUDIO_OVERNIGHT_SLOT_POLL_SECONDS
+  kill "$_hold" 2>/dev/null; wait "$_hold" 2>/dev/null
+  R="$(last_lanes_dir)"
+  assert_eq 0 "$LS_STATUS" "B lands after its wait"
+  assert_contains "$R/events.jsonl" '"event":"session_wait".*"story":"B"' "B waited for the slot"
+  assert_not_contains "$R/lanes/1/units.tsv" "timed out" "the wait is not session time: no unit timed out"
+}
+test_lanes_session_wait_event_and_status() {
+  LANES_CONFIG='{"overnight": {"max_lanes": 2, "max_sessions": 1}}'; export LANES_CONFIG
+  lanes_fixture slev integration A:- B:-
+  printf 'sleep 4\n' > "$SCEN/A"
+  slot_poll
+  bg_lanes demo "$P" start "$MFP"
+  unset STUDIO_OVERNIGHT_SLOT_POLL_SECONDS
+  wait_for "slot_waiting B" 60
+  R="$(last_lanes_dir)"; _k="$(lane_of B)"; _hm="$(cat "$R/lanes/${_k:-0}/slotwait" 2>/dev/null)"
+  ( cd "$P" && sh "$RUNNER" status ) > "$TMP/st.out" 2>&1
+  bg_wait demo
+  assert_eq "sessions: 1/1" "$(sed -n 1p "$TMP/st.out")" "status prints the sessions line first (AC10)"
+  assert_eq "    waiting for a session slot since $_hm" "$(grep -A1 '^B  lane ' "$TMP/st.out" | sed -n 2p)" "under B: the wait and its start"
+  assert_contains "$R/events.jsonl" '"event":"session_wait","lane":"'"$_k"'","story":"B","since":"[0-9-]*T[0-9:]*Z"' "the session_wait event: lane, story and an ISO since (AC28)"
+}
+test_lanes_max_sessions_preflight() {
+  lanes_fixture msp integration A:-
+  for _v in 0 9 '"x"' 8; do
+    ( cd "$P" && printf '{"overnight": {"max_sessions": %s}}\n' "$_v" > .studio/config.json \
+      && git commit -qam "cfg $_v" ) > /dev/null 2>&1
+    run_lanes start --dry-run "$MFP"
+    if [ "$_v" = 8 ]; then
+      assert_eq 0 "$LS_STATUS" "max_sessions 8 passes"
+    else
+      assert_eq 2 "$LS_STATUS" "max_sessions $_v refuses"
+      assert_contains "$LS_ERR" "overnight.max_sessions must be an integer 1-8 in $P/.studio/config.json" "and says why ($_v)"
+    fi
+  done
+}
+
 run_tests test_lanes_chain_rule test_lanes_manifest_refusals test_lanes_preflight_backlog_tasks test_lanes_manifest_header_refusals \
   test_lanes_preflight_story_checks test_lanes_preflight_story_state test_lanes_docs_unreachable \
   test_lanes_git_too_old test_lanes_sourced_only test_lanes_next \
@@ -3236,4 +3434,8 @@ run_tests test_lanes_chain_rule test_lanes_manifest_refusals test_lanes_prefligh
   test_lanes_same_slug_live_refused \
   test_lanes_preflight_refuses_live_slug_id_branch test_lanes_preflight_refuses_live_old_style_run test_lanes_preflight_refuses_stopped_record test_lanes_preflight_done_record_needs_archive \
   test_lanes_preflight_branch_forms test_lanes_preflight_slug_off_and_digits test_lanes_preflight_resume_own_record \
-  test_lanes_recheck_race_one_wins test_lanes_overlap_warning test_lanes_next_slug_forms test_lanes_no_orphans
+  test_lanes_recheck_race_one_wins test_lanes_overlap_warning test_lanes_next_slug_forms \
+  test_lanes_slot_cap_two_across_runs test_lanes_slot_cap_one_alternates test_lanes_slot_kill9_lane_reclaimed \
+  test_lanes_slot_stop_ends_wait test_lanes_slot_released_every_exit test_lanes_slot_wait_not_in_session_minutes \
+  test_lanes_session_wait_event_and_status test_lanes_max_sessions_preflight \
+  test_lanes_no_orphans

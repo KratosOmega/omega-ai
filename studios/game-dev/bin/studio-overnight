@@ -362,6 +362,8 @@ Environment:
 Test hooks (tests only; never set them for a real run; --detach strips them):
   STUDIO_OVERNIGHT_POLL_SECONDS — test hook: a whole number of seconds between
                      a lane's polls of a wait or a lock (default 5)
+  STUDIO_OVERNIGHT_SLOT_POLL_SECONDS — test hook: seconds between a unit's
+                     tries for a session slot (default 2)
   STUDIO_OVERNIGHT_LAND_HOOK — test hook: shell text evaluated after a landing's
                      push and before it is recorded (the crash-after-push test)
   STUDIO_OVERNIGHT_GATE_CMD — test hook: shell text that replaces the final
@@ -405,6 +407,8 @@ REPORTS="$STATE_ROOT/.studio/reports"
 RUN_SLUG=""   # a manifest run's slug (run_paths); empty for a single-plan run
 # The project's live runs (#39): runs_live, runs_match, runs_stop_of, mx_*.
 . "$SELF_DIR/overnight-runs.sh"
+# The project-wide session cap (#39 AC27): sess_*; slots are taken by manifest units only (D19).
+. "$SELF_DIR/overnight-sessions.sh"
 
 # preflight [manifest] — bundle 2's checks. With `manifest`, the single-plan
 # checks (spec, plan, ledger, stage on STATE.md) are skipped and a failure
@@ -461,6 +465,14 @@ preflight() {
   awk -v v="${RUN_USD:-0}" 'BEGIN { exit !(v > 0 && v < 1) }' \
     && refuse "config overnight.run_usd must be 0 (no run-wide cap) or from 1 to 5000, got $RUN_USD"
   cfg max_lanes 0 0 8 int
+  if [ -n "$_pf_mf" ]; then
+    # #39 AC27: one cap for every run, from the main checkout's config (D21: the start value is the fallback).
+    _pf_ms="$(CONFIG="$STATE_ROOT/.studio/config.json"; cfg_raw max_sessions)"
+    case "${_pf_ms:-6}" in
+      [1-8]) SESS_START_CAP="${_pf_ms:-6}" ;;
+      *) refuse "overnight.max_sessions must be an integer 1-8 in $STATE_ROOT/.studio/config.json" ;;
+    esac
+  fi
   cfg_str model_task sonnet '^[a-z0-9.-]+$'
   cfg_str model_final opus '^[a-z0-9.-]+$'
   cfg_str model_finish sonnet '^[a-z0-9.-]+$'
@@ -998,7 +1010,16 @@ start_session() {
   set +m 2>/dev/null || true
   [ -z "${LDIR:-}" ] || printf '%s\n' "$CPID" > "$LDIR/cpid"
 }
+# Session slots (#39 AC27) are a manifest run's (D19): a single-plan run
+# excludes every other run, so here they are no-ops. overnight-lanes.sh
+# redefines them. session_acquire LABEL returns 1 on a halt during the wait.
+session_acquire() { :; }
+session_started() { :; }
+session_release() { :; }
 # run_unit N LABEL — one session, waited for; sets UNIT_* (D7's wait loop).
+# It first takes a session slot (session_acquire, D23): a halt while it waits
+# sets UNIT_HALTED=1 and returns at once, with no row, event or session; the
+# caller ends on the halt (D22). The slot goes once the session is reaped.
 # CUR_ID (empty in single-plan mode) names the story: stem N-ID-LABEL, and
 # $UNIT_DIR/current reads "ID LABEL". The model comes from the bare LABEL.
 # While it runs, $UNIT_DIR/unit.now reads "<start epoch> <stem>" (status and
@@ -1009,11 +1030,13 @@ run_unit() {
   UNIT_TAG="$(printf '%s' "$(basename "$RUN_DIR")-${LANE_K:-0}-$UNIT_STEM" | tr -c 'A-Za-z0-9._-' '_')"
   [ -z "${LDIR:-}" ] || printf '%s\n' "$UNIT_TAG" > "$LDIR/utag"
   model_for "$2"
+  UNIT_HALTED=0; session_acquire "$2" || { UNIT_HALTED=1; [ -z "${LDIR:-}" ] || rm -f "$LDIR/utag"; return 0; }
   run_event unit_started "story=${CUR_ID:--}" "unit=$UNIT_TAG" "label=$2" "model=$UNIT_MODEL"
   _t0="$(date +%s)"
   printf '%s %s\n' "$_t0" "$UNIT_STEM" > "$UNIT_DIR/unit.now"
   say "${CUR_ID:+$CUR_ID }$2 · started${LANE_K:+ (lane $LANE_K)}"
   with_launch_args start_session
+  session_started "$CPID"
   heartbeat_start
   _secs="${STUDIO_OVERNIGHT_SESSION_SECONDS:-$((SESSION_MINUTES * 60))}"
   _claim="$UNIT_DIR/$UNIT_STEM.ended"; rmdir "$_claim" 2>/dev/null
@@ -1042,6 +1065,7 @@ run_unit() {
     kill -0 "$CPID" 2>/dev/null || break
   done
   CPID=""; [ -z "${LDIR:-}" ] || rm -f "$LDIR/cpid"   # reaped: never signal a reused pid
+  session_release
   heartbeat_stop; rm -f "$UNIT_DIR/unit.now"
   UNIT_EXIT="$_st"; UNIT_TIMED_OUT=0
   mkdir "$_claim" 2>/dev/null || UNIT_TIMED_OUT=1
@@ -1130,10 +1154,11 @@ finish_run() {
 # end_session — TERM the live session's group, poll up to GRACE seconds,
 # then KILL it, so no session outlives the lock (pkill -P/kill when there is
 # no group, as the watchdog does). The watchdog goes first: it must not act.
+# Then the unit's session slot or wait entry is released (session_release).
 end_session() {
   [ -z "${WPID:-}" ] || { kill "$WPID" 2>/dev/null; wait "$WPID" 2>/dev/null; }
   heartbeat_stop
-  { [ -n "${CPID:-}" ] && kill -0 "$CPID" 2>/dev/null; } || { unit_reap "${UNIT_TAG:-}"; return 0; }
+  { [ -n "${CPID:-}" ] && kill -0 "$CPID" 2>/dev/null; } || { unit_reap "${UNIT_TAG:-}"; session_release; return 0; }
   kill -TERM -"$CPID" 2>/dev/null || { pkill -TERM -P "$CPID"; kill -TERM "$CPID"; } 2>/dev/null
   _g=0
   while { kill -0 -"$CPID" 2>/dev/null || kill -0 "$CPID" 2>/dev/null; } && [ "$_g" -lt "${GRACE:-30}" ]; do
@@ -1142,6 +1167,7 @@ end_session() {
   kill -KILL -"$CPID" 2>/dev/null || { pkill -KILL -P "$CPID"; kill -KILL "$CPID"; } 2>/dev/null
   wait "$CPID" 2>/dev/null
   unit_reap "${UNIT_TAG:-}"
+  session_release   # the session is gone: its slot (or a wait entry) goes (#39 AC27)
 }
 # on_exit CODE — the EXIT trap (D18): an ending that never reached
 # finish_run is a runner error, or a closed terminal (HUP_REQ). Any live
@@ -1152,6 +1178,7 @@ on_exit() {
   [ "$REPORTED" = 1 ] && return 0
   trap '' HUP INT TERM
   end_session
+  session_release
   # A story held when the runner died keeps its why (AC25); its report is
   # written, so the held record goes (R25).
   _oe_h=""
@@ -1190,6 +1217,7 @@ story_units() {
     if run_budget_out; then ENDING="stop: run budget"; return 0; fi
     _before="$SIG"; _base="${STUDIO_OVERNIGHT_LABEL:-$(label_for)}"
     n=$((n + 1)); run_unit "$n" "$_base$suffix"
+    [ "$UNIT_HALTED" = 0 ] || { ENDING="$(halt_reason)"; return 0; }   # halted waiting for a slot (D22)
     snapshot "$UNIT_DIR/stops.after"
     take_new_stop "$UNIT_DIR/stops.before" "$UNIT_DIR/stops.after"
     if [ -n "$NEW_STOP" ]; then row "$n" "$_base$suffix" stop; ENDING="$STOP_ENDING"; return 0; fi
@@ -1518,8 +1546,9 @@ status_reap_dead() {
 # project_status — status inside a project (STATE_ROOT/.studio exists).
 # Dead runs are reaped first (status_reap_dead). Then one block per live run
 # (runs_live, oldest first); RUN_SEL (`status --run <sel>`) keeps the one
-# runs_match picks, or prints `no live run <sel>` and returns 1. With two or
-# more blocks each is headed `== <slug> (<kind>, pid <pid>) — <run dir>`
+# runs_match picks, or prints `no live run <sel>` and returns 1. With a live
+# manifest run and no RUN_SEL, `sessions: <live>/<cap>` comes first (AC10,
+# D15). With two or more blocks each is headed `== <slug> (<kind>, pid <pid>) — <run dir>`
 # (D16). Each block runs in a subshell with that run's LOCK and start dir
 # (D12): a manifest run prints per story (lanes_status), a single-plan run
 # single_status. With no live run: the lock's or the newest run dir — a
@@ -1533,6 +1562,11 @@ project_status() {
     [ -n "$_ps_all" ] || { printf 'no live run %s\n' "$RUN_SEL"; return 1; }
   fi
   if [ -n "$_ps_all" ]; then
+    # AC10, D15: with a manifest run live (and no --run), the project's
+    # session slots first: the live ones (read, never reclaimed) over the cap.
+    if [ -z "${RUN_SEL:-}" ] && printf '%s\n' "$_ps_all" | cut -f3 | grep -qx manifest; then
+      sess_init; printf 'sessions: %s/%s\n' "$(sess_live_count)" "$(sess_cap)"
+    fi
     _ps_n="$(printf '%s\n' "$_ps_all" | grep -c .)"; _ps_i=0
     # Fields by cut, not `read`: a tab is IFS white space, so an empty field
     # (an old lock's unknown start dir) would shift the ones after it.

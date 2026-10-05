@@ -243,7 +243,7 @@ test_events_contract_doc() {
     | grep -oE '(run_event|chan_event|"\$RD") [a-z_]+ ("|[a-z_]+(=|:=|\[\]=)|'"'"')' > "$TMP/ev-calls.txt"
   cat "$B/studio-overnight" "$B/overnight-lanes.sh" "$B/overnight-channel.sh" "$H" | grep -v '^[[:space:]]*#' \
     | grep -oE '(run_event|chan_event|"\$RD") [a-z_]+ .*' > "$TMP/ev-lines.txt"
-  for e in run_started story_listed story_state unit_started unit_ended message_queued message_delivered message_requeued control run_ended; do
+  for e in run_started story_listed story_state unit_started unit_ended session_wait message_queued message_delivered message_requeued control run_ended; do
     assert_contains "$DOC" "^| \`$e\` |" "the doc's table lists $e"
     assert_eq 1 "$(awk -v e="$e" '$2 == e { f = 1 } END { print f ? 1 : 0 }' "$TMP/ev-calls.txt")" "the code writes $e"
     # fields: those at the event's call sites equal those in the doc's fields column
@@ -367,7 +367,7 @@ test_overnight_deny_file_required() {
   # The runner reads overnight-deny.txt beside itself: run a copy whose
   # sibling deny file holds only comments.
   fixture deny
-  mkdir -p "$TMP/denybin"; cp "$RUNNER" "$STATE_BIN" "$REPO_ROOT/studios/game-dev/bin/overnight-channel.sh" "$REPO_ROOT/studios/game-dev/bin/overnight-runs.sh" "$REPO_ROOT/studios/game-dev/bin/overnight-progress.sh" "$REPO_ROOT/studios/game-dev/bin/studio-env" "$TMP/denybin/"
+  mkdir -p "$TMP/denybin"; cp "$RUNNER" "$STATE_BIN" "$REPO_ROOT/studios/game-dev/bin/overnight-channel.sh" "$REPO_ROOT/studios/game-dev/bin/overnight-runs.sh" "$REPO_ROOT/studios/game-dev/bin/overnight-sessions.sh" "$REPO_ROOT/studios/game-dev/bin/overnight-progress.sh" "$REPO_ROOT/studios/game-dev/bin/studio-env" "$TMP/denybin/"
   printf '# only a comment\n\n' > "$TMP/denybin/overnight-deny.txt"
   RS_STATUS=0; ( cd "$P" && sh "$TMP/denybin/studio-overnight" start ) > "$TMP/rs.out" 2> "$TMP/rs.err" || RS_STATUS=$?
   assert_eq 2 "$RS_STATUS" "a deny file with no rules refuses"
@@ -1924,6 +1924,20 @@ test_stop_all_writes_each_flag() {
   assert_missing "$P/.studio/runs/beta/stop" "an ended run is skipped"
   fake_run_end "$_pa"
 }
+# #39 AC10, D15: with a manifest run live, status prints `sessions: <live>/<cap>`
+# first: the live slots under <root>/.studio/sessions (an owner whose lane is
+# live) and the cap from <root>/.studio/config.json. `status --run` has none.
+test_status_sessions_line_first() {
+  fixture ssl '{"overnight": {"max_sessions": 3}}'; fake_mrun alpha S1=running
+  mkdir -p "$P/.studio/sessions/1"
+  printf 'lane=%s\nsession=\nrun=%s\nunit=x\n' "$FR_PID" "$FR_DIR" > "$P/.studio/sessions/1/owner"
+  verb status
+  assert_eq 0 "$V_STATUS" "status with a manifest run live"
+  assert_eq "sessions: 1/3" "$(sed -n 1p "$V_OUT")" "line 1 is the sessions line (#39 AC10)"
+  verb status --run alpha
+  assert_not_contains "$V_OUT" "^sessions: " "status --run prints no sessions line (D15)"
+  fake_run_end
+}
 test_stop_story_unchanged() {
   fixture ssu; FR_SEQ=1; fake_mrun alpha S1=running; _pa="$FR_PID"; FR_SEQ=2; fake_mrun beta S2=running
   verb stop S1
@@ -2071,4 +2085,5 @@ run_tests test_overnight_report_done test_overnight_report_not_done test_overnig
   test_status_two_runs_blocks_oldest_first test_status_run_not_live test_status_registry_root_once \
   test_watch_run_selects test_stop_two_runs_refuses test_stop_run_writes_own_flag test_stop_all_writes_each_flag \
   test_stop_story_unchanged test_verbs_channel_resolution_by_story test_verbs_channel_run_flag_slug_or_basename \
-  test_verbs_channel_no_run_lists_story test_verbs_channel_ambiguous_story_refused test_verbs_channel_start_dir_from_lock test_help_names_concurrent_runs
+  test_verbs_channel_no_run_lists_story test_verbs_channel_ambiguous_story_refused test_verbs_channel_start_dir_from_lock test_help_names_concurrent_runs \
+  test_status_sessions_line_first
