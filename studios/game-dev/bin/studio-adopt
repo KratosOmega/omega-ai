@@ -169,22 +169,33 @@ rewritten_msg() {
   else echo "history of $BRANCH was rewritten after T$(($1 - 1)) — re-adopt: studio-adopt seed $ID --reset" >&2; fi
 }
 
-# chain_check FILE PREV START TIP — FILE holds `<n> <a> <b>` (full shas) by n;
-# n must run START, START+1, …; PREV is the adopt-base or T<START-1>'s end.
-# AC10b's rules; the first failure on stderr, status 1.
+# cc_fail REASON — chain_check's failure line. A committed truth line reads
+# `T<n>: REASON`; a new claim (mode `claim`) names the claim and its workspace.
+cc_fail() {
+  if [ "$_cc_m" = claim ]; then
+    _cc_ws="$(awk -v n="$_cc_n" '$1 == n { print $4; exit }' "$TMPD/claims" 2>/dev/null || true)"
+    echo "Task $_cc_n: the claim $(s7 "$_cc_a")..$(s7 "$_cc_b") (${_cc_ws:-no workspace}) failed: $1" >&2
+  else echo "T$_cc_n: $1" >&2; fi
+}
+
+# chain_check FILE PREV START TIP [claim] — FILE holds `<n> <a> <b>` (full shas)
+# by n; n must run START, START+1, …; PREV is the adopt-base or T<START-1>'s end.
+# AC10b's rules; the first failure on stderr, status 1. With `claim` (new SDD
+# claims, not yet truth) a failure is a plain mismatch: the rewrite advice
+# (`seed --reset`) only fits committed truth, which a reset can re-read.
 chain_check() {
-  _cc_p="$2"; _cc_w="$3"
+  _cc_p="$2"; _cc_w="$3"; _cc_m="${5:-}"
   while read -r _cc_n _cc_a _cc_b; do
     [ "$_cc_n" -eq "$_cc_w" ] || { echo "T$_cc_w has no line (next is T$_cc_n)" >&2; return 1; }
-    [ "$_cc_a" != "$_cc_b" ] || { echo "T$_cc_n: empty range $(s7 "$_cc_a")..$(s7 "$_cc_b")" >&2; return 1; }
+    [ "$_cc_a" != "$_cc_b" ] || { cc_fail "empty range $(s7 "$_cc_a")..$(s7 "$_cc_b")"; return 1; }
     git merge-base --is-ancestor "$_cc_a" "$_cc_b" 2>/dev/null \
-      || { echo "T$_cc_n: $(s7 "$_cc_a") is not an ancestor of $(s7 "$_cc_b")" >&2; return 1; }
+      || { cc_fail "$(s7 "$_cc_a") is not an ancestor of $(s7 "$_cc_b")"; return 1; }
     git merge-base --is-ancestor "$_cc_b" "$4" 2>/dev/null \
-      || { rewritten_msg "$_cc_n"; return 1; }
+      || { if [ "$_cc_m" = claim ]; then cc_fail "$(s7 "$_cc_b") is not on $BRANCH"; else rewritten_msg "$_cc_n"; fi; return 1; }
     git merge-base --is-ancestor "$_cc_p" "$_cc_a" 2>/dev/null \
-      || { echo "T$_cc_n: $(s7 "$_cc_a") does not follow $(s7 "$_cc_p")" >&2; return 1; }
+      || { cc_fail "$(s7 "$_cc_a") does not follow $(s7 "$_cc_p")"; return 1; }
     touches_work "$_cc_a" "$_cc_b" \
-      || { echo "T$_cc_n: $(s7 "$_cc_a")..$(s7 "$_cc_b") has no commit outside .studio/" >&2; return 1; }
+      || { cc_fail "$(s7 "$_cc_a")..$(s7 "$_cc_b") has no commit outside .studio/"; return 1; }
     _cc_p="$_cc_b"; _cc_w=$((_cc_n + 1))
   done < "$1"
 }
@@ -473,19 +484,25 @@ cmd_seed() {
   while IFS= read -r _sd_l; do
     STUDIO_STORY="$ID" sh "$SELF_DIR/studio-state" ledger "$_sd_l" >/dev/null || { _sd_ok=0; break; }
   done < "$TMPD/sd.out"
-  if [ "$_sd_ok" -eq 1 ]; then
-    { git add -- ".studio/ledger/$ID.md" \
-      && git commit -q -m "chore(studio): ledger (adopt)" -- ".studio/ledger/$ID.md"; } >/dev/null 2>"$TMPD/sd.err" || _sd_ok=0
-  fi
+  if [ "$_sd_ok" -eq 1 ]; then commit_ledger "chore(studio): ledger (adopt)" "$_sd_led" "$_sd_had" "$TMPD/sd.backup" || _sd_ok=0; fi
   if [ "$_sd_ok" -eq 0 ]; then
-    git reset -q -- ".studio/ledger/$ID.md" >/dev/null 2>&1 || true
     if [ "$_sd_had" -eq 1 ]; then cp "$TMPD/sd.backup" "$_sd_led"; else rm -f "$_sd_led"; fi
-    cat "$TMPD/sd.err" >&2 2>/dev/null || true
     echo "could not write the adopt lines for $ID — ledger restored" >&2
     return 1
   fi
   printf 'seeded: %s lines\n' "$(wc -l < "$TMPD/sd.out" | tr -d ' ')"
   return 0
+}
+
+# commit_ledger SUBJECT LEDGER HAD BACKUP — commit the story ledger as one
+# commit (seed and sync share it). On failure: unstage, restore LEDGER from
+# BACKUP (or remove it when HAD is 0), print git's stderr, status 1.
+commit_ledger() {
+  { git add -- ".studio/ledger/$ID.md" && git commit -q -m "$1" -- ".studio/ledger/$ID.md"; } >/dev/null 2>"$TMPD/cl.err" && return 0
+  git reset -q -- ".studio/ledger/$ID.md" >/dev/null 2>&1 || true
+  if [ "$3" -eq 1 ]; then cp "$4" "$2"; else rm -f "$2"; fi
+  cat "$TMPD/cl.err" >&2 2>/dev/null || true
+  return 1
 }
 
 # git_retry CMD… — run a git write, retrying three times (1, 2, 4 s) when its
@@ -591,12 +608,10 @@ sync_truth() {
     END { if (!bad) for (i = 1; i <= n; i++) print o[i], a[o[i]], b[o[i]]; exit bad }' > "$TMPD/truth" || return 1
   # D31: a rewrite shows as the adopt-base or a truth end off HEAD.
   git merge-base --is-ancestor "$ADOPT_BASE" HEAD 2>/dev/null \
-    || { echo "history of $BRANCH was rewritten after its adopt base — re-adopt: studio-adopt seed $ID --reset" >&2; return 1; }
+    || { rewritten_msg 0; return 1; }
   while read -r _st_n _st_a _st_b; do
     git merge-base --is-ancestor "$_st_b" HEAD 2>/dev/null && continue
-    if [ "$_st_n" -le 1 ]; then echo "history of $BRANCH was rewritten after its adopt base — re-adopt: studio-adopt seed $ID --reset" >&2
-    else echo "history of $BRANCH was rewritten after T$((_st_n - 1)) — re-adopt: studio-adopt seed $ID --reset" >&2; fi
-    return 1
+    rewritten_msg "$_st_n"; return 1
   done < "$TMPD/truth"
   chain_check "$TMPD/truth" "$ADOPT_BASE" 1 HEAD
 }
@@ -676,7 +691,7 @@ cmd_sync() {
       || { echo "Task $_sy_n: the SDD claim ends at $(s7 "$_sy_b") but the ledger's T$_sy_n ends at $(s7 "$_sy_e")" >&2; return 1; }
   done < "$TMPD/chain"
   awk -v k="$K0" '$1 + 0 > k' "$TMPD/chain" > "$TMPD/new"
-  chain_check "$TMPD/new" "$_sy_prev" "$((K0 + 1))" HEAD || return 1
+  chain_check "$TMPD/new" "$_sy_prev" "$((K0 + 1))" HEAD claim || return 1
   K1="$K0"; _sy_end="$_sy_prev"
   if [ -s "$TMPD/new" ]; then K1="$(awk 'END { print $1 }' "$TMPD/new")"; _sy_end="$(awk 'END { print $3 }' "$TMPD/new")"; fi
   cat "$TMPD/truth" "$TMPD/new" > "$TMPD/truth.all"; cp "$TMPD/truth.all" "$TMPD/truth"
@@ -695,12 +710,8 @@ cmd_sync() {
     while IFS= read -r _sy_l; do
       STUDIO_STORY="$ID" sh "$SELF_DIR/studio-state" ledger "$_sy_l" >/dev/null || { _sy_ok=0; break; }
     done < "$TMPD/sd.add"
-    if [ "$_sy_ok" -eq 1 ]; then
-      { git add -- ".studio/ledger/$ID.md" \
-        && git commit -q -m "chore(studio): ledger (sync)" -- ".studio/ledger/$ID.md"; } >/dev/null 2>&1 || _sy_ok=0
-    fi
+    if [ "$_sy_ok" -eq 1 ]; then commit_ledger "chore(studio): ledger (sync)" "$_sy_led" 1 "$TMPD/sy.backup" || _sy_ok=0; fi
     if [ "$_sy_ok" -eq 0 ]; then
-      git reset -q -- ".studio/ledger/$ID.md" >/dev/null 2>&1 || true
       cp "$TMPD/sy.backup" "$_sy_led"
       echo "could not write the sync lines for $ID — ledger restored" >&2
       return 1

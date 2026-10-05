@@ -683,7 +683,34 @@ test_sync_push_failure_warns() {
   assert_eq "chore(studio): ledger (sync)" "$(git -C "$W" log -1 --format=%s)" "commit kept locally"
 }
 
-run_tests test_sync_already_in_sync test_sync_accepts_claims test_sync_all_or_nothing test_sync_claim_end_differs \
+test_sync_failed_commit_restores() {
+  sync_repo sfc; claim_t4
+  cp "$W/.studio/ledger/S1.md" "$TMP/sfc.led"; _h="$(git -C "$W" rev-parse HEAD)"
+  _hd="$TMP/sfc-hooks"; mkdir -p "$_hd"
+  printf '#!/bin/sh\necho hook-says-no >&2\nexit 1\n' > "$_hd/pre-commit"; chmod +x "$_hd/pre-commit"
+  git -C "$W" config core.hooksPath "$_hd"
+  adopt "$W" sync S1
+  assert_eq 1 "$AD_STATUS" "failed commit: exit 1"
+  assert_contains "$TMP/ad.err" "ledger restored" "says restored"
+  assert_contains "$TMP/ad.err" "hook-says-no" "shows git's stderr"
+  assert_eq "$(cat "$TMP/sfc.led")" "$(cat "$W/.studio/ledger/S1.md")" "ledger byte-identical"
+  assert_eq "$_h" "$(git -C "$W" rev-parse HEAD)" "no commit"
+}
+
+test_sync_bad_new_claim_is_plain_mismatch() {
+  sync_repo bn; adopt "$W" sync S1; claim_t4
+  _x="$(git -C "$W" commit-tree -m x -p "$C4" "$C4^{tree}")"
+  printf 'Task 5: complete (commits %s..%s, review clean)\n' "$(s7 "$C4")" "$(s7 "$_x")" >> "$W/$WS/progress.md"
+  adopt "$W" sync S1
+  assert_eq 1 "$AD_STATUS" "claim not on the branch: exit 1"
+  assert_contains "$TMP/ad.err" "Task 5" "names the task"
+  assert_contains "$TMP/ad.err" "$(s7 "$C4")\.\.$(s7 "$_x")" "names the claimed range"
+  assert_contains "$TMP/ad.err" "$WS" "names the workspace"
+  assert_not_contains "$TMP/ad.err" "rewritten" "no rewrite advice"
+  assert_not_contains "$TMP/ad.err" "--reset" "no reset advice"
+}
+
+run_tests test_sync_failed_commit_restores test_sync_bad_new_claim_is_plain_mismatch test_sync_already_in_synctest_sync_accepts_claims test_sync_all_or_nothing test_sync_claim_end_differs \
   test_sync_truth_mismatches test_sync_ambiguous_short_sha test_sync_rewrite_message test_sync_views_keep_other_lines \
   test_sync_carries_rulings_once test_sync_landed_note test_sync_live_run_refusal test_sync_own_unit_exempt \
   test_sync_diverged_and_behind test_sync_preconditions test_adopt_workspace_lookup_two_trees test_sync_push_failure_warns \
