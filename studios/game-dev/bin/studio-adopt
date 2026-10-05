@@ -83,15 +83,20 @@ state_root() {
 # (#39 AC20, D40): a porcelain worktree on run/* (the main checkout
 # included). Two refuse; none prints state_root.
 start_checkout() {
-  _sc_id="$1"; _sc_hits=""
-  for _sc_w in $(git worktree list --porcelain 2>/dev/null | awk '/^worktree /{ w = substr($0, 10) } /^branch refs\/heads\/run\//{ print w }'); do
-    _sc_m="$(head -n 1 "$_sc_w/.studio/run" 2>/dev/null)"; [ -n "$_sc_m" ] || continue
-    case "$_sc_m" in /*) ;; *) _sc_m="$_sc_w/$_sc_m" ;; esac
-    [ -n "$(manifest_branch "$_sc_m" "$_sc_id")" ] && _sc_hits="$_sc_hits $_sc_w"
-  done
-  set -- $_sc_hits
-  if [ "$#" -gt 1 ]; then echo "story $_sc_id is listed by two run worktrees: $*" >&2; return 1; fi
-  if [ "$#" = 1 ]; then printf '%s\n' "$1"; else state_root; fi
+  _sc_id="$1"
+  # One path per line, never word-split: a project path may hold a space.
+  _sc_hits="$(git worktree list --porcelain 2>/dev/null \
+    | awk '/^worktree /{ w = substr($0, 10) } /^branch refs\/heads\/run\//{ print w }' \
+    | while IFS= read -r _sc_w; do
+        _sc_m="$(head -n 1 "$_sc_w/.studio/run" 2>/dev/null)"; [ -n "$_sc_m" ] || continue
+        [ "${_sc_m#/}" != "$_sc_m" ] || _sc_m="$_sc_w/$_sc_m"   # relative to the worktree
+        [ -z "$(manifest_branch "$_sc_m" "$_sc_id")" ] || printf '%s\n' "$_sc_w"
+      done)"
+  _sc_n="$(printf '%s' "$_sc_hits" | grep -c .)"
+  if [ "$_sc_n" -gt 1 ]; then
+    echo "story $_sc_id is listed by two run worktrees: $(printf '%s\n' "$_sc_hits" | paste -sd, - | sed 's/,/, /g')" >&2; return 1
+  fi
+  if [ "$_sc_n" = 1 ]; then printf '%s\n' "$_sc_hits"; else state_root; fi
 }
 
 # start_root ID — AC20's start checkout: $STUDIO_START_DIR when set, else

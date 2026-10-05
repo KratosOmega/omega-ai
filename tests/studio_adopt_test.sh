@@ -605,6 +605,24 @@ test_adopt_start_checkout_from_run_worktree() {
   assert_eq 0 "$AD_STATUS" "seed exits 0, reading the adopted line from the run worktree"
 }
 
+# A run worktree whose path has a space (a spaced project path): start_checkout
+# must not word-split it (#39 final review, N1).
+test_adopt_start_checkout_spaced_path() {
+  sync_repo ssp
+  run_wt "run alpha sp" run/alpha
+  mkdir -p "$P/.studio/runs/alpha"; printf 'S1\tintegration/demo\tabc1234\t1\n' > "$P/.studio/runs/alpha/landed.tsv"
+  adopt "$W" sync S1
+  assert_eq 0 "$AD_STATUS" "sync exits 0"
+  assert_eq "Landed: integration/demo at abc1234 — continue dependent stories from there" "$(tail -n 1 "$W/$WS/progress.md")" "manifest found in the spaced run worktree"
+  sed -e '$d' -e "s|^SELF_DIR=.*|SELF_DIR=\"$(dirname "$ADOPT")\"|" "$ADOPT" > "$TMP/adopt.lib"
+  ( cd "$P" && . "$TMP/adopt.lib" && start_checkout S1 > "$TMP/ssp.sc" ) 2>/dev/null
+  assert_eq "$TMP/run alpha sp" "$(cat "$TMP/ssp.sc")" "start_checkout names the spaced run worktree"
+  run_wt "run beta sp" run/beta
+  adopt "$W" sync S1
+  assert_eq 1 "$AD_STATUS" "two spaced listings still refuse"
+  assert_contains "$TMP/ad.err" "story S1 is listed by two run worktrees: $TMP/run alpha sp, $TMP/run beta sp" "and name both whole paths"
+}
+
 test_adopt_start_checkout_two_listings_refuse() {
   sync_repo s2
   run_wt run-a2 run/alpha; run_wt run-b2 run/beta
@@ -896,7 +914,7 @@ test_sync_view_write_failure_commits_nothing() {
   assert_eq "$_o" "$(git -C "$W" rev-parse origin/S1-b)" "nothing pushed"
 }
 
-run_tests test_adopt_seed_reads_ledger_from_run_worktree test_adopt_seed_start_dir_wins test_adopt_run_target_from_start_checkout test_adopt_start_checkout_from_run_worktree test_adopt_start_checkout_two_listings_refuse test_adopt_start_checkout_none_falls_back test_adopt_live_run_check_per_run_lock test_adopt_part_done_ignores_sync test_adopt_seed_short_sha_line_same_range test_sync_short_sha_truth_line test_sync_view_collision_counter test_sync_view_write_failure_commits_nothing test_sync_failed_commit_restores test_sync_bad_new_claim_is_plain_mismatch test_adopt_from_subdirectory test_sync_already_in_sync test_sync_accepts_claims test_sync_all_or_nothing test_sync_claim_end_differs \
+run_tests test_adopt_start_checkout_spaced_path test_adopt_seed_reads_ledger_from_run_worktree test_adopt_seed_start_dir_wins test_adopt_run_target_from_start_checkout test_adopt_start_checkout_from_run_worktree test_adopt_start_checkout_two_listings_refuse test_adopt_start_checkout_none_falls_back test_adopt_live_run_check_per_run_lock test_adopt_part_done_ignores_sync test_adopt_seed_short_sha_line_same_range test_sync_short_sha_truth_line test_sync_view_collision_counter test_sync_view_write_failure_commits_nothing test_sync_failed_commit_restores test_sync_bad_new_claim_is_plain_mismatch test_adopt_from_subdirectory test_sync_already_in_sync test_sync_accepts_claims test_sync_all_or_nothing test_sync_claim_end_differs \
   test_sync_truth_mismatches test_sync_ambiguous_short_sha test_sync_rewrite_message test_sync_views_keep_other_lines \
   test_sync_carries_rulings_once test_sync_landed_note test_sync_live_run_refusal test_sync_own_unit_exempt \
   test_sync_diverged_and_behind test_sync_preconditions test_adopt_workspace_lookup_two_trees test_sync_push_failure_warns \
