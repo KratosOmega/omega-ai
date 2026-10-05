@@ -1,7 +1,7 @@
 # A stage pointer per checkout, with explicit hand-off — Spec
 
 Date: 2026-10-05
-Status: Draft — ready for operator approval
+Status: Approved by the operator (2026-10-05), including D1
 Milestone: Plan 3 — Content (studio tooling; follows concurrent runs, #39)
 Classification: architectural
 Base: origin/main once #39 has merged. The build rebases onto #39's resolution code, `studio-state:54-60`. Line numbers below are on branch `worktree-issue-39-concurrent-runs` at 0286a47. The plan sets its own file and line targets after #39 merges. #42 also depends on a race-free shared `mx_take` (AC27; f3-N2): if #39 merges without that fix, #42's first task makes it.
