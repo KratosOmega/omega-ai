@@ -35,6 +35,7 @@ export GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
 # - Numbering: a global call number n under a `mkdir $CALLS/n.lock` spin
 #   ($CALLS/count), and a per-story, per-kind number m. Each call records
 #   $CALLS/<n>.argv (one element per line), .story, .prompt, .pid, .pwd,
+#   .peers (the peer-runs hook's output; only with STUDIO_UNIT_TAG set),
 #   .env (OMEGA_AUTOPILOT, STUDIO_RUN, STUDIO_DOCS_REV, STUDIO_REPAIR,
 #   STUDIO_GATE_HELD as KEY=value lines), .t0 and .t1 (epoch seconds).
 # - Live count (#39): $CALLS/live/<pid> while a call runs; $CALLS/max holds
@@ -69,6 +70,8 @@ export GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
 #                   story id) instead of <id>-T<k>.txt
 #   cost <usd>      the result event's total_cost_usd (default 1)
 #   sleep <s>       sleep s seconds
+#   waitfor <path>  poll up to 60 s for <path> to exist and be non-empty
+#                   (e.g. a peer run's landed.tsv); the unit then goes on
 #   gate <s>        studio-gate studio-test around a sleep of s seconds,
 #                   logging `s|e <story> <epoch>` lines to $CALLS/gate.iv
 #   bggate <s>      studio-gate studio-test around a sleep of s seconds,
@@ -119,6 +122,8 @@ export GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
 #   push_target <f> post: commits <f> (content: the branch name) to
 #                   origin/<Target> through a temp clone
 #   push_main <f>   post: the same on origin/main
+#   mark <path>     post: writes <path> (a flag another unit can waitfor)
+#   waitafter <path> post: as waitfor, after auto (the unit's work is pushed)
 #   dirty <f>       post: an untracked <f> in the story worktree
 #   localcommit     post: an empty commit in the story worktree, not pushed
 #   rmwt            post: removes the story worktree (the branch stays)
@@ -167,6 +172,8 @@ pwd -P > "$CALLS/$n.pwd"
 printf 'OMEGA_AUTOPILOT=%s\nSTUDIO_RUN=%s\nSTUDIO_DOCS_REV=%s\nSTUDIO_REPAIR=%s\nSTUDIO_GATE_HELD=%s\n' \
   "${OMEGA_AUTOPILOT:-}" "${STUDIO_RUN:-}" "${STUDIO_DOCS_REV:-}" "${STUDIO_REPAIR:-}" "${STUDIO_GATE_HELD:-}" > "$CALLS/$n.env"
 env > "$CALLS/$n.fullenv"
+# #39: a unit session starts under the peers hook, as SessionStart runs it.
+[ -z "${STUDIO_UNIT_TAG:-}" ] || sh "$STUB_PLUGIN/hooks/peer-runs.sh" < /dev/null > "$CALLS/$n.peers" 2>/dev/null
 line="$(sed -n "${m}p" "$SCEN/$kind" 2>/dev/null)"
 
 st() { sh "$STUB_STATE_BIN" "$@"; }
@@ -270,6 +277,8 @@ for act in "$@"; do
     "conflict "*)     conflict="${act#conflict }" ;;
     "cost "*)         cost="${act#cost }" ;;
     "sleep "*)        sleep "${act#sleep }" ;;
+    "waitfor "*)      _wf="${act#waitfor }"; _wi=0
+                      while [ ! -s "$_wf" ] && [ "$_wi" -lt 600 ]; do sleep 0.1; _wi=$((_wi + 1)); done ;;
     "gate "*)         s="${act#gate }"
                       sh "$(dirname "$STUB_STATE_BIN")/studio-gate" studio-test -- sh -c \
                         "echo s $id \$(date +%s) >> '$CALLS/gate.iv'; sleep $s; echo e $id \$(date +%s) >> '$CALLS/gate.iv'" ;;
@@ -297,7 +306,7 @@ for act in "$@"; do
                         && git commit -q --allow-empty -m "fix(sync): resolve $_ref" \
                         && st ledger "Synced: merged $_ref" \
                         && git add -A && git commit -q -m "docs(ledger): synced" && sg push -q origin HEAD ) >> "$CALLS/$n.log" 2>&1 ;;
-    "push_target "*|"push_main "*|"dirty "*|localcommit|rmwt) post="$post${post:+;}$act" ;;
+    "push_target "*|"push_main "*|"dirty "*|"mark "*|"waitafter "*|localcommit|rmwt) post="$post${post:+;}$act" ;;
     "mergehook "*)    _hd="$(cd "$(git rev-parse --git-common-dir)" && pwd -P)/hooks"; mkdir -p "$_hd"
                       if [ "${act#mergehook }" = on ]; then printf '#!/bin/sh\nexit 1\n' > "$_hd/pre-merge-commit"; chmod +x "$_hd/pre-merge-commit"
                       else rm -f "$_hd/pre-merge-commit"; fi ;;
@@ -335,6 +344,9 @@ for act in "$@"; do
     "push_target "*)  push_to "$TARGET" "${act#push_target }" ;;
     "push_main "*)    push_to main "${act#push_main }" ;;
     "dirty "*)        w="$(story_wt)"; : > "$w/${act#dirty }" ;;
+    "mark "*)         echo 1 > "${act#mark }" ;;
+    "waitafter "*)    _wf="${act#waitafter }"; _wi=0
+                      while [ ! -s "$_wf" ] && [ "$_wi" -lt 600 ]; do sleep 0.1; _wi=$((_wi + 1)); done ;;
     localcommit)      w="$(story_wt)"; git -C "$w" commit -q --allow-empty -m "local: not pushed" ;;
     rmwt)             w="$(story_wt)"; git worktree remove --force "$w" ;;
   esac
@@ -3571,7 +3583,120 @@ test_lanes_max_sessions_preflight() {
   done
 }
 
-run_tests test_lanes_chain_rule test_lanes_manifest_refusals test_lanes_preflight_backlog_tasks test_lanes_manifest_header_refusals \
+# ---- T15: the Milestone round trip (two concurrent runs) ----
+
+# rt_pair — alpha (integration, S1) and beta (direct, S2) in one project, each
+# max_lanes 1, 2 sessions at once. The fixture's own run (X) is never started.
+rt_pair() {
+  _rt_cfg='{"overnight": {"max_lanes": 1, "max_sessions": 2}}'
+  LANES_CONFIG="$_rt_cfg"; export LANES_CONFIG
+  lanes_fixture rt integration X:-
+  printf '%s\n' "$_rt_cfg" > "$P/.studio/config.json"
+  LANES_CONFIG="$_rt_cfg"; export LANES_CONFIG
+  lanes_add_run alpha integration S1:-; RW_A="$RW"; RMF_A="$RMF"
+  LANES_CONFIG="$_rt_cfg"; export LANES_CONFIG
+  lanes_add_run beta direct S2:-; RW_B="$RW"; RMF_B="$RMF"
+  slot_poll
+}
+# rt_start — start alpha, wait for its lock, then start beta while alpha is live.
+rt_start() {
+  bg_lanes alpha "$RW_A" start "$RMF_A"
+  wait_for "[ -f '$P/.studio/runs/alpha/lock' ]" 60
+  bg_lanes beta "$RW_B" start "$RMF_B"
+  wait_for "[ -f '$P/.studio/runs/beta/lock' ]" 60
+}
+# rt_bare_stop — a bare stop with two live runs exits 1, names both, stops none.
+rt_bare_stop() {
+  ( cd "$P" && sh "$RUNNER" stop ) > "$TMP/bs.out" 2>&1; _bs=$?
+  assert_eq 1 "$_bs" "a bare stop with two live runs exits 1"
+  assert_contains "$TMP/bs.out" 'alpha' "and lists alpha"
+  assert_contains "$TMP/bs.out" 'beta' "and lists beta"
+  assert_contains "$TMP/bs.out" 'stop --run <slug>' "names stop --run <slug>"
+  assert_contains "$TMP/bs.out" 'stop --all' "and stop --all"
+  assert_missing "$P/.studio/runs/alpha/stop" "a bare stop wrote no alpha stop"
+  assert_missing "$P/.studio/runs/beta/stop" "nor a beta stop"
+}
+# rt_scen — S1's task 1 pushes a target move, flags it, then holds until beta
+# has landed S2 (so task 2's sync sees both moved refs); S2 waits for the flag.
+# $1 is S2's task 1 line (default: auto).
+rt_scen() {
+  printf 'auto; push_target other.txt; mark %s; waitafter %s\n' "$TMP/rt-s1t1" "$P/.studio/runs/beta/landed.tsv" > "$SCEN/S1"
+  printf 'waitfor %s; %s\n' "$TMP/rt-s1t1" "${1:-auto}" > "$SCEN/S2"
+  rm -f "$TMP/rt-s1t1"
+}
+rt_alpha_dir() { ls -d "$P"/.studio/reports/overnight-alpha-* 2>/dev/null | tail -n 1; }
+
+test_lanes_round_trip_two_runs() {
+  rt_pair; rt_scen
+  rt_start
+  ( cd "$P" && sh "$RUNNER" status ) > "$TMP/st.out" 2>&1; _st=$?
+  assert_eq 0 "$_st" "status exits 0 with both runs live"
+  assert_contains "$TMP/st.out" '^sessions: [0-2]/2' "status line 1 shows the session count"
+  assert_eq "sessions" "$(head -n 1 "$TMP/st.out" | cut -d: -f1)" "and it is line 1"
+  assert_contains "$TMP/st.out" '^== alpha (manifest' "alpha's block"
+  assert_contains "$TMP/st.out" '^== beta (manifest' "beta's block"
+  rt_bare_stop
+  bg_wait beta
+  assert_eq 0 "$BG_STATUS" "beta ends 0"
+  assert_contains "$P/.studio/runs/beta/landed.tsv" '^S2	' "S2 landed"
+  git -C "$P" fetch -q origin
+  assert_eq 1 "$(git -C "$P" ls-tree -r --name-only origin/main | grep -c '^S2-T1.txt$')" "S2's work is on main"
+  bg_wait alpha
+  assert_eq 0 "$BG_STATUS" "alpha ends 0"
+  unset STUDIO_OVERNIGHT_SLOT_POLL_SECONDS
+  assert_contains "$P/.studio/runs/alpha/landed.tsv" '^S1	' "S1 landed"
+  _ev="$(rt_alpha_dir)/events.jsonl"
+  assert_eq 1 "$(grep '"event":"story_synced","story":"S1"' "$_ev" | grep -c '"refs":\["origin/integration/alpha","origin/main"\]')" "one story_synced for S1 names both refs"
+  assert_eq "chore(sync): merge origin/integration/alpha into S1-b|chore(sync): merge origin/main into S1-b" "$(sync_merges S1)" "the merge commits are on S1-b"
+  assert_eq 4 "$(story_calls S1 | wc -l | tr -d ' ')" "S1: T1, T2, final review, finish"
+  assert_missing "$CALLS/m-S1.sync" "the sync ran no session"
+  assert_eq 4 "$(story_calls S2 | wc -l | tr -d ' ')" "S2: T1, T2, final review, finish"
+  assert_eq 1 "$([ "$(cat "$CALLS/max")" -le 2 ] && echo 1 || echo 0)" "never more than 2 sessions at once (max $(cat "$CALLS/max"))"
+  # Units that started while the other run was live saw it in their peers block.
+  _seen=0
+  for _pf in "$CALLS"/*.peers; do
+    grep -q '^Other live runs$' "$_pf" || continue
+    _seen=$((_seen + 1)); _pn="${_pf##*/}"; _pn="${_pn%.peers}"
+    case "$(cat "$CALLS/$_pn.story")" in S1) _other=beta ;; *) _other=alpha ;; esac
+    assert_contains "$_pf" "$_other" "call $_pn names the other run ($_other)"
+  done
+  assert_eq 1 "$([ "$_seen" -ge 1 ] && echo 1 || echo 0)" "at least one unit saw the Other live runs block"
+}
+test_lanes_round_trip_stop_one_of_two() {
+  rt_pair
+  # A stop ends a run after its running unit (never mid-unit), so the units
+  # are long sleeps, not `hang`: alpha's ends soon, beta's outlives it.
+  printf 'sleep 8\n' > "$SCEN/S1"; printf 'sleep 40\n' > "$SCEN/S2"
+  rt_start
+  wait_for "[ \"\$(ls '$CALLS/live' 2>/dev/null | grep -c .)\" -ge 2 ]" 60
+  rt_bare_stop
+  ( cd "$P" && sh "$RUNNER" stop --run alpha ) > "$TMP/so.out" 2>&1
+  assert_file "$P/.studio/runs/alpha/stop" "stop --run alpha writes alpha's stop"
+  assert_missing "$P/.studio/runs/beta/stop" "and not beta's"
+  bg_wait alpha
+  assert_file "$P/.studio/runs/beta/lock" "beta's lock is still held"
+  assert_eq 1 "$(kill -0 "$(cat "$TMP/bg-beta.pid")" 2>/dev/null && echo 1 || echo 0)" "beta's runner is alive"
+  assert_missing "$P/.studio/runs/beta/stop" "still no beta stop"
+  ( cd "$P" && sh "$RUNNER" stop --run beta ) > /dev/null 2>&1
+  bg_wait beta
+  unset STUDIO_OVERNIGHT_SLOT_POLL_SECONDS
+  assert_missing "$P/.studio/runs/beta/lock" "beta's lock is gone after its stop"
+}
+test_lanes_round_trip_sync_conflict() {
+  rt_pair; rt_scen 'conflict S1-T1.txt'
+  printf 'syncrepair\n' > "$SCEN/S1.sync"
+  rt_start
+  bg_wait beta
+  assert_eq 0 "$BG_STATUS" "beta ends 0"
+  bg_wait alpha
+  assert_eq 0 "$BG_STATUS" "alpha ends 0"
+  unset STUDIO_OVERNIGHT_SLOT_POLL_SECONDS
+  assert_eq 1 "$(cat "$CALLS/m-S1.sync" 2>/dev/null)" "exactly one S1.sync call resolves the conflict"
+  assert_contains "$P/.studio/runs/alpha/landed.tsv" '^S1	' "S1 lands"
+  assert_not_contains "$P/.studio/runs/alpha/landed.tsv" 'stopped' "stopped appears nowhere in alpha's landed.tsv"
+}
+
+run_tests test_lanes_chain_ruletest_lanes_manifest_refusals test_lanes_preflight_backlog_tasks test_lanes_manifest_header_refusals \
   test_lanes_preflight_story_checks test_lanes_preflight_story_state test_lanes_docs_unreachable \
   test_lanes_git_too_old test_lanes_sourced_only test_lanes_next \
   test_lanes_next_all_planned_and_ambiguous test_lanes_next_plan_before_autopilot \
@@ -3621,4 +3746,5 @@ run_tests test_lanes_chain_rule test_lanes_manifest_refusals test_lanes_prefligh
   test_lanes_slot_cap_two_across_runs test_lanes_slot_cap_one_alternates test_lanes_slot_kill9_lane_reclaimed \
   test_lanes_slot_stop_ends_wait test_lanes_slot_released_every_exit test_lanes_slot_wait_not_in_session_minutes \
   test_lanes_session_wait_event_and_status test_lanes_max_sessions_preflight \
+  test_lanes_round_trip_two_runs test_lanes_round_trip_sync_conflict test_lanes_round_trip_stop_one_of_two \
   test_lanes_no_orphans
