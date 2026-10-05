@@ -13,7 +13,17 @@ names the next stage, and hands freeform requests to the right stage skill.
 
 ## 1. Read the state
 
-Run `studio-state show` from the project root.
+Run `studio-state show` in the checkout you are in.
+
+- In the main checkout, also run `studio-state stories` and list each story
+  on one line with the checkout to continue it in. A `run` line reads
+  `run in progress in <path>`, never a story to continue.
+- When main is idle and a story is active elsewhere, `Next:` names
+  `continue <spec> in <path>` first, then `/game-dev:brainstorm` for a new
+  story.
+- In a pointer-less worktree whose `show` prints the take hint, `Next:` names
+  `studio-state take <spec>` (continue main's story here) or
+  `/game-dev:brainstorm` (a new story), never `/game-dev:execute`.
 
 - **Overnight run live:** `studio-overnight status` (exit 0) shows the live
   runs. Mention them in one line. A live run does not make the project busy:
@@ -67,7 +77,9 @@ On demand, at any stage: `/game-dev:review [scope]`,
 dropped or the plan is too broken to follow, confirm with one
 `AskUserQuestion` (keep the ledger, or remove it), run `studio-state reset`
 (`--keep-ledger` when asked), and name `/game-dev:brainstorm` as the next
-command. The `abandoned <spec>` line stays in `STATE.md`'s ledger (when a
+command. `studio-state reset` resets this checkout's pointer only; for a
+story in another checkout, say `abandon it in <path>`. On exit 4, show the
+message. The `abandoned <spec>` line stays in `STATE.md`'s ledger (when a
 spec was set).
 
 If the next stage's skill is not in your skill list, say which stage it is
@@ -104,6 +116,7 @@ paraphrase a request into a different one.
 - Never write to `.studio/` except through `studio-state init` (after the
   user says yes), `studio-state check --rebuild` (after the user agrees),
   `studio-state reset` (after the user confirms), and the `studio-state
-  ledger` line of the bug route.
+  ledger` line of the bug route. A pre-#42 worktree's one-time adopt
+  (studio-state AC18) may move its story into it on the router's first read.
 - Always end by naming the exact command to run next, even when it is the one
   you just invoked.

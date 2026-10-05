@@ -25,6 +25,9 @@ description: Use when an approved spec exists and needs an implementation plan â
   To start the next feature on this branch anyway, run
   `studio-state set branch -` first." Without studio state the guard is
   skipped like every other `studio-state` call.
+- In a pointer-less worktree whose `studio-state show` prints the take hint,
+  stop with: "the main checkout's story `<spec>` is waiting: continue it in
+  `<main checkout>`, or run `studio-state take <spec>` here".
 - `studio-state get spec` names a file that exists, and the ledger has a
   `spec approved` line for it. If not, stop and say the spec must be approved
   first (`/game-dev:brainstorm`). The user may approve it now in one word;
@@ -150,7 +153,8 @@ a `Spec:` line whose ranges exist, and a `Review:` line.
 
 Then run `studio-state set stage plan`, `studio-state set plan <plan path>`,
 `studio-state set task 0/N` (N = number of tasks outside the backlog), and
-`studio-state ledger "plan written <plan path>"`. **Stop** with:
+`studio-state ledger "plan written <plan path>"`. On exit 4 from any of these
+state writes: stop and show the message. **Stop** with:
 
 > Plan at `<path>`: N tasks, K cut to backlog. Reply **approve**, or name the
 > task to change.
