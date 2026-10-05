@@ -12,12 +12,13 @@ BOOTSTRAP="$ROOT/hooks/bootstrap.md"
 # Exit 1 (not 2: on SessionStart that would reset the session's context).
 [ -f "$BOOTSTRAP" ] || { printf 'game-dev session-start: no bootstrap.md at %s\n' "$ROOT/hooks" >&2; exit 1; }
 
-# The project's config lives in the checkout the session runs in; the stage
-# pointer lives in the main checkout. studio-state knows both. Both calls are
-# best-effort: no state, no line.
+# The project's config lives in the checkout the session runs in; studio-state
+# resolves this checkout's own pointer. Both calls are best-effort and never
+# write: STUDIO_STATE_NO_ADOPT=1 suppresses adopt and self-heal (AC19).
 STUDIO_STATE="$ROOT/bin/studio-state"
 WORK_ROOT="$(sh "$STUDIO_STATE" root --work 2>/dev/null || pwd -P)"
-STAGE="$(sh "$STUDIO_STATE" get stage 2>/dev/null || true)"
+STAGE="$(STUDIO_STATE_NO_ADOPT=1 sh "$STUDIO_STATE" get stage 2>/dev/null || true)"
+HINT="$(STUDIO_STATE_NO_ADOPT=1 sh "$STUDIO_STATE" show 2>/dev/null | sed -n "/^the main checkout's story /{p;q;}")"
 # A stage value the old eight-stage pipeline wrote reads as idle, the way the
 # router reports it (decided here, outside the $(...) below: bash 3.2 cannot
 # parse a case pattern's ')' inside a command substitution).
@@ -90,7 +91,7 @@ escaped="$({ STUDIO_ENGINE="$ENGINE" STUDIO_DIMENSION="$DIMENSION" \
     line = fill(line, "{{TESTS}}", ENVIRON["STUDIO_TESTS"])
     print line
   }' "$BOOTSTRAP"
-  if [ -n "$STAGE" ]; then printf '\nStudio state: stage %s\n' "$STAGE"; fi
+  if [ -n "$STAGE" ]; then printf '\nStudio state: stage %s%s\n' "$STAGE" "${HINT:+ · $HINT}"; fi
   } \
   | tr -d '\r' \
   | tr -d '\000-\010\013\014\016-\037' \
