@@ -637,6 +637,41 @@ test_final_wave_contracts() {
   assert_contains "$E" 'nothing is run to produce it' "§5's lane brief runs no tests"
 }
 
+# #35: execute's adopt rules (AC9, AC12, AC13, AC15, AC16, AC18-20, AC25).
+test_execute_adopt() {
+  E="$REPO_ROOT/studios/game-dev/skills/execute/SKILL.md"
+  assert_contains "$E" 'git checkout $STUDIO_DOCS_REV -- <spec> <plan> <Context paths>' "§0 docs sync takes the Context paths (AC18)"
+  assert_contains "$E" 'git checkout $STUDIO_DOCS_REV -- <spec> <plan> .studio/ledger/<id>.md <Context paths>' "and on the new-branch path"
+  assert_contains "$E" 'studio-state ledger "adopt-base $(git rev-parse HEAD)"' "a not-started adopted story records its base (AC9)"
+  assert_contains "$E" 'run `studio-setup` from the worktree root' "setup on every entry (AC19)"
+  assert_eq 1 "$([ "$(section_count "$E" '^## 0[.] ' 'run `studio-setup` from the worktree root')" -ge 2 ] && echo 1 || echo 0)" "lane and single-plan entries both run it"
+  assert_contains "$E" 'Stop: worktree setup failed — exit <n> — log <path>' "a failed setup stops"
+  assert_contains "$E" '`studio-adopt sync <id>`' "§0 syncs adopted stories (AC12)"
+  assert_contains "$E" 'Stop: adopt sync — <its stderr line>' "a failed sync stops"
+  assert_contains "$E" 'before \*Where to start\* reads `task`' "sync comes before Where to start"
+  assert_contains "$E" 'T<n> complete <full sha>..<full sha>' "§6 writes full shas (AC25)"
+  assert_not_contains "$E" 'short commit range' "the short form is gone"
+  assert_contains "$E" '`studio-setup gate`' "gate_command at the finish (AC20)"
+  assert_contains "$E" 'Stop: gate red — gate_command exit <n> — log <path>' "its red line"
+  assert_contains "$E" '`check requested` without `check done`' "§8 check case (AC15)"
+  _w="$(sed -n '/^## 8\. /,/^## 9\. /p' "$E")"
+  _c="$(printf '%s\n' "$_w" | grep -n '`check requested` without `check done`' | head -n 1 | cut -d: -f1)"
+  _t="$(printf '%s\n' "$_w" | grep -n '`task k/N` with k < N: one SDD task' | head -n 1 | cut -d: -f1)"
+  assert_eq 1 "$([ -n "$_c" ] && [ -n "$_t" ] && [ "$_c" -lt "$_t" ] && echo 1 || echo 0)" "the check case comes before the task case"
+  assert_contains "$E" 'studio-brief check <k>' "the check unit reads its brief (AC13)"
+  assert_contains "$E" 'check Ruling: <decision> — <why> — <cost if wrong>' "check fixes are rulings"
+  assert_contains "$E" 'check done <full sha>..<full sha>' "check done carries a full-sha range (pre-fix HEAD..last fix)"
+  assert_contains "$E" 'check done none' "and none when no fix commit"
+  assert_contains "$E" 'Stop: check — <reason>' "a check it cannot fix stops"
+  assert_contains "$E" 'commits already on the branch for this task: <first>..<last> — check and finish them; do not start over' "the part-done brief line (AC16)"
+  assert_contains "$E" 'range starts at `git rev-parse <first>^1`' "§6: a part-done task's range starts before its first commit (AC16)"
+  assert_contains "$E" 'never an empty `X..X`' "§6: no empty range for a unit with no new commit"
+  assert_eq 1 "$([ "$(sed -n '/^## 6\. /,/^## 7\. /p' "$E" | grep -c 'first>^1')" -ge 1 ] && echo 1 || echo 0)" "the rule sits in §6"
+  assert_contains "$E" "the task's ledger range (§6: it starts at .<first>^1.)" "§0 points the sync report at the §6 range"
+  assert_contains "$E" 'verify with the command that failed' "§11 (AC20)"
+  assert_contains "$E" 'Direct mode runs no finish gate, so `gate_command` does not run there' "direct mode (AC20)"
+}
+
 run_tests test_plugin_manifests test_skill_frontmatter test_agent_frontmatter \
   test_external_references_declared test_required_plugins_enabled test_bin_syntax \
   test_role_agents_exist test_stage_skill_contracts test_plan_skill_contract \
@@ -645,5 +680,5 @@ run_tests test_plugin_manifests test_skill_frontmatter test_agent_frontmatter \
   test_stage_chain test_execute_contract test_agent_contracts test_feature_checkout_copies test_next_lines \
   test_review_contract test_on_demand_skills_keep_stage test_playtest_contract test_retro_contract \
   test_no_ship_references test_superpowers_requires_referenced test_no_last_playtest_callers \
-  test_execute_one_contract test_router_overnight_lock test_execute_lanes test_execute_lane_gate_foreground test_execute_land_and_progress test_execute_gate_repair test_execute_operator_messages test_final_wave_contracts \
+  test_execute_one_contract test_router_overnight_lock test_execute_lanes test_execute_lane_gate_foreground test_execute_land_and_progress test_execute_gate_repair test_execute_operator_messages test_execute_adopt test_final_wave_contracts \
   test_plan_brainstorm_lanes

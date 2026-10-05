@@ -20,6 +20,18 @@
 #                           `diff: git diff origin/<Target>...HEAD` (Target from
 #                           $STUDIO_RUN's `Target:` header, else origin/HEAD).
 #                           No plan text. The story id is $STUDIO_STORY.
+#                           When the spec has no ## Acceptance criteria, the
+#                           plan's stand in (and no ## Stories row is read).
+#   studio-brief check <k>  the plan's Global Constraints, Decisions and
+#                           Acceptance criteria, the `### Task 1..k` blocks
+#                           with their Spec: ranges, `range: <adopt-base>..
+#                           <T<k> end>` (truth region: after the last `adopt
+#                           reset`), directives, Context files, and the line
+#                           `diff:` for that range. k=0: `range: none`.
+#
+# `Context:` (a comma-separated file list before the plan's first `## `) adds a
+# `## Context files` part to all three verbs: whole files while the byte total
+# stays <= 12000, the rest listed under `Read these as well:`.
 #
 # A plan without ## Global Constraints or ## Decisions, or a task without a
 # Spec: line, prints a one-line note in its place and still exits 0.
@@ -31,7 +43,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 STATE_BIN="$HERE/studio-state"
 
 usage() {
-  printf 'usage: studio-brief task <n> | final\n' >&2
+  printf 'usage: studio-brief task <n> | final | check <k>\n' >&2
   exit 2
 }
 fail() { printf 'studio-brief: %s\n' "$*" >&2; exit 1; }
@@ -97,33 +109,21 @@ emit_section() {
   emit "$1" $_r
 }
 
-case "$verb" in
-task)
-  [ $# -eq 2 ] || usage
-  case "$2" in ''|*[!0-9]*) usage ;; esac
-  n="$2"
-  plan="$(state_get plan)"
-  [ -n "$plan" ] || fail "no plan set"
-  [ -f "$plan" ] || fail "plan $plan not found"
-  for part in "Global Constraints" "Decisions"; do
-    r="$(section "$plan" "## $part" 1)"
-    if [ -n "$r" ]; then
-      # shellcheck disable=SC2086
-      emit "$plan" $r
-    else
-      printf '(plan has no ## %s)\n' "$part"
-    fi
-  done
-  tr="$(section "$plan" "### Task $n:" 0)"
-  [ -n "$tr" ] || fail "### Task $n not found in $plan"
-  set -- $tr
-  ta="$1"; tb="$2"
-  emit "$plan" "$ta" "$tb"
-  directives_part
-  specline="$(sed -n "${ta},${tb}p" "$plan" | sed -n 's/^Spec: //p' | head -n 1)"
+# emit_task N WITHDIR — the `### Task N:` block, then (WITHDIR=1) the active
+# directives, then every range on the block's `Spec:` line (`task` and `check`
+# share it). Needs $plan. Exits 1 when the task or a range cannot be resolved.
+emit_task() {
+  _et_n="$1"; _et_wd="$2"
+  _et_r="$(section "$plan" "### Task $_et_n:" 0)"
+  [ -n "$_et_r" ] || fail "### Task $_et_n not found in $plan"
+  set -- $_et_r
+  _et_a="$1"; _et_b="$2"
+  emit "$plan" "$_et_a" "$_et_b"
+  if [ "$_et_wd" = 1 ]; then directives_part; fi
+  specline="$(sed -n "${_et_a},${_et_b}p" "$plan" | sed -n 's/^Spec: //p' | head -n 1)"
   if [ -z "$specline" ]; then
-    printf '(task %s has no Spec: line)\n' "$n"
-    exit 0
+    printf '(task %s has no Spec: line)\n' "$_et_n"
+    return 0
   fi
   # Items are separated by ", " (a heading containing ", " cannot be cited).
   items="$(printf '%s\n' "$specline" | sed 's/, /\
@@ -156,6 +156,96 @@ task)
 '
   done
   IFS="$oldifs"
+}
+
+# context_part — D18: the plan's Context: files under `## Context files`,
+# whole, in order, while the running byte total stays <= 12000; the rest
+# listed under `Read these as well:`. Nothing when the plan has no Context:.
+context_part() {
+  _cp_p="$(state_get plan)"; [ -n "$_cp_p" ] && [ -f "$_cp_p" ] || return 0
+  _cp_l="$(sed -n '/^## /q; s/^Context:[[:space:]]*//p' "$_cp_p" | head -n 1)"
+  [ -n "$_cp_l" ] || return 0
+  printf '## Context files\n'
+  _cp_t=0; _cp_over=""
+  set -f   # a `*` in a Context path is a name, not a glob
+  for _cp_f in $(printf '%s\n' "$_cp_l" | tr ',' '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//'); do
+    [ -f "$_cp_f" ] || fail "Context file $_cp_f not found"
+    _cp_c="$(wc -c < "$_cp_f" | tr -d ' ')"
+    if [ -z "$_cp_over" ] && [ $((_cp_t + _cp_c)) -le 12000 ]; then
+      _cp_t=$((_cp_t + _cp_c)); _cp_n="$(wc -l < "$_cp_f" | tr -d ' ')"
+      [ -n "$(tail -c1 "$_cp_f")" ] && _cp_n=$((_cp_n + 1))
+      if [ "$_cp_n" -eq 0 ]; then printf '==> %s:L0-0\n' "$_cp_f"; else emit "$_cp_f" 1 "$_cp_n"; fi
+    else
+      [ -n "$_cp_over" ] || printf 'Read these as well:\n'; _cp_over=1; printf -- '- %s\n' "$_cp_f"
+    fi
+  done
+  set +f
+}
+
+# plan_head — the plan's Global Constraints and Decisions (or a note each).
+plan_head() {
+  for part in "Global Constraints" "Decisions"; do
+    r="$(section "$plan" "## $part" 1)"
+    if [ -n "$r" ]; then
+      # shellcheck disable=SC2086
+      emit "$plan" $r
+    else
+      printf '(plan has no ## %s)\n' "$part"
+    fi
+  done
+}
+
+# need_plan — set $plan from the state, or fail.
+need_plan() {
+  plan="$(state_get plan)"
+  [ -n "$plan" ] || fail "no plan set"
+  [ -f "$plan" ] || fail "plan $plan not found"
+}
+
+case "$verb" in
+task)
+  [ $# -eq 2 ] || usage
+  case "$2" in ''|*[!0-9]*) usage ;; esac
+  need_plan
+  plan_head
+  emit_task "$2" 1
+  context_part
+  ;;
+check)
+  [ $# -eq 2 ] || usage
+  case "$2" in ''|*[!0-9]*) usage ;; esac
+  k="$2"
+  need_plan
+  plan_head
+  r="$(section "$plan" "## Acceptance criteria" 1)"
+  if [ -n "$r" ]; then
+    # shellcheck disable=SC2086
+    emit "$plan" $r
+  else
+    printf '(plan has no ## Acceptance criteria)\n'
+  fi
+  i=1
+  while [ "$i" -le "$k" ]; do emit_task "$i" 0; i=$((i + 1)); done
+  # D2: only the lines after the last `adopt reset` count.
+  truth=""
+  ledger="$(ledger_path)"
+  if [ -n "$ledger" ] && [ -f "$ledger" ]; then
+    truth="$(awk '/^- [0-9-]+ adopt reset /{ n = NR } { l[NR] = $0 } END { for (i = n + 1; i <= NR; i++) print l[i] }' "$ledger")"
+  fi
+  rng=""
+  if [ "$k" -eq 0 ]; then
+    printf 'range: none — no finished task\n'
+  else
+    base="$(printf '%s\n' "$truth" | awk '/^- [0-9-]+ adopt-base /{ v = $NF } END { print v }')"
+    [ -n "$base" ] || fail "no adopt-base line in the ledger (after the last adopt reset)"
+    tend="$(printf '%s\n' "$truth" | awk -v k="$k" '$0 ~ "^- [0-9-]+ T" k " complete " { v = $NF } END { sub(/.*\.\./, "", v); print v }')"
+    [ -n "$tend" ] || fail "no T$k complete line in the ledger (after the last adopt reset)"
+    rng="$base..$tend"
+    printf 'range: %s\n' "$rng"
+  fi
+  directives_part
+  context_part
+  [ -z "$rng" ] || printf 'diff: git diff %s\n' "$rng"
   ;;
 final)
   [ $# -eq 1 ] || usage
@@ -165,6 +255,16 @@ final)
   story="${STUDIO_STORY:-}"
   st="$(section "$spec" "## Stories" 0)"
   ac="$(section "$spec" "## Acceptance criteria" 0)"
+  acfile="$spec"
+  if [ -z "$ac" ]; then
+    # D17: an adopted story may have no epic spec; the plan's criteria stand in
+    # and there is no ## Stories row to read.
+    _pl="$(state_get plan)"
+    if [ -n "$_pl" ] && [ -f "$_pl" ]; then
+      ac="$(section "$_pl" "## Acceptance criteria" 0)"
+      if [ -n "$ac" ]; then acfile="$_pl"; st=""; fi
+    fi
+  fi
   [ -n "$ac" ] || fail "## Acceptance criteria not found in $spec"
   set -- $ac
   aa="$1"; ab="$2"
@@ -211,17 +311,18 @@ final)
     done
     emit "$spec" "$rown" "$rown"
   else
-    emit "$spec" "$aa" "$ab"
+    emit "$acfile" "$aa" "$ab"
   fi
   # the story's ledger
   ledger="$(ledger_path)"
   if [ -f "$ledger" ]; then
     printf '==> %s\n' "$ledger"
-    grep -E '^- [0-9-]+ ((T[0-9]+|Task [0-9]+:) )?(Ruling: |minor \(deferred\))' "$ledger" || true
+    grep -E '^- [0-9-]+ ((T[0-9]+|Task [0-9]+:|check) )?(Ruling: |minor \(deferred\))' "$ledger" || true
   else
     printf '(no ledger at %s)\n' "$ledger"
   fi
   directives_part
+  context_part
   # the diff command
   target=""
   if [ -n "${STUDIO_RUN:-}" ] && [ -f "$STUDIO_RUN" ]; then

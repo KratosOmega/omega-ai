@@ -1,0 +1,809 @@
+#!/bin/sh
+# studio-adopt — bring a story built outside the studio (with superpowers'
+# subagent-driven-development, "SDD") under autopilot, and keep the two in
+# step. Read-only `inspect` here; `seed` and `sync` are further verbs of the
+# same engine.
+#
+# Usage:
+#   studio-adopt inspect <id> --branch <Branch> --plan <original> [--base <sha>]
+#   studio-adopt seed    <id> [--base <sha>] [--reset]
+#   studio-adopt sync    <id>
+#   studio-adopt --help
+#
+# Exit: 0 clean / in sync · 1 a mismatch or a refused precondition (one stderr
+# line naming it) · 2 usage
+set -u
+
+SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
+TMPD="$(mktemp -d)"
+trap 'rm -rf "$TMPD"' EXIT
+TAB="$(printf '\t')"
+BRANCH=""; DEFAULT=""; TARGET=""; ID=""
+
+usage_text() {
+  cat <<'EOF'
+studio-adopt — adopt a story built outside the studio, and keep it in sync.
+Written against superpowers 6.4.1's SDD workspace format
+(.superpowers/sdd/<plan>/progress.md, plan-path).
+
+  studio-adopt inspect <id> --branch <Branch> --plan <original> [--base <sha>]
+      Print the evidence (base, finished tasks, k/N, part-done commits).
+      Read-only; runs from any checkout of the repo.
+      Example: studio-adopt inspect S1 --branch S1-b --plan docs/superpowers/plans/2026-09-01-demo.md
+
+  studio-adopt seed <id> [--base <sha>] [--reset]
+      In the story checkout: write the adopted truth into the story ledger.
+      Example: studio-adopt seed S1
+
+  studio-adopt sync <id>
+      In a checkout of the story branch: accept new SDD claims, regenerate views.
+      Example: studio-adopt sync S1
+
+Exit: 0 clean / in sync · 1 a mismatch or a refused precondition (one stderr
+line naming it) · 2 usage
+EOF
+}
+
+usage() { usage_text >&2; exit 2; }
+
+s7() { printf '%.7s' "$1"; }
+
+# resolve TOK — TOK's full commit sha when it names exactly one commit; else
+# nothing and status 1 (unknown or ambiguous: D19).
+resolve() { git rev-parse --verify --quiet "$1^{commit}" 2>/dev/null; }
+
+# default_branch — the remote's default branch name.
+default_branch() {
+  _db_r="$(git symbolic-ref --quiet refs/remotes/origin/HEAD 2>/dev/null)" || _db_r=""
+  if [ -n "$_db_r" ]; then printf '%s\n' "${_db_r#refs/remotes/origin/}"; return 0; fi
+  for _db_b in main master; do
+    if git show-ref --verify --quiet "refs/remotes/origin/$_db_b"; then printf '%s\n' "$_db_b"; return 0; fi
+  done
+  echo "cannot tell the default branch: origin/HEAD is not set (run: git remote set-head origin -a)" >&2
+  return 1
+}
+
+# fork_point TIP DEFAULT — the first commit on TIP's first-parent chain that is
+# reachable from origin/DEFAULT (D20). Those not reachable form a prefix.
+fork_point() {
+  _fp_n="$(git rev-list --count --first-parent "$1" --not "origin/$2" 2>/dev/null)" || return 1
+  git rev-list --first-parent --skip="$_fp_n" --max-count=1 "$1" 2>/dev/null | grep . || return 1
+}
+
+# state_root — the start checkout's root (the stage pointer's root). Computed
+# once per run into STATE_ROOT (callers set it before any subshell uses it).
+STATE_ROOT=""; TOPLEVEL=""
+state_root() {
+  if [ -n "$STATE_ROOT" ]; then printf '%s\n' "$STATE_ROOT"; return 0; fi
+  sh "$SELF_DIR/studio-state" root 2>/dev/null || true
+}
+
+# plan_file PATH — the plan's file: in the current tree, else in the start
+# checkout (D25).
+plan_file() {
+  _pf_w="${TOPLEVEL:-$(git rev-parse --show-toplevel 2>/dev/null || true)}"
+  _pf_r="$(state_root)"
+  # $2 = root: the start checkout first (the converted plan's approved copy).
+  if [ "${2:-}" = root ] && [ -n "$_pf_r" ] && [ -f "$_pf_r/$1" ]; then printf '%s\n' "$_pf_r/$1"; return 0; fi
+  if [ -n "$_pf_w" ] && [ -f "$_pf_w/$1" ]; then printf '%s\n' "$_pf_w/$1"; return 0; fi
+  if [ -n "$_pf_r" ] && [ -f "$_pf_r/$1" ]; then printf '%s\n' "$_pf_r/$1"; return 0; fi
+  echo "plan $1 not found in this tree or in the start checkout" >&2
+  return 1
+}
+
+# task_count PLAN — the `### Task <n>` headings above `## Backlog`.
+task_count() {
+  awk '/^## Backlog/ { exit } /^### Task [0-9]/ { n++ } END { print n + 0 }' "$1"
+}
+
+# task_title PLAN N — the title after `### Task N:`.
+task_title() {
+  _tt_t="$(awk -v n="$2" '/^## Backlog/ { exit }
+    $0 ~ "^### Task " n ":" { sub(/^### Task [0-9]+:[ \t]*/, ""); print; exit }' "$1")"
+  [ -n "$_tt_t" ] || { echo "$1 has no Task $2" >&2; return 1; }
+  printf '%s\n' "$_tt_t"
+}
+
+# workspaces PLAN — `<tree>\t<dir>` for every SDD workspace whose plan-path
+# names PLAN, in every worktree. Marker-less workspaces are ignored (D32).
+workspaces() {
+  _ws_p="$1"
+  git worktree list --porcelain | sed -n 's/^worktree //p' | while IFS= read -r t; do
+    for d in "$t"/.superpowers/sdd/*/; do
+      [ -f "$d/plan-path" ] || continue
+      if [ "$(cat "$d/plan-path")" = "$_ws_p" ]; then printf '%s\t%s\n' "$t" "${d%/}"; fi
+    done
+  done
+  # Always 0: no match is an empty result, not an error (callers test WS_LIST).
+  return 0
+}
+
+# claims_of PROGRESS — per `Task <n>: complete (commits …)` line: `<n> <first>
+# <last>` from the first and last 7-40 hex tokens after `commits ` that each
+# resolve to exactly one commit (D19); `<n> - <the line>` when none does.
+claims_of() {
+  grep -E '^Task [0-9]+: complete \(commits ' "$1" 2>/dev/null | while IFS= read -r _co_l; do
+    _co_n="$(printf '%s\n' "$_co_l" | sed 's/^Task \([0-9]*\):.*/\1/')"; _co_f=""; _co_z=""
+    _co_r="${_co_l#*commits }"; _co_r="${_co_r%%)*}"
+    for _co_t in $(printf '%s\n' "$_co_r" | tr -c '0-9a-f' ' '); do
+      case "${#_co_t}" in [7-9]|[1-3][0-9]|40) ;; *) continue ;; esac
+      _co_s="$(resolve "$_co_t")" || continue
+      [ -n "$_co_f" ] || _co_f="$_co_s"; _co_z="$_co_s"
+    done
+    if [ -n "$_co_f" ]; then printf '%s %s %s\n' "$_co_n" "$_co_f" "$_co_z"
+    else printf '%s - %s\n' "$_co_n" "$_co_l"; fi
+  done
+}
+
+# merged_claims PLAN — every workspace's claims for PLAN, by task number; one
+# line per task; a claim with no resolvable token, or two ranges for one task,
+# is a mismatch (stderr, status 1). Sets WS_LIST (`<dir> (<n> claims)` lines).
+merged_claims() {
+  : > "$TMPD/claims"; WS_LIST=""
+  workspaces "$1" > "$TMPD/ws"
+  while IFS="$TAB" read -r _mc_t _mc_d; do
+    claims_of "$_mc_d/progress.md" > "$TMPD/c1"
+    WS_LIST="$WS_LIST$_mc_d ($(wc -l < "$TMPD/c1" | tr -d ' ') claims)
+"
+    sed "s|\$| $_mc_d|" "$TMPD/c1" >> "$TMPD/claims"
+  done < "$TMPD/ws"
+  _mc_bad="$(awk '$2 == "-" { sub(/^[0-9]+ - /, ""); print "claim names no commit: " $0; exit }' "$TMPD/claims")"
+  [ -z "$_mc_bad" ] || { printf '%s\n' "$_mc_bad" >&2; return 1; }
+  sort -n -k1,1 "$TMPD/claims" | awk '
+    { if (($1 in a) && (a[$1] != $2 || b[$1] != $3)) { print "two ranges for Task " $1 ": " w[$1] " and " $4 > "/dev/stderr"; bad = 1; exit }
+      if (!($1 in a)) { a[$1] = $2; b[$1] = $3; w[$1] = $4; o[++n] = $1 } }
+    END { if (!bad) for (i = 1; i <= n; i++) print o[i], a[o[i]], b[o[i]]; exit bad }'
+}
+
+# touches_work A B — some commit on B's first-parent chain past A touches a path
+# outside .studio/ (merges diffed against their first parent: D21).
+touches_work() {
+  git log --first-parent --diff-merges=first-parent --name-only --format= "$1..$2" 2>/dev/null \
+    | grep -v '^$' | grep -qv '^\.studio/'
+}
+
+# rewritten_msg N — D31: a rewrite is reported after T<n-1>, or after the
+# adopt base when N is 1 (or 0).
+rewritten_msg() {
+  if [ "$1" -le 1 ]; then echo "history of $BRANCH was rewritten after its adopt base — re-adopt: studio-adopt seed $ID --reset" >&2
+  else echo "history of $BRANCH was rewritten after T$(($1 - 1)) — re-adopt: studio-adopt seed $ID --reset" >&2; fi
+}
+
+# cc_fail REASON — chain_check's failure line. A committed truth line reads
+# `T<n>: REASON`; a new claim (mode `claim`) names the claim and its workspace.
+cc_fail() {
+  if [ "$_cc_m" = claim ]; then
+    _cc_ws="$(awk -v n="$_cc_n" '$1 == n { print $4; exit }' "$TMPD/claims" 2>/dev/null || true)"
+    echo "Task $_cc_n: the claim $(s7 "$_cc_a")..$(s7 "$_cc_b") (${_cc_ws:-no workspace}) failed: $1" >&2
+  else echo "T$_cc_n: $1" >&2; fi
+}
+
+# chain_check FILE PREV START TIP [claim] — FILE holds `<n> <a> <b>` (full shas)
+# by n; n must run START, START+1, …; PREV is the adopt-base or T<START-1>'s end.
+# AC10b's rules; the first failure on stderr, status 1. With `claim` (new SDD
+# claims, not yet truth) a failure is a plain mismatch: the rewrite advice
+# (`seed --reset`) only fits committed truth, which a reset can re-read.
+chain_check() {
+  _cc_p="$2"; _cc_w="$3"; _cc_m="${5:-}"
+  while read -r _cc_n _cc_a _cc_b; do
+    [ "$_cc_n" -eq "$_cc_w" ] || { echo "T$_cc_w has no line (next is T$_cc_n)" >&2; return 1; }
+    [ "$_cc_a" != "$_cc_b" ] || { cc_fail "empty range $(s7 "$_cc_a")..$(s7 "$_cc_b")"; return 1; }
+    git merge-base --is-ancestor "$_cc_a" "$_cc_b" 2>/dev/null \
+      || { cc_fail "$(s7 "$_cc_a") is not an ancestor of $(s7 "$_cc_b")"; return 1; }
+    git merge-base --is-ancestor "$_cc_b" "$4" 2>/dev/null \
+      || { if [ "$_cc_m" = claim ]; then cc_fail "$(s7 "$_cc_b") is not on $BRANCH"; else rewritten_msg "$_cc_n"; fi; return 1; }
+    git merge-base --is-ancestor "$_cc_p" "$_cc_a" 2>/dev/null \
+      || { cc_fail "$(s7 "$_cc_a") does not follow $(s7 "$_cc_p")"; return 1; }
+    touches_work "$_cc_a" "$_cc_b" \
+      || { cc_fail "$(s7 "$_cc_a")..$(s7 "$_cc_b") has no commit outside .studio/"; return 1; }
+    _cc_p="$_cc_b"; _cc_w=$((_cc_n + 1))
+  done < "$1"
+}
+
+# part_done FROM TIP DOCS — AC11: the first-parent commits FROM..TIP, oldest
+# first, minus merges of the default or Target branch, commits touching only
+# .studio/ and DOCS paths (D22), commits inside a `check done <a>..<b>` range
+# (the $TMPD/checkset file), and fix(final|gate|review / docs(progress subjects.
+part_done() {
+  git log --first-parent --diff-merges=first-parent --name-only --reverse \
+      --format='C %H %P%x09%s' "$1..$2" 2>/dev/null | awk -v docs="$3" '
+    BEGIN { n = split(docs, d, " "); for (i = 1; i <= n; i++) isdoc[d[i]] = 1 }
+    function flush() { if (h != "" && keep) print h; h = "" }
+    /^C / { flush(); split($0, t, "\t"); h = substr(t[1], 3); keep = 0
+            if (t[2] ~ /^(fix\(final|fix\(gate|fix\(review|docs\(progress)/) h = ""
+            next }
+    NF == 0 { next }
+    h != "" && $0 !~ /^\.studio\// && !($0 in isdoc) { keep = 1 }
+    END { flush() }' | while read -r _pd_c _pd_p1 _pd_p2; do
+      if [ -n "$_pd_p2" ]; then
+        git merge-base --is-ancestor "$_pd_p2" "origin/$DEFAULT" 2>/dev/null && continue
+        [ -z "$TARGET" ] || ! git merge-base --is-ancestor "$_pd_p2" "origin/$TARGET" 2>/dev/null || continue
+      fi
+      grep -qxF "$_pd_c" "$TMPD/checkset" 2>/dev/null && continue
+      printf '%s\n' "$_pd_c"
+    done
+}
+
+# run_target — the live run's Target branch: $STUDIO_RUN's manifest, else the
+# manifest .studio/run names in the start checkout (D23). Nothing when neither.
+run_target() {
+  _rt_m="${STUDIO_RUN:-}"
+  if [ -z "$_rt_m" ]; then
+    _rt_r="$(state_root)"
+    _rt_m="$(head -n 1 "$_rt_r/.studio/run" 2>/dev/null || true)"
+    case "$_rt_m" in ''|/*) ;; *) _rt_m="$_rt_r/$_rt_m" ;; esac
+  fi
+  [ -n "$_rt_m" ] && [ -f "$_rt_m" ] || return 0
+  sed -n 's/^Target:[[:space:]]*//p' "$_rt_m" | head -n 1
+  return 0
+}
+
+# truth_lines FILE — the truth region of a story ledger (D2): the lines after
+# the last `adopt reset` line.
+truth_lines() {
+  awk '/^- [0-9-]+ adopt reset /{ n = NR } { l[NR] = $0 } END { for (i = n + 1; i <= NR; i++) print l[i] }' "$1"
+}
+
+# docs_paths ID — space-separated docs paths of a story (D22): the original,
+# the converted plan, the spec, and the converted plan's `Context:` paths,
+# from `adopted`/`source` lines of the start checkout's story ledger.
+docs_paths() {
+  _dp_r="$(state_root)"
+  _dp_l="$_dp_r/.studio/ledger/$1.md"
+  _dp_t="$TMPD/sd.truth"   # the current tree's truth lines (sync, seed), dates stripped
+  [ -f "$_dp_t" ] || _dp_t=/dev/null
+  [ -f "$_dp_l" ] || _dp_l=/dev/null
+  _dp_c=""
+  {
+    sed -n 's/^- [0-9-]* adopted \(.*\) -> \(.*\)$/\1\n\2/p' "$_dp_l"
+    sed -n 's/^- [0-9-]* source \([^ ]*\) spec \([^ ]*\).*$/\1\n\2/p' "$_dp_l"
+    sed -n 's/^adopted \(.*\) -> \(.*\)$/\1\n\2/p' "$_dp_t"
+    sed -n 's/^source \([^ ]*\) spec \([^ ]*\).*$/\1\n\2/p' "$_dp_t"
+  } | grep -v '^-$' | sort -u > "$TMPD/docs"
+  while IFS= read -r _dp_p; do
+    _dp_c="$_dp_c $_dp_p"
+    _dp_f="$(plan_file "$_dp_p" 2>/dev/null)" || continue
+    sed -n '/^## /q; s/^Context:[[:space:]]*//p' "$_dp_f" | tr ',' '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' \
+      | grep . > "$TMPD/ctx" || true
+    while IFS= read -r _dp_x; do _dp_c="$_dp_c $_dp_x"; done < "$TMPD/ctx"
+  done < "$TMPD/docs"
+  printf '%s\n' "${_dp_c# }"
+}
+
+# build_checkset ID TIP — every commit inside a `check done <a>..<b>` range of
+# the story ledger as committed at TIP (AC13: the check unit writes it on the
+# story branch; a missing file is empty), into $TMPD/checkset.
+build_checkset() {
+  : > "$TMPD/checkset"
+  [ -n "$2" ] || return 0
+  _bc_l="$TMPD/checkset.ledger"
+  git show "$2:.studio/ledger/$1.md" > "$_bc_l" 2>/dev/null || return 0
+  sed -n 's/^- [0-9-]* check done \([^ ]*\.\.[^ ]*\).*$/\1/p' "$_bc_l" | while IFS= read -r _bc_g; do
+    git rev-list "$_bc_g" >> "$TMPD/checkset" 2>/dev/null || true
+  done
+  return 0
+}
+
+valid_id() { printf '%s' "$1" | grep -Eq '^[A-Za-z0-9._-]+$'; }
+
+# adopt_evidence PLAN N — inspect's checks, shared by inspect and seed (AC9):
+# the claims chain from BASE_SHA to TIP, and the work on the branch past it.
+# Needs BRANCH, ID, BASE_SHA, TIP, DEFAULT, TARGET and the checkset. Sets K,
+# FROM, WS_LIST, DOCS and $TMPD/{chain,pd}.
+adopt_evidence() {
+  git merge-base --is-ancestor "$BASE_SHA" "$TIP" 2>/dev/null || { rewritten_msg 0; return 1; }
+  merged_claims "$1" > "$TMPD/chain" || return 1
+  _ae_over="$(awk -v n="$2" '$1 + 0 > n { print $1; exit }' "$TMPD/chain")"
+  [ -z "$_ae_over" ] || { echo "claim for Task $_ae_over but $1 has $2 tasks" >&2; return 1; }
+  chain_check "$TMPD/chain" "$BASE_SHA" 1 "$TIP" claim || return 1
+  K="$(awk 'END { print $1 + 0 }' "$TMPD/chain")"
+  FROM="$BASE_SHA"
+  [ "$K" -eq 0 ] || FROM="$(awk 'END { print $3 }' "$TMPD/chain")"
+  DOCS="$1 $(docs_paths "$ID")"
+  part_done "$FROM" "$TIP" "$DOCS" > "$TMPD/pd"
+  if [ -z "$WS_LIST" ] && [ -s "$TMPD/pd" ]; then
+    echo "work on $BRANCH past $(s7 "$BASE_SHA") but no SDD ledger for $1 in any worktree — restore it, or write one in SDD's format, and inspect again" >&2
+    return 1
+  fi
+}
+
+cmd_inspect() {
+  ID="${1:-}"; [ -n "$ID" ] && valid_id "$ID" || usage
+  shift
+  BRANCH=""; _in_plan=""; _in_base=""
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --branch) [ "$#" -ge 2 ] || usage; BRANCH="$2"; shift 2 ;;
+      --plan) [ "$#" -ge 2 ] || usage; _in_plan="$2"; shift 2 ;;
+      --base) [ "$#" -ge 2 ] || usage; _in_base="$2"; shift 2 ;;
+      *) usage ;;
+    esac
+  done
+  [ -n "$BRANCH" ] && [ -n "$_in_plan" ] || usage
+
+  STATE_ROOT="$(state_root)"
+  TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+  _in_pf="$(plan_file "$_in_plan")" || return 1
+  N="$(task_count "$_in_pf")"
+  [ "$N" -gt 0 ] || { echo "$_in_plan has no tasks" >&2; return 1; }
+  DEFAULT="$(default_branch)" || return 1
+  TARGET="$(run_target)"
+
+  TIP="$(resolve "refs/heads/$BRANCH")" || TIP="$(resolve "refs/remotes/origin/$BRANCH")" || TIP=""
+  build_checkset "$ID" "$TIP"
+  : > "$TMPD/report"
+  if [ -z "$TIP" ]; then
+    merged_claims "$_in_plan" > "$TMPD/chain" || return 1
+    {
+      printf 'story: %s\nbranch: %s (not started)\nbase: -\n' "$ID" "$BRANCH"
+      if [ -n "$WS_LIST" ]; then printf '%s' "$WS_LIST" | sed 's/^/workspace: /'; else echo "workspace: none"; fi
+      printf 'k: 0/%s\n' "$N"
+    }
+    return 0
+  fi
+
+  if [ -n "$_in_base" ]; then
+    BASE_SHA="$(resolve "$_in_base")" || { echo "base $_in_base does not name exactly one commit" >&2; return 1; }
+  else
+    BASE_SHA="$(fork_point "$TIP" "$DEFAULT")" \
+      || { echo "$BRANCH shares no history with origin/$DEFAULT — pass --base <sha>" >&2; return 1; }
+  fi
+
+  adopt_evidence "$_in_plan" "$N" || return 1
+
+  printf 'story: %s\nbranch: %s\nbase: %s\n' "$ID" "$BRANCH" "$BASE_SHA"
+  if [ -n "$WS_LIST" ]; then printf '%s' "$WS_LIST" | sed 's/^/workspace: /'; else echo "workspace: none"; fi
+  awk '{ print "T" $1 " complete " $2 ".." $3 }' "$TMPD/chain"
+  printf 'k: %s/%s\n' "$K" "$N"
+  if [ -s "$TMPD/pd" ]; then
+    _in_r="$(head -n 1 "$TMPD/pd")..$(tail -n 1 "$TMPD/pd")"
+    if [ "$K" -lt "$N" ]; then printf 'T%s in progress: %s\n' "$((K + 1))" "$_in_r"
+    else printf 'post-task commits: %s\n' "$_in_r"; fi
+  fi
+  return 0
+}
+
+# ledger_texts FILE — the text (date stripped) of every truth-region line of FILE.
+ledger_texts() { truth_lines "$1" | sed -n 's/^- [0-9-]* //p'; }
+
+# sd_add TEXT — queue TEXT as a line to write, unless the truth region (or the
+# queue) already has it.
+sd_add() {
+  if grep -qxF -- "$1" "$TMPD/sd.truth"; then return 0; fi
+  printf '%s\n' "$1" >> "$TMPD/sd.truth"; printf '%s\n' "$1" >> "$TMPD/sd.add"
+}
+
+# seed_ac10f K — D34: the SDD notes of Tasks 1..K from every workspace in
+# $TMPD/ws, as ledger texts.
+seed_ac10f() {
+  while IFS="$TAB" read -r _sf_t _sf_d; do
+    grep -E '^Task [0-9]+: ' "$_sf_d/progress.md" 2>/dev/null | while IFS= read -r _sf_l; do
+      _sf_n="$(printf '%s\n' "$_sf_l" | sed 's/^Task \([0-9]*\):.*/\1/')"
+      [ "$_sf_n" -le "$1" ] || continue
+      _sf_x="${_sf_l#Task "$_sf_n": }"
+      case "$_sf_x" in
+        "parked — "*) printf 'minor (deferred) T%s: %s (standard mode)\n' "$_sf_n" "${_sf_x#parked — }" ;;
+        "minor (deferred): "*) printf 'minor (deferred) T%s: %s (standard mode)\n' "$_sf_n" "${_sf_x#minor (deferred): }" ;;
+        "complete ("*|*"fix round"*) ;;
+        *"Ruling: "*) printf 'T%s Ruling: %s\n' "$_sf_n" "${_sf_x#*Ruling: }" ;;
+      esac
+    done
+  done < "$TMPD/ws"
+  return 0
+}
+
+# cmd_seed ID [--base SHA] [--reset] — write the adopted truth into the current
+# tree's story ledger (D26-D28). Everything is checked before anything is
+# written, and a failed write puts the ledger back.
+cmd_seed() {
+  ID="${1:-}"; [ -n "$ID" ] && valid_id "$ID" || usage
+  shift
+  _sd_reset=0; _sd_base=""
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --reset) _sd_reset=1; shift ;;
+      --base) [ "$#" -ge 2 ] || usage; _sd_base="$2"; shift 2 ;;
+      *) usage ;;
+    esac
+  done
+  STATE_ROOT="$(state_root)"
+  TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+  [ -n "$TOPLEVEL" ] || { echo "not in a git checkout" >&2; return 1; }
+  cd "$TOPLEVEL" || return 1
+  _sd_src="$STATE_ROOT/.studio/ledger/$ID.md"
+  _sd_adopted=""; _sd_source=""
+  if [ -f "$_sd_src" ]; then
+    _sd_adopted="$(sed -n 's/^- [0-9-]* \(adopted .* -> .*\)$/\1/p' "$_sd_src" | tail -n 1)"
+    _sd_source="$(sed -n 's/^- [0-9-]* \(source .*\)$/\1/p' "$_sd_src" | tail -n 1)"
+  fi
+  [ -n "$_sd_adopted" ] || { echo "no adopted line for $ID in the start checkout" >&2; return 1; }
+  _sd_rest="${_sd_adopted#adopted }"; _sd_orig="${_sd_rest%% -> *}"; _sd_conv="${_sd_rest#* -> }"
+
+  BRANCH="$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+  _sd_pb="$(STUDIO_STORY="$ID" sh "$SELF_DIR/studio-state" get branch 2>/dev/null || true)"
+  [ -n "$_sd_pb" ] && [ "$BRANCH" = "$_sd_pb" ] \
+    || { echo "run seed on the story branch ${_sd_pb:-<unset>} (this checkout is on ${BRANCH:-a detached HEAD})" >&2; return 1; }
+  TIP="$(resolve HEAD)" || { echo "no commits on $BRANCH" >&2; return 1; }
+
+  _sd_led="$TOPLEVEL/.studio/ledger/$ID.md"
+  if [ "$_sd_reset" -eq 1 ] || [ ! -f "$_sd_led" ]; then : > "$TMPD/sd.truth"; else ledger_texts "$_sd_led" > "$TMPD/sd.truth"; fi
+  : > "$TMPD/sd.add"
+
+  # Base (D26): the truth's adopt-base, else --base, else the fork point.
+  _sd_have="$(sed -n 's/^adopt-base //p' "$TMPD/sd.truth" | tail -n 1)"
+  _sd_given=""
+  if [ -n "$_sd_base" ]; then
+    _sd_given="$(resolve "$_sd_base")" || { echo "base $_sd_base does not name exactly one commit" >&2; return 1; }
+  fi
+  if [ -n "$_sd_have" ]; then
+    [ -z "$_sd_given" ] || [ "$_sd_given" = "$_sd_have" ] \
+      || { echo "adopt-base is $(s7 "$_sd_have") in the ledger but --base is $(s7 "$_sd_given")" >&2; return 1; }
+    BASE_SHA="$_sd_have"
+  elif [ -n "$_sd_given" ]; then BASE_SHA="$_sd_given"
+  else
+    DEFAULT="$(default_branch)" || return 1
+    BASE_SHA="$(fork_point "$TIP" "$DEFAULT")" \
+      || { echo "$BRANCH shares no history with origin/$DEFAULT — pass --base <sha>" >&2; return 1; }
+  fi
+
+  _sd_of="$(plan_file "$_sd_orig")" || return 1
+  _sd_cf="$(plan_file "$_sd_conv" root)" || return 1
+  N="$(task_count "$_sd_of")"
+  [ "$N" -gt 0 ] || { echo "$_sd_orig has no tasks" >&2; return 1; }
+  [ -n "${DEFAULT:-}" ] || DEFAULT="$(default_branch)" || return 1
+  TARGET="$(run_target)"
+  build_checkset "$ID" "$TIP"
+  adopt_evidence "$_sd_orig" "$N" || return 1
+  workspaces "$_sd_orig" > "$TMPD/ws"
+
+  _sd_i=1
+  while [ "$_sd_i" -le "$K" ]; do
+    _sd_a="$(task_title "$_sd_of" "$_sd_i")" || return 1
+    _sd_b="$(task_title "$_sd_cf" "$_sd_i")" || return 1
+    [ "$_sd_a" = "$_sd_b" ] \
+      || { echo "Task $_sd_i: title differs — $_sd_orig has \"$_sd_a\", $_sd_conv has \"$_sd_b\"" >&2; return 1; }
+    _sd_i=$((_sd_i + 1))
+  done
+  # An existing T<n> complete with a different range is a mismatch.
+  while read -r _sd_n _sd_a _sd_b; do
+    _sd_old="$(sed -n "s/^T$_sd_n complete //p" "$TMPD/sd.truth" | tail -n 1)"
+    [ -n "$_sd_old" ] || continue
+    [ "$_sd_old" = "$_sd_a..$_sd_b" ] && continue
+    # Older ledgers hold short shas: compare the resolved full shas.
+    _sd_oa="$(resolve "${_sd_old%%..*}")" || _sd_oa=""
+    _sd_ob="$(resolve "${_sd_old#*..}")" || _sd_ob=""
+    case "$_sd_old" in *..*) ;; *) _sd_oa="" ;; esac
+    if [ -n "$_sd_oa" ] && [ "$_sd_oa" = "$_sd_a" ] && [ "$_sd_ob" = "$_sd_b" ]; then
+      # Same range: count the full-form line as present, so it is not written twice.
+      printf '%s\n' "T$_sd_n complete $_sd_a..$_sd_b" >> "$TMPD/sd.truth"
+      continue
+    fi
+    echo "T$_sd_n: ledger has $_sd_old but the claims say $_sd_a..$_sd_b" >&2; return 1
+  done < "$TMPD/chain"
+
+  [ -z "$_sd_source" ] || sd_add "$_sd_source"
+  sd_add "$_sd_adopted"
+  sd_add "adopt-base $BASE_SHA"
+  while read -r _sd_n _sd_a _sd_b; do sd_add "T$_sd_n complete $_sd_a..$_sd_b"; done < "$TMPD/chain"
+  seed_ac10f "$K" > "$TMPD/sd.f"
+  while IFS= read -r _sd_l; do sd_add "$_sd_l"; done < "$TMPD/sd.f"
+  if ledger_texts "$_sd_src" | grep -qxF 'check requested'; then sd_add "check requested"; fi
+
+  if [ "$_sd_reset" -eq 1 ]; then
+    { printf 'adopt reset %s\n' "$TIP"; cat "$TMPD/sd.add"; } > "$TMPD/sd.out"
+  else cp "$TMPD/sd.add" "$TMPD/sd.out"; fi
+  if [ ! -s "$TMPD/sd.out" ]; then echo "already seeded"; return 0; fi
+
+  _sd_had=0; if [ -f "$_sd_led" ]; then _sd_had=1; cp "$_sd_led" "$TMPD/sd.backup"; fi
+  _sd_ok=1
+  while IFS= read -r _sd_l; do
+    STUDIO_STORY="$ID" sh "$SELF_DIR/studio-state" ledger "$_sd_l" >/dev/null || { _sd_ok=0; break; }
+  done < "$TMPD/sd.out"
+  if [ "$_sd_ok" -eq 1 ]; then commit_ledger "chore(studio): ledger (adopt)" "$_sd_led" "$_sd_had" "$TMPD/sd.backup" || _sd_ok=0; fi
+  if [ "$_sd_ok" -eq 0 ]; then
+    if [ "$_sd_had" -eq 1 ]; then cp "$TMPD/sd.backup" "$_sd_led"; else rm -f "$_sd_led"; fi
+    echo "could not write the adopt lines for $ID — ledger restored" >&2
+    return 1
+  fi
+  printf 'seeded: %s lines\n' "$(wc -l < "$TMPD/sd.out" | tr -d ' ')"
+  return 0
+}
+
+# commit_ledger SUBJECT LEDGER HAD BACKUP — commit the story ledger as one
+# commit (seed and sync share it). On failure: unstage, restore LEDGER from
+# BACKUP (or remove it when HAD is 0), print git's stderr, status 1.
+commit_ledger() {
+  { git add -- ".studio/ledger/$ID.md" && git commit -q -m "$1" -- ".studio/ledger/$ID.md"; } >/dev/null 2>"$TMPD/cl.err" && return 0
+  git reset -q -- ".studio/ledger/$ID.md" >/dev/null 2>&1 || true
+  if [ "$3" -eq 1 ]; then cp "$4" "$2"; else rm -f "$2"; fi
+  cat "$TMPD/cl.err" >&2 2>/dev/null || true
+  return 1
+}
+
+# git_retry CMD… — run a git write, retrying three times (1, 2, 4 s) when its
+# stderr says `could not lock` or `cannot lock ref` (execute's git lock rule).
+# Its stderr stays in $TMPD/gr.err.
+git_retry() {
+  for _gr_d in 1 2 4 ""; do
+    if "$@" 2> "$TMPD/gr.err"; then return 0; fi
+    grep -qE 'could not lock|cannot lock ref' "$TMPD/gr.err" || break
+    [ -n "$_gr_d" ] || break
+    sleep "$_gr_d"
+  done
+  return 1
+}
+
+# run_manifest — the manifest of the live run: $STUDIO_RUN, else the one the
+# start checkout's .studio/run names. Nothing when neither exists.
+run_manifest() {
+  _rm_m="${IN_RUN:-}"
+  if [ -z "$_rm_m" ]; then
+    _rm_r="$(state_root)"
+    _rm_m="$(head -n 1 "$_rm_r/.studio/run" 2>/dev/null || true)"
+    case "$_rm_m" in ''|/*) ;; *) _rm_m="$_rm_r/$_rm_m" ;; esac
+  fi
+  if [ -n "$_rm_m" ] && [ -f "$_rm_m" ]; then printf '%s\n' "$_rm_m"; fi
+  return 0
+}
+
+# manifest_branch MANIFEST ID — the Branch cell of ID's row.
+manifest_branch() {
+  awk -F'|' -v id="$2" '
+    function trim(s) { gsub(/^[ \t]+|[ \t]+$/, "", s); return s }
+    /^\|/ { for (i = 1; i <= NF; i++) c[i] = trim($i)
+            if (!hdr) { for (i = 1; i <= NF; i++) col[c[i]] = i; if ("Story" in col) hdr = 1; next }
+            if (c[col["Story"]] == id) { print c[col["Branch"]]; exit } }' "$1"
+}
+
+# live_run_check — D30: refuse when a live run has the story, unless this is
+# that run's own unit (the incoming STUDIO_RUN/STUDIO_STORY/STUDIO_RUN_DIR).
+live_run_check() {
+  _lr_l="$STATE_ROOT/.studio/overnight.lock"
+  [ -f "$_lr_l" ] || return 0
+  _lr_p="$(sed -n 's/^pid=//p' "$_lr_l" | head -n 1)"
+  _lr_d="$(sed -n 's/^run=//p' "$_lr_l" | head -n 1)"
+  [ -n "$_lr_p" ] && kill -0 "$_lr_p" 2>/dev/null && ps -o args= -p "$_lr_p" 2>/dev/null | grep -q studio-overnight || return 0
+  [ -f "$_lr_d/manifest.md" ] || return 0
+  _lr_s="$(cat "$_lr_d/stories/$ID" 2>/dev/null || true)"
+  case "${_lr_s%% *}" in running|held|repair|gate-repair|landing) ;; *) return 0 ;; esac
+  if [ -n "$IN_RUN" ] && [ "$IN_STORY" = "$ID" ] && [ "$IN_RUN_DIR" = "$_lr_d" ]; then return 0; fi
+  echo "story $ID is in a live run — /hold it or wait for it to end" >&2
+  return 1
+}
+
+# vd_owns DIR PLAN / view_dir PLAN — this tree's SDD workspace for PLAN, by
+# superpowers 6.4.1 sdd-workspace's rule (marker match; a missing marker is claimed).
+vd_owns() { if [ -e "$1/plan-path" ]; then [ "$(cat "$1/plan-path")" = "$2" ]; else mkdir -p "$1" && printf '%s\n' "$2" > "$1/plan-path"; fi; }
+view_dir() {
+  _vr="$(git rev-parse --show-toplevel)"; _vb="$_vr/.superpowers/sdd"
+  _vs="$(basename "$1" .md)"; _vp="$(basename "$(dirname "$1")")"; [ "$_vp" != . ] || _vp="$(basename "$_vr")"
+  mkdir -p "$_vb"
+  if vd_owns "$_vb/$_vs" "$1"; then _vd="$_vb/$_vs"
+  elif vd_owns "$_vb/$_vs-$_vp" "$1"; then _vd="$_vb/$_vs-$_vp"
+  else _vn=2; while ! vd_owns "$_vb/$_vs-$_vp-$_vn" "$1"; do _vn=$((_vn + 1)); done; _vd="$_vb/$_vs-$_vp-$_vn"; fi
+  printf '*\n' > "$_vb/.gitignore"; printf '%s\n' "$_vd"
+}
+
+# write_view PLAN LANDED — regenerate PLAN's progress.md in this tree (D32):
+# identity line, the truth's Task lines ($TMPD/truth), then the old file minus
+# its identity, `Task <n>: complete (` and `Landed: ` lines, then LANDED.
+# Appends a `kept: …` line to $TMPD/sy.rep3.
+write_view() {
+  _wv_d="$(view_dir "$1")" || return 1
+  _wv_f="$_wv_d/progress.md"; _wv_t="$_wv_d/progress.md.tmp.$$"
+  : > "$TMPD/kept"
+  if [ -f "$_wv_f" ]; then
+    grep -v -e '^# SDD ledger — plan: ' -e '^Task [0-9][0-9]*: complete (' -e '^Landed: ' "$_wv_f" > "$TMPD/kept" || true
+  fi
+  {
+    printf '# SDD ledger — plan: %s\n' "$1"
+    awk '{ printf "Task %s: complete (commits %s..%s, review clean)\n", $1, $2, $3 }' "$TMPD/truth"
+    cat "$TMPD/kept"
+    if [ -n "$2" ]; then printf '%s\n' "$2"; fi
+  } > "$_wv_t" && mv "$_wv_t" "$_wv_f" || { rm -f "$_wv_t"; echo "could not write $_wv_f" >&2; return 1; }
+  printf 'kept: %s lines in %s\n' "$(wc -l < "$TMPD/kept" | tr -d ' ')" "$_wv_d" >> "$TMPD/sy.rep3"
+}
+
+# sync_truth LEDGER — AC10b: parse the truth region's `T<n> complete` lines into
+# $TMPD/truth (`<n> <a> <b>`, full shas, by n, de-duplicated) and verify them.
+sync_truth() {
+  : > "$TMPD/truth.raw"
+  truth_lines "$1" | grep -E '^- [0-9-]+ T[0-9]+ complete ' | awk '{ print substr($3, 2), $NF }' > "$TMPD/truth.tok" || true
+  while read -r _st_n _st_t; do
+    case "$_st_t" in *..*) ;; *) echo "T$_st_n: $_st_t is not a range <a>..<b>" >&2; return 1 ;; esac
+    _st_a="${_st_t%%..*}"; _st_b="${_st_t#*..}"
+    _st_ra="$(resolve "$_st_a")" || { echo "T$_st_n: $_st_a does not name exactly one commit (line: T$_st_n complete $_st_t)" >&2; return 1; }
+    _st_rb="$(resolve "$_st_b")" || { echo "T$_st_n: $_st_b does not name exactly one commit (line: T$_st_n complete $_st_t)" >&2; return 1; }
+    printf '%s %s %s\n' "$_st_n" "$_st_ra" "$_st_rb" >> "$TMPD/truth.raw"
+  done < "$TMPD/truth.tok"
+  sort -n -s -k1,1 "$TMPD/truth.raw" | awk '
+    { if (($1 in a) && (a[$1] != $2 || b[$1] != $3)) {
+        print "T" $1 ": two ranges in the ledger: " substr(a[$1], 1, 7) ".." substr(b[$1], 1, 7) " and " substr($2, 1, 7) ".." substr($3, 1, 7) > "/dev/stderr"; bad = 1; exit }
+      if (!($1 in a)) { a[$1] = $2; b[$1] = $3; o[++n] = $1 } }
+    END { if (!bad) for (i = 1; i <= n; i++) print o[i], a[o[i]], b[o[i]]; exit bad }' > "$TMPD/truth" || return 1
+  # D31: a rewrite shows as the adopt-base or a truth end off HEAD.
+  git merge-base --is-ancestor "$ADOPT_BASE" HEAD 2>/dev/null \
+    || { rewritten_msg 0; return 1; }
+  while read -r _st_n _st_a _st_b; do
+    git merge-base --is-ancestor "$_st_b" HEAD 2>/dev/null && continue
+    rewritten_msg "$_st_n"; return 1
+  done < "$TMPD/truth"
+  chain_check "$TMPD/truth" "$ADOPT_BASE" 1 HEAD
+}
+
+# sy_unwrite — put the ledger back as it was before the sync lines (nothing is committed yet).
+sy_unwrite() { if [ "${_sy_wrote:-0}" -eq 1 ]; then cp "$TMPD/sy.backup" "$_sy_led"; fi; }
+
+# cmd_sync ID — AC10: verify the truth, accept new SDD claims, regenerate the
+# views (D29-D36). Everything is checked before anything is written.
+cmd_sync() {
+  ID="${1:-}"; [ -n "$ID" ] && valid_id "$ID" && [ "$#" -eq 1 ] || usage
+  IN_STORY="${STUDIO_STORY:-}"; IN_RUN="${STUDIO_RUN:-}"; IN_RUN_DIR="${STUDIO_RUN_DIR:-}"
+  STATE_ROOT="$(state_root)"
+  TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+  [ -n "$TOPLEVEL" ] || { echo "not in a git checkout" >&2; return 1; }
+  cd "$TOPLEVEL" || return 1
+  : > "$TMPD/sy.rep"; : > "$TMPD/sy.rep3"
+
+  # D29: preconditions.
+  if [ ! -f "$STATE_ROOT/.studio/stories/$ID.md" ]; then
+    STUDIO_STORY="$ID" sh "$SELF_DIR/studio-state" init >/dev/null 2>&1 \
+      || { echo "cannot create the story pointer for $ID" >&2; return 1; }
+  fi
+  BRANCH="$(STUDIO_STORY="$ID" sh "$SELF_DIR/studio-state" get branch 2>/dev/null || true)"
+  if [ -z "$BRANCH" ] || [ "$BRANCH" = "-" ]; then
+    _sy_mf="$(run_manifest)"
+    BRANCH=""; if [ -n "$_sy_mf" ]; then BRANCH="$(manifest_branch "$_sy_mf" "$ID")"; fi
+    case "$BRANCH" in ''|-) echo "no branch for $ID: the story pointer has none and no run manifest has a row for it" >&2; return 1 ;; esac
+  fi
+  _sy_cur="$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+  [ "$_sy_cur" = "$BRANCH" ] \
+    || { echo "run sync on the story branch $BRANCH (this checkout is on ${_sy_cur:-a detached HEAD})" >&2; return 1; }
+  _sy_have=1
+  if ! git_retry git fetch -q origin "$BRANCH"; then
+    if grep -q "couldn't find remote ref" "$TMPD/gr.err"; then _sy_have=0
+    else echo "git fetch origin $BRANCH failed: $(head -n 1 "$TMPD/gr.err")" >&2; return 1; fi
+  fi
+  if [ "$_sy_have" -eq 1 ]; then
+    _sy_o="$(resolve "refs/remotes/origin/$BRANCH")" || _sy_o=""
+    _sy_h="$(resolve HEAD)" || { echo "no commits on $BRANCH" >&2; return 1; }
+    if [ -n "$_sy_o" ] && [ "$_sy_o" != "$_sy_h" ]; then
+      if git merge-base --is-ancestor "$_sy_h" "$_sy_o" 2>/dev/null; then
+        git merge -q --ff-only "origin/$BRANCH" >/dev/null 2>"$TMPD/gr.err" \
+          || { echo "cannot fast-forward $BRANCH to origin/$BRANCH: $(head -n 1 "$TMPD/gr.err") — if it names .studio/ledger/$ID.md, commit or drop the local ledger lines, then sync" >&2; return 1; }
+      elif ! git merge-base --is-ancestor "$_sy_o" "$_sy_h" 2>/dev/null; then
+        echo "$BRANCH has diverged from origin/$BRANCH — reconcile it by hand, then sync" >&2; return 1
+      fi
+    fi
+  fi
+  live_run_check || return 1
+
+  # The truth: the ledger as it stands in this tree.
+  _sy_led="$TOPLEVEL/.studio/ledger/$ID.md"
+  [ -f "$_sy_led" ] || { echo "no ledger for $ID on $BRANCH — run: studio-adopt seed $ID" >&2; return 1; }
+  ledger_texts "$_sy_led" > "$TMPD/sd.truth"
+  _sy_ad="$(sed -n 's/^adopted \(.* -> .*\)$/\1/p' "$TMPD/sd.truth" | tail -n 1)"
+  [ -n "$_sy_ad" ] || { echo "no adopted line for $ID in the ledger of $BRANCH — run: studio-adopt seed $ID" >&2; return 1; }
+  ORIG_PLAN="${_sy_ad%% -> *}"; CONV_PLAN="${_sy_ad#* -> }"
+  ADOPT_BASE="$(sed -n 's/^adopt-base //p' "$TMPD/sd.truth" | tail -n 1)"
+  [ -n "$ADOPT_BASE" ] || { echo "no adopt-base for $ID in the ledger of $BRANCH — run: studio-adopt seed $ID" >&2; return 1; }
+  ADOPT_BASE="$(resolve "$ADOPT_BASE")" || { echo "adopt-base does not name exactly one commit" >&2; return 1; }
+  TIP="$(resolve HEAD)"
+  DEFAULT="$(default_branch)" || return 1
+  TARGET="$(run_target)"
+  _sy_of="$(plan_file "$ORIG_PLAN")" || return 1
+  N="$(task_count "$_sy_of")"
+  [ "$N" -gt 0 ] || { echo "$ORIG_PLAN has no tasks" >&2; return 1; }
+
+  sync_truth "$_sy_led" || return 1
+  K0="$(awk 'END { print $1 + 0 }' "$TMPD/truth")"
+  _sy_prev="$ADOPT_BASE"; if [ "$K0" -gt 0 ]; then _sy_prev="$(awk 'END { print $3 }' "$TMPD/truth")"; fi
+
+  # AC10c: claims.
+  merged_claims "$ORIG_PLAN" > "$TMPD/chain" || return 1
+  _sy_over="$(awk -v n="$N" '$1 + 0 > n { print $1; exit }' "$TMPD/chain")"
+  [ -z "$_sy_over" ] || { echo "claim for Task $_sy_over but $ORIG_PLAN has $N tasks" >&2; return 1; }
+  while read -r _sy_n _sy_a _sy_b; do
+    [ "$_sy_n" -le "$K0" ] || continue
+    _sy_e="$(awk -v n="$_sy_n" '$1 == n { print $3 }' "$TMPD/truth")"
+    [ "$_sy_b" = "$_sy_e" ] \
+      || { echo "Task $_sy_n: the SDD claim ends at $(s7 "$_sy_b") but the ledger's T$_sy_n ends at $(s7 "$_sy_e")" >&2; return 1; }
+  done < "$TMPD/chain"
+  awk -v k="$K0" '$1 + 0 > k' "$TMPD/chain" > "$TMPD/new"
+  chain_check "$TMPD/new" "$_sy_prev" "$((K0 + 1))" HEAD claim || return 1
+  K1="$K0"; _sy_end="$_sy_prev"
+  if [ -s "$TMPD/new" ]; then K1="$(awk 'END { print $1 }' "$TMPD/new")"; _sy_end="$(awk 'END { print $3 }' "$TMPD/new")"; fi
+  cat "$TMPD/truth" "$TMPD/new" > "$TMPD/truth.all"; cp "$TMPD/truth.all" "$TMPD/truth"
+
+  # AC10f: rulings carried.
+  : > "$TMPD/sd.add"
+  while read -r _sy_n _sy_a _sy_b; do sd_add "T$_sy_n complete $_sy_a..$_sy_b"; done < "$TMPD/new"
+  seed_ac10f "$K1" > "$TMPD/sd.f"
+  while IFS= read -r _sy_l; do sd_add "$_sy_l"; done < "$TMPD/sd.f"
+
+  # Write the lines now (restored on any failure); the commit and push come last,
+  # after the task view and the views, so a failure there leaves nothing landed.
+  _sy_pushed=""; _sy_wrote=0
+  if [ -s "$TMPD/sd.add" ]; then
+    cp "$_sy_led" "$TMPD/sy.backup"
+    _sy_ok=1
+    while IFS= read -r _sy_l; do
+      STUDIO_STORY="$ID" sh "$SELF_DIR/studio-state" ledger "$_sy_l" >/dev/null || { _sy_ok=0; break; }
+    done < "$TMPD/sd.add"
+    if [ "$_sy_ok" -eq 0 ]; then
+      cp "$TMPD/sy.backup" "$_sy_led"
+      echo "could not write the sync lines for $ID — ledger restored" >&2
+      return 1
+    fi
+    _sy_wrote=1
+  fi
+
+  # Report, part one.
+  {
+    if [ -s "$TMPD/new" ]; then awk '{ print "accepted: T" $1 " " $2 ".." $3 }' "$TMPD/new"
+    elif [ ! -s "$TMPD/sd.add" ]; then echo "already in sync"; fi
+    _sy_carry=$(( $(grep -c . "$TMPD/sd.add" || true) - $(grep -c . "$TMPD/new" || true) ))
+    if [ "$_sy_carry" -gt 0 ]; then printf 'carried: %s lines\n' "$_sy_carry"; fi
+    printf 'k: %s/%s -> %s/%s\n' "$K0" "$N" "$K1" "$N"
+  } > "$TMPD/sy.rep"
+
+  # D35: the task view.
+  _sy_stage="$(STUDIO_STORY="$ID" sh "$SELF_DIR/studio-state" get stage 2>/dev/null || true)"
+  if [ "$_sy_stage" = "execute" ]; then
+    STUDIO_STORY="$ID" sh "$SELF_DIR/studio-state" check --rebuild >"$TMPD/sy.chk" 2>&1 \
+      || { cat "$TMPD/sy.chk" >&2; sy_unwrite; echo "studio-state check --rebuild failed for $ID — nothing committed" >&2; return 1; }
+  else echo "task view: skipped (stage ${_sy_stage:-unknown})" >> "$TMPD/sy.rep"; fi
+
+  # D32-D33: the views, and the landed note.
+  _sy_landed=""
+  _sy_mf="$(run_manifest)"
+  if [ -n "$_sy_mf" ]; then
+    _sy_slug="$(sed -n 's/^# Run:[ 	]*//p' "$_sy_mf" | head -n 1 | sed -e 's/[ 	]#.*$//' -e 's/[ 	]*$//')"
+    _sy_tsv="$STATE_ROOT/.studio/runs/$_sy_slug/landed.tsv"
+    if [ -n "$_sy_slug" ] && [ -f "$_sy_tsv" ]; then
+      _sy_lr="$(awk -F'\t' -v id="$ID" '$1 == id { t = $2; s = $3 } END { if (t != "") print t " " s }' "$_sy_tsv")"
+      if [ -n "$_sy_lr" ]; then _sy_landed="Landed: ${_sy_lr% *} at ${_sy_lr#* } — continue dependent stories from there"; fi
+    fi
+  fi
+  write_view "$ORIG_PLAN" "$_sy_landed" || { sy_unwrite; echo "nothing committed" >&2; return 1; }
+  write_view "$CONV_PLAN" "" || { sy_unwrite; echo "nothing committed" >&2; return 1; }
+  cat "$TMPD/sy.rep3" >> "$TMPD/sy.rep"
+  _sy_trees="$(cut -f1 "$TMPD/ws" | awk '!s[$0]++' | paste -sd, - | sed 's/,/, /g')"
+  printf 'trees: %s\n' "${_sy_trees:-none}" >> "$TMPD/sy.rep"
+
+  # The commit (restored on failure), then the push: the last writes.
+  if [ "$_sy_wrote" -eq 1 ]; then
+    if ! commit_ledger "chore(studio): ledger (sync)" "$_sy_led" 1 "$TMPD/sy.backup"; then
+      cp "$TMPD/sy.backup" "$_sy_led"
+      echo "could not write the sync lines for $ID — ledger restored" >&2
+      return 1
+    fi
+    if git_retry git push -q origin "$BRANCH"; then _sy_pushed="pushed $BRANCH"
+    else _sy_pushed="push failed: $(head -n 1 "$TMPD/gr.err")"; echo "$_sy_pushed" >&2; fi
+  fi
+
+  # AC11: work already on the branch past the last accepted task.
+  build_checkset "$ID" HEAD
+  part_done "$_sy_end" HEAD "$ORIG_PLAN $(docs_paths "$ID")" > "$TMPD/pd"
+  if [ -s "$TMPD/pd" ]; then
+    _sy_r="$(head -n 1 "$TMPD/pd")..$(tail -n 1 "$TMPD/pd")"
+    if [ "$K1" -lt "$N" ]; then printf 'T%s in progress: %s\n' "$((K1 + 1))" "$_sy_r" >> "$TMPD/sy.rep"
+    else printf 'post-task commits: %s\n' "$_sy_r" >> "$TMPD/sy.rep"; fi
+  fi
+  if [ -n "$_sy_pushed" ]; then printf '%s\n' "$_sy_pushed" >> "$TMPD/sy.rep"; fi
+  cat "$TMPD/sy.rep"
+  return 0
+}
+
+main() {
+  [ "$#" -ge 1 ] || usage
+  case "$1" in
+    --help|-h) usage_text; exit 0 ;;
+    inspect) shift; cmd_inspect "$@"; exit $? ;;
+    seed) shift; cmd_seed "$@"; exit $? ;;
+    sync) shift; cmd_sync "$@"; exit $? ;;
+    *) usage ;;
+  esac
+}
+
+main "$@"

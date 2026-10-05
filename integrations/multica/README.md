@@ -105,8 +105,10 @@ starts.
 1. **Plan (terminal, in the project).** Run `claude-gd`, then `/omega:autopilot`.
    - Answer its first question: integration mode (recommended: stories land on
      `integration/<slug>` and you get one draft PR into main) and the lane count.
-   - List the night's stories. It writes the manifest `docs/runs/<slug>.md` on
-     branch `run/<slug>`.
+   - List the night's stories — or point autopilot at an existing plan (made
+     outside the studio, e.g. with superpowers): it converts it, keeps the
+     original, and takes the finished work from the SDD ledger. It writes the
+     manifest `docs/runs/<slug>.md` on branch `run/<slug>`.
    - Work the planning loop: for each story it prints `/clear` and the next
      command (`/game-dev:brainstorm <id>` or `/game-dev:plan`). Answer, reply
      **approve**, then run `/omega:autopilot` again. Repeat until every story is
