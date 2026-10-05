@@ -70,12 +70,20 @@ fork_point() {
   git rev-list --first-parent --skip="$_fp_n" --max-count=1 "$1" 2>/dev/null | grep . || return 1
 }
 
+# state_root — the start checkout's root (the stage pointer's root). Computed
+# once per run into STATE_ROOT (callers set it before any subshell uses it).
+STATE_ROOT=""; TOPLEVEL=""
+state_root() {
+  if [ -n "$STATE_ROOT" ]; then printf '%s\n' "$STATE_ROOT"; return 0; fi
+  sh "$SELF_DIR/studio-state" root 2>/dev/null || true
+}
+
 # plan_file PATH — the plan's file: in the current tree, else in the start
 # checkout (D25).
 plan_file() {
-  _pf_w="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+  _pf_w="${TOPLEVEL:-$(git rev-parse --show-toplevel 2>/dev/null || true)}"
   if [ -n "$_pf_w" ] && [ -f "$_pf_w/$1" ]; then printf '%s\n' "$_pf_w/$1"; return 0; fi
-  _pf_r="$(sh "$SELF_DIR/studio-state" root 2>/dev/null || true)"
+  _pf_r="$(state_root)"
   if [ -n "$_pf_r" ] && [ -f "$_pf_r/$1" ]; then printf '%s\n' "$_pf_r/$1"; return 0; fi
   echo "plan $1 not found in this tree or in the start checkout" >&2
   return 1
@@ -101,9 +109,11 @@ workspaces() {
   git worktree list --porcelain | sed -n 's/^worktree //p' | while IFS= read -r t; do
     for d in "$t"/.superpowers/sdd/*/; do
       [ -f "$d/plan-path" ] || continue
-      [ "$(cat "$d/plan-path")" = "$_ws_p" ] && printf '%s\t%s\n' "$t" "${d%/}"
+      if [ "$(cat "$d/plan-path")" = "$_ws_p" ]; then printf '%s\t%s\n' "$t" "${d%/}"; fi
     done
   done
+  # Always 0: no match is an empty result, not an error (callers test WS_LIST).
+  return 0
 }
 
 # claims_of PROGRESS — per `Task <n>: complete (commits …)` line: `<n> <first>
@@ -112,7 +122,8 @@ workspaces() {
 claims_of() {
   grep -E '^Task [0-9]+: complete \(commits ' "$1" 2>/dev/null | while IFS= read -r _co_l; do
     _co_n="$(printf '%s\n' "$_co_l" | sed 's/^Task \([0-9]*\):.*/\1/')"; _co_f=""; _co_z=""
-    for _co_t in $(printf '%s\n' "${_co_l#*commits }" | tr -c '0-9a-f' ' '); do
+    _co_r="${_co_l#*commits }"; _co_r="${_co_r%%)*}"
+    for _co_t in $(printf '%s\n' "$_co_r" | tr -c '0-9a-f' ' '); do
       case "${#_co_t}" in [7-9]|[1-3][0-9]|40) ;; *) continue ;; esac
       _co_s="$(resolve "$_co_t")" || continue
       [ -n "$_co_f" ] || _co_f="$_co_s"; _co_z="$_co_s"
@@ -160,7 +171,7 @@ chain_check() {
     git merge-base --is-ancestor "$_cc_a" "$_cc_b" 2>/dev/null \
       || { echo "T$_cc_n: $(s7 "$_cc_a") is not an ancestor of $(s7 "$_cc_b")" >&2; return 1; }
     git merge-base --is-ancestor "$_cc_b" "$4" 2>/dev/null \
-      || { echo "T$_cc_n: $(s7 "$_cc_b") is not on $BRANCH" >&2; return 1; }
+      || { echo "T$_cc_n: $(s7 "$_cc_b") is not on $BRANCH — history of $BRANCH was rewritten after T$_cc_n — re-adopt: studio-adopt seed $ID --reset" >&2; return 1; }
     git merge-base --is-ancestor "$_cc_p" "$_cc_a" 2>/dev/null \
       || { echo "T$_cc_n: $(s7 "$_cc_a") does not follow $(s7 "$_cc_p")" >&2; return 1; }
     touches_work "$_cc_a" "$_cc_b" \
@@ -198,7 +209,7 @@ part_done() {
 run_target() {
   _rt_m="${STUDIO_RUN:-}"
   if [ -z "$_rt_m" ]; then
-    _rt_r="$(sh "$SELF_DIR/studio-state" root 2>/dev/null || true)"
+    _rt_r="$(state_root)"
     _rt_m="$(head -n 1 "$_rt_r/.studio/run" 2>/dev/null || true)"
     case "$_rt_m" in ''|/*) ;; *) _rt_m="$_rt_r/$_rt_m" ;; esac
   fi
@@ -217,7 +228,7 @@ truth_lines() {
 # the converted plan, the spec, and the converted plan's `Context:` paths,
 # from `adopted`/`source` lines of the start checkout's story ledger.
 docs_paths() {
-  _dp_r="$(sh "$SELF_DIR/studio-state" root 2>/dev/null || true)"
+  _dp_r="$(state_root)"
   _dp_l="$_dp_r/.studio/ledger/$1.md"
   [ -f "$_dp_l" ] || return 0
   _dp_c=""
@@ -235,13 +246,14 @@ docs_paths() {
   printf '%s\n' "${_dp_c# }"
 }
 
-# build_checkset ID — every commit inside a `check done <a>..<b>` range of the
-# story ledger, into $TMPD/checkset.
+# build_checkset ID TIP — every commit inside a `check done <a>..<b>` range of
+# the story ledger as committed at TIP (AC13: the check unit writes it on the
+# story branch; a missing file is empty), into $TMPD/checkset.
 build_checkset() {
   : > "$TMPD/checkset"
-  _bc_r="$(sh "$SELF_DIR/studio-state" root 2>/dev/null || true)"
-  _bc_l="$_bc_r/.studio/ledger/$1.md"
-  [ -f "$_bc_l" ] || return 0
+  [ -n "$2" ] || return 0
+  _bc_l="$TMPD/checkset.ledger"
+  git show "$2:.studio/ledger/$1.md" > "$_bc_l" 2>/dev/null || return 0
   sed -n 's/^- [0-9-]* check done \([^ ]*\.\.[^ ]*\).*$/\1/p' "$_bc_l" | while IFS= read -r _bc_g; do
     git rev-list "$_bc_g" >> "$TMPD/checkset" 2>/dev/null || true
   done
@@ -264,14 +276,16 @@ cmd_inspect() {
   done
   [ -n "$BRANCH" ] && [ -n "$_in_plan" ] || usage
 
+  STATE_ROOT="$(state_root)"
+  TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null || true)"
   _in_pf="$(plan_file "$_in_plan")" || return 1
   N="$(task_count "$_in_pf")"
   [ "$N" -gt 0 ] || { echo "$_in_plan has no tasks" >&2; return 1; }
   DEFAULT="$(default_branch)" || return 1
   TARGET="$(run_target)"
-  build_checkset "$ID"
 
   TIP="$(resolve "refs/heads/$BRANCH")" || TIP="$(resolve "refs/remotes/origin/$BRANCH")" || TIP=""
+  build_checkset "$ID" "$TIP"
   : > "$TMPD/report"
   if [ -z "$TIP" ]; then
     merged_claims "$_in_plan" > "$TMPD/chain" || return 1

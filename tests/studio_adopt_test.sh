@@ -25,10 +25,24 @@ WS=.superpowers/sdd/2026-09-01-demo
 # task 0/TASKS, branch S1-b, stage execute) and $P's ledger lines `source` and
 # `adopted`. Sets P, W, BASE (main's tip) and C1..C<DONE> (full shas).
 adopt_repo() {
-  P="$TMP/$1"; W="$TMP/$1-wt"; _n="$2"; _d="$3"
-  rm -rf "$P" "$W" "$TMP/$1.git"; git init -q --bare "$TMP/$1.git"
+  _n="$2"; _d="$3"; _t="$TMP/tpl-$_n-$_d"
+  # The fixture is built once per (TASKS, DONE) into a template, then copied
+  # per test: the build costs seconds, a copy costs milliseconds.
+  [ -d "$_t" ] || build_adopt_tpl "tpl-$_n-$_d" "$_n" "$_d"
+  P="$TMP/$1"; W="$TMP/$1-wt"
+  rm -rf "$P" "$W" "$TMP/$1.git"
+  cp -R "$_t/p" "$P"; cp -R "$_t/wt" "$W"; cp -R "$_t/origin.git" "$TMP/$1.git"
+  ( cd "$P" && git remote set-url origin "$TMP/$1.git" \
+      && printf '%s/.git\n' "$W" > .git/worktrees/wt/gitdir && printf 'gitdir: %s/.git/worktrees/wt\n' "$P" > "$W/.git" ) >/dev/null 2>&1 \
+    || { TESTS_RUN=$((TESTS_RUN + 1)); _fail "adopt_repo $1: copy failed"; }
+  BASE="$(git -C "$P" rev-parse main)"
+  i=1; while [ "$i" -le "$_d" ]; do eval "C$i=\$(cat \"\$_t/c$i\")"; i=$((i + 1)); done
+}
+build_adopt_tpl() {
+  _bt="$TMP/$1"; mkdir -p "$_bt"; P="$_bt/p"; W="$_bt/wt"; _n="$2"; _d="$3"
+  git init -q --bare "$_bt/origin.git"
   ( set -e; git init -q -b main "$P"; cd "$P"
-    git remote add origin "$TMP/$1.git"
+    git remote add origin "$_bt/origin.git"
     mkdir -p "$(dirname "$ORIG")" "$(dirname "$CONV")"
     { printf '# Demo plan\n\n'; i=1
       while [ "$i" -le "$_n" ]; do printf '### Task %s: step %s\n\nFiles: src/s%s.txt\n\n' "$i" "$i" "$i"; i=$((i + 1)); done; } > "$ORIG"
@@ -47,13 +61,11 @@ adopt_repo() {
       _a="$(git rev-parse --short HEAD)"
       printf 'T%s\n' "$i" > "S1-T$i.txt"; git add "S1-T$i.txt"; git commit -q -m "feat: step $i"
       printf 'Task %s: complete (commits %s..%s, review clean)\n' "$i" "$_a" "$(git rev-parse --short HEAD)" >> "$WS/progress.md"
-      git rev-parse HEAD > "$TMP/$1.c$i"; i=$((i + 1))
+      git rev-parse HEAD > "$_bt/c$i"; i=$((i + 1))
     done
     git push -q origin S1-b
     sh "$STATE_BIN" set branch S1-b; sh "$STATE_BIN" set stage execute ) >/dev/null 2>&1 \
     || { TESTS_RUN=$((TESTS_RUN + 1)); _fail "adopt_repo $1: setup failed"; }
-  BASE="$(git -C "$P" rev-parse main)"
-  i=1; while [ "$i" -le "$_d" ]; do eval "C$i=\$(cat \"\$TMP/$1.c$i\")"; i=$((i + 1)); done
 }
 # adopt DIR ARGS — studio-adopt ARGS in DIR: AD_STATUS, $TMP/ad.out, $TMP/ad.err.
 adopt() { _ad="$1"; shift; AD_STATUS=0; ( cd "$_ad" && sh "$ADOPT" "$@" ) > "$TMP/ad.out" 2> "$TMP/ad.err" || AD_STATUS=$?; }
@@ -207,7 +219,53 @@ test_adopt_explicit_base() {
   assert_contains "$TMP/ad.err" "nope" "names the token"
 }
 
+test_adopt_check_done_on_branch_ledger() {
+  adopt_repo cd 6 3
+  # AC13: the check unit commits `check done <a>..<b>` in the story branch's
+  # ledger; the start checkout's ledger has no such line.
+  wt_commit "fix: before check" fa.txt; _fa="$(git -C "$W" rev-parse HEAD)"
+  wt_commit "fix: after check" fb.txt; _fb="$(git -C "$W" rev-parse HEAD)"
+  wt_commit "wip real" wr.txt; _wr="$(git -C "$W" rev-parse HEAD)"
+  inspect_s1
+  assert_contains "$TMP/ad.out" "^T4 in progress: $_fa\.\.$_wr$" "before the ledger line: all three count"
+  ( cd "$W" && mkdir -p .studio/ledger && printf -- '- 2026-10-04 check done %s..%s\n' "$C3" "$_fb" >> .studio/ledger/S1.md \
+    && git add .studio/ledger/S1.md && git commit -q -m "chore(studio): check done" ) >/dev/null 2>&1
+  inspect_s1
+  assert_eq 0 "$AD_STATUS" "check done on the branch: exit 0"
+  assert_contains "$TMP/ad.out" "^T4 in progress: $_wr\.\.$_wr$" "commits inside the branch ledger's check range are not part-done"
+}
+
+test_adopt_workspaces_status() {
+  adopt_repo wsx 6 3
+  mkdir -p "$W/.superpowers/sdd/zz-other"; printf 'docs/other.md\n' > "$W/.superpowers/sdd/zz-other/plan-path"
+  sed '$d' "$ADOPT" > "$TMP/adopt.lib"
+  ( cd "$P" && . "$TMP/adopt.lib" && TMPD="$TMP/wsd" && workspaces "$ORIG" > "$TMP/ws.out"; echo "$?" > "$TMP/ws.st" ) 2>/dev/null
+  assert_eq 0 "$(cat "$TMP/ws.st")" "a matching workspace printed: status 0 though the last scanned names another plan"
+  assert_eq 1 "$(wc -l < "$TMP/ws.out" | tr -d ' ')" "only the matching workspace is printed"
+  ( cd "$P" && . "$TMP/adopt.lib" && TMPD="$TMP/wsd" && workspaces "docs/none.md" > "$TMP/ws.out"; echo "$?" > "$TMP/ws.st" ) 2>/dev/null
+  assert_eq 0 "$(cat "$TMP/ws.st")" "no match: empty output, status 0"
+  assert_eq 0 "$(wc -c < "$TMP/ws.out" | tr -d ' ')" "no match prints nothing"
+}
+
+test_adopt_claim_stops_at_close_paren() {
+  adopt_repo cp 6 3
+  set_claims "Task 1: complete (commits $(s7 "$BASE")..$(s7 "$C1"), review clean) fixed $(s7 "$C3")"
+  inspect_s1
+  assert_eq 0 "$AD_STATUS" "a hex token after the closing paren: exit 0"
+  assert_contains "$TMP/ad.out" "^T1 complete $BASE\.\.$C1$" "only the tokens inside the parentheses count"
+}
+
+test_adopt_rewritten_history_message() {
+  adopt_repo rw 6 3
+  ( cd "$W" && git commit -q --amend -m "feat: step 3 reworded" ) >/dev/null 2>&1
+  inspect_s1
+  assert_eq 1 "$AD_STATUS" "a claim whose end left the branch: exit 1"
+  assert_contains "$TMP/ad.err" "history of S1-b was rewritten after T3 — re-adopt: studio-adopt seed S1 --reset" "AC10b wording"
+}
+
 run_tests test_adopt_help_and_usage test_adopt_inspect_clean_chain test_adopt_inspect_from_any_checkout \
   test_adopt_inspect_not_started test_adopt_inspect_no_workspace test_adopt_main_merged_between_tasks \
   test_adopt_claim_tokens test_adopt_claim_gaps_and_order test_adopt_short_sha_lines_parse \
-  test_adopt_part_done_filter test_adopt_post_task_commits test_adopt_explicit_base
+  test_adopt_part_done_filter test_adopt_post_task_commits test_adopt_explicit_base \
+  test_adopt_check_done_on_branch_ledger test_adopt_workspaces_status test_adopt_claim_stops_at_close_paren \
+  test_adopt_rewritten_history_message
