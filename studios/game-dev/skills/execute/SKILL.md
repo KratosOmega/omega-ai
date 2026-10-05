@@ -10,9 +10,14 @@ description: Use when an approved plan exists — dispatches a fresh role agent 
 `--one` was given).
 
 **Never search for a tool or script.** Do not run `find /`, `find ~`, `locate`
-or a recursive `ls` from `/` or `$HOME` to look for one: a search can hang a
-headless unit for hours. Find SDD's scripts with `sdd-script` (below), use a
-path this studio documents, or stop and report the tool as missing.
+or a recursive `ls` from `/`, `~` or `$HOME` to look for one: a search can hang
+a headless unit for hours. `find .` or `git ls-files` inside the project, and
+`command -v`, are fine. Find superpowers' scripts with `sdd-script` (below),
+use a path this studio documents, or stop and report the tool as missing.
+If `sdd-script` is command not found, run
+`"$(command -v sdd-script || echo "$OMEGA_STUDIO_ROOT/bin/sdd-script")"` in its
+place; if that is missing too, stop and report "reinstall omega-ai". Never look
+for it.
 
 ## 0. Preconditions and isolation
 
@@ -245,7 +250,10 @@ procedures, below).
 `superpowers:subagent-driven-development` and follow its loop for the
 per-task cycle: fresh implementer per task, task review after each, ledger.
 Its fix loop, its final review and its last step are replaced by §4a, §5 and
-§7 below. The studio rules in §2–§7 layer on top of it.
+§7 below. The studio rules in §2–§7 layer on top of it. When a superpowers
+skill says `scripts/<name>`, run `bash "$(sdd-script [--skill <skill>] <name>)" ...`
+(`--skill executing-plans` for task-start and task-done); if that fails, stop
+and report it (`sdd-script` not found: "reinstall omega-ai").
 Under `--one`, SDD's setup never reads the plan: the one task's text comes from `studio-brief task <n>`, and no other task is extracted.
 Under `--one`, see §8.
 
@@ -284,7 +292,7 @@ The `Role:` values are the studio's agents: `game-dev:gameplay-programmer`,
 `game-dev:producer`, `game-dev:playtester` and `game-dev:reviewer` never
 appear in `Role:`.
 
-Every brief also carries: the task text (via the skill's task-brief script, ``bash "$(sdd-script task-brief)"``),
+Every brief also carries: the task text (via the skill's task-brief script, ``bash "$(sdd-script task-brief)" <plan> <n>``),
 the spec sections the task cites, and the project `CLAUDE.md` architecture
 rules. The agent's own `## Skills you may call` section (in
 `agents/<role>.md`) names the skills it reads before writing code. A stuck

@@ -680,8 +680,13 @@ test_sdd_script_references() {
   assert_not_contains "$ex" "SDD's skill directory" "execute no longer says 'SDD's skill directory'"
   assert_not_contains "$ex" 'bash scripts/review-package' "execute has no bare scripts/review-package path"
   assert_contains "$ex" 'Never search for a tool or script' "execute carries the no-search rule"
+  assert_contains "$ex" 'bash "$(sdd-script \[--skill <skill>\] <name>)"' "execute maps a superpowers skill's scripts/<name> to sdd-script"
+  assert_contains "$ex" 'reinstall omega-ai' "execute: sdd-script not found means reinstall omega-ai"
+  assert_contains "$ex" '"$(sdd-script task-brief)" <plan> <n>' "execute's task-brief call carries <plan> <n>"
+  assert_contains "$ex" '`find .` or `git ls-files` inside the project' "execute: searching inside the project is fine"
   for f in "$REPO_ROOT"/studios/game-dev/agents/*.md; do
     assert_contains "$f" 'Never search for a tool or script' "$(basename "$f") carries the no-search rule"
+    assert_contains "$f" '`find .` or `git ls-files` inside the project' "$(basename "$f") allows searching inside the project"
   done
 }
 

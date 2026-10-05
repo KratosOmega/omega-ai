@@ -32,7 +32,7 @@ Method:
 
 ## Finding tools
 
-Never search for a tool or script: no `find /`, `find ~`, `locate` or recursive `ls` from `/` or `$HOME`. A search can hang a headless unit for hours. Use `sdd-script` (superpowers scripts), a path the studio documents, or stop and report the tool as missing.
+Never search for a tool or script: no `find /`, `find ~`, `locate` or recursive `ls` from `/`, `~` or `$HOME`. `find .` or `git ls-files` inside the project, and `command -v`, are fine. A search can hang a headless unit for hours. Use `sdd-script` (superpowers scripts), a path the studio documents, or stop and report the tool as missing.
 
 ## Skills you may call
 

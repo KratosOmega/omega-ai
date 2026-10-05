@@ -10,7 +10,7 @@ trap 'rm -rf "$TMP"' EXIT
 SDD=skills/subagent-driven-development/scripts
 
 # fresh N — a new empty config dir $CFG
-fresh() { CFG="$TMP/cfg.$1"; rm -rf "$CFG"; mkdir -p "$CFG/plugins"; }
+fresh() { CFG="$TMP/cfg dir.$1"; rm -rf "$CFG"; mkdir -p "$CFG/plugins"; }
 # cache VERSION — the cached superpowers VERSION directory
 cache() { printf '%s' "$CFG/plugins/cache/claude-plugins-official/superpowers/$1"; }
 # ver VERSION SKILL NAME… — a cached superpowers VERSION holding those scripts
@@ -20,12 +20,29 @@ ver() {
   mkdir -p "$_d"
   for _n in "$@"; do : > "$_d/$_n"; done
 }
-# installed VERSION — installed_plugins.json naming that cached version active
-installed() {
-  cat > "$CFG/plugins/installed_plugins.json" <<JSON
-{"version":2,"plugins":{"superpowers@claude-plugins-official":[{"scope":"user","installPath":"$(cache "$1")","version":"$1"}]}}
-JSON
+# entry VERSION SCOPE — one superpowers registry entry (pretty-printed)
+entry() {
+  printf '      {\n        "scope": "%s",\n        "installPath": "%s",\n        "version": "%s"\n      }' "$2" "$(cache "$1")" "$1"
 }
+# registry ENTRY… — installed_plugins.json shaped like the real one: other
+# plugins before and after superpowers, pretty-printed
+registry() {
+  {
+    printf '{\n  "version": 2,\n  "plugins": {\n'
+    printf '    "caveman@caveman": [\n      {\n        "scope": "user",\n        "installPath": "%s/other/caveman",\n        "version": "1.0.0"\n      }\n    ],\n' "$CFG"
+    printf '    "superpowers@claude-plugins-official": [\n'
+    _first=1
+    for _e in "$@"; do
+      [ "$_first" = 1 ] || printf ',\n'
+      _first=0
+      printf '%s' "$_e"
+    done
+    printf '\n    ],\n'
+    printf '    "godot-prompter@gp": [\n      {\n        "scope": "user",\n        "installPath": "%s/other/gp",\n        "version": "2.0.0"\n      }\n    ]\n  }\n}\n' "$CFG"
+  } > "$CFG/plugins/installed_plugins.json"
+}
+# installed VERSION — installed_plugins.json naming that cached version active
+installed() { registry "$(entry "$1" user)"; }
 # run ARGS — sdd-script under $CFG; stdout run.out, stderr run.err, exit RC
 run() {
   RC=0
@@ -107,5 +124,42 @@ test_usage() {
   nonzero "no name: non-zero"
 }
 
+test_multi_entries() {
+  fresh 9
+  ver 6.3.0 subagent-driven-development review-package
+  ver 6.4.1 subagent-driven-development review-package
+  ver 6.5.0 subagent-driven-development review-package
+  registry "$(entry 6.5.0 project)" "$(entry 6.3.0 user)" "$(entry 6.4.1 project)"
+  run review-package
+  assert_eq "$(cache 6.3.0)/$SDD/review-package" "$(out)" "several entries: the user-scope entry wins"
+  registry "$(entry 6.4.1 project)" "$(entry 6.5.0 project)"
+  run review-package
+  assert_eq "$(cache 6.4.1)/$SDD/review-package" "$(out)" "no user-scope entry: the first entry wins, not the last"
+}
+test_prerelease_order() {
+  fresh 10
+  ver 6.4.1 subagent-driven-development review-package
+  ver 6.4.1-beta subagent-driven-development review-package
+  ver 6.4.0 subagent-driven-development review-package
+  run review-package
+  assert_eq "$(cache 6.4.1)/$SDD/review-package" "$(out)" "6.4.1 ranks above 6.4.1-beta"
+}
+test_empty_highest() {
+  fresh 11
+  ver 6.4.1 subagent-driven-development review-package
+  mkdir -p "$(cache 9.0.0)"
+  run review-package
+  assert_eq "$(cache 6.4.1)/$SDD/review-package" "$(out)" "an empty highest version folder is skipped"
+}
+test_space_in_config_dir() {
+  fresh 12
+  ver 6.4.1 subagent-driven-development review-package
+  installed 6.4.1
+  run review-package
+  case "$CFG" in *" "*) _pass "config dir path contains a space" ; TESTS_RUN=$((TESTS_RUN + 1)) ;; *) _fail "no space in $CFG"; TESTS_RUN=$((TESTS_RUN + 1)) ;; esac
+  assert_eq "$(cache 6.4.1)/$SDD/review-package" "$(out)" "registry path resolved under a config dir with a space"
+}
+
 run_tests test_installpath_wins test_highest_version test_stale_installed test_skill_flag \
-  test_missing_script test_no_superpowers test_home_fallback test_usage
+  test_missing_script test_no_superpowers test_home_fallback test_usage \
+  test_multi_entries test_prerelease_order test_empty_highest test_space_in_config_dir
