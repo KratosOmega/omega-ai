@@ -1,7 +1,7 @@
 # Concurrent autopilot runs — Spec
 
 Date: 2026-10-04
-Status: Draft (awaiting operator review; spec falsifier findings folded in)
+Status: Approved (operator, 2026-10-04; spec falsifier findings folded in)
 Milestone: Plan 3 — Content (studio tooling; follows overnight lanes, #19, the operator channel, #27, Multica, #28, and autopilot adopt, #35)
 Classification: architectural
 
