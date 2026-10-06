@@ -273,8 +273,8 @@ usage: $SELF_ABS start [--dry-run | --detach] [<manifest>] | status [--run <slug
                      story; --dry-run prints the chains, each chain's first
                      launch line and the deny rule count.
   start --detach <manifest>
-                     manifest mode, detached from the chat: preflight runs in the
-                     foreground (a refusal exits 2), then the runner starts in
+                     manifest mode, detached from the chat: preflight (worktree_setup's
+                     check included) runs in the foreground (a refusal exits 2), then the runner starts in
                      its own session with stdin /dev/null and output in
                      reports/overnight-<slug>-detached-<ts>.log (linked as
                      runner.log in the run dir). Every variable named CLAUDECODE,
@@ -419,6 +419,9 @@ Environment:
                      written as origin= in this run's registry entry; the
                      runner never interprets it and does not pass it to unit
                      sessions
+  STUDIO_OVERNIGHT_SETUP_CHECKED — set by --detach for its child: the commit the
+                     foreground worktree_setup check passed at; start skips the
+                     check when it names the base's commit. Never set it yourself
 
 Test hooks (tests only; never set them for a real run; --detach strips them):
   STUDIO_OVERNIGHT_POLL_SECONDS — test hook: a whole number of seconds between
@@ -1326,7 +1329,9 @@ story_units() {
 }
 
 # detach_start MANIFEST — start the run detached from the chat (D1a): the
-# preflight runs here in the foreground (a refusal shows and exits 2), then
+# preflight runs here in the foreground (a refusal shows and exits 2; it
+# includes the worktree_setup check, whose commit the child gets in
+# STUDIO_OVERNIGHT_SETUP_CHECKED so it does not run it again), then
 # this script re-execs itself in its own session (perl setsid), stdin
 # /dev/null, output to a log, with every CLAUDECODE, CLAUDE_*, AI_AGENT,
 # OMEGA_* and STUDIO_* variable removed (CLAUDE_CONFIG_DIR kept). Success
@@ -1346,7 +1351,7 @@ detach_start() {
   START_DIR="$(sh "$STATE_BIN" root --work 2>/dev/null || true)"
   STATE_ROOT="$(sh "$STATE_BIN" root 2>/dev/null || true)"
   preflight manifest
-  ( . "$SELF_DIR/overnight-lanes.sh"; lanes_start --dry-run "$_dm" ) > /dev/null || exit 2
+  _dck="$( . "$SELF_DIR/overnight-lanes.sh"; lanes_start --check "$_dm" )" || exit 2
   _dmf="$_dm"; case "$_dmf" in /*) ;; *) _dmf="$START_DIR/$_dmf" ;; esac
   _dslug="$(runs_mf_slug "$_dmf")"
   # The dry run checked it (mf_check); checked again here, since it names a path.
@@ -1362,9 +1367,9 @@ detach_start() {
   mkdir -p "$REPORTS" || { say "cannot create $REPORTS"; exit 2; }
   _dlog="$REPORTS/overnight-$_dslug-detached-$(date +%Y%m%d-%H%M%S).log"
   if [ -n "$_dhc" ]; then
-    nohup env ${RUN_ORIGIN:+"STUDIO_RUN_ORIGIN=$RUN_ORIGIN"} perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV' sh -c "$_dhc" </dev/null >"$_dlog" 2>&1 &
+    nohup env ${RUN_ORIGIN:+"STUDIO_RUN_ORIGIN=$RUN_ORIGIN"} ${_dck:+"STUDIO_OVERNIGHT_SETUP_CHECKED=$_dck"} perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV' sh -c "$_dhc" </dev/null >"$_dlog" 2>&1 &
   else
-    nohup env ${RUN_ORIGIN:+"STUDIO_RUN_ORIGIN=$RUN_ORIGIN"} perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV' sh "$SELF_ABS" start "$_dm" </dev/null >"$_dlog" 2>&1 &
+    nohup env ${RUN_ORIGIN:+"STUDIO_RUN_ORIGIN=$RUN_ORIGIN"} ${_dck:+"STUDIO_OVERNIGHT_SETUP_CHECKED=$_dck"} perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV' sh "$SELF_ABS" start "$_dm" </dev/null >"$_dlog" 2>&1 &
   fi
   _dpid=$!
   _di=0

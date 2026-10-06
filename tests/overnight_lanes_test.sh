@@ -3934,9 +3934,50 @@ test_lanes_round_trip_sync_conflict() {
   assert_not_contains "$P/.studio/runs/alpha/landed.tsv" 'stopped' "stopped appears nowhere in alpha's landed.tsv"
 }
 
+test_lanes_detach_setup_preflight_refused() {
+  LANES_CONFIG='{"worktree_setup": "[ -d .git ]"}'; export LANES_CONFIG
+  lanes_fixture pfdr integration A:-
+  st=0; ( cd "$P" && sh "$RUNNER" start --detach "$MFP" ) > "$TMP/pfdr.out" 2>&1 || st=$?
+  assert_eq 2 "$st" "detach: the check runs in the foreground and refuses"
+  assert_contains "$TMP/pfdr.out" "worktree_setup failed in a linked worktree — exit 1 — log " "the refusal is shown"
+  assert_not_contains "$TMP/pfdr.out" "^detached:" "no child was started"
+  assert_eq 0 "$(calls)" "no unit ran"
+  assert_eq "" "$(pf_wts)" "no scratch worktree"
+}
+test_lanes_detach_setup_preflight_runs_once() {
+  LANES_CONFIG='{"worktree_setup": "case $(pwd -P) in */setup-preflight-*) echo pf >> '"$TMP"'/pf-det;; esac"}'; export LANES_CONFIG
+  rm -f "$TMP/pf-det"
+  lanes_fixture pfdo integration A:-
+  st=0; ( cd "$P" && sh "$RUNNER" start --detach "$MFP" ) > "$TMP/pfdo.out" 2>&1 || st=$?
+  assert_eq 0 "$st" "a green check detaches"
+  assert_contains "$TMP/pfdo.out" "worktree_setup: checking it once" "the running line is in the foreground output"
+  wait_for "[ -f '$CALLS/1.fullenv' ]" 60
+  detach_stop
+  assert_eq 1 "$(wc -l < "$TMP/pf-det" | tr -d ' ')" "the setup ran once: the child skipped it"
+  assert_eq "" "$(pf_wts)" "no scratch worktree"
+}
+test_lanes_setup_checked_env_binds_to_sha() {
+  LANES_CONFIG='{"worktree_setup": "case $(pwd -P) in */setup-preflight-*) echo pf >> '"$TMP"'/pf-env;; esac"}'; export LANES_CONFIG
+  rm -f "$TMP/pf-env"
+  lanes_fixture pfe integration A:-
+  STUDIO_OVERNIGHT_SETUP_CHECKED=0000000000000000000000000000000000000000; export STUDIO_OVERNIGHT_SETUP_CHECKED
+  run_lanes start "$MFP"
+  unset STUDIO_OVERNIGHT_SETUP_CHECKED
+  assert_eq 1 "$(wc -l < "$TMP/pf-env" | tr -d ' ')" "a value that is not the base's commit runs the check"
+  rm -f "$TMP/pf-env"
+  LANES_CONFIG='{"worktree_setup": "case $(pwd -P) in */setup-preflight-*) echo pf >> '"$TMP"'/pf-env;; esac"}'; export LANES_CONFIG
+  lanes_fixture pfe2 integration A:-
+  STUDIO_OVERNIGHT_SETUP_CHECKED="$(git -C "$P" ls-remote origin refs/heads/integration/demo | cut -f1)"; export STUDIO_OVERNIGHT_SETUP_CHECKED
+  run_lanes start "$MFP"
+  unset STUDIO_OVERNIGHT_SETUP_CHECKED
+  assert_eq 0 "$LS_STATUS" "the run ends done"
+  assert_missing "$TMP/pf-env" "the base's own commit skips the check"
+}
+
 run_tests test_lanes_setup_preflight_refuses_linked_only test_lanes_setup_preflight_pass_launches \
   test_lanes_setup_preflight_unset_silent test_lanes_setup_preflight_dry_run_skips \
   test_lanes_setup_preflight_interrupt_cleans test_lanes_setup_preflight_sweeps_stale \
+  test_lanes_detach_setup_preflight_refused test_lanes_detach_setup_preflight_runs_once test_lanes_setup_checked_env_binds_to_sha \
   test_lanes_chain_rule test_lanes_manifest_refusals test_lanes_branch_default_or_target_refused test_lanes_conflicts_lock_without_start test_lanes_preflight_backlog_tasks test_lanes_manifest_header_refusals \
   test_lanes_preflight_story_checks test_lanes_preflight_story_state test_lanes_docs_unreachable \
   test_lanes_git_too_old test_lanes_sourced_only test_lanes_next \

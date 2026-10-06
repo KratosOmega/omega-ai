@@ -2027,12 +2027,14 @@ lanes_run() {
   lanes_finish "$(lanes_ending)"
 }
 
-# lanes_start [--dry-run] MANIFEST — manifest mode's start, after
-# studio-overnight's preflight (which deferred its exit to here).
+# lanes_start [--dry-run | --check] MANIFEST — manifest mode's start, after
+# studio-overnight's preflight (which deferred its exit to here). --check
+# (detach's foreground step): the manifest checks and the setup preflight;
+# prints the checked commit only.
 lanes_start() {
-  _ls_dry=0; _ls_mf=""
+  _ls_dry=0; _ls_chk=0; _ls_mf=""
   for _a in "$@"; do
-    case "$_a" in --dry-run) _ls_dry=1 ;; *) _ls_mf="$_a" ;; esac
+    case "$_a" in --dry-run) _ls_dry=1 ;; --check) _ls_chk=1 ;; *) _ls_mf="$_a" ;; esac
   done
   MF_TMP="$STATE_ROOT/.studio/tmp.$$"
   mkdir -p "$MF_TMP" || { say "cannot create $MF_TMP"; exit 2; }
@@ -2042,6 +2044,11 @@ lanes_start() {
   [ "$FAILED" -eq 0 ] || exit 2
   run_paths "$MF_SLUG"
   build_chains
+  if [ "$_ls_chk" -eq 1 ]; then
+    setup_preflight "$MF_TARGET"
+    printf '%s\n' "$SP_SHA"
+    exit 0
+  fi
   RUN_DIR="$REPORTS/overnight-$MF_SLUG-$(date +%Y%m%d-%H%M%S)"
   if [ "$_ls_dry" -eq 1 ]; then
     setup_preflight_note "$MF_TARGET"
