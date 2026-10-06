@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-Status: Draft (awaiting approval).
+Status: Approved (2026-10-06). D1-D6 ruled by the user; delivered through subagent-driven execution, the final whole-branch review and its fix wave.
 
 **Goal:** `studio-adopt seed` and `sync` must find an adopted story's run worktree even when that worktree has no `.studio/run`. They must never quietly read another live run's ledger, Target and manifest. Each failure must name what was read and where the missing line actually is. An adopted story that was never seeded can neither rebuild to task 1 nor start overnight.
 
@@ -11,7 +11,7 @@ Status: Draft (awaiting approval).
   - `start_checkout` becomes a four-tier lookup, `sc_resolve`. It returns the checkout and its manifest, so `run_target` and `run_manifest` read the manifest of the checkout that was resolved, through `start_manifest`.
   - The `no adopted line` / `no ledger` refusals name the ledger that was read and the start checkout. Through `adopted_hint` they also name any other worktree's ledger that holds the line.
 - `studios/game-dev/bin/studio-state`: `check --rebuild` under `STUDIO_STORY` refuses an adopted, started story that this checkout never seeded (`adopt_guard`).
-- `studios/game-dev/bin/overnight-lanes.sh`: `mf_check` ends with `mf_ready`. It refuses to start when the start checkout has no `.studio/run`, or when an adopted story with a branch has no `adopt-base` in its story ledger.
+- `studios/game-dev/bin/overnight-lanes.sh`: `mf_check` ends with `mf_ready`. It refuses to start when the start checkout has no `.studio/run` (or one naming no manifest of this run), or when an adopted story with a branch has no `adopt-base` in its story ledger.
 - `shared/omega/skills/autopilot/SKILL.md`:
   - discovery re-creates a missing `.studio/run`;
   - step 3 ledgers and seeds from the run worktree;
@@ -74,6 +74,8 @@ Facts:
 - R2: tier 2 considers only worktrees whose `.studio/run` is missing or empty. A pointer that names another manifest is the operator's explicit choice and is not second-guessed.
 - R3: the tier-2 note prints once per invocation. A marker `$TMPD/sc.noted` does this. The marker is skipped when `TMPD` is unset or missing, because `test_adopt_run_target_from_start_checkout` sources the script with `TMPD` pointing at a directory that does not exist.
 - R4: `cmd_inspect` sets `START_ROOT` (it never did), so `plan_file` and `docs_paths` read the resolved checkout and not the main one. This is a same-class latent bug. `inspect` already calls `run_target "$ID"`, so it already goes through the lookup.
+- Fix wave (final review I1): "main checkout not on `run/*`" is not the same as "no run involved". Tier 3 also refuses when a checked `run/*` worktree's ledger has an `adopted` line for ID (truth region), for example a run worktree whose `.studio/run` is missing and whose manifest is not committed yet, or whose pointer names a missing file. Tier 4 is reached only when no run is involved. A pointer naming a missing file is listed as `.studio/run → missing <pointer>`.
+- Behaviour change (D1 as ruled; final review M7): a manual adopt (no run) while another run holds the main checkout (on `run/<other>`) now refuses at tier 3. Before #50 it silently used the other run's ledger and Target. The way through is `STUDIO_START_DIR=<checkout holding the story's adopted line>`. Its Target, if any, is then the one read; it only narrows part-done filtering.
 
 **D2 — the refusals name what was read.** The `no adopted line` refusals in `cmd_seed` (:449) and `cmd_sync` (:719), and sync's `no ledger` refusal (:716), name:
 - the ledger file that was read;
@@ -163,14 +165,15 @@ Facts:
   - overnight-lanes: `rd_truth`, `rd_adopted` (`_ra_`), `mf_ready` (`_rd_`). `_mr_` is `mx_reap`'s in overnight-runs.sh.
 - **Fixed texts** (quote exactly; the tests grep them):
   - tier-2 note: `note: run worktree <W> has no .studio/run — using its committed docs/runs/<slug>.md for <id>`
-  - tier-3 refusal begins `no run worktree found for <id>: looked for a run/* worktree whose .studio/run (or, without one, committed docs/runs/<slug>.md) has a row for <id>; checked: <W> (run/<s>, .studio/run); <W2> (run/<s2>, no .studio/run); the main checkout <P> is on run/<other> (another run) — write .studio/run in <id>'s run worktree (printf '%s\n' docs/runs/<slug>.md > .studio/run), or set STUDIO_START_DIR`
+  - tier-3 refusal begins `no run worktree found for <id>: looked for a run/* worktree whose .studio/run (or, without one, committed docs/runs/<slug>.md) has a row for <id>; checked: <W> (run/<s>, .studio/run); <W2> (run/<s2>, no .studio/run); <W3> (run/<s3>, .studio/run → missing <pointer>)[; the main checkout <P> is on run/<other>[ (another run)]][; an adopted line for <id> is in <ledger>[, <ledger>…]] — write .studio/run in <id>'s run worktree (printf '%s\n' docs/runs/<slug>.md > .studio/run), or set STUDIO_START_DIR`
+    - It refuses when the main checkout is on `run/*`, **or** when a checked `run/*` worktree's ledger has an `adopted` line for <id> (final review I1: a run is involved but tiers 1-2 missed its worktree; never the tier-4 fallback). The main-checkout clause appears only in the first case; ` (another run)` is dropped when the main checkout's own ledger has the `adopted` line (it may be <id>'s own run, missing the row).
   - two hits (unchanged): `story <id> is listed by two run worktrees: <W1>, <W2>`
   - seed: `no adopted line for <id> in <ledger> (start checkout <S>)` + hint
   - sync: `no ledger for <id> on <Branch> (<ledger>; start checkout <S>) — run: studio-adopt seed <id>` + hint
   - sync: `no adopted line for <id> in <ledger> (the ledger of <Branch>; start checkout <S>) — run: studio-adopt seed <id>` + hint
   - hint: `; an adopted line for <id> is in <ledger>[, <ledger>…] — ledger it from the start checkout`
   - guard: `studio-state: check --rebuild: <id> is adopted (<ledger>) but <this ledger> has no adopt-base line — never seeded here; a rebuild would restart it from task 1. Run studio-adopt seed <id> in the checkout of <Branch> first.`
-  - readiness: `start checkout <dir> has no .studio/run — write it there: printf '%s\n' <manifest> > .studio/run` and `<id>: adopted (<ledger>) but not seeded on <Branch> — run studio-adopt seed <id> in <worktree or "the <Branch> worktree">, then STUDIO_STORY=<id> studio-state check --rebuild there`
+  - readiness: `start checkout <dir> has no .studio/run — write it there: printf '%s\n' <manifest> > .studio/run`, `start checkout <dir>: .studio/run names <pointer>, not this run's manifest — write it there: printf '%s\n' <manifest> > .studio/run` (the pointer, relative to <dir> or absolute, must name an existing file whose `# Run:` slug is this run's; final review M2), and `<id>: adopted (<ledger>) but not seeded on <Branch> — run studio-adopt seed <id> in <worktree or "the <Branch> worktree">, then STUDIO_STORY=<id> studio-state check --rebuild there`
 - Exit codes: studio-adopt refusals 1 (as today); studio-state `fail` 1; the lanes preflight 2 (as today).
 - Test fixtures use only the `S1`/`S9`/`AD`/`A` ids and the `kan`/`other`/`demo`/`alpha` slugs. No `/Users/` paths.
 
@@ -746,7 +749,7 @@ Review: — (this task *is* the final review) · **mechanical**
 Wave: 3
 Touches: `docs/game-dev/PROGRESS.md` (plus whatever the fix wave touches)
 
-- [ ] **Step 1:** Add a log entry at the top of `## Log` in `docs/game-dev/PROGRESS.md`, `### 2026-10-06 — Adopted story starts from its own run worktree (#50)`. It covers:
+- [x] **Step 1:** Add a log entry at the top of `## Log` in `docs/game-dev/PROGRESS.md`, `### 2026-10-06 — Adopted story starts from its own run worktree (#50)`. It covers:
   - the root cause (a missing `.studio/run` fell back to the main checkout's run; an adopted line ledgered from the main checkout);
   - the four tiers;
   - the messages;
@@ -756,13 +759,13 @@ Touches: `docs/game-dev/PROGRESS.md` (plus whatever the fix wave touches)
   - the operator note: after merge, reinstall only from a checkout with no live run (memory: no pull while a run is live).
 
   Commit it with `-- docs/game-dev/PROGRESS.md`.
-- [ ] **Step 2: Final whole-branch review** on Opus (`model: "opus"`), standalone, over `git diff origin/main...HEAD`. Give it this plan's Design, Global Constraints and Review Focus. Ask it to try:
+- [x] **Step 2: Final whole-branch review** on Opus (`model: "opus"`), standalone, over `git diff origin/main...HEAD`. Give it this plan's Design, Global Constraints and Review Focus. Ask it to try:
   - a run worktree with a stale `.studio/run` naming a deleted file;
   - the main checkout on `run/*` with a pointer listing the id;
   - a resumed run;
   - execute §0's window between `set branch` and the `adopt-base` line (no rebuild runs there);
   - #49's `--check` path.
-- [ ] **Step 3: Fix wave**, one fresh fixer given the findings and the diff range. Re-review only after a Critical, three or more Importants, or a production-bug fix.
+- [x] **Step 3: Fix wave**, one fresh fixer given the findings and the diff range. Re-review only after a Critical, three or more Importants, or a production-bug fix.
 - [ ] **Step 4: Full gate:** `sh tests/run_all.sh`, expected exit 0. It runs the suites one at a time, so the two overnight suites never overlap. Then:
   - `git diff origin/main --stat` lists only the File Structure files plus this plan;
   - `git diff origin/main | grep -n '/Users/\|/home/'` prints nothing new.
