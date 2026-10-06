@@ -43,8 +43,8 @@ delivered() {
   grep -c '"event":"message_delivered"' "$IR/events.jsonl" || true
 }
 AUTOPILOT_GUARD="$STUDIO_DIR/hooks/autopilot-guard.sh"
-TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+# The shared #42 fixtures (P, wt, plan_in_p) set TMP and its cleanup trap.
+. "$REPO_ROOT/tests/state_fixtures.sh"
 
 # run_hook DIR — run the hook as Claude Code would: cwd is the project, the
 # plugin root is passed in the environment. Output lands in $TMP/hook.out.
@@ -169,7 +169,7 @@ test_hook_defaults_from_studio_json() {
   assert_contains "$TMP/ctx.txt" "Godot 4.x · 2D · GDScript · GUT" "identity line uses the studio defaults"
   assert_contains "$TMP/ctx.txt" "stage skills own the workflow" "context carries the precedence rule"
   assert_contains "$TMP/ctx.txt" "/game-dev:brainstorm" "context lists the stages"
-  assert_contains "$TMP/ctx.txt" ".studio/STATE.md" "context carries the state instruction"
+  assert_contains "$TMP/ctx.txt" "studio-state get stage" "context carries the state instruction"
 }
 
 test_hook_reads_project_config() {
@@ -213,7 +213,7 @@ test_hook_fills_config_value_with_metacharacters() {
   assert_contains "$TMP/ctx5.txt" "godot4/mono&x · 2D · GDScript · GUT" \
     "a value with sed metacharacters is filled in literally"
   assert_contains "$TMP/ctx5.txt" "stage skills own the workflow" "the rest of the bootstrap survives"
-  assert_contains "$TMP/ctx5.txt" ".studio/STATE.md" "the state instruction survives"
+  assert_contains "$TMP/ctx5.txt" "studio-state get stage" "the state instruction survives"
   assert_not_contains "$TMP/hook.out" '"additionalContext":""' "the context is not emptied"
   if command -v jq >/dev/null 2>&1; then
     assert_status 0 "output is still valid JSON" -- jq -e . "$TMP/hook.out"
@@ -825,7 +825,52 @@ test_inbox_probe_fake_launcher() {
   done
 }
 
-run_tests test_hook_files test_hook_output_shape test_hook_defaults_from_studio_json \
+# #42: the stage line is this checkout's own; a pointer-less worktree reads idle.
+test_session_start_stage_per_checkout() {
+  proj hs1; wt a feat/a; WA="$W"; wt c feat/c; WC="$W"
+  for _a in "stage brainstorm" "spec docs/s.md" "stage plan"; do st "$WA" set --force $_a >/dev/null 2>&1; done
+  run_hook "$P"; context "$TMP/hook.out" > "$TMP/ctx.txt"
+  assert_contains "$TMP/ctx.txt" "Studio state: stage idle" "P idle"
+  run_hook "$WA"; context "$TMP/hook.out" > "$TMP/ctx.txt"
+  assert_contains "$TMP/ctx.txt" "Studio state: stage plan" "WA at plan"
+  run_hook "$WC"; context "$TMP/hook.out" > "$TMP/ctx.txt"
+  assert_contains "$TMP/ctx.txt" "Studio state: stage idle" "pointer-less WC reads idle"
+}
+
+test_session_start_take_hint() {
+  proj hs2; plan_in_p; wt c feat/c; WC="$W"
+  run_hook "$WC"; context "$TMP/hook.out" > "$TMP/ctx.txt"
+  assert_contains "$TMP/ctx.txt" "if no session is working on it in" "WC gets the hint"
+  assert_contains "$TMP/ctx.txt" "studio-state take docs/s.md continues it here" "and the take command"
+  _A="$P/.claude/worktrees/agent-x"; git -C "$P" worktree add -q -b agent-x "$_A" >/dev/null 2>&1
+  run_hook "$_A"; context "$TMP/hook.out" > "$TMP/ctx.txt"
+  assert_not_contains "$TMP/ctx.txt" "the main checkout's story" "an agent worktree gets no hint"
+  wt e feat/e; WE="$W"; st "$P" set branch feat/e >/dev/null
+  run_hook "$WC"; context "$TMP/hook.out" > "$TMP/ctx.txt"
+  assert_contains "$TMP/ctx.txt" "studio-state take docs/s.md continues it here" "a stale branch live in WE keeps the hint"
+}
+
+test_session_start_never_writes() {
+  proj hs3; plan_in_p; st "$P" set stage execute >/dev/null; st "$P" set branch feat/e >/dev/null
+  wt e feat/e; WE="$W"
+  printf -- '- 2026-10-05 handing\tspec=docs/s.md\tplan=docs/p.md\tbranch=feat/e\tpath=%s\n' "$WE" >> "$P/.studio/STATE.md"
+  _x="$(git -C "$P" rev-parse --path-format=absolute --git-common-dir)/info/exclude"
+  _before="$(sum "$P/.studio/STATE.md") $(sum "$WE/.studio/STATE.md" 2>/dev/null) $(sum "$_x")"
+  run_hook "$WE"; run_hook "$P"
+  assert_eq "$_before" "$(sum "$P/.studio/STATE.md") $(sum "$WE/.studio/STATE.md" 2>/dev/null) $(sum "$_x")" "pointers and info/exclude unchanged"
+  assert_missing "$WE/.studio/STATE.md" "WE's pointer stays absent"
+  if [ -L "$P/.studio/state.mutex" ] || [ -e "$P/.studio/state.mutex" ]; then _m=present; else _m=absent; fi
+  assert_eq absent "$_m" "no mutex link"
+}
+
+test_skill_bootstrap_stage_line() {
+  _b="$STUDIO_DIR/hooks/bootstrap.md"
+  assert_contains "$_b" "a linked worktree with no story of its own reads idle" "bootstrap names the per-checkout stage"
+  assert_not_contains "$_b" 'When `.studio/STATE.md` exists' "the file-exists wording is gone"
+}
+
+run_tests test_session_start_stage_per_checkout test_session_start_take_hint \
+  test_session_start_never_writes test_skill_bootstrap_stage_line test_hook_files test_hook_output_shape test_hook_defaults_from_studio_json \
   test_hook_reads_project_config test_hook_partial_config_falls_back test_hook_escapes_json \
   test_hook_fills_config_value_with_metacharacters test_guard_state_blocks_direct_writes \
   test_hook_fails_without_bootstrap test_hook_strips_control_characters test_hook_reports_stage \

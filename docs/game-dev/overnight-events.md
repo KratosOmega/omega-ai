@@ -9,7 +9,9 @@ Story #27 defines it; #28 (the Multica bridge) builds on it. Spec:
 - Inside a project, a live run holds a lock. Several manifest runs may be live
   in one project at once, each with its own lock at
   `<root>/.studio/runs/<slug>/lock` (`pid=`, `run=`, `started=`, `start=`). A
-  single-plan run holds `.studio/overnight.lock` (`pid=`, `run=`, `started=`).
+  single-plan run holds `.studio/overnight.lock` (`pid=`, `run=`, `started=`,
+  `start=`, then `spec=`: the run's spec, which `status` and the channel read
+  to follow the story, #42 AC38; a run started before #42 has none).
   These locks are the source of truth for which runs are live.
 - From anywhere, the user-level registry `~/.claude-gamedev/runs/` holds one
   file per run whose runner started, `<run name>-<pid>` (the run name starts
@@ -30,6 +32,9 @@ Story #27 defines it; #28 (the Multica bridge) builds on it. Spec:
   `STUDIO_RUN_ORIGIN` at start (AC1a of #28: 1-200 characters of
   A-Z a-z 0-9 . _ : -, else left out with a warning); it stays when the entry
   moves to `runs/last`; the core never interprets it.
+
+  A single-plan entry also holds `spec=<spec>` (the run's spec, #42 AC38),
+  after `origin=`; manifest runs and runs started before #42 have none.
 
   The run dir's basename is the run's name. Every verb's `--run <run>` takes
   it. Inside the run's project, `--run` also takes the run's slug

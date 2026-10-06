@@ -24,4 +24,4 @@ A command that is not in your skill list is not installed yet: say so and name i
 
 ## State
 
-When `.studio/STATE.md` exists, a line naming the current stage (`stage <stage>`) follows this bootstrap; `/game-dev:studio` names the next step from it. When it does not exist and this is a Godot project (`project.godot` present), `/game-dev:studio` initialises it.
+When `studio-state get stage` succeeds, a line naming this checkout's stage follows this bootstrap (a linked worktree with no story of its own reads idle); `/game-dev:studio` names the next step from it. When it fails and this is a Godot project, `/game-dev:studio` initialises it.

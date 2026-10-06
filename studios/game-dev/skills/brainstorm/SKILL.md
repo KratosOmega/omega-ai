@@ -13,7 +13,8 @@ a short spec — but it never disappears.
 
 ## 0. State
 
-- If `.studio/STATE.md` does not exist and `project.godot` does, ask once
+- When `studio-state get stage` exits 0, state is on. On exit 1 with
+  `project.godot` present, ask once
   whether to initialise studio state; on yes run `studio-state init`. On no,
   or when there is no `project.godot`, continue without state and skip every
   `studio-state` call in this skill.
@@ -59,6 +60,10 @@ invoke `game-dev:game-feel`.
 
 For **bounded** and **architectural** work run
 `studio-state set stage brainstorm` now; a spike leaves the stage where it was.
+Before it, at stage `plan` ask once:
+"revise `<spec>`, or start a new story in its own worktree?". On "revise" run `studio-state set --force stage brainstorm`.
+At stage `execute` offer no revise. On exit 4 from `set stage brainstorm` or
+`set spec`, stop, show the message and suggest EnterWorktree.
 
 When in doubt, take the heavier path. Hidden complexity found mid-way
 upgrades the path; say so.

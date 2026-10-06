@@ -132,6 +132,7 @@ test_install_copy_mode() {
   assert_file "$TMP/cp/studio/.claude-plugin/plugin.json" "copy mode snapshots the studio under the target"
   assert_file "$TMP/cp/studio/skills/game-feel/SKILL.md" "the snapshot carries the skills"
   assert_file "$TMP/cp/bin/studio-state" "copy mode installs a real bin file"
+  assert_file "$TMP/cp/bin/overnight-runs.sh" "copy mode ships overnight-runs.sh beside studio-state (#42 AC27)"
   TESTS_RUN=$((TESTS_RUN + 1))
   if [ -L "$TMP/cp/bin/studio-state" ]; then
     _fail "copy mode installs no symlink"

@@ -23,6 +23,25 @@ for it.
 
 Check these first, in the checkout you are in:
 
+- **Stories.** In the main checkout at `stage idle`, run
+  `studio-state stories`. Exactly one `active` line at stage `plan` or
+  `execute` (a `run` line never counts) — **enter the feature checkout**
+  (Feature-checkout procedures, below; the Exit 0 way) and run §0 there.
+  Several — ask the user once which. None — the stop below. A non-zero
+  `stories` exit stops and shows its message.
+- **A resume from the worktree a stop before (c) left the session in.**
+  Outside a lane, in a linked worktree whose own `spec` is `-` while the
+  main pointer is at `stage execute` with `branch -` (`studio-state show`
+  prints the take hint for that story):
+  - when main's spec is a file here, run `studio-state take <spec>` (any
+    non-zero exit stops and shows its message), then continue §0 as
+    **a resume that found no `branch`**: (a) isolates, (b) creates nothing
+    inside a linked worktree, the ancestor check runs, (c) runs (its
+    `set branch` is now a no-op) and records the base. No hand-off runs,
+    because this §0 did not run in the main checkout;
+  - otherwise stop and say: "the gate commits are not in this worktree:
+    bring them in (`git merge --ff-only <the main checkout's branch>` once
+    it fast-forwards), then re-run `/game-dev:execute` here".
 - `studio-state get plan` names a file that exists and `studio-state show`
   has a `plan approved` line for it; otherwise stop and point at
   `/game-dev:plan`.
@@ -60,9 +79,11 @@ Check these first, in the checkout you are in:
   `studio-state set stage execute`. An interruption between the two leaves
   `stage plan`, so the re-run is a new run again, never a resume into the
   previous feature's worktree. Read `task` to find where to resume: `3/6`
-  means tasks 1–3 are complete; start at 4. `studio-state` keeps the
-  pointer in the project's main checkout, so every call below works the
-  same from inside a worktree.
+  means tasks 1–3 are complete; start at 4. Each checkout has its own
+  pointer. A story planned in the main checkout moves to its execute
+  worktree at isolation (c) (`studio-state handoff`); a story born in a
+  worktree stays there. So every call below reads the story's own pointer
+  from the feature worktree.
 
 Under `--one`, see §8. It changes what every stop here does.
 
@@ -163,6 +184,8 @@ is `STUDIO_STORY`:
     has no `T<n> complete` line: then do not isolate; stop and say:
     "run `/game-dev:execute` from the feature's worktree" (a run an older
     pipeline started from the main checkout would get an empty worktree).
+  - Any other exit 1 (the checkout must switch back, or a candidate list):
+    stop and show its stderr; only `no feature branch recorded` isolates.
   - It exits 1 because the branch is gone
     (`studio-state: branch <b> no longer exists`): stop and say so; the
     user restarts with `studio-state set task 0/<N>` and
@@ -177,13 +200,27 @@ is `STUDIO_STORY`:
   base that lacks the gate commits: run `git merge --ff-only <noted branch>`;
   if that fails, stop and say so.
 - **(c) Only after that check:** for a new run, and for a resume that found
-  no `branch`, run inside the worktree
+  no `branch`, first the hand-off. When this run's §0 ran in the main
+  checkout outside a lane and the top level is not the main checkout (the
+  first `worktree` line of `git worktree list --porcelain`; the top level
+  is `git rev-parse --show-toplevel`), run inside the new worktree
+  `studio-state handoff "$(git rev-parse --show-toplevel)"`;
+  any non-zero exit stops and shows its message, a killed call included. In place (the
+  (b) consent; the default-branch path in §7) the top level is the main
+  checkout: no hand-off runs, and `set branch` writes the main pointer as
+  today. A worktree-born story runs no hand-off. Then run inside the worktree
   `studio-state set branch "$(git branch --show-current)"`. A new run — or
   such a resume at `task 0/N`, which is a new run restarted — then records
   its base and commits it at once:
   `studio-state ledger "base <noted branch>" && git add .studio/ledger && git commit -m "chore(studio): ledger"`.
   Never write the ledger before the fast-forward: an untracked ledger file
   makes it abort.
+  Also: any resume whose feature ledger has no `base <branch>` line writes
+  and commits one the same way, after the ancestor check. It is the noted
+  branch, except when the noted branch is the story's own `branch` (the
+  session was left in the feature worktree); then it is the
+  main checkout's current branch, or the default branch on a detached main
+  checkout.
   Operator messages are recorded after this step (see §8, Operator messages).
   Then, on a new run and on every resume that has entered the feature checkout,
   run `studio-setup` from the worktree root (`worktree_setup`; a no-op when unset or
@@ -196,8 +233,8 @@ is `STUDIO_STORY`:
 `git merge-base <base> HEAD` in §4a, §5 and §7 — is the noted branch on a
 new run. On a resume it is the feature ledger's last `base <branch>` line,
 because the noted branch can be the feature branch itself after a stop that
-left the session in the worktree (§7 step 1). A ledger without one (a run
-an older pipeline began) uses the default branch (Feature-checkout
+left the session in the worktree (§7 step 1); (c) records a missing one on
+every resume. A ledger without one (a run an older pipeline began) uses the default branch (Feature-checkout
 procedures, below).
 
 **Where to start**, once isolated:
@@ -546,7 +583,7 @@ A finish records operator messages at §0's recording point and commits them wit
    reports the milestone gate: `gate met: <current> → <next>` or
    `gate not met: …`. Commit it:
    `git add docs/game-dev/PROGRESS.md && git commit -m "docs(progress): <topic>"`.
-   On `gate met`: `studio-state set milestone <next>`. On `gate not met`:
+   On `gate met`: `studio-state set milestone <next>` (writes the project's milestone: the main checkout's pointer, from any checkout). On `gate not met`:
    `milestone` stays, and its missing list goes in the report. Without the
    file: skip this step and say so in the report.
 4. **Push and PR.** `<branch>` is `git branch --show-current`; `<base>` is

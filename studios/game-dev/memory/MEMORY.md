@@ -13,3 +13,4 @@ pointing at a file in this directory.
 - [Context doc at budget: plan the condensation](context-doc-at-budget-plan-the-condensation.md) — name the entry that gives up a line and prove no guarantee dropped; codepoints, not awk bytes
 - [PROGRESS entry lands with the story PR](progress-entry-lands-with-the-story-pr.md) — every post-merge docs commit is another 25-minute gate; producer before merge.sh
 - [Phoenix: the LFS hook breaks a long rebase](phoenix-lfs-hook-breaks-long-rebase.md) — phantom "local changes" at a moving commit with a clean tree; rebase with core.hooksPath=/dev/null, and merge.sh hits it too
+- [Stage pointer is per checkout](stage-pointer-is-per-checkout.md) — a story moves to its execute worktree by `studio-state handoff` (`take` by hand, `stories` from main); exit 4 is a story switch, never `--force` it unasked

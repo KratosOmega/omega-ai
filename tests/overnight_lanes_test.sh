@@ -1934,6 +1934,23 @@ test_lanes_final_dirty_unit_is_red() {
   assert_contains "$GH/body-1" "progress unit left uncommitted changes" "the body names it"
   assert_eq "" "$(git -C "$P/.claude/worktrees/integration-demo" status --porcelain 2>&1)" "and the worktree is clean"
 }
+# #42 AC40: a final unit has no STUDIO_STORY; its `studio-state ledger "Stop: x"`
+# writes the worktree's local pointer, which must stay out of git (excluded, not
+# untracked) so the dirty check and `clean -fdq` neither flag nor delete it.
+test_lanes_final_unit_stop_pointer_invisible() {
+  lanes_fixture finptr integration A:-
+  printf 'stop x\n' > "$SCEN/final-repair"
+  use_gate "[ -f fixed ]"
+  run_lanes start "$MFP"
+  use_gate true
+  FINAL_W="$P/.claude/worktrees/integration-demo"
+  assert_eq 1 "$(prompt_calls '/omega:integration repair demo' | grep -c .)" "the final-repair unit ran"
+  assert_file "$FINAL_W/.studio/STATE.md" "the final unit's Stop line made a local pointer"
+  assert_contains "$FINAL_W/.studio/STATE.md" "Stop: x" "and holds the Stop line"
+  assert_eq "" "$(git -C "$FINAL_W" status --porcelain 2>&1)" "the pointer is invisible to git status"
+  git -C "$FINAL_W" clean -fdq
+  assert_file "$FINAL_W/.studio/STATE.md" "git clean -fdq leaves it (excluded, not untracked)"
+}
 # The run budget caps the final units too: at the cap, none launches.
 test_lanes_final_budget() {
   LANES_CONFIG='{"overnight": {"run_usd": 10, "session_usd": 8}}'; LANES_PROGRESS=1; export LANES_CONFIG LANES_PROGRESS
@@ -3822,7 +3839,7 @@ run_tests test_lanes_chain_rule test_lanes_manifest_refusals test_lanes_branch_d
   test_lanes_final_step_once test_lanes_final_red_after_repair \
   test_lanes_final_repair_turns_green test_lanes_final_conflict test_lanes_final_resume_edits_pr \
   test_lanes_final_skipped_on_stop_or_nothing_landed test_lanes_final_stop_before_setup test_lanes_final_gate_default test_lanes_direct_progress_landing \
-  test_lanes_final_dirty_unit_is_red test_lanes_final_budget test_lanes_final_conflict_then_red test_lanes_final_gate_interrupted_not_recorded \
+  test_lanes_final_dirty_unit_is_red test_lanes_final_unit_stop_pointer_invisible test_lanes_final_budget test_lanes_final_conflict_then_red test_lanes_final_gate_interrupted_not_recorded \
   test_lanes_direct_merge_timeout_after_merge_lands test_lanes_direct_merge_timeout_term_ignored \
   test_lanes_status_dead_old_lock_not_masking test_lanes_status_per_story test_lanes_report_every_ending test_lanes_report_on_lane_crash \
   test_lanes_done_marker test_lanes_status_reaps_dead_runner test_lanes_reap_names_final_pr \

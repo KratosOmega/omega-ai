@@ -165,9 +165,10 @@ test_state_show() {
   assert_contains "$TMP/show.out" "^milestone: prototype" "show prints the file"
 }
 
-# The pointer lives in the main checkout: a linked worktree of the project
-# edits the same STATE.md, so execute on a feature branch and the router in
-# main see one stage. The gitignore line keeps the pointer out of commits.
+# root is the main checkout from a linked worktree, but the stage pointer is
+# per checkout (#42): a linked worktree's first write creates its own
+# STATE.md and the main one is untouched. The gitignore line keeps the
+# main pointer out of commits.
 test_state_resolves_to_main_checkout() {
   P="$(fresh_project wt)"
   ( cd "$P" && git init -q && git -c user.name=t -c user.email=t@t commit -q --allow-empty -m init ) 2>/dev/null
@@ -176,9 +177,11 @@ test_state_resolves_to_main_checkout() {
   assert_eq "$P" "$(cd "$TMP/wt-linked" && sh "$STATE_BIN" root)" "root from a worktree is the main checkout"
   assert_eq "$TMP/wt-linked" "$(cd "$TMP/wt-linked" && sh "$STATE_BIN" root --work)" "root --work is the worktree"
   assert_eq "$P" "$(cd "$P" && sh "$STATE_BIN" root --work)" "root --work in main is main"
+  _main_before="$(cat "$P/.studio/STATE.md")"
   assert_status 0 "set from a worktree succeeds" -- sh -c "cd '$TMP/wt-linked' && sh '$STATE_BIN' set stage execute"
-  assert_eq "execute" "$(cd "$P" && sh "$STATE_BIN" get stage)" "the main checkout's STATE.md carries the change"
-  assert_missing "$TMP/wt-linked/.studio/STATE.md" "the worktree holds no copy of the pointer"
+  assert_eq "idle" "$(cd "$P" && sh "$STATE_BIN" get stage)" "the main checkout's STATE.md does not carry the change (#42 AC6)"
+  assert_eq "$_main_before" "$(cat "$P/.studio/STATE.md")" "the main pointer is unchanged"
+  assert_contains "$TMP/wt-linked/.studio/STATE.md" '^stage: execute$' "the worktree's write creates its own pointer"
   assert_contains "$P/.gitignore" "^\.studio/STATE\.md$" "init gitignores the pointer"
   P2="$(fresh_project nogit)"
   assert_eq "$P2" "$(cd "$P2" && sh "$STATE_BIN" root)" "outside git the root is the current directory"
@@ -283,7 +286,8 @@ test_state_ledger_per_branch() {
   assert_file "$P/.studio/ledger/a.md" "feature a's ledger is in the main checkout"
   assert_file "$TMP/fb-linked/.studio/ledger/b.md" "feature b's ledger is in the worktree"
   assert_missing "$P/.studio/ledger/b.md" "feature b's ledger is not in the main checkout"
-  assert_eq "docs/game-dev/specs/2026-09-13-b.md" "$(cd "$P" && sh "$STATE_BIN" get spec)" "the pointer is shared"
+  assert_eq "docs/game-dev/specs/2026-09-13-a.md" "$(cd "$P" && sh "$STATE_BIN" get spec)" "the pointer is not shared (#42 AC6)"
+  assert_eq "docs/game-dev/specs/2026-09-13-b.md" "$(cd "$TMP/fb-linked" && sh "$STATE_BIN" get spec)" "the worktree reads its own spec"
 }
 
 test_state_check() {
@@ -437,8 +441,8 @@ test_state_worktree() {
   assert_eq "0" "$WT_STATUS" "worktree exits 0 from the main checkout"
   assert_eq "$WT_F" "$(cat "$TMP/wt.out")" "stdout is the worktree's physical path"
   wt_run "$TMP/wt-f"
-  assert_eq "0" "$WT_STATUS" "worktree exits 0 from inside the worktree"
-  assert_eq "$WT_F" "$(cat "$TMP/wt.out")" "the same path from inside the worktree"
+  assert_eq "1" "$WT_STATUS" "worktree exits 1 from inside a pointer-less worktree (#42 AC3)"
+  assert_eq "studio-state: no feature branch recorded" "$(cat "$TMP/wt.err")" "it has no feature branch recorded"
 
   ( cd "$P" && git branch feat/g ) >/dev/null 2>&1
   ( cd "$P" && sh "$STATE_BIN" set branch feat/g )
@@ -625,6 +629,7 @@ test_state_init_local_creates_pointer() {
   assert_contains "$RW/.studio/STATE.md" '^stage: idle$' "stage idle"
   assert_contains "$(git -C "$P" rev-parse --path-format=absolute --git-common-dir)/info/exclude" '^\.studio/STATE\.md$' "kept out of git (D41)"
   assert_eq "" "$(git -C "$RW" status --porcelain)" "no untracked noise"
+  assert_not_contains "$RW/.studio/STATE.md" '^milestone:' "a local pointer has no milestone line (#42 AC10)"
 }
 test_state_init_local_refusals() {
   rw_fixture refuse
@@ -635,16 +640,18 @@ test_state_init_local_refusals() {
   st=0; ( cd "$RW" && sh "$STATE_BIN" init --local ) > "$TMP/out" 2>&1 || st=$?
   assert_eq 1 "$st" "refused when the checkout already has one"
 }
-test_state_local_pointer_only_when_present() {
+test_state_local_pointer_auto_created() {
   rw_fixture present
   ( cd "$RW" && sh "$STATE_BIN" set stage brainstorm ) >/dev/null 2>&1
-  assert_contains "$P/.studio/STATE.md" '^stage: brainstorm$' "no local pointer: the root's STATE.md, as today"
-  ( cd "$P" && sh "$STATE_BIN" set stage idle ) >/dev/null 2>&1
+  assert_contains "$RW/.studio/STATE.md" '^stage: brainstorm$' "no local pointer: RW's write creates RW's pointer (#42 AC6)"
+  assert_contains "$P/.studio/STATE.md" '^stage: idle$' "P stays idle"
+  rm -f "$RW/.studio/STATE.md"
   ( cd "$RW" && sh "$STATE_BIN" init --local && sh "$STATE_BIN" set stage plan ) >/dev/null 2>&1
   assert_contains "$RW/.studio/STATE.md" '^stage: plan$' "with one: the local pointer"
   assert_eq idle "$(cd "$P" && sh "$STATE_BIN" get stage)" "the main checkout reads its own"
   rm -f "$RW/.studio/STATE.md"
-  assert_eq idle "$(cd "$RW" && sh "$STATE_BIN" get stage)" "pointer removed: back to the root's STATE.md"
+  ( cd "$P" && sh "$STATE_BIN" set stage execute ) >/dev/null 2>&1
+  assert_eq idle "$(cd "$RW" && sh "$STATE_BIN" get stage)" "pointer removed: reads idle again, not the root's STATE.md"
 }
 test_state_run_worktree_leaves_main_state() {
   rw_fixture untouched
@@ -678,5 +685,5 @@ run_tests test_state_check_ignores_before_adopt_reset test_state_needs_init test
   test_state_branch_insert_is_literal test_state_worktree test_state_worktree_edges \
   test_state_story_init_and_isolation test_state_story_rebuild test_state_story_gap_from_k_of_n test_state_story_rebuild_skips_backlog \
   test_state_root_from_run_worktree test_state_init_local_creates_pointer test_state_init_local_refusals \
-  test_state_local_pointer_only_when_present test_state_run_worktree_leaves_main_state \
+  test_state_local_pointer_auto_created test_state_run_worktree_leaves_main_state \
   test_state_story_state_stays_at_root test_state_gate_lock_from_run_worktree

@@ -47,9 +47,23 @@ for act in "$@"; do
     "stage "*)    sh "$STUB_STATE_BIN" set stage "${act#stage }" ;;
     "task "*)     sh "$STUB_STATE_BIN" set task "${act#task }" ;;
     "ledger "*)   sh "$STUB_STATE_BIN" ledger "${act#ledger }" ;;
+    # branch: real execute's (c) (#42) — a new worktree, the hand-off into it,
+    # then `set branch` there; the line's later actions run in the worktree.
     "branch "*)   b="${act#branch }"
                   git worktree add -q "$TMP_WT/wt-$b" -b "$b" >/dev/null 2>&1
+                  cd "$TMP_WT/wt-$b" && sh "$STUB_STATE_BIN" handoff "$(pwd -P)" >/dev/null 2>&1
                   sh "$STUB_STATE_BIN" set branch "$b" ;;
+    # legacybranch: the pre-#42 (c), `set branch` in the start checkout.
+    "legacybranch "*) b="${act#legacybranch }"
+                  git worktree add -q "$TMP_WT/wt-$b" -b "$b" >/dev/null 2>&1
+                  sh "$STUB_STATE_BIN" set branch "$b" ;;
+    # inplace: (c) with consent to work in place — no worktree, no hand-off.
+    inplace)      git checkout -q -b feat && sh "$STUB_STATE_BIN" set branch feat ;;
+    stopbeforec)  sh "$STUB_STATE_BIN" ledger "Stop: stopped before isolation" ;;
+    wtcheck)      _w=0; sh "$STUB_STATE_BIN" worktree >/dev/null 2>&1 || _w=$?; echo "$_w" > "$CALLS/$n.wt" ;;
+    "dupstory "*) b="${act#dupstory }"; ( git worktree add -q "$TMP_WT/wt-$b" -b "$b" >/dev/null 2>&1
+                  cd "$TMP_WT/wt-$b" && for a in "stage brainstorm" "spec docs/spec.md" "stage plan"; do sh "$STUB_STATE_BIN" set $a; done ) >/dev/null 2>&1 ;;
+    "rmwt "*)     ( cd / && git -C "$root" worktree remove --force "$TMP_WT/wt-${act#rmwt }" ) >/dev/null 2>&1 ;;
     "wtledger "*) ( cd "$(sh "$STUB_STATE_BIN" worktree)" && sh "$STUB_STATE_BIN" ledger "${act#wtledger }" ) ;;
     "cost "*)     cost="${act#cost }" ;;
     nocost)       cost="" ;;
@@ -1034,13 +1048,13 @@ test_overnight_origin_written() {
   run_start; unset STUDIO_RUN_ORIGIN
   assert_eq 0 "$RS_STATUS" "the run ends normally"
   assert_contains "$REGL" '^origin=multica:0b5f-12ab$' "origin= written and kept in runs/last"
-  assert_eq "root start run pid started origin ended" "$(reg_keys "$REGL")" "origin= follows started=, ended= is last"
+  assert_eq "root start run pid started origin spec ended" "$(reg_keys "$REGL")" "origin= follows started=, then a single-plan run's spec= (#42), ended= is last"
   assert_not_contains "$RS_ERR" 'STUDIO_RUN_ORIGIN ignored' "a valid value draws no warning"
 }
 test_overnight_origin_absent_without_variable() {
   fixture orn; done_scenario; rm -f "$REGL"; unset STUDIO_RUN_ORIGIN
   run_start
-  assert_eq "root start run pid started ended" "$(reg_keys "$REGL")" "without the variable the entry is unchanged"
+  assert_eq "root start run pid started spec ended" "$(reg_keys "$REGL")" "without the variable there is no origin= line"
   STUDIO_RUN_ORIGIN=""; export STUDIO_RUN_ORIGIN
   fixture ore; done_scenario; rm -f "$REGL"; run_start; unset STUDIO_RUN_ORIGIN
   assert_not_contains "$REGL" '^origin=' "an empty variable writes no line"
@@ -1562,12 +1576,13 @@ test_overnight_hold_on_feature_stop() {
 }
 test_overnight_start_ledger_stop_ends_at_once() {
   holds_on 60
-  fixture sls; scenario "stage execute; branch feat; task 1/2; ledger Stop: from the start checkout"; run_start
+  # R1: inplace means one ledger, before isolation; the two-ledger tie is unreachable for single-plan.
+  fixture sls; scenario "stage execute; inplace; task 1/2; ledger Stop: from the start checkout"; run_start
   assert_contains "$(last_run_dir)/report.md" "^Ending: stop: from the start checkout$" "a Stop: in the start ledger after isolation ends at once"
   assert_missing "$(last_run_dir)/control/-.held" "never held"
   fixture sls2; scenario "stage execute; task 1/2; ledger Stop: before isolation"; run_start
   assert_contains "$(last_run_dir)/report.md" "^Ending: stop: before isolation$" "a Stop: before isolation ends at once"
-  fixture sls3; scenario "stage execute; branch feat; wtledger Stop: both; ledger Stop: both"; run_start
+  fixture sls3; scenario "stage execute; inplace; wtledger Stop: both; ledger Stop: both"; run_start
   assert_contains "$(last_run_dir)/report.md" "^Ending: stop: both$" "the same Stop: in both ledgers ends at once (AC18's tie)"
   assert_not_contains "$(last_run_dir)/events.jsonl" '"state":"held"' "no held event"
   holds_off
@@ -1706,8 +1721,9 @@ test_overnight_prestop_and_limit_end_at_once() {
   run_start
   assert_eq 0 "$RS_STATUS" "before isolation the limit never holds; the story goes on (R6)"
   assert_contains "$(last_run_dir)/events.jsonl" '"event":"message_requeued"' "the message was still requeued"
+  # R1: inplace means one ledger, before isolation; the two-ledger tie is unreachable for single-plan.
   fixture pl2 '{"overnight": {"retries": 0}}'
-  scenario "stage execute; branch feat; task 1/2; wtledger T1 complete a..b; say x" \
+  scenario "stage execute; inplace; task 1/2; wtledger T1 complete a..b; say x" \
            "inbox; ledger Stop: start side"
   run_start
   assert_contains "$(last_run_dir)/report.md" "^Ending: stop: start side$" "a start-ledger Stop: in the same unit as the limit ends at once (AC18)"
@@ -2010,6 +2026,167 @@ test_help_names_concurrent_runs() {
     assert_contains "$TMP/help.txt" "$w" "help names $w"
   done
 }
+# ---- #42: the single-plan runner follows its story (AC38, AC39) ----
+# wait_task DIR TASK — up to 10 s for DIR's own pointer to read `task: TASK`.
+wait_task() {
+  _wt_i=0
+  while ! grep -qx "task: $2" "$1/.studio/STATE.md" 2>/dev/null && [ "$_wt_i" -lt 50 ]; do sleep 0.2; _wt_i=$((_wt_i + 1)); done
+}
+test_single_plan_follows_story_after_unit_1() {
+  fixture fol
+  scenario "stage execute; branch feat; task 1/2; wtledger T1 complete a..b" \
+           "task 2/2; wtledger T2 complete b..c" "wtledger final review done" \
+           "wtledger shipped https://x/pull/1; stage idle; task -"
+  run_start
+  WE="$(cd "$TMP_WT/wt-feat" && pwd -P)"
+  assert_eq "$P" "$(cat "$CALLS/1.pwd")" "unit 1 starts in START_DIR"
+  assert_eq "$WE" "$(cat "$CALLS/2.pwd")" "unit 2 starts in the story's worktree"
+  assert_contains "$(last_run_dir)/report.md" "^Ending: done$" "the run ends done"
+  assert_eq idle "$(cd "$P" && sh "$STATE_BIN" get stage)" "P is idle after the hand-off"
+  assert_contains "$CALLS/1.lock" "^spec=docs/spec.md$" "the lock persists the run's spec"
+  assert_contains "$HOME/.claude-gamedev/runs/last" "^spec=docs/spec.md$" "and so does the registry entry"
+}
+test_single_plan_rerun_after_stop_before_handoff() {
+  fixture rrs
+  scenario "stage execute; stopbeforec" \
+           "wtcheck; branch feat; task 1/2; wtledger T1 complete a..b" \
+           "task 2/2; wtledger T2 complete b..c; wtledger final review done" \
+           "wtledger shipped https://x/pull/1; stage idle; task -"
+  run_start
+  assert_contains "$(last_run_dir)/report.md" "^Ending: stop: stopped before isolation$" "unit 1 stops before (c)"
+  ( cd "$P" && git add .studio/ledger && git -c user.name=t -c user.email=t@t commit -qm stop ) >/dev/null 2>&1
+  run_start
+  assert_eq 1 "$(cat "$CALLS/2.wt")" "the re-run's worktree exits 1 (no feature branch recorded)"
+  assert_eq "$(cd "$TMP_WT/wt-feat" && pwd -P)" "$(cat "$CALLS/3.pwd")" "unit 2 of the re-run runs in the story worktree"
+  assert_contains "$(last_run_dir)/report.md" "^Ending: done$" "and it finishes"
+}
+# I1: a pre-#42 layout (P at execute, branch feat recorded, a live pointer-less
+# worktree on feat): snapshot's ledger read adopts the story into the worktree,
+# and the run follows it instead of stopping on P's now-idle stage.
+test_single_plan_follows_adopted_legacy_story() {
+  fixture ald
+  ( cd "$P" && sh "$STATE_BIN" set stage execute && sh "$STATE_BIN" set task 1/2 \
+      && sh "$STATE_BIN" set branch feat && git worktree add -q "$TMP_WT/wt-feat" -b feat ) >/dev/null 2>&1
+  scenario "task 2/2; wtledger T2 complete b..c; wtledger final review done" \
+           "wtledger shipped https://x/pull/1; stage idle; task -"
+  run_start
+  assert_contains "$(last_run_dir)/report.md" "^Ending: done$" "a legacy pre-run layout finishes done"
+  assert_not_contains "$(last_run_dir)/report.md" "unexpected stage idle" "no stale-stage stop"
+  assert_eq 2 "$(calls)" "both units ran"
+}
+# I1 (M2): the stub's legacybranch inside unit 1 (the pre-#42 (c)) does not stop the run.
+test_single_plan_legacybranch_in_unit_follows() {
+  fixture alb
+  scenario "legacybranch feat; task 2/2" \
+           "wtledger T2 complete b..c; wtledger final review done" \
+           "wtledger shipped https://x/pull/1; stage idle; task -"
+  ( cd "$P" && sh "$STATE_BIN" set stage execute && sh "$STATE_BIN" set task 1/2 ) >/dev/null 2>&1
+  run_start
+  assert_contains "$(last_run_dir)/report.md" "^Ending: done$" "legacybranch in unit 1 finishes done"
+  assert_not_contains "$(last_run_dir)/report.md" "unexpected stage idle" "no stale-stage stop after unit 1"
+}
+test_single_plan_story_not_found_stops() {
+  fixture snf
+  scenario "stage execute; branch feat; task 1/2; wtledger T1 complete a..b; rmwt feat"
+  run_start
+  assert_contains "$(last_run_dir)/report.md" "^Ending: stop: story docs/spec.md not found$" "a removed story worktree stops the run"
+  assert_eq 1 "$(calls)" "no unit runs once the story is gone"
+}
+test_single_plan_resume_line_names_story_worktree() {
+  fixture rln
+  scenario "$ISO1" "wtledger Stop: need art"
+  run_start
+  WE="$(cd "$TMP_WT/wt-feat" && pwd -P)"
+  assert_contains "$(last_run_dir)/report.md" "^Ending: stop: need art$" "the story's Stop: ends the run"
+  assert_eq "cd '$WE' && '$RUNNER' start" "$(tail -n 1 "$(last_run_dir)/report.md")" "the Resume line changes into the story's worktree"
+}
+test_single_plan_ambiguous_story_stops() {
+  fixture amb
+  scenario "$ISO1; dupstory dup" "task 2/2"
+  run_start
+  assert_contains "$(last_run_dir)/report.md" "^Ending: stop: ambiguous story docs/spec.md$" "two checkouts holding the spec stop the run, never a guess"
+  assert_eq 1 "$(calls)" "no unit runs in either"
+}
+test_single_plan_preflight_names_story() {
+  fixture pns
+  scenario "$ISO1" "wtledger Stop: need art"
+  run_start
+  WE="$(cd "$TMP_WT/wt-feat" && pwd -P)"
+  run_start
+  assert_eq 2 "$RS_STATUS" "a start from the idle main checkout is refused"
+  assert_contains "$RS_ERR" "no spec or plan set (studio-state get spec, get plan) — the story is in $WE$" "the refusal names where the story is"
+  assert_eq 2 "$(calls)" "no unit ran"
+}
+test_single_plan_from_story_worktree() {
+  fixture fsw
+  ( cd "$P" && sh "$STATE_BIN" reset --keep-ledger ) >/dev/null 2>&1
+  git -C "$P" worktree add -q "$TMP_WT/wa" -b wa >/dev/null 2>&1
+  WA="$(cd "$TMP_WT/wa" && pwd -P)"
+  ( cd "$WA" && sh "$STATE_BIN" set stage plan && sh "$STATE_BIN" set spec docs/spec.md \
+      && sh "$STATE_BIN" set plan docs/plan.md ) >/dev/null 2>&1
+  assert_eq plan "$(cd "$WA" && sh "$STATE_BIN" get stage)" "WA's own pointer is at plan"
+  _ck="$(cksum < "$P/.studio/STATE.md")"
+  scenario "stage execute; task 1/1; ledger T1 complete a..b" "ledger final review done" \
+           "ledger shipped https://x/pull/1; stage idle; task -"
+  RS_STATUS=0
+  ( cd "$WA" && sh "$RUNNER" start ) > "$TMP/rs.out" 2> "$TMP/rs.err" || RS_STATUS=$?
+  assert_eq 0 "$RS_STATUS" "a single-plan run from a story worktree runs to done (AC39)"
+  assert_eq "$_ck" "$(cksum < "$P/.studio/STATE.md")" "the main pointer stays byte-identical"
+  assert_eq "$WA" "$(cat "$CALLS/1.pwd")" "unit 1 runs in WA"
+  assert_eq "$WA" "$(cat "$CALLS/2.pwd")" "and so does unit 2"
+}
+test_single_plan_in_place_keeps_main_pointer() {
+  fixture ipk
+  scenario "stage execute; inplace; task 1/2; ledger T1 complete a..b" "task 2/2; ledger T2 complete b..c" \
+           "ledger final review done" "ledger shipped https://x/pull/1; stage idle; task -"
+  run_start
+  assert_eq 0 "$RS_STATUS" "an in-place story runs to done"
+  assert_eq "$P" "$(cat "$CALLS/2.pwd")" "unit 2 starts in P"
+  assert_eq feat "$(cd "$P" && sh "$STATE_BIN" get branch)" "the main pointer records P's branch"
+  assert_not_contains "$P/.studio/STATE.md" "handed" "no hand-off ran"
+}
+test_channel_ledger_follows_story() {
+  fixture clf; holds_on 60
+  scenario "$ISO1; wtledger Directive 7: keep the bus" "wtledger Stop: need art"
+  start_bg; wait_held 20
+  # A second worktree story at execute: worktree's candidate list from P has two.
+  ( git -C "$P" worktree add -q "$TMP_WT/wt-oth" -b oth && cd "$TMP_WT/wt-oth" \
+      && sh "$STATE_BIN" set spec docs/other.md && sh "$STATE_BIN" set stage execute ) >/dev/null 2>&1
+  verb said -
+  assert_contains "$V_OUT" "^7  active  keep the bus$" "said reads the ledger where the story's pointer is"
+  verb say - x
+  assert_eq 0 "$V_STATUS" "say - succeeds during the hold"
+  assert_eq 8 "$(cat "$V_OUT")" "the next id counts the story worktree's Directive lines"
+  verb stop -; bg_end 20 "the run ends"
+  assert_contains "$R/report.md" "^Ending: stop: need art$" "with the story's Stop:"
+  holds_off
+}
+test_status_reads_persisted_spec() {
+  fixture srp; scenario "$ISO1; sleep 3"
+  start_bg; wait_task "$TMP_WT/wt-feat" 1/2
+  verb status
+  assert_contains "$V_OUT" "^task: 1/2$" "status reads the task in the story's worktree"
+  bg_end 40 "the run ends"
+  fixture srp2; scenario "$ISO1; rmwt feat; sleep 3"
+  start_bg; wait_for "$CALLS/1.t0"
+  _i=0; until { [ -n "$(git -C "$P" branch --list feat)" ] && [ ! -d "$TMP_WT/wt-feat" ]; } || [ "$_i" -ge 50 ]; do sleep 0.2; _i=$((_i + 1)); done
+  verb status
+  assert_contains "$V_OUT" "^task: story docs/spec.md not found$" "an unresolved story is named in place of the task"
+  bg_end 40 "the run ends"
+}
+test_single_plan_ignores_new_story_in_start() {
+  fixture ins
+  scenario "$ISO1; sleep 3" "task 2/2; wtledger T2 complete b..c" "wtledger final review done" \
+           "wtledger shipped https://x/pull/1; stage idle; task -"
+  start_bg; wait_task "$TMP_WT/wt-feat" 1/2
+  ( cd "$P" && sh "$STATE_BIN" set stage brainstorm && sh "$STATE_BIN" set spec docs/other.md \
+      && sh "$STATE_BIN" ledger "Stop: unrelated" ) >/dev/null 2>&1
+  assert_contains "$P/.studio/ledger/other.md" "Stop: unrelated" "a new story in P has a Stop: line"
+  bg_end 60 "the run ends"
+  assert_eq 0 "$BG_STATUS" "the run is not stopped by an unrelated story in P"
+  assert_contains "$(last_run_dir)/report.md" "^Ending: done$" "it finishes"
+  assert_eq 4 "$(calls)" "every unit ran"
+}
 run_tests test_overnight_report_done test_overnight_report_not_done test_overnight_preflight_env_warns_not_blocks \
   test_overnight_report_anchors test_overnight_resume_quote test_overnight_label_t1 \
   test_overnight_session_seconds_refused test_overnight_claim_without_run_dir \
@@ -2086,4 +2263,11 @@ run_tests test_overnight_report_done test_overnight_report_not_done test_overnig
   test_watch_run_selects test_stop_two_runs_refuses test_stop_run_writes_own_flag test_stop_all_writes_each_flag \
   test_stop_story_unchanged test_verbs_channel_resolution_by_story test_verbs_channel_run_flag_slug_or_basename \
   test_verbs_channel_no_run_lists_story test_verbs_channel_ambiguous_story_refused test_verbs_channel_start_dir_from_lock test_help_names_concurrent_runs \
-  test_status_sessions_line_first
+  test_status_sessions_line_first \
+  test_single_plan_follows_story_after_unit_1 test_single_plan_rerun_after_stop_before_handoff \
+  test_single_plan_story_not_found_stops test_single_plan_resume_line_names_story_worktree \
+  test_single_plan_ambiguous_story_stops test_single_plan_preflight_names_story \
+  test_single_plan_from_story_worktree test_single_plan_in_place_keeps_main_pointer \
+  test_channel_ledger_follows_story test_status_reads_persisted_spec \
+  test_single_plan_follows_adopted_legacy_story test_single_plan_legacybranch_in_unit_follows \
+  test_single_plan_ignores_new_story_in_start
