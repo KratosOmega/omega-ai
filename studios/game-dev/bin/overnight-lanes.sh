@@ -2044,9 +2044,11 @@ lanes_start() {
   build_chains
   RUN_DIR="$REPORTS/overnight-$MF_SLUG-$(date +%Y%m%d-%H%M%S)"
   if [ "$_ls_dry" -eq 1 ]; then
+    setup_preflight_note "$MF_TARGET"
     lanes_dry_run
     exit 0
   fi
+  setup_preflight "$MF_TARGET"
   lanes_run
 }
 

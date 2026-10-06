@@ -266,6 +266,8 @@ usage: $SELF_ABS start [--dry-run | --detach] [<manifest>] | status [--run <slug
   start [--dry-run]  preflight, then run the approved plan one unit per fresh
                      claude-gd session until it ships or a stop rule fires.
                      --dry-run runs the preflight and prints the launch line.
+                     When worktree_setup is set, start first checks it in a
+                     scratch linked worktree (see Config).
   start [--dry-run] <manifest>
                      manifest mode (docs/runs/<slug>.md): preflight every
                      story; --dry-run prints the chains, each chain's first
@@ -378,7 +380,10 @@ Config: .studio/config.json "overnight" (defaults, ranges):
                                     runs under. The preflight warns when the slowest recent
                                     studio-test (.studio/gate.times) × 1.2 + 10 min exceeds it.
   worktree_setup       ""             command run once per new worktree under the gate lock
-                                    (studio-setup); no backslash. Unset = nothing runs
+                                    (studio-setup); no backslash. Unset = nothing runs.
+                                    Preflighted: start runs it once in a scratch linked
+                                    worktree off the run's base and refuses on a failure
+                                    (exit code and log shown); --dry-run only says so
   worktree_setup_minutes 20  1-120    cap on one worktree_setup run
   gate_command         ""             command the finish gate runs after the tests
                                     (studio-setup gate); no backslash. Unset = none
@@ -1430,9 +1435,11 @@ cmd_start() {
   preflight
   if [ "$_dry" -eq 1 ]; then
     UNIT_MODEL="$MODEL_TASK"
+    setup_preflight_note "$DEFAULT_BRANCH"
     with_launch_args print_launch
     exit 0
   fi
+  setup_preflight "$DEFAULT_BRANCH"
   RUN_DIR="$REPORTS/overnight-$(date +%Y%m%d-%H%M%S)"
   acquire_run_lock
   trap 'on_exit $?' EXIT
@@ -1550,6 +1557,88 @@ run_excludes() {
             .claude/worktrees/; do
     grep -qxF "$_e" "$_excl" 2>/dev/null || printf '%s\n' "$_e" >> "$_excl"
   done
+}
+# setup_preflight BRANCH — #49: worktree_setup once, through studio-setup (its
+# gate lock, timeout, log and marker), in a scratch linked worktree at
+# origin/BRANCH, so a command that breaks only where .git is a file is refused
+# here and not by the first story at night. Silent when unset; skipped when
+# STUDIO_OVERNIGHT_SETUP_CHECKED names the base's commit (--detach's child).
+# Green: SP_SHA is the commit, the worktree is gone. Anything else: the
+# worktree is gone and start exits 2 (refused).
+SP_W=""; SP_PID=""; SP_SHA=""
+setup_preflight() {
+  [ -n "${WORKTREE_SETUP:-}" ] || return 0
+  git -C "$START_DIR" fetch -q origin "$1" 2>/dev/null \
+    || { say "worktree_setup check: git fetch origin $1 failed"; exit 2; }
+  SP_SHA="$(git -C "$START_DIR" rev-parse -q --verify "refs/remotes/origin/$1^{commit}" 2>/dev/null)" \
+    || { say "worktree_setup check: no origin/$1"; exit 2; }
+  [ "${STUDIO_OVERNIGHT_SETUP_CHECKED:-}" != "$SP_SHA" ] || return 0
+  sp_sweep
+  run_excludes
+  SP_W="$STATE_ROOT/.claude/worktrees/setup-preflight-$$"
+  if ! { mkdir -p "$(dirname "$SP_W")" \
+         && git -C "$START_DIR" worktree add -q --detach "$SP_W" "$SP_SHA" >/dev/null 2>&1; }; then
+    sp_remove; say "worktree_setup check: cannot add the scratch worktree $SP_W"; exit 2
+  fi
+  say "worktree_setup: checking it once in a scratch linked worktree off origin/$1 before launch — up to ${WORKTREE_SETUP_MINUTES:-20} min (worktree_setup_minutes), longer while another run holds the gate lock"
+  _sp_ef="$(mktemp "${TMPDIR:-/tmp}/setup-preflight.XXXXXX")" || { sp_remove; say "worktree_setup check: mktemp failed"; exit 2; }
+  trap 'sp_interrupt' INT TERM HUP
+  # Background + wait: a trapped signal interrupts wait at once (D4).
+  ( cd "$SP_W" && exec sh "$SELF_DIR/studio-setup" ) > /dev/null 2> "$_sp_ef" &
+  SP_PID=$!
+  _sp_rc=0; wait "$SP_PID" || _sp_rc=$?
+  trap - INT TERM HUP
+  SP_PID=""
+  _sp_l="$(tail -n 1 "$_sp_ef" 2>/dev/null)"; rm -f "$_sp_ef"
+  if [ "$_sp_rc" -eq 0 ]; then sp_remove; say "worktree_setup: green in a linked worktree"; return 0; fi
+  _sp_log=""
+  case "$_sp_l" in
+    *" — log "*)
+      mkdir -p "$REPORTS" && { [ -f "$REPORTS/.gitignore" ] || printf '*\n' > "$REPORTS/.gitignore"; }
+      _sp_log="$REPORTS/setup-preflight-$(date +%Y%m%d-%H%M%S)-$$.log"
+      cp "$SP_W/${_sp_l##* — log }" "$_sp_log" 2>/dev/null || _sp_log="" ;;
+  esac
+  sp_remove
+  case "$_sp_rc" in
+    1) _sp_n="$(printf '%s\n' "$_sp_l" | sed -n 's/^worktree setup failed — exit \([0-9]*\) — .*/\1/p')"
+       [ "$_sp_n" != 124 ] || _sp_n="124 (timed out after worktree_setup_minutes)"
+       say "worktree_setup failed in a linked worktree — exit ${_sp_n:-?} — log ${_sp_log:-unavailable} — a story's worktree is linked too (.git is a file there): fix the command, then start again" ;;
+    2) say "worktree_setup check: ${_sp_l:-studio-setup refused the config}" ;;
+    *) say "worktree_setup check ended with exit $_sp_rc — ${_sp_l:-no output}" ;;
+  esac
+  SP_SHA=""
+  exit 2
+}
+# setup_preflight_note BRANCH — the dry run's one line (R3): start checks it, the dry run does not.
+setup_preflight_note() {
+  [ -n "${WORKTREE_SETUP:-}" ] || return 0
+  echo "worktree_setup: start checks it once in a scratch linked worktree off origin/$1 before launch (up to ${WORKTREE_SETUP_MINUTES:-20} min); --dry-run does not run it"
+}
+# sp_remove — the scratch worktree, gone (a plain rm and a prune when git refuses).
+sp_remove() {
+  [ -n "$SP_W" ] || return 0
+  git -C "$START_DIR" worktree remove --force "$SP_W" >/dev/null 2>&1 \
+    || { rm -rf "$SP_W"; git -C "$START_DIR" worktree prune >/dev/null 2>&1; }
+  SP_W=""
+}
+# sp_sweep — a dead start's scratch worktrees (setup-preflight-<pid>, pid not running).
+sp_sweep() {
+  for _sw in "$STATE_ROOT"/.claude/worktrees/setup-preflight-*; do
+    [ -d "$_sw" ] || continue
+    _swp="${_sw##*-}"
+    case "$_swp" in ''|*[!0-9]*) continue ;; esac
+    ! kill -0 "$_swp" 2>/dev/null || continue
+    SP_W="$_sw"; sp_remove
+  done
+}
+# sp_interrupt — INT/TERM/HUP during the check: stop studio-setup (TERM — its
+# own trap ends the command's group and frees the gate lock), drop the worktree.
+sp_interrupt() {
+  trap '' INT TERM HUP
+  if [ -n "$SP_PID" ]; then kill -TERM "$SP_PID" 2>/dev/null; wait "$SP_PID" 2>/dev/null; fi
+  sp_remove
+  say "worktree_setup check interrupted — nothing started"
+  exit 2
 }
 # run_setup — once the lock and traps are in place: the sleep inhibitor, the
 # reports dir's .gitignore, and the run's paths kept out of git.

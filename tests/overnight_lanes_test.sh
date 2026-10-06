@@ -3065,8 +3065,79 @@ test_lanes_adopt_sync_fail_holds() {
   lholds_off
 }
 
+# #49: the preflight's scratch worktrees in $P (empty when none).
+pf_wts() { git -C "$P" worktree list --porcelain | sed -n 's/^worktree //p' | grep '/setup-preflight-'; ls -d "$P"/.claude/worktrees/setup-preflight-* 2>/dev/null; }
+
+test_lanes_setup_preflight_refuses_linked_only() {
+  LANES_CONFIG='{"worktree_setup": "[ -d .git ]"}'; export LANES_CONFIG
+  lanes_fixture pfr integration A:-
+  assert_eq 0 "$( cd "$P" && [ -d .git ] && echo 0 || echo 1)" "the fixture's setup passes in the main checkout"
+  run_lanes start "$MFP"
+  assert_eq 2 "$LS_STATUS" "a setup that fails in a linked worktree refuses start"
+  assert_contains "$LS_ERR" "worktree_setup: checking it once in a scratch linked worktree off origin/integration/demo before launch — up to 20 min" "the running line names the base and the cap"
+  assert_contains "$LS_ERR" "worktree_setup failed in a linked worktree — exit 1 — log $P/.studio/reports/setup-preflight-[0-9-]*\.log" "the refusal names the exit and the log"
+  _pl="$(sed -n 's/.* — log \([^ ]*\.log\) — .*/\1/p' "$LS_ERR" | head -n 1)"
+  assert_eq 1 "$([ -f "$_pl" ] && echo 1 || echo 0)" "the named log exists after the scratch worktree is gone"
+  assert_eq "" "$(pf_wts)" "no scratch worktree is left"
+  assert_eq 0 "$(calls)" "no unit ran"
+  assert_missing "$P/.studio/runs/demo/lock" "no run lock was taken"
+  assert_missing "$P/.studio/gate.lock" "the gate lock is released"
+}
+test_lanes_setup_preflight_pass_launches() {
+  LANES_CONFIG='{"worktree_setup": "case $(pwd -P) in */setup-preflight-*) [ -f .git ] && echo pf >> '"$TMP"'/pf-ran;; esac"}'; export LANES_CONFIG
+  rm -f "$TMP/pf-ran"
+  lanes_fixture pfp integration A:-
+  run_lanes start "$MFP"
+  assert_eq 0 "$LS_STATUS" "a green preflight launches the run"
+  assert_eq 1 "$(wc -l < "$TMP/pf-ran" | tr -d ' ')" "the setup ran once, in a linked worktree (.git is a file)"
+  assert_contains "$LS_ERR" "worktree_setup: green in a linked worktree" "the green line"
+  assert_contains "$(last_lanes_dir)/report.md" "^Ending: done$" "the run ends done"
+  assert_eq "" "$(pf_wts)" "no scratch worktree is left"
+}
+test_lanes_setup_preflight_unset_silent() {
+  lanes_fixture pfu integration A:-
+  run_lanes start "$MFP"
+  assert_eq 0 "$LS_STATUS" "the run ends done"
+  assert_not_contains "$LS_ERR" "worktree_setup" "unset: no preflight line"
+  assert_eq "" "$(pf_wts)" "none at all"
+}
+test_lanes_setup_preflight_dry_run_skips() {
+  LANES_CONFIG='{"worktree_setup": "[ -d .git ]"}'; export LANES_CONFIG
+  lanes_fixture pfd integration A:-
+  run_lanes start --dry-run "$MFP"
+  assert_eq 0 "$LS_STATUS" "the dry run does not run the setup, so it passes"
+  assert_contains "$LS_OUT" "^worktree_setup: start checks it once in a scratch linked worktree off origin/integration/demo before launch (up to 20 min); --dry-run does not run it$" "it says start will"
+  assert_eq 0 "$(ls "$P"/.studio/reports/setup-* 2>/dev/null | wc -l | tr -d ' ')" "no setup log"
+  assert_eq "" "$(pf_wts)" "no scratch worktree"
+}
+test_lanes_setup_preflight_interrupt_cleans() {
+  LANES_CONFIG='{"worktree_setup": "case $(pwd -P) in */setup-preflight-*) : > '"$TMP"'/pf-int; sleep 4831;; esac"}'; export LANES_CONFIG
+  rm -f "$TMP/pf-int"
+  lanes_fixture pfi integration A:-
+  lanes_bg
+  wait_for "[ -f '$TMP/pf-int' ]" 60
+  kill -TERM "$RPID"
+  wait_pid_or_fail "$RPID" 20 "TERM during the check ends start promptly"
+  assert_eq 2 "$WP_STATUS" "exit 2: nothing started"
+  assert_contains "$TMP/lbg.err" "worktree_setup check interrupted — nothing started" "it says so"
+  sleep 1
+  assert_eq 0 "$(ps -A -o args= | grep -c '^sleep 4831$')" "the setup's processes are gone"
+  assert_eq "" "$(pf_wts)" "no scratch worktree is left"
+  assert_missing "$P/.studio/gate.lock" "the gate lock is released"
+  assert_eq 0 "$(calls)" "no unit ran"
+}
+test_lanes_setup_preflight_sweeps_stale() {
+  LANES_CONFIG='{"worktree_setup": "true"}'; export LANES_CONFIG
+  lanes_fixture pfs integration A:-
+  mkdir -p "$P/.claude/worktrees"
+  git -C "$P" worktree add -q --detach "$P/.claude/worktrees/setup-preflight-999999" HEAD
+  run_lanes start "$MFP"
+  assert_eq 0 "$LS_STATUS" "a dead start's leftover does not block the next start"
+  assert_eq "" "$(pf_wts)" "and it is swept"
+}
+
 test_lanes_setup_fail_holds() {
-  LANES_CONFIG='{"worktree_setup": "exit 5"}'; export LANES_CONFIG
+  LANES_CONFIG='{"worktree_setup": "case $(pwd -P) in */setup-preflight-*) ;; *) exit 5;; esac"}'; export LANES_CONFIG
   lanes_fixture suf integration A:-
   lholds_on 120
   lanes_bg
@@ -3863,7 +3934,10 @@ test_lanes_round_trip_sync_conflict() {
   assert_not_contains "$P/.studio/runs/alpha/landed.tsv" 'stopped' "stopped appears nowhere in alpha's landed.tsv"
 }
 
-run_tests test_lanes_chain_rule test_lanes_manifest_refusals test_lanes_branch_default_or_target_refused test_lanes_conflicts_lock_without_start test_lanes_preflight_backlog_tasks test_lanes_manifest_header_refusals \
+run_tests test_lanes_setup_preflight_refuses_linked_only test_lanes_setup_preflight_pass_launches \
+  test_lanes_setup_preflight_unset_silent test_lanes_setup_preflight_dry_run_skips \
+  test_lanes_setup_preflight_interrupt_cleans test_lanes_setup_preflight_sweeps_stale \
+  test_lanes_chain_rule test_lanes_manifest_refusals test_lanes_branch_default_or_target_refused test_lanes_conflicts_lock_without_start test_lanes_preflight_backlog_tasks test_lanes_manifest_header_refusals \
   test_lanes_preflight_story_checks test_lanes_preflight_story_state test_lanes_docs_unreachable \
   test_lanes_git_too_old test_lanes_sourced_only test_lanes_next \
   test_lanes_next_all_planned_and_ambiguous test_lanes_next_plan_before_autopilot \
