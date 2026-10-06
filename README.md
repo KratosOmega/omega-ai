@@ -48,7 +48,7 @@ different config root, `--shim-dir DIR` for a different shim location,
 in Plan 2), and `--dry-run` to see every action — including the removal of
 a previous install's entries — without performing it. Reinstalling checks
 that the studio's files are all present, then removes everything the
-previous install recorded before writing anew. The install exits non-zero
+previous install recorded before writing anew. A reinstall keeps every top-level key you or Claude Code added to `settings.json` that the studio's template does not define, such as `agentPushNotifEnabled`, and names them; the template's own keys take its values. A copy whose template-owned values changed is still backed up to `settings.json.bak-<timestamp>`. The merge needs python3 — without it, or when the file is not valid JSON, the template is installed as is, with a warning naming the backup. The install exits non-zero
 when the doctor finds a problem.
 
 ### Upgrading from `profiles/`

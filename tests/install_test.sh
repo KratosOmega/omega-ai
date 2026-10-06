@@ -455,6 +455,141 @@ test_settings_backup() {
   assert_not_contains "$TMP/gen/settings.json" "stale" "the studio's settings.json is installed afresh"
 }
 
+# #53: settings.json backups in DIR.
+bak_count() { ls "$1"/settings.json.bak-* 2>/dev/null | wc -l | tr -d ' '; }
+# same_bytes A B — 0 when the files are byte-identical, else 1.
+same_bytes() { cmp -s "$1" "$2" && echo 0 || echo 1; }
+
+# #53: a reinstall keeps the top-level keys the template does not define,
+# after the template's own keys, which take the template's values. The
+# expected bytes assume studios/general/settings.json is {"model": "opus"}.
+test_install_settings_keeps_user_keys() {
+  sh "$REPO_ROOT/install.sh" general --target "$TMP/sk" --shim-dir "$TMP/bin-sk" >/dev/null 2>&1
+  printf '{"zeta": 1, "model": "stale", "agentPushNotifEnabled": true}\n' > "$TMP/sk/settings.json"
+  status=0
+  sh "$REPO_ROOT/install.sh" general --target "$TMP/sk" --shim-dir "$TMP/bin-sk" > "$TMP/sk.out" 2>&1 || status=$?
+  assert_eq 0 "$status" "the reinstall succeeds"
+  printf '{\n  "model": "opus",\n  "zeta": 1,\n  "agentPushNotifEnabled": true\n}\n' > "$TMP/sk.want"
+  assert_eq 0 "$(same_bytes "$TMP/sk.want" "$TMP/sk/settings.json")" \
+    "template keys first with the template's values, then the kept keys in their order"
+  assert_contains "$TMP/sk.out" "^settings.json: kept your keys: zeta, agentPushNotifEnabled$" "one line names the kept keys"
+  assert_eq 1 "$(bak_count "$TMP/sk")" "a template-owned value changed, so the old file is backed up"
+  assert_contains "$TMP/sk"/settings.json.bak-* '"model": "stale"' "the backup holds the old value"
+  assert_contains "$TMP/sk/.omega-ai-manifest" "^$TMP/sk/settings.json$" "the manifest still records settings.json"
+}
+
+# #53: a template-owned object is replaced whole; doctor reads the merged
+# file as it read the template; uninstall removes it through the manifest.
+test_install_settings_merged_doctor_clean() {
+  sh "$REPO_ROOT/install.sh" game-dev --target "$TMP/sd" --shim-dir "$TMP/bin-sd" >/dev/null 2>&1
+  printf '{ "agentPushNotifEnabled": true, "enabledPlugins": { "mine@market": true } }\n' > "$TMP/sd/settings.json"
+  status=0
+  sh "$REPO_ROOT/install.sh" game-dev --target "$TMP/sd" --shim-dir "$TMP/bin-sd" > "$TMP/sd.out" 2>&1 || status=$?
+  assert_eq 0 "$status" "a merged install passes its own doctor run"
+  assert_contains "$TMP/sd/settings.json" '"agentPushNotifEnabled": true' "the user's key is kept"
+  assert_not_contains "$TMP/sd/settings.json" "mine@market" "a template-owned object is replaced whole, not deep-merged"
+  status=0
+  sh "$REPO_ROOT/doctor.sh" game-dev --target "$TMP/sd" > "$TMP/sd-doc.out" 2>&1 || status=$?
+  assert_eq 0 "$status" "doctor passes on the merged file"
+  assert_contains "$TMP/sd-doc.out" "superpowers@claude-plugins-official enabled" "doctor reads superpowers as enabled"
+  assert_contains "$TMP/sd-doc.out" "godot-prompter@skillsmith enabled" "doctor reads godot-prompter as enabled"
+  sh "$REPO_ROOT/uninstall.sh" game-dev --target "$TMP/sd" --shim-dir "$TMP/bin-sd" >/dev/null 2>&1
+  assert_missing "$TMP/sd/settings.json" "uninstall removes the merged settings.json"
+}
+
+# #53: a fresh install never consults python3 and copies the template.
+test_install_settings_fresh_unchanged() {
+  status=0
+  OMEGA_INSTALL_PYTHON="$TMP/no-such-python" \
+    sh "$REPO_ROOT/install.sh" game-dev --target "$TMP/sf" --shim-dir "$TMP/bin-sf" > "$TMP/sf.out" 2>&1 || status=$?
+  assert_eq 0 "$status" "a fresh install succeeds"
+  assert_eq 0 "$(same_bytes "$REPO_ROOT/studios/game-dev/settings.json" "$TMP/sf/settings.json")" \
+    "a fresh install copies the template byte for byte"
+  assert_not_contains "$TMP/sf.out" "settings.json:" "nothing merged, nothing reported, python3 not consulted"
+  assert_eq 0 "$(bak_count "$TMP/sf")" "no backup"
+}
+
+# #53: a file that is not a JSON object falls back to the template, backed up.
+test_install_settings_invalid_json_falls_back() {
+  n=0
+  for body in '{"model": "opus",' '[1, 2]' ''; do
+    n=$((n + 1)); t="$TMP/sij$n"
+    mkdir -p "$t"
+    printf '%s' "$body" > "$t/settings.json"
+    status=0
+    sh "$REPO_ROOT/install.sh" general --target "$t" --shim-dir "$t-bin" > "$t.out" 2>&1 || status=$?
+    assert_eq 0 "$status" "case $n: the install does not fail"
+    assert_contains "$t.out" "settings.json: not a valid JSON object — installing the studio template as is; your previous file is $t/settings.json.bak-" \
+      "case $n: the warning names the backup"
+    assert_eq 0 "$(same_bytes "$REPO_ROOT/studios/general/settings.json" "$t/settings.json")" "case $n: the template is installed as is"
+    assert_eq 1 "$(bak_count "$t")" "case $n: the old bytes are backed up"
+  done
+}
+
+# #53: no python3, or one that does not run (macOS's developer-tools stub):
+# the template is installed as today and the warning names the backup.
+test_install_settings_no_python_falls_back() {
+  printf '#!/bin/sh\nexit 1\n' > "$TMP/broken-python"; chmod +x "$TMP/broken-python"
+  for py in "$TMP/no-such-python" "$TMP/broken-python"; do
+    c="$(basename "$py")"; t="$TMP/snp-$c"
+    mkdir -p "$t"
+    printf '{"model": "opus", "agentPushNotifEnabled": true}\n' > "$t/settings.json"
+    status=0
+    OMEGA_INSTALL_PYTHON="$py" sh "$REPO_ROOT/install.sh" general --target "$t" --shim-dir "$t-bin" > "$t.out" 2>&1 || status=$?
+    assert_eq 0 "$status" "$c: the install does not fail"
+    assert_contains "$t.out" "settings.json: python3 not found or not working — installing the studio template as is; your previous file is $t/settings.json.bak-" \
+      "$c: the warning names the backup"
+    assert_eq 0 "$(same_bytes "$REPO_ROOT/studios/general/settings.json" "$t/settings.json")" "$c: the template is installed as is"
+    assert_contains "$t"/settings.json.bak-* agentPushNotifEnabled "$c: the backup keeps the key"
+  done
+}
+
+# #53: --dry-run names the keys it would keep and touches nothing.
+test_install_settings_dry_run_reports_kept() {
+  sh "$REPO_ROOT/install.sh" general --target "$TMP/sdr" --shim-dir "$TMP/bin-sdr" >/dev/null 2>&1
+  printf '{"model": "stale", "agentPushNotifEnabled": true}\n' > "$TMP/sdr/settings.json"
+  cp "$TMP/sdr/settings.json" "$TMP/sdr.before"
+  status=0
+  sh "$REPO_ROOT/install.sh" general --target "$TMP/sdr" --shim-dir "$TMP/bin-sdr" --dry-run > "$TMP/sdr.out" 2>&1 || status=$?
+  assert_eq 0 "$status" "the dry run succeeds"
+  assert_contains "$TMP/sdr.out" "^DRY  merge $TMP/sdr/settings.json (keeping your keys: agentPushNotifEnabled)$" \
+    "the dry run names the keys it would keep"
+  assert_eq 0 "$(same_bytes "$TMP/sdr.before" "$TMP/sdr/settings.json")" "the dry run writes nothing"
+  assert_eq 0 "$(bak_count "$TMP/sdr")" "the dry run backs nothing up"
+  assert_not_contains "$TMP/sdr.out" "kept your keys" "no claim that keys were kept"
+}
+
+# #53: a file that differs from the template only by kept keys, or only by
+# formatting, is not backed up — eleven redundant backups piled up before.
+test_install_settings_no_backup_for_kept_keys() {
+  sh "$REPO_ROOT/install.sh" general --target "$TMP/snb" --shim-dir "$TMP/bin-snb" >/dev/null 2>&1
+  printf '{"model": "opus", "agentPushNotifEnabled": true}\n' > "$TMP/snb/settings.json"
+  sh "$REPO_ROOT/install.sh" general --target "$TMP/snb" --shim-dir "$TMP/bin-snb" > "$TMP/snb.out" 2>&1
+  assert_eq 0 "$(bak_count "$TMP/snb")" "only a kept key differs: no backup"
+  assert_contains "$TMP/snb.out" "^settings.json: kept your keys: agentPushNotifEnabled$" "the key is kept"
+  cp "$TMP/snb/settings.json" "$TMP/snb.first"
+  sh "$REPO_ROOT/install.sh" general --target "$TMP/snb" --shim-dir "$TMP/bin-snb" >/dev/null 2>&1
+  assert_eq 0 "$(bak_count "$TMP/snb")" "a second reinstall: still no backup"
+  assert_eq 0 "$(same_bytes "$TMP/snb.first" "$TMP/snb/settings.json")" "the second reinstall writes the same bytes"
+  printf '{"model":"opus"}' > "$TMP/snb/settings.json"
+  sh "$REPO_ROOT/install.sh" general --target "$TMP/snb" --shim-dir "$TMP/bin-snb" >/dev/null 2>&1
+  assert_eq 0 "$(bak_count "$TMP/snb")" "same content, other formatting: no backup"
+  assert_eq 0 "$(same_bytes "$REPO_ROOT/studios/general/settings.json" "$TMP/snb/settings.json")" \
+    "nothing kept: the template's own bytes"
+}
+
+# #53: non-ASCII survives byte for byte, even under a C locale.
+test_install_settings_non_ascii() {
+  mkdir -p "$TMP/sna"
+  printf '{"model": "opus", "statusLine": {"type": "command", "command": "echo \342\206\222 caf\303\251"}}\n' > "$TMP/sna/settings.json"
+  status=0
+  LC_ALL=C sh "$REPO_ROOT/install.sh" general --target "$TMP/sna" --shim-dir "$TMP/bin-sna" > "$TMP/sna.out" 2>&1 || status=$?
+  assert_eq 0 "$status" "the install succeeds under LC_ALL=C"
+  printf '{\n  "model": "opus",\n  "statusLine": {\n    "type": "command",\n    "command": "echo \342\206\222 caf\303\251"\n  }\n}\n' > "$TMP/sna.want"
+  assert_eq 0 "$(same_bytes "$TMP/sna.want" "$TMP/sna/settings.json")" "the kept value is written as UTF-8, unescaped"
+  assert_eq 0 "$(bak_count "$TMP/sna")" "only a kept key differs: no backup"
+}
+
 test_shim() {
   sh "$REPO_ROOT/install.sh" game-dev --target "$TMP/gd" --shim-dir "$TMP/bin" >/dev/null 2>&1
   assert_file "$TMP/bin/claude-gd" "writes the shim"
@@ -985,6 +1120,7 @@ test_install_replaces_symlinked_files() {
   if [ -L "$TMP/sym/CLAUDE.md" ]; then _fail "CLAUDE.md is a regular file after install"; else _pass "CLAUDE.md is a regular file after install"; fi
   TESTS_RUN=$((TESTS_RUN + 1))
   if [ -L "$TMP/sym/settings.json" ]; then _fail "settings.json is a regular file after install"; else _pass "settings.json is a regular file after install"; fi
+  assert_not_contains "$TMP/sym/settings.json" "mine" "a linked settings.json is replaced, never merged from"
   assert_contains "$TMP/sym/CLAUDE.md" "General Studio" "CLAUDE.md is rendered in place"
 }
 
@@ -1241,7 +1377,8 @@ run_tests test_studio_contract test_install_unknown_studio test_install_guard \
   test_install_skips_mcp_without_engine test_install_no_mcp_flag_skips_registration \
   test_install_general_has_no_mcp test_reinstall_reregisters_mcp_once test_uninstall_removes_mcp \
   test_uninstall_purge_confirmation_gates_mcp_removal \
-  test_doctor_engine_and_mcp_rows test_doctor_delegations test_doctor_hook_probe_line test_settings_backup test_shim \
+  test_doctor_engine_and_mcp_rows test_doctor_delegations test_doctor_hook_probe_line test_settings_backup test_install_settings_keeps_user_keys test_install_settings_merged_doctor_clean test_install_settings_fresh_unchanged test_install_settings_invalid_json_falls_back test_install_settings_no_python_falls_back test_install_settings_dry_run_reports_kept test_install_settings_no_backup_for_kept_keys test_install_settings_non_ascii \
+  test_shim \
   test_doctor test_doctor_detects_leak test_doctor_reports_no_plugins \
   test_doctor_plugin_report test_doctor_plugin_name_mismatch \
   test_option_value_required test_uninstall test_uninstall_scopes_manifest_entries \
