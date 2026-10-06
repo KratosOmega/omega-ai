@@ -256,16 +256,24 @@ load_main() { M_STAGE="$(hdr "$MAIN" stage)"; M_SPEC="$(hdr "$MAIN" spec)"; M_PL
 # test_seam N — test only (STUDIO_STATE_TEST_SEAM=kill3|kill4|pause3): stop a move after step N.
 test_seam() { case "${STUDIO_STATE_TEST_SEAM:-}" in "kill$1") kill -9 $$ ;; "pause$1") sleep 30 & wait $! ;; esac; }
 
+# HANDING_AWK — for the two rewriters below, which read MAIN twice: on the first
+# pass, last_handing() sets `last` to the line of the newest `handing` record in
+# `## Ledger`, matched by newest_rec's exact format ("- <date> handing", then TAB
+# fields, path= last), so a free-text note that starts "handing<TAB>" is never rewritten.
+HANDING_AWK='function last_handing(  nw, w) { if (/^## Ledger/) { led = 1; return }
+  if (!led || !/^- /) return; nw = split($1, w, " ")
+  if (nw == 3 && w[3] == "handing" && NF >= 2 && $NF ~ /^path=/) last = FNR }'
 # main_idle_to OUT — AC12/AC13 step 5: MAIN with the story header cleared
 # (stage idle, spec/plan/task/branch -, milestone kept) and this move's
 # `handing` line rewritten to `handed`; every other ledger line kept (D1).
 main_idle_to() {
-  awk -F'\t' -v OFS='\t' '
+  awk -F'\t' -v OFS='\t' "$HANDING_AWK"'
     BEGIN { v["stage"] = "idle"; v["spec"] = "-"; v["plan"] = "-"; v["task"] = "-"; v["branch"] = "-" }
+    NR == FNR { last_handing(); next }
     /^## Ledger/ { inl = 1 }
     !inl && /^[a-z_]+: / { k = $0; sub(/:.*/, "", k); if (k in v) { print k ": " v[k]; next } }
-    inl && !done && /^- [0-9-]+ handing\t/ { sub(/ handing$/, " handed", $1); done = 1 }
-    { print }' "$MAIN" > "$1" || return 1
+    FNR == last { sub(/ handing$/, " handed", $1) }
+    { print }' "$MAIN" "$MAIN" > "$1" || return 1
   grep -q '^branch: ' "$1" || { awk '{ print } !d && /^task: / { print "branch: -"; d = 1 }' "$1" > "$1.b" && mv "$1.b" "$1"; }
 }
 finish_main() { _mi="$MAIN.tmp.$$"; { main_idle_to "$_mi" && mv "$_mi" "$MAIN"; } || fail "cannot rewrite $MAIN"; }
@@ -273,10 +281,11 @@ finish_main() { _mi="$MAIN.tmp.$$"; { main_idle_to "$_mi" && mv "$_mi" "$MAIN"; 
 # void); a REASON goes in as reason= just before path=. One tmp + mv.
 rewrite_handing() {
   _rt="$MAIN.tmp.$$"
-  { ST_NEW="$1" ST_WHY="${2:-}" awk -F'\t' -v OFS='\t' '
-    !done && /^- [0-9-]+ handing\t/ { sub(/ handing$/, " " ENVIRON["ST_NEW"], $1)
-      if (ENVIRON["ST_WHY"] != "") $NF = "reason=" ENVIRON["ST_WHY"] OFS $NF; done = 1 }
-    { print }' "$MAIN" > "$_rt" && mv "$_rt" "$MAIN"; } || fail "cannot rewrite $MAIN"
+  { ST_NEW="$1" ST_WHY="${2:-}" awk -F'\t' -v OFS='\t' "$HANDING_AWK"'
+    NR == FNR { last_handing(); next }
+    FNR == last { sub(/ handing$/, " " ENVIRON["ST_NEW"], $1)
+      if (ENVIRON["ST_WHY"] != "") $NF = "reason=" ENVIRON["ST_WHY"] OFS $NF }
+    { print }' "$MAIN" "$MAIN" > "$_rt" && mv "$_rt" "$MAIN"; } || fail "cannot rewrite $MAIN"
 }
 # put_pointer DIR STAGE SPEC PLAN TASK BRANCH LAST — DIR's pointer: the header,
 # then DIR's own `## Ledger` lines (f2-M7; G3), then FORCED_LINE when set, then

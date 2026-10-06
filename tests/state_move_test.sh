@@ -536,10 +536,27 @@ test_state_free_text_notes_are_not_records() {
   assert_eq 4 "$ST_RC" "a handed note restores nothing"
 }
 
+test_state_rewriters_skip_tab_notes() {
+  # T4#2: step 5 and the roll-back rewrite only a record of newest_rec's exact
+  # format, never a free-text note that starts "handing<TAB>".
+  proj rtn; st "$P" ledger "handing${T}foo" >/dev/null; plan_in_p; st "$P" set stage execute >/dev/null; wt e feat/e; WE="$W"
+  st_rc "$P" handoff "$WE"
+  assert_eq 0 "$ST_RC" "the handoff exits 0"
+  assert_eq 1 "$(grep -c "^- [0-9-]* handing${T}foo$" "$P/.studio/STATE.md")" "step 5 leaves the note as it was"
+  assert_eq "0 1" "$(grep -c "^- [0-9-]* handing${T}spec=" "$P/.studio/STATE.md") $(grep -c "^- [0-9-]* handed${T}spec=" "$P/.studio/STATE.md")" "and rewrites the record to handed"
+  proj rtv; st "$P" ledger "handing${T}foo" >/dev/null; plan_in_p
+  printf -- '- 2026-10-05 handing\tspec=docs/s.md\tplan=docs/p.md\tbranch=feat/g\tpath=%s\n' "$P-gone" >> "$P/.studio/STATE.md"
+  st_rc "$P" get stage
+  assert_eq plan "$(cat "$TMP/st.out")" "a heal of a gone target keeps main's story"
+  assert_eq 1 "$(grep -c "^- [0-9-]* handing${T}foo$" "$P/.studio/STATE.md")" "the roll-back leaves the note as it was"
+  assert_eq "0 1" "$(grep -c "^- [0-9-]* handing${T}spec=" "$P/.studio/STATE.md") $(grep -c "^- [0-9-]* void${T}spec=.*${T}reason=worktree gone${T}path=" "$P/.studio/STATE.md")" "and voids the record"
+}
+
 run_tests test_state_handoff_moves_story test_state_handoff_order_and_self_heal \
   test_state_self_heal_ignores_completed_handoff test_state_self_heal_scope test_state_move_record_parse \
   test_state_handoff_refusals test_state_take_after_stop_before_handoff test_state_take_main_planned_story \
   test_state_take_refusals test_state_take_refuses_in_place_story test_state_write_after_take_refused test_state_take_restores_removed_worktree \
   test_state_take_restores_renamed_branch test_state_adopt_legacy_execute test_state_adopt_legacy_finished \
   test_state_adopt_skips_next_story test_state_take_hint_under_stale_branch test_state_mutex_serialises_moves \
-  test_state_mutex_single_acquisition test_state_free_text_notes_are_not_records
+  test_state_mutex_single_acquisition test_state_free_text_notes_are_not_records \
+  test_state_rewriters_skip_tab_notes
