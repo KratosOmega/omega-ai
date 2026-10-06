@@ -1576,6 +1576,7 @@ test_overnight_hold_on_feature_stop() {
 }
 test_overnight_start_ledger_stop_ends_at_once() {
   holds_on 60
+  # R1: inplace means one ledger, before isolation; the two-ledger tie is unreachable for single-plan.
   fixture sls; scenario "stage execute; inplace; task 1/2; ledger Stop: from the start checkout"; run_start
   assert_contains "$(last_run_dir)/report.md" "^Ending: stop: from the start checkout$" "a Stop: in the start ledger after isolation ends at once"
   assert_missing "$(last_run_dir)/control/-.held" "never held"
@@ -1720,6 +1721,7 @@ test_overnight_prestop_and_limit_end_at_once() {
   run_start
   assert_eq 0 "$RS_STATUS" "before isolation the limit never holds; the story goes on (R6)"
   assert_contains "$(last_run_dir)/events.jsonl" '"event":"message_requeued"' "the message was still requeued"
+  # R1: inplace means one ledger, before isolation; the two-ledger tie is unreachable for single-plan.
   fixture pl2 '{"overnight": {"retries": 0}}'
   scenario "stage execute; inplace; task 1/2; wtledger T1 complete a..b; say x" \
            "inbox; ledger Stop: start side"
