@@ -475,6 +475,7 @@ test_install_settings_keeps_user_keys() {
   assert_contains "$TMP/sk.out" "^settings.json: kept your keys: zeta, agentPushNotifEnabled$" "one line names the kept keys"
   assert_eq 1 "$(bak_count "$TMP/sk")" "a template-owned value changed, so the old file is backed up"
   assert_contains "$TMP/sk"/settings.json.bak-* '"model": "stale"' "the backup holds the old value"
+  assert_contains "$TMP/sk.out" "existing settings.json differed; backed up to $TMP/sk/settings.json.bak-" "the warning names the backup"
   assert_contains "$TMP/sk/.omega-ai-manifest" "^$TMP/sk/settings.json$" "the manifest still records settings.json"
 }
 
@@ -497,16 +498,26 @@ test_install_settings_merged_doctor_clean() {
   assert_missing "$TMP/sd/settings.json" "uninstall removes the merged settings.json"
 }
 
-# #53: a fresh install never consults python3 and copies the template.
+# #53: a fresh install never consults python3 and copies the template; nor
+# does a reinstall over a file byte-identical to the template (D8). The stub
+# python records every call, so "not consulted" is observed, not inferred.
 test_install_settings_fresh_unchanged() {
+  printf '#!/bin/sh\necho "$*" >> "%s"\nexit 1\n' "$TMP/sf.py-calls" > "$TMP/sf-python"; chmod +x "$TMP/sf-python"
   status=0
-  OMEGA_INSTALL_PYTHON="$TMP/no-such-python" \
+  OMEGA_INSTALL_PYTHON="$TMP/sf-python" \
     sh "$REPO_ROOT/install.sh" game-dev --target "$TMP/sf" --shim-dir "$TMP/bin-sf" > "$TMP/sf.out" 2>&1 || status=$?
   assert_eq 0 "$status" "a fresh install succeeds"
   assert_eq 0 "$(same_bytes "$REPO_ROOT/studios/game-dev/settings.json" "$TMP/sf/settings.json")" \
     "a fresh install copies the template byte for byte"
-  assert_not_contains "$TMP/sf.out" "settings.json:" "nothing merged, nothing reported, python3 not consulted"
+  assert_not_contains "$TMP/sf.out" "settings.json:" "nothing merged, nothing reported"
+  assert_missing "$TMP/sf.py-calls" "a fresh install never runs python3"
   assert_eq 0 "$(bak_count "$TMP/sf")" "no backup"
+  status=0
+  OMEGA_INSTALL_PYTHON="$TMP/sf-python" \
+    sh "$REPO_ROOT/install.sh" game-dev --target "$TMP/sf" --shim-dir "$TMP/bin-sf" > "$TMP/sf.out" 2>&1 || status=$?
+  assert_eq 0 "$status" "a reinstall over the template's own bytes succeeds"
+  assert_missing "$TMP/sf.py-calls" "a reinstall over the template's own bytes never runs python3"
+  assert_eq 0 "$(bak_count "$TMP/sf")" "still no backup"
 }
 
 # #53: a file that is not a JSON object falls back to the template, backed up.
@@ -578,16 +589,171 @@ test_install_settings_no_backup_for_kept_keys() {
     "nothing kept: the template's own bytes"
 }
 
-# #53: non-ASCII survives byte for byte, even under a C locale.
+# #53: non-ASCII survives byte for byte, even under a C locale. Python 3.7+
+# coerces a C locale to UTF-8 (PEP 538/540) unless told not to, so both are
+# switched off here: python's default text encoding is then ASCII, and only
+# the helper's explicit UTF-8 reads and writes keep the bytes.
 test_install_settings_non_ascii() {
   mkdir -p "$TMP/sna"
   printf '{"model": "opus", "statusLine": {"type": "command", "command": "echo \342\206\222 caf\303\251"}}\n' > "$TMP/sna/settings.json"
   status=0
-  LC_ALL=C sh "$REPO_ROOT/install.sh" general --target "$TMP/sna" --shim-dir "$TMP/bin-sna" > "$TMP/sna.out" 2>&1 || status=$?
+  LC_ALL=C PYTHONUTF8=0 PYTHONCOERCECLOCALE=0 \
+    sh "$REPO_ROOT/install.sh" general --target "$TMP/sna" --shim-dir "$TMP/bin-sna" > "$TMP/sna.out" 2>&1 || status=$?
   assert_eq 0 "$status" "the install succeeds under LC_ALL=C"
+  assert_contains "$TMP/sna.out" "^settings.json: kept your keys: statusLine$" "the merge itself succeeds under LC_ALL=C"
   printf '{\n  "model": "opus",\n  "statusLine": {\n    "type": "command",\n    "command": "echo \342\206\222 caf\303\251"\n  }\n}\n' > "$TMP/sna.want"
   assert_eq 0 "$(same_bytes "$TMP/sna.want" "$TMP/sna/settings.json")" "the kept value is written as UTF-8, unescaped"
   assert_eq 0 "$(bak_count "$TMP/sna")" "only a kept key differs: no backup"
+}
+
+# #53 fix wave (F1): the reinstall removes settings.json with the previous
+# manifest's entries, long before it writes the new one. A copy of the user's
+# file must be on disk the whole time, even when nothing in it would be lost:
+# an install that fails in between keeps that copy and says where it is.
+# The failure here: a directory where CLAUDE.md is rendered, unknown to the
+# manifest, so `rm -f` on it fails after the old entries are gone.
+test_install_settings_failed_install_keeps_copy() {
+  t="$TMP/sfail"
+  sh "$REPO_ROOT/install.sh" general --target "$t" --shim-dir "$TMP/bin-sfail" >/dev/null 2>&1
+  printf '{"model": "opus", "agentPushNotifEnabled": true}\n' > "$t/settings.json"
+  grep -v "^$t/CLAUDE.md\$" "$t/.omega-ai-manifest" > "$t.manifest"
+  mv "$t.manifest" "$t/.omega-ai-manifest"
+  rm -f "$t/CLAUDE.md"; mkdir -p "$t/CLAUDE.md/blocker"
+  status=0
+  sh "$REPO_ROOT/install.sh" general --target "$t" --shim-dir "$TMP/bin-sfail" > "$t.out" 2>&1 || status=$?
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if [ "$status" != 0 ]; then _pass "the install fails (the CLAUDE.md render)"; else _fail "the install fails (the CLAUDE.md render)"; fi
+  assert_eq 1 "$(bak_count "$t")" "a copy of the user's settings.json is on disk"
+  assert_contains "$t"/settings.json.bak-* agentPushNotifEnabled "the copy holds the user's key"
+  assert_contains "$t.out" "the install stopped; your previous settings.json is $t/settings.json.bak-" \
+    "the failure names the copy"
+  rm -rf "$t/CLAUDE.md"
+}
+
+# #53 fix wave (F1): the new settings.json is written to a sibling temp file
+# and moved into place; a failed write fails the install, keeps the copy of
+# the user's file and leaves no half-written settings.json. The failure here:
+# a directory at the temp file's path.
+test_install_settings_write_failure_keeps_copy() {
+  t="$TMP/swf"
+  sh "$REPO_ROOT/install.sh" general --target "$t" --shim-dir "$TMP/bin-swf" >/dev/null 2>&1
+  printf '{"model": "opus", "agentPushNotifEnabled": true}\n' > "$t/settings.json"
+  mkdir -p "$t/settings.json.omega-tmp/blocker"
+  status=0
+  sh "$REPO_ROOT/install.sh" general --target "$t" --shim-dir "$TMP/bin-swf" > "$t.out" 2>&1 || status=$?
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if [ "$status" != 0 ]; then _pass "a failed settings.json write fails the install"; else _fail "a failed settings.json write fails the install"; fi
+  assert_contains "$t.out" "error: could not write $t/settings.json" "the error names the file"
+  assert_eq 1 "$(bak_count "$t")" "the copy of the user's file is kept"
+  assert_contains "$t"/settings.json.bak-* agentPushNotifEnabled "the copy holds the user's key"
+  assert_missing "$t/settings.json" "no half-written settings.json"
+  rm -rf "$t/settings.json.omega-tmp"
+  status=0
+  sh "$REPO_ROOT/install.sh" general --target "$t" --shim-dir "$TMP/bin-swf" > "$t.out" 2>&1 || status=$?
+  assert_eq 0 "$status" "a later install succeeds"
+  assert_missing "$t/settings.json.omega-tmp" "no temp file is left behind"
+}
+
+# #53 fix wave (F1): two backups in the same second never overwrite each
+# other, and dropping a safety copy never deletes an earlier, kept backup.
+#
+# Backups already sit at every stamp of the coming minute, so whatever second
+# the install runs in, its own backup name is taken.
+test_install_settings_backups_never_collide() {
+  t="$TMP/scol"
+  sh "$REPO_ROOT/install.sh" general --target "$t" --shim-dir "$TMP/bin-scol" >/dev/null 2>&1
+  for s in $(python3 -c 'import time
+t = time.time()
+for i in range(-1, 60): print(time.strftime("%Y%m%d%H%M%S", time.localtime(t + i)))'); do
+    printf 'earlier %s\n' "$s" > "$t/settings.json.bak-$s"
+  done
+  printf '{"model": "opus", "agentPushNotifEnabled": true}\n' > "$t/settings.json"
+  sh "$REPO_ROOT/install.sh" general --target "$t" --shim-dir "$TMP/bin-scol" >/dev/null 2>&1
+  assert_eq 61 "$(bak_count "$t")" "a kept-keys-only reinstall: no new backup, none removed"
+  assert_eq 61 "$(grep -l '^earlier ' "$t"/settings.json.bak-* | wc -l | tr -d ' ')" "a kept-keys-only reinstall: every earlier backup intact"
+  printf '{"model": "second", "agentPushNotifEnabled": true}\n' > "$t/settings.json"
+  sh "$REPO_ROOT/install.sh" general --target "$t" --shim-dir "$TMP/bin-scol" >/dev/null 2>&1
+  assert_eq 62 "$(bak_count "$t")" "a changed template value: one new backup"
+  assert_eq 61 "$(grep -l '^earlier ' "$t"/settings.json.bak-* | wc -l | tr -d ' ')" "a changed template value: every earlier backup intact"
+  assert_eq 1 "$(grep -l second "$t"/settings.json.bak-* | wc -l | tr -d ' ')" "the new backup holds the old value"
+}
+
+# #53 fix wave (F2): duplicate keys are merged as json reads them (the last
+# value wins), but the old file is backed up and the keys are named.
+test_install_settings_duplicate_keys() {
+  t="$TMP/sdup1"; mkdir -p "$t"
+  printf '{"model": "opus", "a": 1, "agentPushNotifEnabled": true, "a": 2}\n' > "$t/settings.json"
+  status=0
+  sh "$REPO_ROOT/install.sh" general --target "$t" --shim-dir "$t-bin" > "$t.out" 2>&1 || status=$?
+  assert_eq 0 "$status" "kept duplicates: the install succeeds"
+  printf '{\n  "model": "opus",\n  "a": 2,\n  "agentPushNotifEnabled": true\n}\n' > "$t.want"
+  assert_eq 0 "$(same_bytes "$t.want" "$t/settings.json")" "kept duplicates: the last value wins"
+  assert_eq 1 "$(bak_count "$t")" "kept duplicates: the old file is backed up"
+  assert_contains "$t"/settings.json.bak-* '"a": 1' "kept duplicates: the backup holds the first value"
+  assert_contains "$t.out" "settings.json: duplicate keys a — the last value of each was kept; your previous file is $t/settings.json.bak-" \
+    "kept duplicates: the warning names the keys and the backup"
+  t="$TMP/sdup2"; mkdir -p "$t"
+  printf '{"model": "sonnet", "model": "opus"}\n' > "$t/settings.json"
+  status=0
+  sh "$REPO_ROOT/install.sh" general --target "$t" --shim-dir "$t-bin" > "$t.out" 2>&1 || status=$?
+  assert_eq 0 "$status" "a duplicated template key: the install succeeds"
+  assert_eq 0 "$(same_bytes "$REPO_ROOT/studios/general/settings.json" "$t/settings.json")" \
+    "a duplicated template key: the template's bytes"
+  assert_eq 1 "$(bak_count "$t")" "a duplicated template key: the old file is backed up"
+  assert_contains "$t.out" "settings.json: duplicate keys model — " "a duplicated template key: the warning names it"
+}
+
+# #53 fix wave (F3): an unexpected merge failure falls back like the others,
+# and no python traceback reaches the terminal — neither from an interpreter
+# that fails after its probe nor from the real helper hitting bad data (a lone
+# surrogate cannot be written as UTF-8).
+test_install_settings_merge_failure_falls_back() {
+  printf '#!/bin/sh\n[ "$1" = -c ] && exit 0\necho "Traceback (most recent call last):" >&2\nexit 5\n' > "$TMP/crash-python"
+  chmod +x "$TMP/crash-python"
+  t="$TMP/smf1"; mkdir -p "$t"
+  printf '{"model": "opus", "agentPushNotifEnabled": true}\n' > "$t/settings.json"
+  status=0
+  OMEGA_INSTALL_PYTHON="$TMP/crash-python" \
+    sh "$REPO_ROOT/install.sh" general --target "$t" --shim-dir "$t-bin" > "$t.out" 2>&1 || status=$?
+  assert_eq 0 "$status" "a crashing python: the install does not fail"
+  assert_contains "$t.out" "settings.json: could not merge (python3 exit 5) — installing the studio template as is; your previous file is $t/settings.json.bak-" \
+    "a crashing python: the warning names the exit status and the backup"
+  assert_not_contains "$t.out" "Traceback" "a crashing python: its stderr is not shown"
+  assert_eq 0 "$(same_bytes "$REPO_ROOT/studios/general/settings.json" "$t/settings.json")" "a crashing python: the template is installed as is"
+  assert_contains "$t"/settings.json.bak-* agentPushNotifEnabled "a crashing python: the backup keeps the key"
+  t="$TMP/smf2"; mkdir -p "$t"
+  printf '{"model": "opus", "k": "\\ud800"}\n' > "$t/settings.json"
+  status=0
+  sh "$REPO_ROOT/install.sh" general --target "$t" --shim-dir "$t-bin" > "$t.out" 2>&1 || status=$?
+  assert_eq 0 "$status" "a lone surrogate: the install does not fail"
+  assert_contains "$t.out" "settings.json: could not merge (python3 exit 7) — installing the studio template as is" \
+    "a lone surrogate: the helper's own failure falls back"
+  assert_not_contains "$t.out" "Traceback" "a lone surrogate: no traceback"
+  assert_eq 1 "$(bak_count "$t")" "a lone surrogate: the old file is backed up"
+}
+
+# #53 fix wave (F4): a settings.json the installer cannot read gets its own
+# message, and the install stops before anything is removed — it can make no
+# backup of a file it cannot read.
+test_install_settings_unreadable() {
+  if [ "$(id -u)" = 0 ]; then _pass "unreadable settings.json (skipped as root)"; TESTS_RUN=$((TESTS_RUN + 1)); return; fi
+  t="$TMP/sunr"
+  sh "$REPO_ROOT/install.sh" general --target "$t" --shim-dir "$TMP/bin-sunr" >/dev/null 2>&1
+  printf '{"model": "opus", "agentPushNotifEnabled": true}\n' > "$t/settings.json"
+  chmod 000 "$t/settings.json"
+  status=0
+  sh "$REPO_ROOT/install.sh" general --target "$t" --shim-dir "$TMP/bin-sunr" --dry-run > "$t.dry" 2>&1 || status=$?
+  assert_eq 0 "$status" "the dry run succeeds"
+  assert_contains "$t.dry" "settings.json: could not read $t/settings.json — a real install would stop here" "the dry run says it"
+  status=0
+  sh "$REPO_ROOT/install.sh" general --target "$t" --shim-dir "$TMP/bin-sunr" > "$t.out" 2>&1 || status=$?
+  chmod 600 "$t/settings.json"
+  assert_eq 1 "$status" "the install stops"
+  assert_contains "$t.out" "error: settings.json: could not read $t/settings.json — nothing was changed" "the error says it could not read the file"
+  assert_not_contains "$t.out" "not a valid JSON object" "not mistaken for invalid JSON"
+  assert_contains "$t/settings.json" agentPushNotifEnabled "the file is left as it was"
+  assert_file "$t/CLAUDE.md" "the previous install is left in place"
+  assert_eq 0 "$(bak_count "$t")" "no backup"
 }
 
 test_shim() {
@@ -1378,6 +1544,9 @@ run_tests test_studio_contract test_install_unknown_studio test_install_guard \
   test_install_general_has_no_mcp test_reinstall_reregisters_mcp_once test_uninstall_removes_mcp \
   test_uninstall_purge_confirmation_gates_mcp_removal \
   test_doctor_engine_and_mcp_rows test_doctor_delegations test_doctor_hook_probe_line test_settings_backup test_install_settings_keeps_user_keys test_install_settings_merged_doctor_clean test_install_settings_fresh_unchanged test_install_settings_invalid_json_falls_back test_install_settings_no_python_falls_back test_install_settings_dry_run_reports_kept test_install_settings_no_backup_for_kept_keys test_install_settings_non_ascii \
+  test_install_settings_failed_install_keeps_copy test_install_settings_write_failure_keeps_copy \
+  test_install_settings_backups_never_collide test_install_settings_duplicate_keys \
+  test_install_settings_merge_failure_falls_back test_install_settings_unreadable \
   test_shim \
   test_doctor test_doctor_detects_leak test_doctor_reports_no_plugins \
   test_doctor_plugin_report test_doctor_plugin_name_mismatch \
