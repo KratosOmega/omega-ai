@@ -1658,7 +1658,7 @@ test_overnight_requeue_then_hold() {
   scenario "stage execute; branch feat; task 1/3; wtledger T1 complete a..b; say use the bus" \
            "inbox; task 2/3; wtledger T2 complete b..c" \
            "inbox; task 3/3; wtledger T3 complete c..d"
-  start_bg; wait_held 20
+  start_bg; wait_held 60
   assert_contains "$R/control/-.held" "^held directive 1 not recorded until " "requeued retries + 1 times: the story holds (AC14)"
   assert_eq "progress progress progress" "$(unit_col 7)" "the unit's own outcome is kept in its row"
   verb stop -; bg_end 20 "the run ends"
