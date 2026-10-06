@@ -14,6 +14,20 @@ approval page in `artifacts/`.
 
 ## Log
 
+### 2026-10-06 — Preflight worktree_setup before start (#49)
+
+- `studio-overnight start` runs the project's `worktree_setup` once in a scratch
+  linked worktree off `origin/<target>` before launching, through `studio-setup`
+  (same gate lock and timeout). A command that breaks only where `.git` is a file
+  is refused with exit 2, the setup's exit code and a log that outlives the
+  scratch worktree. The scratch worktree never survives `start` (interrupts and a
+  killed start included). `--dry-run` only says that start will check; it does not
+  run the setup. `start --detach` checks once in the foreground and hands the
+  checked commit to the child (`STUDIO_OVERNIGHT_SETUP_CHECKED`), which skips it.
+- Why: phoenix's 2026-10-05 incident — a `worktree_setup` that worked in the main
+  checkout failed in a story's linked worktree, and the overnight run found out
+  only when its first story ran.
+
 ### 2026-10-06 — Adopted story starts from its own run worktree (#50)
 
 - Root cause. The 10-05 `no adopted line` (with Target `integration/other`) came

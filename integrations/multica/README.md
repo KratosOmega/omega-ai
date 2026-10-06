@@ -19,7 +19,11 @@ centre on.
 Only manifest runs detach. An agent must start an overnight run with
 `studio-overnight start --detach <manifest>`. A single-plan run started by an
 agent runs inside the agent's task and ends with it, so the game-dev agent's
-instructions tell it to use `--detach` and a manifest every time.
+instructions tell it to use `--detach` and a manifest every time. The start checks the
+project's `worktree_setup` first, which can outlast a command timeout, so the agent (Claude Code)
+runs it with the Bash tool's `run_in_background: true` and acts on the completion notification:
+exit 0 means live; any other exit means it did not start (2: refused), and it relays the printed
+message and log path.
 
 ## Install
 
@@ -121,8 +125,8 @@ mirrors each live run on its own Run issue.
    `docs/runs/<slug>.md` from the run worktree
    `<project>/.claude/worktrees/run-<slug>`. The manifest is only on
    `run/<slug>`, so paste the start line autopilot printed (`cd '<run worktree>'
-   && studio-overnight start --detach docs/runs/<slug>.md`). The agent runs it,
-   replies with the run name and ends; the runner keeps going.
+   && studio-overnight start --detach docs/runs/<slug>.md`). The agent runs it in the
+   background (the setup check can take minutes), replies with the run name and ends; the runner keeps going.
    Starting from the terminal instead also works. The run then shows as a
    top-level Run issue, and no agent posts a summary at the end.
 3. **Steer (phone).** Watch the Run issue and the story sub-issues (see

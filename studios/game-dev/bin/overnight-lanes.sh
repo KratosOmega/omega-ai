@@ -207,8 +207,9 @@ EOF_MC
   ' "$MF_ROWS" > "$MF_TMP/row-refusals"
   while IFS= read -r _l; do refuse "$_l"; done < "$MF_TMP/row-refusals"
 
-  # Origin: one fetch, then the docs revision and the target branch.
-  git_retry -C "$START_DIR" fetch -q origin || refuse "git fetch origin failed"
+  # Origin: one fetch, then the docs revision and the target branch. The
+  # setup preflight reuses it (SP_FETCHED): no second fetch of the Target.
+  if git_retry -C "$START_DIR" fetch -q origin; then SP_FETCHED="$MF_TARGET"; else refuse "git fetch origin failed"; fi
   _docs_ok=0
   if ! git_retry -C "$START_DIR" fetch -q origin "run/$MF_SLUG" 2>/dev/null; then
     refuse "manifest: origin/run/$MF_SLUG does not exist (push the run branch)"
@@ -2027,12 +2028,14 @@ lanes_run() {
   lanes_finish "$(lanes_ending)"
 }
 
-# lanes_start [--dry-run] MANIFEST — manifest mode's start, after
-# studio-overnight's preflight (which deferred its exit to here).
+# lanes_start [--dry-run | --check] MANIFEST — manifest mode's start, after
+# studio-overnight's preflight (which deferred its exit to here). --check
+# (detach's foreground step): the manifest checks and the setup preflight;
+# prints the checked commit only.
 lanes_start() {
-  _ls_dry=0; _ls_mf=""
+  _ls_dry=0; _ls_chk=0; _ls_mf=""
   for _a in "$@"; do
-    case "$_a" in --dry-run) _ls_dry=1 ;; *) _ls_mf="$_a" ;; esac
+    case "$_a" in --dry-run) _ls_dry=1 ;; --check) _ls_chk=1 ;; *) _ls_mf="$_a" ;; esac
   done
   MF_TMP="$STATE_ROOT/.studio/tmp.$$"
   mkdir -p "$MF_TMP" || { say "cannot create $MF_TMP"; exit 2; }
@@ -2042,11 +2045,18 @@ lanes_start() {
   [ "$FAILED" -eq 0 ] || exit 2
   run_paths "$MF_SLUG"
   build_chains
+  if [ "$_ls_chk" -eq 1 ]; then
+    setup_preflight "$MF_TARGET"
+    printf '%s\n' "$SP_SHA"
+    exit 0
+  fi
   RUN_DIR="$REPORTS/overnight-$MF_SLUG-$(date +%Y%m%d-%H%M%S)"
   if [ "$_ls_dry" -eq 1 ]; then
+    setup_preflight_note "$MF_TARGET"
     lanes_dry_run
     exit 0
   fi
+  setup_preflight "$MF_TARGET"
   lanes_run
 }
 

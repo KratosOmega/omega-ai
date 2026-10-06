@@ -266,20 +266,25 @@ usage: $SELF_ABS start [--dry-run | --detach] [<manifest>] | status [--run <slug
   start [--dry-run]  preflight, then run the approved plan one unit per fresh
                      claude-gd session until it ships or a stop rule fires.
                      --dry-run runs the preflight and prints the launch line.
+                     When worktree_setup is set, start first checks it in a
+                     scratch linked worktree (see Config).
   start [--dry-run] <manifest>
                      manifest mode (docs/runs/<slug>.md): preflight every
                      story; --dry-run prints the chains, each chain's first
                      launch line and the deny rule count.
   start --detach <manifest>
-                     manifest mode, detached from the chat: preflight runs in the
-                     foreground (a refusal exits 2), then the runner starts in
+                     manifest mode, detached from the chat: preflight (the
+                     worktree_setup check included: up to
+                     worktree_setup_minutes) runs in the foreground (a
+                     refusal or a signal exits 2), then the runner starts in
                      its own session with stdin /dev/null and output in
                      reports/overnight-<slug>-detached-<ts>.log (linked as
-                     runner.log in the run dir). Every variable named CLAUDECODE,
-                     CLAUDE_*, AI_AGENT, OMEGA_* or STUDIO_* is removed (the
-                     test hooks below included); CLAUDE_CONFIG_DIR and PATH stay.
-                     Exit 0 printing "detached: pid <p>, log <path>" once
-                     status answers within 10 s; else it prints the plain command.
+                     runner.log in the run dir). Every variable named
+                     CLAUDECODE, CLAUDE_*, AI_AGENT, OMEGA_* or STUDIO_* is
+                     removed (the test hooks below included);
+                     CLAUDE_CONFIG_DIR and PATH stay. Exit 0 printing
+                     "detached: pid <p>, log <path>" once status answers
+                     within 10 s; else it prints the plain command.
   deny-rules [--dir <path>]
                      print the deny rules a unit would get for the project at
                      <path> (default: here), one per line; notes on stderr for
@@ -378,7 +383,10 @@ Config: .studio/config.json "overnight" (defaults, ranges):
                                     runs under. The preflight warns when the slowest recent
                                     studio-test (.studio/gate.times) × 1.2 + 10 min exceeds it.
   worktree_setup       ""             command run once per new worktree under the gate lock
-                                    (studio-setup); no backslash. Unset = nothing runs
+                                    (studio-setup); no backslash. Unset = nothing runs.
+                                    Preflighted: start runs it once in a scratch linked
+                                    worktree off the run's base and refuses on a failure
+                                    (exit code and log shown); --dry-run only says so
   worktree_setup_minutes 20  1-120    cap on one worktree_setup run
   gate_command         ""             command the finish gate runs after the tests
                                     (studio-setup gate); no backslash. Unset = none
@@ -414,6 +422,11 @@ Environment:
                      written as origin= in this run's registry entry; the
                      runner never interprets it and does not pass it to unit
                      sessions
+  STUDIO_OVERNIGHT_SETUP_CHECKED — set by --detach for its child: the
+                     commit the foreground worktree_setup check passed at;
+                     start skips the check when it names the base's commit
+                     and refuses (exit 2) when the base has moved since.
+                     Never set it yourself
 
 Test hooks (tests only; never set them for a real run; --detach strips them):
   STUDIO_OVERNIGHT_POLL_SECONDS — test hook: a whole number of seconds between
@@ -1321,7 +1334,9 @@ story_units() {
 }
 
 # detach_start MANIFEST — start the run detached from the chat (D1a): the
-# preflight runs here in the foreground (a refusal shows and exits 2), then
+# preflight runs here in the foreground (a refusal shows and exits 2; it
+# includes the worktree_setup check, whose commit the child gets in
+# STUDIO_OVERNIGHT_SETUP_CHECKED so it does not run it again), then
 # this script re-execs itself in its own session (perl setsid), stdin
 # /dev/null, output to a log, with every CLAUDECODE, CLAUDE_*, AI_AGENT,
 # OMEGA_* and STUDIO_* variable removed (CLAUDE_CONFIG_DIR kept). Success
@@ -1341,7 +1356,25 @@ detach_start() {
   START_DIR="$(sh "$STATE_BIN" root --work 2>/dev/null || true)"
   STATE_ROOT="$(sh "$STATE_BIN" root 2>/dev/null || true)"
   preflight manifest
-  ( . "$SELF_DIR/overnight-lanes.sh"; lanes_start --dry-run "$_dm" ) > /dev/null || exit 2
+  # The check is a background job we wait on, so a signal to this process
+  # (a closed terminal, a caller's timeout) stops it too: detach_check_interrupt.
+  DCK_F="$(mktemp "${TMPDIR:-/tmp}/detach-check.XXXXXX")" || { say "--detach: mktemp failed"; exit 2; }
+  DCK_PID=""
+  trap 'detach_check_interrupt' INT TERM HUP
+  ( . "$SELF_DIR/overnight-lanes.sh"; lanes_start --check "$_dm" ) > "$DCK_F" &
+  DCK_PID=$!
+  _dck_rc=0; wait "$DCK_PID" || _dck_rc=$?
+  trap - INT TERM HUP
+  DCK_PID=""
+  _dck="$(cat "$DCK_F")"; rm -f "$DCK_F"
+  [ "$_dck_rc" -eq 0 ] || exit 2
+  # Empty (worktree_setup unset) or one commit id (40 or, in a SHA-256 repo, 64 hex).
+  case "$_dck" in
+    '') ;;
+    *[!0-9a-f]*) say "worktree_setup check printed an unexpected commit: $_dck"; exit 2 ;;
+    *) [ "${#_dck}" -eq 40 ] || [ "${#_dck}" -eq 64 ] \
+         || { say "worktree_setup check printed an unexpected commit: $_dck"; exit 2; } ;;
+  esac
   _dmf="$_dm"; case "$_dmf" in /*) ;; *) _dmf="$START_DIR/$_dmf" ;; esac
   _dslug="$(runs_mf_slug "$_dmf")"
   # The dry run checked it (mf_check); checked again here, since it names a path.
@@ -1357,9 +1390,9 @@ detach_start() {
   mkdir -p "$REPORTS" || { say "cannot create $REPORTS"; exit 2; }
   _dlog="$REPORTS/overnight-$_dslug-detached-$(date +%Y%m%d-%H%M%S).log"
   if [ -n "$_dhc" ]; then
-    nohup env ${RUN_ORIGIN:+"STUDIO_RUN_ORIGIN=$RUN_ORIGIN"} perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV' sh -c "$_dhc" </dev/null >"$_dlog" 2>&1 &
+    nohup env ${RUN_ORIGIN:+"STUDIO_RUN_ORIGIN=$RUN_ORIGIN"} ${_dck:+"STUDIO_OVERNIGHT_SETUP_CHECKED=$_dck"} perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV' sh -c "$_dhc" </dev/null >"$_dlog" 2>&1 &
   else
-    nohup env ${RUN_ORIGIN:+"STUDIO_RUN_ORIGIN=$RUN_ORIGIN"} perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV' sh "$SELF_ABS" start "$_dm" </dev/null >"$_dlog" 2>&1 &
+    nohup env ${RUN_ORIGIN:+"STUDIO_RUN_ORIGIN=$RUN_ORIGIN"} ${_dck:+"STUDIO_OVERNIGHT_SETUP_CHECKED=$_dck"} perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV' sh "$SELF_ABS" start "$_dm" </dev/null >"$_dlog" 2>&1 &
   fi
   _dpid=$!
   _di=0
@@ -1397,6 +1430,19 @@ detach_start() {
   return 1
 }
 
+# detach_check_interrupt — INT/TERM/HUP during detach's foreground check: TERM
+# the check (a background job has SIGINT ignored; its own trap stops
+# studio-setup, drops the scratch worktree and says so, exit 2), wait for it.
+detach_check_interrupt() {
+  trap '' INT TERM HUP
+  _dci_rc=0
+  if [ -n "$DCK_PID" ]; then kill -TERM "$DCK_PID" 2>/dev/null; wait "$DCK_PID" 2>/dev/null || _dci_rc=$?; fi
+  rm -f "$DCK_F"
+  # 2: the check refused or said "interrupted" itself; anything else: it said nothing.
+  [ "$_dci_rc" -eq 2 ] || say "worktree_setup check interrupted — nothing started"
+  exit 2
+}
+
 cmd_start() {
   origin_take
   # Manifest mode: the first non-flag argument names the manifest (D18).
@@ -1430,9 +1476,11 @@ cmd_start() {
   preflight
   if [ "$_dry" -eq 1 ]; then
     UNIT_MODEL="$MODEL_TASK"
+    setup_preflight_note "$DEFAULT_BRANCH"
     with_launch_args print_launch
     exit 0
   fi
+  setup_preflight "$DEFAULT_BRANCH"
   RUN_DIR="$REPORTS/overnight-$(date +%Y%m%d-%H%M%S)"
   acquire_run_lock
   trap 'on_exit $?' EXIT
@@ -1550,6 +1598,135 @@ run_excludes() {
             .claude/worktrees/; do
     grep -qxF "$_e" "$_excl" 2>/dev/null || printf '%s\n' "$_e" >> "$_excl"
   done
+}
+# setup_preflight BRANCH — #49: worktree_setup once, through studio-setup (its
+# gate lock, timeout, log and marker), in a scratch linked worktree at
+# origin/BRANCH, so a command that breaks only where .git is a file is refused
+# here and not by the first story at night. Silent when unset. --detach's
+# child gets STUDIO_OVERNIGHT_SETUP_CHECKED (read once, then unset): the
+# base's commit skips the check; any other commit (BRANCH moved since detach
+# checked it) refuses, since re-running a long setup would outlast detach's
+# status window. Green: SP_SHA is the commit, the worktree is gone. Anything
+# else: the worktree is gone and start exits 2 (refused).
+SP_W=""; SP_PID=""; SP_SHA=""; SP_FETCHED=""; _sp_ef=""
+setup_preflight() {
+  _sp_ck="${STUDIO_OVERNIGHT_SETUP_CHECKED:-}"; unset STUDIO_OVERNIGHT_SETUP_CHECKED
+  [ -n "${WORKTREE_SETUP:-}" ] || return 0
+  if [ -n "$_sp_ck" ]; then
+    sp_base "$1"
+    if [ "$_sp_ck" = "$SP_SHA" ]; then
+      say "worktree_setup: checked by start --detach at $(printf '%.7s' "$SP_SHA")"; return 0
+    fi
+    SP_SHA=""; say "worktree_setup: origin/$1 moved since start --detach checked it — start --detach again"; exit 2
+  fi
+  say "worktree_setup: checking it once in a scratch linked worktree off origin/$1 before launch — up to ${WORKTREE_SETUP_MINUTES:-20} min (worktree_setup_minutes), longer while another run holds the gate lock"
+  _sp_ef=""; SP_PID=""; SP_W=""
+  trap 'sp_interrupt' INT TERM HUP
+  sp_base "$1"
+  # This process's own pid ($$ is the parent's inside $( ) or a background
+  # subshell): the scratch tree and its marker name the process that owns it.
+  _sp_me="$(exec sh -c 'echo $PPID')"
+  sp_sweep "$_sp_me"
+  run_excludes
+  _sp_w="$STATE_ROOT/.claude/worktrees/setup-preflight-$_sp_me"
+  [ ! -e "$_sp_w" ] || sp_refuse "$_sp_w exists and is not this check's scratch worktree — move it, then start again"
+  mkdir -p "$(dirname "$_sp_w")" || sp_refuse "cannot create $(dirname "$_sp_w")"
+  SP_W="$_sp_w"
+  _sp_ge="$(sp_git -C "$START_DIR" worktree add -q --detach "$SP_W" "$SP_SHA" 2>&1 >/dev/null)" \
+    || sp_refuse "cannot add the scratch worktree $SP_W — $(sp_last "$_sp_ge")"
+  # The marker the sweep requires: a tree that merely has the name is never swept.
+  _sp_gd="$(git -C "$SP_W" rev-parse --absolute-git-dir 2>/dev/null)" \
+    && printf '%s\n' "$_sp_me" > "$_sp_gd/studio-setup-preflight" \
+    || sp_refuse "cannot mark the scratch worktree $SP_W"
+  _sp_ef="$(mktemp "${TMPDIR:-/tmp}/setup-preflight.XXXXXX")" || { _sp_ef=""; sp_refuse "mktemp failed"; }
+  # Background + wait: a trapped signal interrupts wait at once (D4).
+  ( cd "$SP_W" && exec sh "$SELF_DIR/studio-setup" ) > /dev/null 2> "$_sp_ef" &
+  SP_PID=$!
+  _sp_rc=0; wait "$SP_PID" || _sp_rc=$?
+  trap - INT TERM HUP
+  SP_PID=""
+  _sp_l="$(tail -n 1 "$_sp_ef" 2>/dev/null)"; rm -f "$_sp_ef"; _sp_ef=""
+  if [ "$_sp_rc" -eq 0 ]; then sp_remove; say "worktree_setup: green in a linked worktree"; return 0; fi
+  _sp_log=""
+  case "$_sp_l" in
+    *" — log "*)
+      mkdir -p "$REPORTS" && { [ -f "$REPORTS/.gitignore" ] || printf '*\n' > "$REPORTS/.gitignore"; }
+      _sp_log="$REPORTS/setup-preflight-$(date +%Y%m%d-%H%M%S)-$_sp_me.log"
+      cp "$SP_W/${_sp_l##* — log }" "$_sp_log" 2>/dev/null || _sp_log="" ;;
+  esac
+  sp_remove
+  case "$_sp_rc" in
+    1) _sp_n="$(printf '%s\n' "$_sp_l" | sed -n 's/^worktree setup failed — exit \([0-9]*\) — .*/\1/p')"
+       [ "$_sp_n" != 124 ] || _sp_n="124 (timed out after worktree_setup_minutes)"
+       say "worktree_setup failed in a linked worktree — exit ${_sp_n:-?} — log ${_sp_log:-unavailable} — a story's worktree is linked too (.git is a file there): fix the command, then start again" ;;
+    2) say "worktree_setup check: ${_sp_l:-studio-setup refused the config}" ;;
+    *) say "worktree_setup check ended with exit $_sp_rc — ${_sp_l:-no output}" ;;
+  esac
+  SP_SHA=""
+  exit 2
+}
+# sp_base BRANCH — SP_SHA, origin/BRANCH's commit, after a fetch of BRANCH
+# (skipped when manifest mode's mf_check fetched origin in this process:
+# SP_FETCHED names that Target). A failure refuses (sp_refuse).
+sp_base() {
+  if [ "${SP_FETCHED:-}" != "$1" ]; then
+    _sp_ge="$(sp_git -C "$START_DIR" fetch -q origin "$1" 2>&1 >/dev/null)" \
+      || sp_refuse "git fetch origin $1 failed — $(sp_last "$_sp_ge")"
+  fi
+  SP_SHA="$(git -C "$START_DIR" rev-parse -q --verify "refs/remotes/origin/$1^{commit}" 2>/dev/null)" \
+    || sp_refuse "no origin/$1"
+}
+# sp_git ARGS… — git through git_retry once manifest mode has loaded it
+# (concurrent runs contend on git's locks, #39); plain git otherwise.
+sp_git() { if command -v git_retry >/dev/null 2>&1; then git_retry "$@"; else git "$@"; fi; }
+# sp_last TEXT — TEXT's last non-blank line, or "no output".
+sp_last() {
+  _sl="$(printf '%s\n' "$1" | sed '/^[[:space:]]*$/d' | tail -n 1)"
+  printf '%s\n' "${_sl:-no output}"
+}
+# sp_refuse MESSAGE — the check could not run: clean up, say so, exit 2.
+sp_refuse() {
+  trap '' INT TERM HUP
+  [ -z "${_sp_ef:-}" ] || rm -f "$_sp_ef"
+  sp_remove; SP_SHA=""
+  say "worktree_setup check: $1"
+  exit 2
+}
+# setup_preflight_note BRANCH — the dry run's one line (R3): start checks it, the dry run does not.
+setup_preflight_note() {
+  [ -n "${WORKTREE_SETUP:-}" ] || return 0
+  echo "worktree_setup: start checks it once in a scratch linked worktree off origin/$1 before launch (up to ${WORKTREE_SETUP_MINUTES:-20} min); --dry-run does not run it"
+}
+# sp_remove — the scratch worktree, gone (a plain rm and a prune when git refuses).
+sp_remove() {
+  [ -n "$SP_W" ] || return 0
+  git -C "$START_DIR" worktree remove --force "$SP_W" >/dev/null 2>&1 \
+    || { rm -rf "$SP_W"; git -C "$START_DIR" worktree prune >/dev/null 2>&1; }
+  SP_W=""
+}
+# sp_sweep ME — leftovers of a SIGKILLed check: setup-preflight-<pid> whose
+# pid is not running (or is ME: a reused pid) and whose admin dir carries the
+# marker naming that pid. A tree that merely has the name is never touched.
+sp_sweep() {
+  for _sw in "$STATE_ROOT"/.claude/worktrees/setup-preflight-*; do
+    [ -d "$_sw" ] || continue
+    _swp="${_sw##*-}"
+    case "$_swp" in ''|*[!0-9]*) continue ;; esac
+    [ "$_swp" = "$1" ] || ! kill -0 "$_swp" 2>/dev/null || continue
+    _swg="$(git -C "$_sw" rev-parse --absolute-git-dir 2>/dev/null)" || continue
+    [ "$(cat "$_swg/studio-setup-preflight" 2>/dev/null)" = "$_swp" ] || continue
+    SP_W="$_sw"; sp_remove
+  done
+}
+# sp_interrupt — INT/TERM/HUP during the check: stop studio-setup (TERM — its
+# own trap ends the command's group and frees the gate lock), drop the worktree.
+sp_interrupt() {
+  trap '' INT TERM HUP
+  if [ -n "$SP_PID" ]; then kill -TERM "$SP_PID" 2>/dev/null; wait "$SP_PID" 2>/dev/null; fi
+  [ -z "${_sp_ef:-}" ] || rm -f "$_sp_ef"
+  sp_remove
+  say "worktree_setup check interrupted — nothing started"
+  exit 2
 }
 # run_setup — once the lock and traps are in place: the sleep inhibitor, the
 # reports dir's .gitignore, and the run's paths kept out of git.

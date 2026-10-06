@@ -171,7 +171,7 @@ session (it is on `PATH` only inside a `claude-gd` session).
    A failed line stops here; fix it and print the checklist again.
 5. **Ask how to start** — one `AskUserQuestion`:
    - **autopilot starts it** — detached from the chat: no terminal, no Ctrl-C; watch with `studio-overnight status`.
-     Run `cd '<run worktree>' && '<abs>' start --detach <manifest>`. It runs the preflight in the foreground, starts the runner in its own session, and waits for `studio-overnight status` to answer; exit 0 means the run is live — report success only then.
+     Run `cd '<run worktree>' && '<abs>' start --detach <manifest>`. It runs the preflight in the foreground, starts the runner in its own session, and waits for `studio-overnight status` to answer; exit 0 means the run is live — report success only then. It also checks `worktree_setup` in the foreground (up to `worktree_setup_minutes`, plus any wait for another run's gate lock), longer than a Bash command timeout: run it with the Bash tool's `run_in_background: true` and act on the completion notification — exit 0 is live; exit 2 is refused, so relay the printed reason with its log path. Do not poll and do not start a second one while one is in flight.
      The launch may need one permission approval and runs outside the Bash sandbox when one is on (the run needs the network).
      On any non-zero exit, show its message (and the log it names), print the command below, and stop; autopilot never retries in this session.
    - **print the command** — paste it into a plain terminal: live output, and Ctrl-C stops after the running units. The command, with absolute paths: `cd '<run worktree>' && '<abs>' start <manifest>`.

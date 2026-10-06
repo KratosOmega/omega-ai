@@ -1658,7 +1658,7 @@ test_overnight_requeue_then_hold() {
   scenario "stage execute; branch feat; task 1/3; wtledger T1 complete a..b; say use the bus" \
            "inbox; task 2/3; wtledger T2 complete b..c" \
            "inbox; task 3/3; wtledger T3 complete c..d"
-  start_bg; wait_held 20
+  start_bg; wait_held 60
   assert_contains "$R/control/-.held" "^held directive 1 not recorded until " "requeued retries + 1 times: the story holds (AC14)"
   assert_eq "progress progress progress" "$(unit_col 7)" "the unit's own outcome is kept in its row"
   verb stop -; bg_end 20 "the run ends"
@@ -2187,7 +2187,26 @@ test_single_plan_ignores_new_story_in_start() {
   assert_contains "$(last_run_dir)/report.md" "^Ending: done$" "it finishes"
   assert_eq 4 "$(calls)" "every unit ran"
 }
-run_tests test_overnight_report_done test_overnight_report_not_done test_overnight_preflight_env_warns_not_blocks \
+test_overnight_setup_preflight_single() {
+  fixture pfs1 '{"worktree_setup": "[ -d .git ]"}'
+  done_scenario; run_start
+  assert_eq 2 "$RS_STATUS" "single-plan: a setup that fails in a linked worktree refuses start"
+  assert_contains "$RS_ERR" "off origin/main before launch" "the base is the default branch"
+  assert_contains "$RS_ERR" "worktree_setup failed in a linked worktree — exit 1 — log " "the refusal"
+  assert_eq 0 "$(calls)" "no unit ran"
+  assert_eq "" "$(ls -d "$P"/.claude/worktrees/setup-preflight-* 2>/dev/null)" "no scratch worktree"
+  fixture pfs2 '{"worktree_setup": "[ -f .git ]"}'
+  done_scenario; run_start
+  assert_eq 0 "$RS_STATUS" "a green check launches the single-plan run"
+  assert_contains "$RS_ERR" "worktree_setup: green in a linked worktree" "the green line"
+  assert_eq "" "$(ls -d "$P"/.claude/worktrees/setup-preflight-* 2>/dev/null)" "no scratch worktree"
+}
+test_overnight_help_setup_preflight() {
+  sh "$RUNNER" --help > "$TMP/help-pf.txt" 2>&1
+  assert_contains "$TMP/help-pf.txt" "Preflighted: start runs it once in a scratch linked" "help: worktree_setup says it is preflighted"
+}
+run_tests test_overnight_setup_preflight_single test_overnight_help_setup_preflight \
+  test_overnight_report_done test_overnight_report_not_done test_overnight_preflight_env_warns_not_blocks \
   test_overnight_report_anchors test_overnight_resume_quote test_overnight_label_t1 \
   test_overnight_session_seconds_refused test_overnight_claim_without_run_dir \
   test_overnight_report_runner_error test_overnight_crash_resume test_overnight_status \
