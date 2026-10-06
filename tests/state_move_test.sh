@@ -490,6 +490,18 @@ test_state_mutex_serialises_moves() {
   assert_eq docs/s.md "$(st "$WE" get spec)" "WE holds S"
 }
 
+test_state_handoff_rechecks_target_under_mutex() {
+  # T4#3: a target removed while handoff waits for the mutex is refused, not re-created.
+  proj hrm; plan_in_p; st "$P" set stage execute >/dev/null; wt e feat/e; WE="$W"; hold_mutex; _s="$(sum "$P/.studio/STATE.md")"
+  ( cd "$P" && sh "$STATE_BIN" handoff "$WE" ) > "$TMP/hrm.out" 2> "$TMP/hrm.err" & _hp=$!
+  sleep 1; git -C "$P" worktree remove "$WE" >/dev/null 2>&1; release_mutex
+  _rc=0; wait "$_hp" || _rc=$?
+  assert_eq 1 "$_rc" "handoff to a worktree removed during the wait exits 1"
+  assert_eq "studio-state: $WE is not a live linked worktree of this repository" "$(cat "$TMP/hrm.err")" "naming the rule"
+  assert_missing "$WE" "and does not re-create it"
+  assert_eq "$_s" "$(sum "$P/.studio/STATE.md")" "main keeps its story"
+}
+
 test_state_mutex_single_acquisition() {
   proj sa; plan_in_p; st "$P" set stage execute >/dev/null; wt e feat/e; WE="$W"
   printf -- '- 2026-10-05 handing\tspec=docs/s.md\tplan=docs/p.md\tbranch=feat/e\tpath=%s\n' "$WE" >> "$P/.studio/STATE.md"
@@ -558,5 +570,6 @@ run_tests test_state_handoff_moves_story test_state_handoff_order_and_self_heal 
   test_state_take_refusals test_state_take_refuses_in_place_story test_state_write_after_take_refused test_state_take_restores_removed_worktree \
   test_state_take_restores_renamed_branch test_state_adopt_legacy_execute test_state_adopt_legacy_finished \
   test_state_adopt_skips_next_story test_state_take_hint_under_stale_branch test_state_mutex_serialises_moves \
+  test_state_handoff_rechecks_target_under_mutex \
   test_state_mutex_single_acquisition test_state_free_text_notes_are_not_records \
   test_state_rewriters_skip_tab_notes

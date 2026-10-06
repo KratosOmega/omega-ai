@@ -322,13 +322,17 @@ target_story_check() {
   refuse4 "$1 holds story $(slug_of "$_tp") (stage $_ts) — finish or reset it there first, or pass --force"
 }
 tracked_text() { printf '%s/.studio/STATE.md is tracked by git — a tracked STATE.md is never a stage pointer; run git rm --cached .studio/STATE.md on this branch' "$1"; }
-# move_checks TARGET MODE — AC15 (and AC4) under the mutex. Exits 1 or 4; sets M_*, FORCED_LINE.
+# move_checks TARGET MODE — AC15 (and AC4) under the mutex, TARGET still a live linked
+# worktree. Exits 1 or 4; sets M_*, FORCED_LINE.
 move_checks() {
   load_main; FORCED_LINE=""
   if [ "$2" = handoff ] && [ "$M_STAGE" = idle ]; then fail "the main checkout has no story to hand off (stage idle)"; fi
   case "$M_SPEC" in ''|-) fail "the main checkout has no story to hand off" ;; esac
+  # Re-checked here, under the mutex: the target may have gone while the caller waited.
+  is_live_linked "$1" || fail "$1 is not a live linked worktree of this repository"
   if tracked_at "$1"; then fail "$(tracked_text "$1")"; fi
-  [ "$(branch_at "$1")" != - ] || fail "$1 has a detached HEAD — check out the story's branch there first"
+  _mcb="$(branch_at "$1")"; [ -n "$_mcb" ] || fail "$1 is not a live linked worktree of this repository"
+  [ "$_mcb" != - ] || fail "$1 has a detached HEAD — check out the story's branch there first"
   case "$M_SPEC" in *"$TAB"*) fail "a TAB in spec cannot be recorded" ;; esac
   case "$M_PLAN" in *"$TAB"*) fail "a TAB in plan cannot be recorded" ;; esac
   case "$1" in *"$TAB"*) fail "a TAB in path cannot be recorded" ;; esac
