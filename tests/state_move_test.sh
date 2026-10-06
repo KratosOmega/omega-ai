@@ -13,12 +13,6 @@ fields() { for _fk in stage spec plan task branch; do st "$1" get $_fk; done | t
 kind_n() { grep -c "^- [0-9-]* $2$T" "$1"; }
 # story_in D SPEC — D brainstorms and plans SPEC itself (its own pointer).
 story_in() { for _a in "stage brainstorm" "spec $2" "stage plan"; do st "$1" set --force $_a >/dev/null 2>&1; done; }
-# timed2 FUNC — run FUNC twice; SECS is the shorter wall-clock time, in whole seconds.
-timed2() {
-  _t0=$(date +%s); "$1"; _a1=$(( $(date +%s) - _t0 ))
-  _t0=$(date +%s); "$1"; _a2=$(( $(date +%s) - _t0 ))
-  SECS=$_a1; [ "$_a2" -ge "$SECS" ] || SECS=$_a2
-}
 # commit_ledger D MSG — commit D's .studio/ledger on its branch.
 commit_ledger() { ( cd "$1" && git add -f .studio/ledger && g commit -qm "$2" ) >/dev/null 2>&1; }
 
@@ -503,10 +497,12 @@ test_state_handoff_rechecks_target_under_mutex() {
 }
 
 test_state_mutex_single_acquisition() {
+  # One sample each (a heal, an adopt and a restore cannot be repeated); the bound
+  # of 5 s still separates one acquisition from a self-wait on the 10 s timeout.
   proj sa; plan_in_p; st "$P" set stage execute >/dev/null; wt e feat/e; WE="$W"
   printf -- '- 2026-10-05 handing\tspec=docs/s.md\tplan=docs/p.md\tbranch=feat/e\tpath=%s\n' "$WE" >> "$P/.studio/STATE.md"
   _t0=$(date +%s); st "$P" handoff "$WE" >/dev/null 2>&1
-  [ $(( $(date +%s) - _t0 )) -lt 2 ] && _pass "heal + move in one acquisition" || _fail "heal + move in one acquisition"; TESTS_RUN=$((TESTS_RUN + 1))
+  [ $(( $(date +%s) - _t0 )) -lt 5 ] && _pass "heal + move in one acquisition" || _fail "heal + move in one acquisition"; TESTS_RUN=$((TESTS_RUN + 1))
   _x="$(git -C "$P" rev-parse --path-format=absolute --git-common-dir)/info/exclude"
   assert_eq 1 "$(grep -cxF .studio/state.mutex "$_x")" "state.mutex excluded once"
   dead_mutex; assert_eq "" "$(git -C "$P" status --porcelain)" "a dangling link never shows in git status"
@@ -524,11 +520,11 @@ test_state_mutex_single_acquisition() {
   # adopt + its write, and a restore, each in one acquisition.
   proj sa2; plan_in_p; wt e feat/e; st "$P" set stage execute >/dev/null; st "$P" set branch feat/e >/dev/null
   _t0=$(date +%s); st "$W" set task 1/3 >/dev/null 2>&1
-  [ $(( $(date +%s) - _t0 )) -lt 2 ] && _pass "adopt then set: one acquisition" || _fail "adopt then set: one acquisition"; TESTS_RUN=$((TESTS_RUN + 1))
+  [ $(( $(date +%s) - _t0 )) -lt 5 ] && _pass "adopt then set: one acquisition" || _fail "adopt then set: one acquisition"; TESTS_RUN=$((TESTS_RUN + 1))
   assert_eq 1/3 "$(st "$W" get task)" "the adopted story took the write"
   git -C "$P" worktree remove "$W" >/dev/null 2>&1; git -C "$P" worktree add -q "$W" feat/e >/dev/null 2>&1
   _t0=$(date +%s); st "$W" take docs/s.md >/dev/null 2>&1
-  [ $(( $(date +%s) - _t0 )) -lt 2 ] && _pass "restore: one acquisition" || _fail "restore: one acquisition"; TESTS_RUN=$((TESTS_RUN + 1))
+  [ $(( $(date +%s) - _t0 )) -lt 5 ] && _pass "restore: one acquisition" || _fail "restore: one acquisition"; TESTS_RUN=$((TESTS_RUN + 1))
   assert_eq execute "$(st "$W" get stage)" "the restore landed"
 }
 
