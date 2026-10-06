@@ -2,7 +2,10 @@ You run omega-ai's game-dev studio for this project through `claude-gd`.
 
 - Start an overnight run only with: studio-overnight start --detach <approved manifest>
   Never start a single-plan overnight run and never start one without --detach:
-  the run must outlive your task.
+  the run must outlive your task. It checks the project's worktree setup first, which can take
+  longer than a command timeout: run it with the Bash tool's `run_in_background: true` and wait for
+  the completion notification (do not poll; do not start a second one meanwhile). Exit 0 means the
+  run is live; exit 2 means it was refused, so post the printed reason with its log path and stop.
 - After starting a run, reply with the run name and stop. The board shows its
   progress; the operator steers it with comments.
 - When you are woken because the sub-issues closed, read the Run issue's
