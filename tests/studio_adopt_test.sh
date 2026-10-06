@@ -673,6 +673,82 @@ test_adopt_seed_start_dir_wins() {
   assert_eq "seeded: 6 lines" "$(cat "$TMP/ad.out")" "seeded count"
 }
 
+# incident_repo NAME [noptr] — 10-05 (#50): adopt_repo NAME 6 3, then a run
+# worktree $RK on run/kan whose committed docs/runs/kan.md lists S1 and whose
+# ledger holds S1's source/adopted lines (moved out of $P's), with
+# .studio/run unless noptr; and $P switched to run/other with its own
+# committed docs/runs/other.md (S9 only) and .studio/run — another live run.
+incident_repo() {
+  adopt_repo "$1" 6 3
+  RK="$TMP/$1-run-kan"
+  ( set -e
+    git -C "$P" worktree add -q -b run/kan "$RK" main
+    mkdir -p "$RK/docs/runs"
+    printf '# Run: kan\nTarget: integration/kan\n\n| Story | Branch |\n|---|---|\n| S1 | S1-b |\n' > "$RK/docs/runs/kan.md"
+    move_adoption_lines "$P" "$RK"
+    git -C "$RK" add docs/runs/kan.md .studio/ledger/S1.md
+    git -C "$RK" commit -q -m "docs(run): kan manifest"
+    [ "${2:-}" = noptr ] || printf 'docs/runs/kan.md\n' > "$RK/.studio/run"
+    git -C "$P" switch -q -c run/other
+    mkdir -p "$P/docs/runs"
+    printf '# Run: other\nTarget: integration/other\n\n| Story | Branch |\n|---|---|\n| S9 | S9-b |\n' > "$P/docs/runs/other.md"
+    git -C "$P" add docs/runs/other.md
+    git -C "$P" commit -q -m "docs(run): other manifest"
+    printf 'docs/runs/other.md\n' > "$P/.studio/run"
+  ) >/dev/null 2>&1 || { TESTS_RUN=$((TESTS_RUN + 1)); _fail "incident_repo $1: setup failed"; }
+}
+# adopt_lib — studio-adopt as a sourceable library at $TMP/adopt.lib.
+adopt_lib() { sed -e '$d' -e "s|^SELF_DIR=.*|SELF_DIR=\"$(dirname "$ADOPT")\"|" "$ADOPT" > "$TMP/adopt.lib"; }
+
+test_adopt_incident_seed_tier2() {
+  incident_repo it2 noptr
+  adopt "$W" seed S1
+  assert_eq 0 "$AD_STATUS" "no .studio/run in the run worktree: seed still exits 0"
+  assert_eq "seeded: 6 lines" "$(cat "$TMP/ad.out")" "seeded from the run worktree's ledger"
+  assert_contains "$TMP/ad.err" "note: run worktree $RK has no .studio/run — using its committed docs/runs/kan.md for S1" "one note names the committed manifest"
+  assert_eq 1 "$(grep -c '^note: run worktree' "$TMP/ad.err")" "the note prints once per invocation"
+  adopt_lib
+  ( cd "$W" && . "$TMP/adopt.lib" && TMPD="$TMP/it2.d" && mkdir -p "$TMPD" \
+      && { start_checkout S1; start_manifest S1; run_target S1; } > "$TMP/it2.out" ) 2>/dev/null
+  assert_eq "$RK
+$RK/docs/runs/kan.md
+integration/kan" "$(cat "$TMP/it2.out")" "start_checkout, start_manifest and run_target name the run worktree"
+  adopt "$W" sync S1
+  assert_eq 0 "$AD_STATUS" "and sync passes"
+}
+
+test_adopt_incident_seed_tier1() {
+  incident_repo it1
+  adopt "$W" seed S1
+  assert_eq 0 "$AD_STATUS" "with .studio/run: seed exits 0"
+  assert_not_contains "$TMP/ad.err" "note:" "and prints no note"
+}
+
+test_adopt_incident_tier2_two_refuse() {
+  incident_repo it22 noptr
+  _r2="$TMP/it22-run-kan2"
+  ( set -e; git -C "$P" worktree add -q -b run/kan2 "$_r2" run/kan
+    sed 's/^# Run: kan$/# Run: kan2/' "$_r2/docs/runs/kan.md" > "$_r2/docs/runs/kan2.md"
+    git -C "$_r2" add docs/runs/kan2.md; git -C "$_r2" commit -q -m "docs(run): kan2 manifest" ) >/dev/null 2>&1
+  adopt "$W" seed S1
+  assert_eq 1 "$AD_STATUS" "two pointer-less run worktrees list S1: refused"
+  assert_contains "$TMP/ad.err" "story S1 is listed by two run worktrees: " "same message as two tier-1 hits"
+}
+
+test_adopt_incident_no_run_worktree_refuses() {
+  incident_repo inr noptr
+  ( cd "$RK" && git rm -q docs/runs/kan.md && git commit -q -m drop ) >/dev/null 2>&1
+  adopt "$W" seed S1
+  assert_eq 1 "$AD_STATUS" "no run worktree lists S1, main on another run: seed refuses"
+  assert_contains "$TMP/ad.err" "no run worktree found for S1: looked for" "says what it looked for"
+  assert_contains "$TMP/ad.err" "checked: $P (run/other, .studio/run); $RK (run/kan, no .studio/run)" "names every run worktree checked"
+  assert_contains "$TMP/ad.err" "the main checkout $P is on run/other" "and the main checkout's run"
+  assert_not_contains "$TMP/ad.err" "no adopted line" "not the misleading ledger error"
+  adopt "$W" sync S1
+  assert_eq 1 "$AD_STATUS" "sync refuses the same way"
+  assert_contains "$TMP/ad.err" "no run worktree found for S1" "sync message"
+}
+
 test_adopt_run_target_from_start_checkout() {
   adopt_repo rt 6 3
   printf '# Run: demo\nTarget: integration/demo\n' > "$P/docs-demo.md"
@@ -914,7 +990,7 @@ test_sync_view_write_failure_commits_nothing() {
   assert_eq "$_o" "$(git -C "$W" rev-parse origin/S1-b)" "nothing pushed"
 }
 
-run_tests test_adopt_start_checkout_spaced_path test_adopt_seed_reads_ledger_from_run_worktree test_adopt_seed_start_dir_wins test_adopt_run_target_from_start_checkout test_adopt_start_checkout_from_run_worktree test_adopt_start_checkout_two_listings_refuse test_adopt_start_checkout_none_falls_back test_adopt_live_run_check_per_run_lock test_adopt_part_done_ignores_sync test_adopt_seed_short_sha_line_same_range test_sync_short_sha_truth_line test_sync_view_collision_counter test_sync_view_write_failure_commits_nothing test_sync_failed_commit_restores test_sync_bad_new_claim_is_plain_mismatch test_adopt_from_subdirectory test_sync_already_in_sync test_sync_accepts_claims test_sync_all_or_nothing test_sync_claim_end_differs \
+run_tests test_adopt_start_checkout_spaced_path test_adopt_seed_reads_ledger_from_run_worktree test_adopt_seed_start_dir_wins test_adopt_incident_seed_tier2 test_adopt_incident_seed_tier1 test_adopt_incident_tier2_two_refuse test_adopt_incident_no_run_worktree_refuses test_adopt_run_target_from_start_checkout test_adopt_start_checkout_from_run_worktree test_adopt_start_checkout_two_listings_refuse test_adopt_start_checkout_none_falls_back test_adopt_live_run_check_per_run_lock test_adopt_part_done_ignores_sync test_adopt_seed_short_sha_line_same_range test_sync_short_sha_truth_line test_sync_view_collision_counter test_sync_view_write_failure_commits_nothing test_sync_failed_commit_restores test_sync_bad_new_claim_is_plain_mismatch test_adopt_from_subdirectory test_sync_already_in_sync test_sync_accepts_claims test_sync_all_or_nothing test_sync_claim_end_differs \
   test_sync_truth_mismatches test_sync_ambiguous_short_sha test_sync_rewrite_message test_sync_views_keep_other_lines \
   test_sync_carries_rulings_once test_sync_landed_note test_sync_live_run_refusal test_sync_own_unit_exempt \
   test_sync_diverged_and_behind test_sync_preconditions test_adopt_workspace_lookup_two_trees test_sync_push_failure_warns \

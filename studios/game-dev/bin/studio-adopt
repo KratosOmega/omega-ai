@@ -79,24 +79,83 @@ state_root() {
   sh "$SELF_DIR/studio-state" root 2>/dev/null || true
 }
 
-# start_checkout ID — the checkout whose .studio/run manifest lists ID
-# (#39 AC20, D40): a porcelain worktree on run/* (the main checkout
-# included). Two refuse; none prints state_root.
-start_checkout() {
+# sc_resolve ID — ID's start checkout and its run manifest, as
+# "<checkout><TAB><manifest or empty>" (#50 D1):
+#   1. a run/* worktree (the main checkout included) whose .studio/run names a
+#      manifest with a row for ID (#39 AC20, D40);
+#   2. else a run/* worktree with no .studio/run whose committed
+#      docs/runs/<slug>.md (for run/<slug>) has a row for ID — with a one-line
+#      stderr note, once per invocation;
+#   3. else, when the main checkout is on run/* (another run's checkout),
+#      refuse, naming what was looked for and every run worktree checked;
+#   4. else state_root and the manifest its .studio/run names (no run: a
+#      manual adopt).
+# Two hits in one tier refuse. Status 1 after a refusal (one stderr line).
+# No temp files: callers source this with TMPD unset or missing.
+sc_resolve() {
   _sc_id="$1"
-  # One path per line, never word-split: a project path may hold a space.
-  _sc_hits="$(git worktree list --porcelain 2>/dev/null \
-    | awk '/^worktree /{ w = substr($0, 10) } /^branch refs\/heads\/run\//{ print w }' \
-    | while IFS= read -r _sc_w; do
-        _sc_m="$(head -n 1 "$_sc_w/.studio/run" 2>/dev/null)"; [ -n "$_sc_m" ] || continue
-        [ "${_sc_m#/}" != "$_sc_m" ] || _sc_m="$_sc_w/$_sc_m"   # relative to the worktree
-        [ -z "$(manifest_branch "$_sc_m" "$_sc_id")" ] || printf '%s\n' "$_sc_w"
+  # One record per line, never word-split: a project path may hold a space.
+  _sc_all="$(git worktree list --porcelain 2>/dev/null \
+    | awk '/^worktree /{ w = substr($0, 10) } /^branch refs\/heads\/run\//{ print w "\t" substr($0, 23) }' \
+    | while IFS="$TAB" read -r _sc_w _sc_s; do
+        _sc_m="$(head -n 1 "$_sc_w/.studio/run" 2>/dev/null)"
+        if [ -n "$_sc_m" ]; then
+          [ "${_sc_m#/}" != "$_sc_m" ] || _sc_m="$_sc_w/$_sc_m"   # relative to the worktree
+          printf 'seen\t%s (run/%s, .studio/run)\n' "$_sc_w" "$_sc_s"
+          if [ -f "$_sc_m" ] && [ -n "$(manifest_branch "$_sc_m" "$_sc_id")" ]; then printf '1\t%s\t%s\n' "$_sc_w" "$_sc_m"; fi
+        else
+          _sc_c="docs/runs/$_sc_s.md"
+          printf 'seen\t%s (run/%s, no .studio/run)\n' "$_sc_w" "$_sc_s"
+          if git -C "$_sc_w" ls-files --error-unmatch -- "$_sc_c" >/dev/null 2>&1 && [ -f "$_sc_w/$_sc_c" ] \
+             && [ -n "$(manifest_branch "$_sc_w/$_sc_c" "$_sc_id")" ]; then printf '2\t%s\t%s\n' "$_sc_w" "$_sc_w/$_sc_c"; fi
+        fi
       done)"
-  _sc_n="$(printf '%s' "$_sc_hits" | grep -c .)"
-  if [ "$_sc_n" -gt 1 ]; then
-    echo "story $_sc_id is listed by two run worktrees: $(printf '%s\n' "$_sc_hits" | paste -sd, - | sed 's/,/, /g')" >&2; return 1
+  for _sc_t in 1 2; do
+    _sc_h="$(printf '%s\n' "$_sc_all" | awk -F'\t' -v t="$_sc_t" '$1 == t { print $2 "\t" $3 }')"
+    _sc_n="$(printf '%s' "$_sc_h" | grep -c .)"
+    if [ "$_sc_n" -gt 1 ]; then
+      echo "story $_sc_id is listed by two run worktrees: $(printf '%s\n' "$_sc_h" | cut -f1 | paste -sd, - | sed 's/,/, /g')" >&2; return 1
+    fi
+    [ "$_sc_n" = 1 ] || continue
+    if [ "$_sc_t" = 2 ] && [ ! -e "${TMPD:-/nonexistent}/sc.noted" ]; then
+      : > "${TMPD:-/nonexistent}/sc.noted" 2>/dev/null || true
+      _sc_w="${_sc_h%%"$TAB"*}"
+      echo "note: run worktree $_sc_w has no .studio/run — using its committed ${_sc_h#*"$TAB""$_sc_w"/} for $_sc_id" >&2
+    fi
+    printf '%s\n' "$_sc_h"; return 0
+  done
+  _sc_r="$(state_root)"
+  _sc_b="$(git -C "$_sc_r" symbolic-ref -q --short HEAD 2>/dev/null || true)"
+  case "$_sc_b" in
+    run/*)
+      printf '%s\n' "no run worktree found for $_sc_id: looked for a run/* worktree whose .studio/run (or, without one, committed docs/runs/<slug>.md) has a row for $_sc_id; checked: $(printf '%s\n' "$_sc_all" | sed -n "s/^seen$TAB//p" | paste -sd';' - | sed 's/;/; /g'); the main checkout $_sc_r is on $_sc_b (another run) — write .studio/run in $_sc_id's run worktree (printf '%s\\n' docs/runs/<slug>.md > .studio/run), or set STUDIO_START_DIR" >&2
+      return 1 ;;
+  esac
+  _sc_m="$(head -n 1 "$_sc_r/.studio/run" 2>/dev/null || true)"
+  case "$_sc_m" in ''|/*) ;; *) _sc_m="$_sc_r/$_sc_m" ;; esac
+  [ -n "$_sc_m" ] && [ -f "$_sc_m" ] || _sc_m=""
+  printf '%s\t%s\n' "$_sc_r" "$_sc_m"
+}
+
+# start_checkout ID — sc_resolve's checkout.
+start_checkout() {
+  _sk_l="$(sc_resolve "$1")" || return 1
+  printf '%s\n' "${_sk_l%%"$TAB"*}"
+}
+
+# start_manifest ID — the run manifest of ID's start checkout: the one
+# $STUDIO_START_DIR/.studio/run names when STUDIO_START_DIR is set, else
+# sc_resolve's. Nothing when none.
+start_manifest() {
+  if [ -n "${STUDIO_START_DIR:-}" ]; then
+    _sm_m="$(head -n 1 "$STUDIO_START_DIR/.studio/run" 2>/dev/null || true)"
+    case "$_sm_m" in ''|/*) ;; *) _sm_m="$STUDIO_START_DIR/$_sm_m" ;; esac
+  else
+    _sm_l="$(sc_resolve "$1")" || return 1
+    _sm_m="${_sm_l#*"$TAB"}"
   fi
-  if [ "$_sc_n" = 1 ]; then printf '%s\n' "$_sc_hits"; else state_root; fi
+  if [ -n "$_sm_m" ] && [ -f "$_sm_m" ]; then printf '%s\n' "$_sm_m"; fi
+  return 0
 }
 
 # start_root ID — AC20's start checkout: $STUDIO_START_DIR when set, else
@@ -258,9 +317,13 @@ part_done() {
 run_target() {
   _rt_m="${STUDIO_RUN:-}"
   if [ -z "$_rt_m" ]; then
-    if [ -n "${1:-}" ]; then _rt_r="$(start_checkout "$1")" || return 1; else _rt_r="$(state_root)"; fi
-    _rt_m="$(head -n 1 "$_rt_r/.studio/run" 2>/dev/null || true)"
-    case "$_rt_m" in ''|/*) ;; *) _rt_m="$_rt_r/$_rt_m" ;; esac
+    if [ -n "${1:-}" ]; then
+      _rt_m="$(start_manifest "$1")" || return 1
+    else
+      _rt_r="$(state_root)"
+      _rt_m="$(head -n 1 "$_rt_r/.studio/run" 2>/dev/null || true)"
+      case "$_rt_m" in ''|/*) ;; *) _rt_m="$_rt_r/$_rt_m" ;; esac
+    fi
   fi
   [ -n "$_rt_m" ] && [ -f "$_rt_m" ] || return 0
   sed -n 's/^Target:[[:space:]]*//p' "$_rt_m" | head -n 1
@@ -352,6 +415,7 @@ cmd_inspect() {
 
   STATE_ROOT="$(state_root)"
   TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+  START_ROOT="$(start_root "$ID")" || return 1
   _in_pf="$(plan_file "$_in_plan")" || return 1
   N="$(task_count "$_in_pf")"
   [ "$N" -gt 0 ] || { echo "$_in_plan has no tasks" >&2; return 1; }
@@ -568,9 +632,7 @@ git_retry() {
 run_manifest() {
   _rm_m="${IN_RUN:-}"
   if [ -z "$_rm_m" ]; then
-    _rm_r="$(start_checkout "$ID")" || return 1
-    _rm_m="$(head -n 1 "$_rm_r/.studio/run" 2>/dev/null || true)"
-    case "$_rm_m" in ''|/*) ;; *) _rm_m="$_rm_r/$_rm_m" ;; esac
+    _rm_m="$(start_manifest "$ID")" || return 1
   fi
   if [ -n "$_rm_m" ] && [ -f "$_rm_m" ]; then printf '%s\n' "$_rm_m"; fi
   return 0
