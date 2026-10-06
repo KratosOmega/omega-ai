@@ -22,7 +22,8 @@ agent runs inside the agent's task and ends with it, so the game-dev agent's
 instructions tell it to use `--detach` and a manifest every time. The start checks the
 project's `worktree_setup` first, which can outlast a command timeout, so the agent (Claude Code)
 runs it with the Bash tool's `run_in_background: true` and acts on the completion notification:
-exit 0 means live, exit 2 means refused (it relays the printed reason and log path).
+exit 0 means live; any other exit means it did not start (2: refused), and it relays the printed
+message and log path.
 
 ## Install
 
