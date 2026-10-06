@@ -300,15 +300,25 @@ rd_adopted() {
 }
 
 # mf_ready — #50 D5: the start checkout is ready for this run. One refuse per
-# problem: START_DIR has no .studio/run; an adopted story whose branch exists,
+# problem: START_DIR has no .studio/run, or one naming no manifest of this run
+# (a missing file, or another `# Run:` slug); an adopted story whose branch exists,
 # locally or on origin, but whose story ledger (its worktree's, else the
 # branch's) has no `adopt-base` line: never seeded, so its first unit would
 # start at task 1. A not-started adopted story (no branch yet) is skipped:
 # execute §0 records its adopt-base. Reads files and git only (RUN_DIR is not
 # set yet, so story_ledger_text cannot be used).
 mf_ready() {
-  if [ -z "$(head -n 1 "$START_DIR/.studio/run" 2>/dev/null)" ]; then
+  _rd_p="$(head -n 1 "$START_DIR/.studio/run" 2>/dev/null)"
+  if [ -z "$_rd_p" ]; then
     refuse "start checkout $START_DIR has no .studio/run — write it there: printf '%s\\n' ${MF#"$START_DIR"/} > .studio/run"
+  else
+    # The pointer (relative to START_DIR, or absolute) names an existing
+    # manifest of this run (its `# Run:` slug), else studio-adopt's lookup
+    # misses this run's worktree (#50 final review M2).
+    case "$_rd_p" in /*) _rd_f="$_rd_p" ;; *) _rd_f="$START_DIR/$_rd_p" ;; esac
+    if [ ! -f "$_rd_f" ] || [ "$(runs_mf_slug "$_rd_f")" != "$MF_SLUG" ]; then
+      refuse "start checkout $START_DIR: .studio/run names $_rd_p, not this run's manifest — write it there: printf '%s\\n' ${MF#"$START_DIR"/} > .studio/run"
+    fi
   fi
   awk -F'\t' '!($1 in s) { s[$1] = 1; print $1 "\t" $2 }' "$MF_ROWS" > "$MF_TMP/ready"
   while IFS='	' read -r _rd_id _rd_b; do
@@ -319,6 +329,7 @@ mf_ready() {
       || git -C "$START_DIR" rev-parse -q --verify "refs/remotes/origin/$_rd_b^{commit}" >/dev/null 2>&1 \
       || continue
     _rd_w="$(story_state "$_rd_id" worktree 2>/dev/null)" || _rd_w=""
+    [ -n "$_rd_w" ] && [ -d "$_rd_w" ] || _rd_w=""   # never hint at a removed worktree (as mf_check)
     { if [ -n "$_rd_w" ] && [ -f "$_rd_w/.studio/ledger/$_rd_id.md" ]; then cat "$_rd_w/.studio/ledger/$_rd_id.md"
       else git -C "$START_DIR" show "refs/heads/$_rd_b:.studio/ledger/$_rd_id.md" \
         || git -C "$START_DIR" show "refs/remotes/origin/$_rd_b:.studio/ledger/$_rd_id.md"

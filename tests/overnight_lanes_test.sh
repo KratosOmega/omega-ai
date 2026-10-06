@@ -2928,10 +2928,34 @@ test_lanes_ready_needs_run_pointer() {
   rm -f "$P/.studio/run"
   run_lanes start --dry-run "$MFP"
   assert_eq 2 "$LS_STATUS" "no .studio/run: refused"
-  assert_contains "$LS_ERR" "start checkout $P has no .studio/run" "names the checkout"
+  assert_contains "$LS_ERR" "start checkout $P has no .studio/run — write it there: printf '%s\\\\n' $MFP > .studio/run" "names the checkout and the pointer to write"
+  # #50 final review M2: the pointer must name this run's manifest.
+  printf 'docs/runs/demoo.md\n' > "$P/.studio/run"
+  run_lanes start --dry-run "$MFP"
+  assert_eq 2 "$LS_STATUS" "a pointer naming a missing file: refused"
+  assert_contains "$LS_ERR" "start checkout $P: .studio/run names docs/runs/demoo.md, not this run's manifest — write it there: printf '%s\\\\n' $MFP > .studio/run" "names the bad pointer and the fix"
+  sed 's/^# Run: demo$/# Run: other/' "$P/$MFP" > "$P/docs/runs/other.md"
+  printf '%s\n' "$P/docs/runs/other.md" > "$P/.studio/run"
+  run_lanes start --dry-run "$MFP"
+  assert_eq 2 "$LS_STATUS" "a pointer naming another run's manifest: refused"
+  assert_contains "$LS_ERR" "start checkout $P: .studio/run names $P/docs/runs/other.md, not this run's manifest" "names the other manifest"
   printf '%s\n' "$MFP" > "$P/.studio/run"
   run_lanes start --dry-run "$MFP"
   assert_eq 0 "$LS_STATUS" "with the pointer: the dry run passes"
+}
+# #50 final review M5/M6: the readiness hint never names a removed worktree,
+# and an adopted story whose branch is gone after landing is skipped.
+test_lanes_ready_stale_worktree_and_landed() {
+  ALF_NOSEED=1; adopt_lanes_fixture rsl; unset ALF_NOSEED
+  rm -rf "$AW"
+  run_lanes start --dry-run "$MFP"
+  assert_eq 2 "$LS_STATUS" "unseeded, its worktree removed: refused"
+  assert_contains "$LS_ERR" "studio-adopt seed S1 in the S1-b worktree, then" "the hint names the branch's worktree, not the removed path"
+  assert_not_contains "$LS_ERR" "seed S1 in $AW" "never the removed path"
+  ( cd "$P" && git worktree prune && git branch -q -D S1-b && git push -q origin --delete S1-b && git fetch -q --prune origin ) >/dev/null 2>&1
+  run_lanes start --dry-run "$MFP"
+  assert_not_contains "$LS_ERR" "not seeded on S1-b" "branch gone after landing: not a readiness problem"
+  assert_eq 0 "$LS_STATUS" "and the dry run passes"
 }
 test_lanes_adopt_seeded_runs_rest() {
   adopt_lanes_fixture asr
@@ -3890,5 +3914,5 @@ run_tests test_lanes_chain_rule test_lanes_manifest_refusals test_lanes_branch_d
   test_lanes_slot_stop_ends_wait test_lanes_slot_enqueue_failure_retried test_lanes_session_release_clears_slotwait test_lanes_slot_released_every_exit test_lanes_slot_wait_not_in_session_minutes \
   test_lanes_session_wait_event_and_status test_lanes_max_sessions_preflight \
   test_lanes_round_trip_two_runs test_lanes_round_trip_sync_conflict test_lanes_round_trip_stop_one_of_two \
-  test_lanes_ready_needs_run_pointer test_lanes_ready_adopted_unseeded \
+  test_lanes_ready_needs_run_pointer test_lanes_ready_adopted_unseeded test_lanes_ready_stale_worktree_and_landed \
   test_lanes_no_orphans

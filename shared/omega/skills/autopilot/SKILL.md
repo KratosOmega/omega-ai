@@ -163,7 +163,7 @@ session (it is on `PATH` only inside a `claude-gd` session).
    - Fill each row's Spec and Plan cells, then `git add docs/runs/<slug>.md .studio/config.json <specs> <plans> .studio/ledger/<id>.md …` (every story's ledger, half-done ones included), `git commit -m "docs(run): <slug> planned"`, `git push -u origin run/<slug>`.
      Write that commit's sha (`git rev-parse HEAD`) as `Docs:`, then commit `docs(run): <slug> docs <short sha>` and push `run/<slug>` again.
 4. **Readiness checklist.** Print it; every line must pass:
-   - `studio-overnight start --dry-run <manifest>` exits 0 (the runner's own preflight: the manifest, `Docs:` on `origin/run/<slug>`, each plan's `Story:`, `Spec:` lines and `## Decisions`, each story's state and ledger, `claude-gd`, `gh auth status`, the deny list, config, `merge_command` in direct mode, no conflicting live or stopped run (slug, story, branch), the start checkout's `.studio/run`, every adopted story with a branch seeded on it);
+   - `studio-overnight start --dry-run <manifest>` exits 0 (the runner's own preflight: the manifest, `Docs:` on `origin/run/<slug>`, each plan's `Story:`, `Spec:` lines and `## Decisions`, each story's state and ledger, `claude-gd`, `gh auth status`, the deny list, config, `merge_command` in direct mode, no conflicting live or stopped run (slug, story, branch), the start checkout's `.studio/run` naming this manifest, every adopted story with a branch seeded on it);
    - the baseline test run is green — `studio-test`, exit 0, run in the run worktree after `worktree_setup`;
    - the engine binary resolves — `studio-test` or `GODOT_PATH`;
    - for each adopted story: `studio-adopt sync <id>` from its worktree exits 0 (a not-started story is skipped, with a note).
