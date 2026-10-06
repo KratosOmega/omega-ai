@@ -280,7 +280,51 @@ EOF_MC
     done
     set +f
   done < "$MF_TMP/stories"
+  mf_ready
   mf_overlap_warn
+}
+
+# rd_truth — stdin's lines after its last `adopt reset` line (all of them when
+# there is none): the truth region every adopt reader uses (#35 D2).
+rd_truth() { awk '/^- [0-9-]+ adopt reset /{ n = NR } { l[NR] = $0 } END { for (i = n + 1; i <= NR; i++) print l[i] }'; }
+
+# rd_adopted ID — the first ledger with an `adopted` line for ID in its truth
+# region: START_DIR's, else any worktree's (#50 case b: ledgered from the
+# wrong checkout). Nothing when none.
+rd_adopted() {
+  { printf '%s\n' "$START_DIR"; git -C "$START_DIR" worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p'; } \
+    | while IFS= read -r _ra_w; do
+        _ra_f="$_ra_w/.studio/ledger/$1.md"
+        if [ -f "$_ra_f" ] && rd_truth < "$_ra_f" | grep -q '^- [0-9-]* adopted .* -> '; then printf '%s\n' "$_ra_f"; break; fi
+      done
+}
+
+# mf_ready — #50 D5: the start checkout is ready for this run. One refuse per
+# problem: START_DIR has no .studio/run; an adopted story whose branch exists,
+# locally or on origin, but whose story ledger (its worktree's, else the
+# branch's) has no `adopt-base` line: never seeded, so its first unit would
+# start at task 1. A not-started adopted story (no branch yet) is skipped:
+# execute §0 records its adopt-base. Reads files and git only (RUN_DIR is not
+# set yet, so story_ledger_text cannot be used).
+mf_ready() {
+  if [ -z "$(head -n 1 "$START_DIR/.studio/run" 2>/dev/null)" ]; then
+    refuse "start checkout $START_DIR has no .studio/run — write it there: printf '%s\\n' ${MF#"$START_DIR"/} > .studio/run"
+  fi
+  awk -F'\t' '!($1 in s) { s[$1] = 1; print $1 "\t" $2 }' "$MF_ROWS" > "$MF_TMP/ready"
+  while IFS='	' read -r _rd_id _rd_b; do
+    printf '%s\n' "$_rd_id" | grep -Eq '^[A-Za-z0-9._-]+$' || continue
+    case "$_rd_b" in ''|-) continue ;; esac
+    _rd_l="$(rd_adopted "$_rd_id")"; [ -n "$_rd_l" ] || continue
+    git -C "$START_DIR" rev-parse -q --verify "refs/heads/$_rd_b^{commit}" >/dev/null 2>&1 \
+      || git -C "$START_DIR" rev-parse -q --verify "refs/remotes/origin/$_rd_b^{commit}" >/dev/null 2>&1 \
+      || continue
+    _rd_w="$(story_state "$_rd_id" worktree 2>/dev/null)" || _rd_w=""
+    { if [ -n "$_rd_w" ] && [ -f "$_rd_w/.studio/ledger/$_rd_id.md" ]; then cat "$_rd_w/.studio/ledger/$_rd_id.md"
+      else git -C "$START_DIR" show "refs/heads/$_rd_b:.studio/ledger/$_rd_id.md" \
+        || git -C "$START_DIR" show "refs/remotes/origin/$_rd_b:.studio/ledger/$_rd_id.md"
+      fi; } 2>/dev/null | rd_truth | grep -q '^- [0-9-]* adopt-base ' && continue
+    refuse "$_rd_id: adopted ($_rd_l) but not seeded on $_rd_b — run studio-adopt seed $_rd_id in ${_rd_w:-the $_rd_b worktree}, then STUDIO_STORY=$_rd_id studio-state check --rebuild there"
+  done < "$MF_TMP/ready"
 }
 
 # build_chains — $CHAINS from $MF_ROWS by the chain rule (spec 479-487), one
