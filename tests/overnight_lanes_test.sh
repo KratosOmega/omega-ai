@@ -2245,9 +2245,11 @@ test_lanes_detach_child_refusal_surfaces() {
   ( cd "$P" && exec sh "$RUNNER" start "$MFP" ) > /dev/null 2>&1 & RPID=$!
   wait_for "[ -f '$CALLS/1.fullenv' ]" 60
   kill -KILL "$RPID" 2>/dev/null
+  # Reaped here, so bash's "Killed: 9" job notice goes to /dev/null and not
+  # to the suite's output while the detach below runs.
+  wait "$RPID" 2>/dev/null
   st=0; ( cd "$P" && sh "$RUNNER" start --detach "$MFP" ) > "$TMP/detk.out" 2>&1 || st=$?
   pkill -f "$TMP/fakebin/claude" 2>/dev/null; pkill -f "$RUNNER start" 2>/dev/null
-  wait "$RPID" 2>/dev/null
   wait_for "[ -z \"\$(pgrep -f '$TMP'; pgrep -f '$RUNNER')\" ]" 20
   assert_eq 2 "$st" "a refused detached start exits with the refusal"
   assert_contains "$TMP/detk.out" "lanes still run" "and shows the child's message"
@@ -3131,9 +3133,53 @@ test_lanes_setup_preflight_sweeps_stale() {
   lanes_fixture pfs integration A:-
   mkdir -p "$P/.claude/worktrees"
   git -C "$P" worktree add -q --detach "$P/.claude/worktrees/setup-preflight-999999" HEAD
+  printf '999999\n' > "$(git -C "$P/.claude/worktrees/setup-preflight-999999" rev-parse --absolute-git-dir)/studio-setup-preflight"
+  # Not the preflight's (no marker): a story worktree that merely has the name.
+  git -C "$P" worktree add -q -b setup-preflight-999998 "$P/.claude/worktrees/setup-preflight-999998" HEAD
   run_lanes start "$MFP"
   assert_eq 0 "$LS_STATUS" "a dead start's leftover does not block the next start"
-  assert_eq "" "$(pf_wts)" "and it is swept"
+  assert_missing "$P/.claude/worktrees/setup-preflight-999999" "and it is swept"
+  assert_eq "$P/.claude/worktrees/setup-preflight-999998" "$(git -C "$P" worktree list --porcelain | sed -n 's/^worktree //p' | grep '/setup-preflight-')" "a same-named tree without the marker is never swept"
+  git -C "$P" worktree remove --force "$P/.claude/worktrees/setup-preflight-999998"
+  assert_eq "" "$(pf_wts)" "nothing else is left"
+}
+# pf_target_config NAME JSON — commits JSON as .studio/config.json on
+# origin/integration/demo of fixture NAME (the scratch tree's own config).
+pf_target_config() {
+  ( set -e; rm -rf "$TMP/pf-push"
+    git clone -q -b integration/demo "$TMP/$1.git" "$TMP/pf-push"; cd "$TMP/pf-push"
+    mkdir -p .studio && printf '%s\n' "$2" > .studio/config.json
+    git add -f .studio/config.json && git commit -q -m cfg && git push -q origin HEAD:integration/demo
+  ) >/dev/null 2>&1 || { TESTS_RUN=$((TESTS_RUN + 1)); _fail "pf_target_config $1: setup failed"; }
+  rm -rf "$TMP/pf-push"
+}
+test_lanes_setup_preflight_bad_config() {
+  LANES_CONFIG='{"worktree_setup": "true"}'; export LANES_CONFIG
+  lanes_fixture pfb integration A:-
+  pf_target_config pfb '{"worktree_setup": "true", "worktree_setup_minutes": 0}'
+  run_lanes start "$MFP"
+  assert_eq 2 "$LS_STATUS" "studio-setup's exit 2 (bad config in the tree) refuses start"
+  assert_contains "$LS_ERR" "^studio-overnight: worktree_setup check: studio-setup: worktree_setup_minutes must be an integer 1-120$" "the refusal relays studio-setup's line"
+  assert_eq "" "$(pf_wts)" "no scratch worktree is left"
+  assert_eq 0 "$(calls)" "no unit ran"
+  assert_missing "$P/.studio/runs/demo/lock" "no run lock was taken"
+}
+test_lanes_setup_preflight_timeout() {
+  LANES_CONFIG='{"worktree_setup": "case $(pwd -P) in */setup-preflight-*) sleep 4834;; esac"}'; export LANES_CONFIG
+  lanes_fixture pft integration A:-
+  STUDIO_SETUP_TIMEOUT_SECONDS=1; export STUDIO_SETUP_TIMEOUT_SECONDS
+  run_lanes start "$MFP"
+  unset STUDIO_SETUP_TIMEOUT_SECONDS
+  assert_eq 2 "$LS_STATUS" "a setup that times out refuses start"
+  assert_contains "$LS_ERR" "worktree_setup failed in a linked worktree — exit 124 (timed out after worktree_setup_minutes) — log $P/.studio/reports/setup-preflight-[0-9-]*\.log — " "the refusal names the timeout and the log"
+  _pl="$(sed -n 's/.* — log \([^ ]*\.log\) — .*/\1/p' "$LS_ERR" | head -n 1)"
+  assert_eq 1 "$([ -f "$_pl" ] && echo 1 || echo 0)" "the named log exists after the scratch worktree is gone"
+  assert_eq "" "$(pf_wts)" "no scratch worktree is left"
+  wait_for '[ -z "$(pgrep -f "^sleep 4834$")" ]' 20
+  assert_eq "" "$(pgrep -f '^sleep 4834$')" "the timed-out command is gone"
+  assert_missing "$P/.studio/gate.lock" "the gate lock is released"
+  assert_eq 0 "$(calls)" "no unit ran"
+  pkill -f '^sleep 4834$' 2>/dev/null
 }
 
 test_lanes_setup_fail_holds() {
@@ -3941,8 +3987,31 @@ test_lanes_detach_setup_preflight_refused() {
   assert_eq 2 "$st" "detach: the check runs in the foreground and refuses"
   assert_contains "$TMP/pfdr.out" "worktree_setup failed in a linked worktree — exit 1 — log " "the refusal is shown"
   assert_not_contains "$TMP/pfdr.out" "^detached:" "no child was started"
+  assert_not_contains "$TMP/pfdr.out" "the detached run did not start" "the refusal is the foreground's, not a child's"
+  assert_eq "" "$(ls "$P/.studio/reports" 2>/dev/null | grep '^overnight-demo-detached-')" "no detached child log: no child was started"
   assert_eq 0 "$(calls)" "no unit ran"
   assert_eq "" "$(pf_wts)" "no scratch worktree"
+}
+# A11: TERM to `start --detach` while its foreground check runs the setup.
+test_lanes_detach_setup_preflight_interrupt() {
+  LANES_CONFIG='{"worktree_setup": "case $(pwd -P) in */setup-preflight-*) : > '"$TMP"'/pf-dint; sleep 4835;; esac"}'; export LANES_CONFIG
+  rm -f "$TMP/pf-dint"
+  lanes_fixture pfdi integration A:-
+  ( cd "$P" && exec sh "$RUNNER" start --detach "$MFP" ) > "$TMP/pfdi.out" 2>&1 < /dev/null &
+  _pdi=$!
+  wait_for "[ -f '$TMP/pf-dint' ] && [ -n \"\$(pf_wts)\" ]" 60
+  assert_eq 1 "$([ -f "$TMP/pf-dint" ] && echo 1 || echo 0)" "the check is running the setup"
+  kill -TERM "$_pdi"
+  wait_pid_or_fail "$_pdi" 20 "TERM during detach's check ends it promptly"
+  assert_eq 2 "$WP_STATUS" "exit 2: nothing started"
+  assert_eq 1 "$(grep -c 'worktree_setup check interrupted — nothing started' "$TMP/pfdi.out")" "it says so, once"
+  wait_for '[ -z "$(pgrep -f "^sleep 4835$")" ] && [ -z "$(pf_wts)" ]' 20
+  assert_eq "" "$(pgrep -f '^sleep 4835$')" "the setup's processes are gone"
+  assert_eq "" "$(pf_wts)" "no scratch worktree is left"
+  assert_missing "$P/.studio/gate.lock" "the gate lock is released"
+  assert_eq "" "$(ls "$P/.studio/reports" 2>/dev/null | grep '^overnight-demo-detached-')" "no detached child log: no child was started"
+  assert_eq 0 "$(calls)" "no unit ran"
+  pkill -f '^sleep 4835$' 2>/dev/null
 }
 test_lanes_detach_setup_preflight_runs_once() {
   LANES_CONFIG='{"worktree_setup": "case $(pwd -P) in */setup-preflight-*) echo pf >> '"$TMP"'/pf-det;; esac"}'; export LANES_CONFIG
@@ -3954,6 +4023,7 @@ test_lanes_detach_setup_preflight_runs_once() {
   wait_for "[ -f '$CALLS/1.fullenv' ]" 60
   detach_stop
   assert_eq 1 "$(wc -l < "$TMP/pf-det" | tr -d ' ')" "the setup ran once: the child skipped it"
+  assert_contains "$(ls -d "$P"/.studio/reports/overnight-demo-detached-* | tail -n 1)" "worktree_setup: checked by start --detach at [0-9a-f]\{7\}$" "the child's log says it skipped the check"
   assert_eq "" "$(pf_wts)" "no scratch worktree"
 }
 test_lanes_setup_checked_env_binds_to_sha() {
@@ -3963,21 +4033,30 @@ test_lanes_setup_checked_env_binds_to_sha() {
   STUDIO_OVERNIGHT_SETUP_CHECKED=0000000000000000000000000000000000000000; export STUDIO_OVERNIGHT_SETUP_CHECKED
   run_lanes start "$MFP"
   unset STUDIO_OVERNIGHT_SETUP_CHECKED
-  assert_eq 1 "$(wc -l < "$TMP/pf-env" | tr -d ' ')" "a value that is not the base's commit runs the check"
+  assert_eq 2 "$LS_STATUS" "a value that is not the base's commit (Target moved since detach checked it) refuses"
+  assert_contains "$LS_ERR" "^studio-overnight: worktree_setup: origin/integration/demo moved since start --detach checked it — start --detach again$" "it says why"
+  assert_missing "$TMP/pf-env" "and does not re-run the setup"
+  assert_eq "" "$(pf_wts)" "no scratch worktree"
+  assert_eq 0 "$(calls)" "no unit ran"
   rm -f "$TMP/pf-env"
   LANES_CONFIG='{"worktree_setup": "case $(pwd -P) in */setup-preflight-*) echo pf >> '"$TMP"'/pf-env;; esac"}'; export LANES_CONFIG
   lanes_fixture pfe2 integration A:-
   STUDIO_OVERNIGHT_SETUP_CHECKED="$(git -C "$P" ls-remote origin refs/heads/integration/demo | cut -f1)"; export STUDIO_OVERNIGHT_SETUP_CHECKED
+  _pfe_short="$(printf '%.7s' "$STUDIO_OVERNIGHT_SETUP_CHECKED")"
   run_lanes start "$MFP"
   unset STUDIO_OVERNIGHT_SETUP_CHECKED
   assert_eq 0 "$LS_STATUS" "the run ends done"
   assert_missing "$TMP/pf-env" "the base's own commit skips the check"
+  assert_contains "$LS_ERR" "^studio-overnight: worktree_setup: checked by start --detach at $_pfe_short$" "the skip is logged"
+  assert_not_contains "$CALLS/1.fullenv" "STUDIO_OVERNIGHT_SETUP_CHECKED" "the variable is not passed on to unit sessions"
 }
 
 run_tests test_lanes_setup_preflight_refuses_linked_only test_lanes_setup_preflight_pass_launches \
   test_lanes_setup_preflight_unset_silent test_lanes_setup_preflight_dry_run_skips \
   test_lanes_setup_preflight_interrupt_cleans test_lanes_setup_preflight_sweeps_stale \
-  test_lanes_detach_setup_preflight_refused test_lanes_detach_setup_preflight_runs_once test_lanes_setup_checked_env_binds_to_sha \
+  test_lanes_setup_preflight_bad_config test_lanes_setup_preflight_timeout \
+  test_lanes_detach_setup_preflight_refused test_lanes_detach_setup_preflight_interrupt \
+  test_lanes_detach_setup_preflight_runs_once test_lanes_setup_checked_env_binds_to_sha \
   test_lanes_chain_rule test_lanes_manifest_refusals test_lanes_branch_default_or_target_refused test_lanes_conflicts_lock_without_start test_lanes_preflight_backlog_tasks test_lanes_manifest_header_refusals \
   test_lanes_preflight_story_checks test_lanes_preflight_story_state test_lanes_docs_unreachable \
   test_lanes_git_too_old test_lanes_sourced_only test_lanes_next \

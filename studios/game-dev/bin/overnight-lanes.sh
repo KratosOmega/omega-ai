@@ -207,8 +207,9 @@ EOF_MC
   ' "$MF_ROWS" > "$MF_TMP/row-refusals"
   while IFS= read -r _l; do refuse "$_l"; done < "$MF_TMP/row-refusals"
 
-  # Origin: one fetch, then the docs revision and the target branch.
-  git_retry -C "$START_DIR" fetch -q origin || refuse "git fetch origin failed"
+  # Origin: one fetch, then the docs revision and the target branch. The
+  # setup preflight reuses it (SP_FETCHED): no second fetch of the Target.
+  if git_retry -C "$START_DIR" fetch -q origin; then SP_FETCHED="$MF_TARGET"; else refuse "git fetch origin failed"; fi
   _docs_ok=0
   if ! git_retry -C "$START_DIR" fetch -q origin "run/$MF_SLUG" 2>/dev/null; then
     refuse "manifest: origin/run/$MF_SLUG does not exist (push the run branch)"
