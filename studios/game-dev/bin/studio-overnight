@@ -14,7 +14,8 @@
 # Exit: start 0 done · 1 any other ending · 2 refused. status 0 this
 # project's run is live · 1 no run · 3 (outside a project) live elsewhere.
 # watch 0. stop 0 stop requested · 1 no run.
-# Self-contained on purpose (copy mode); calls its siblings studio-state,
+# Self-contained on purpose (copy mode); calls its siblings studio-state
+# (the single-plan story is read where its pointer is: story_dir, #42),
 # studio-event and studio-env, and sources overnight-lanes.sh, -channel.sh and
 # -progress.sh. status prints a progress bar with a rough finish time, then the
 # resource readout (studio-env).
@@ -23,6 +24,9 @@ set -u
 # Manifest mode's per-unit words, set only by overnight-lanes.sh: never taken
 # from the user's environment, so a single-plan run evaluates and uses none.
 LAUNCH_ENV=""; UNIT_CWD=""; LDIR=""
+# The single-plan run's spec (#42 AC38): set by take_lock in the runner, never
+# taken from the user's environment; other processes read the lock's spec=.
+RUN_SPEC=""
 PROMPT="/game-dev:execute --one"
 SELF_ABS="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 self="$0"
@@ -37,7 +41,56 @@ DENY_FILE="$SELF_DIR/overnight-deny.txt"
 say() { printf 'studio-overnight: %s\n' "$*" >&2; }
 # sq TEXT — TEXT as one single-quoted shell word ('\'' for each ').
 sq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
-state() { ( cd "$START_DIR" && sh "$STATE_BIN" "$@" ); }
+# start_state ARGS — studio-state in the start checkout (the preflight, and
+# the run's spec at take_lock).
+start_state() { ( cd "$START_DIR" && sh "$STATE_BIN" "$@" ); }
+# run_spec — AC38 (f2-M6): the single-plan run's spec. RUN_SPEC in the runner;
+# elsewhere the lock's spec=, else its registry entry's. "" for a manifest run,
+# a pre-#42 record, or spec -.
+run_spec() {
+  _rp_s="${RUN_SPEC:-}"
+  [ -n "$_rp_s" ] || _rp_s="$(runs_kv spec "$LOCK")"
+  if [ -z "$_rp_s" ]; then
+    _rp_r="$(runs_kv run "$LOCK")"
+    for _rp_e in "${REGISTRY:-$HOME/.claude-gamedev/runs}"/overnight-* "${REGISTRY:-$HOME/.claude-gamedev/runs}/last"; do
+      [ -f "$_rp_e" ] && [ -n "$_rp_r" ] && [ "$(runs_kv run "$_rp_e")" = "$_rp_r" ] || continue
+      _rp_s="$(runs_kv spec "$_rp_e")"; break
+    done
+  fi
+  [ "$_rp_s" != - ] || _rp_s=""
+  printf '%s\n' "$_rp_s"
+}
+# story_resolve — AC38: STORY_DIR, the checkout whose pointer holds the run's
+# story, in the current shell. START_DIR under STUDIO_STORY or with no persisted
+# spec, and while START_DIR's own spec is the run's; else the one `stories`
+# line with that spec (run lines skipped); else main's newest handed line for
+# it when its path is a live worktree. 1 with STORY_WHY when ambiguous or gone
+# (STORY_DIR stays START_DIR, so it is always a usable directory).
+story_resolve() {
+  STORY_DIR="$START_DIR"; STORY_WHY=""
+  [ -z "${STUDIO_STORY:-}" ] || return 0
+  _sy_s="$(run_spec)"
+  [ -n "$_sy_s" ] || return 0
+  [ "$(start_state get spec 2>/dev/null)" != "$_sy_s" ] || return 0
+  _sy_h="$(start_state stories 2>/dev/null | ST_S="$_sy_s" awk -F'\t' '$4 == ENVIRON["ST_S"] && $6 != "run" { print $1 }')"
+  case "$(printf '%s\n' "$_sy_h" | grep -c .)" in
+    1) STORY_DIR="$_sy_h"; return 0 ;;
+    0) ;;
+    *) STORY_WHY="ambiguous story $_sy_s"; return 1 ;;
+  esac
+  # Handed paths are `pwd -P` paths, as studio-state records them.
+  _sy_p="$(ST_S="$_sy_s" awk -F'\t' '/^## Ledger/ { f = 1; next }
+          f && $1 ~ / handed$/ && $2 == "spec=" ENVIRON["ST_S"] { p = $NF } END { sub(/^path=/, "", p); print p }' \
+          "$STATE_ROOT/.studio/STATE.md" 2>/dev/null)"
+  if [ -n "$_sy_p" ] && [ -d "$_sy_p" ] && git -C "$START_DIR" worktree list --porcelain 2>/dev/null | grep -qxF "worktree $_sy_p"; then
+    STORY_DIR="$_sy_p"; return 0
+  fi
+  STORY_WHY="story $_sy_s not found"; return 1
+}
+# story_dir — STORY_DIR as story_resolve finds it (START_DIR when unresolved).
+story_dir() { story_resolve || true; printf '%s\n' "$STORY_DIR"; }
+# state ARGS — studio-state where the run's story is (story_dir).
+state() { _st_d="$(story_dir)"; ( cd "$_st_d" && sh "$STATE_BIN" "$@" ); }
 FAILED=0
 refuse() { say "$*"; FAILED=1; }
 
@@ -195,10 +248,13 @@ lock_live() {
     && ps -o args= -p "$_p" 2>/dev/null | grep -q studio-overnight
 }
 # take_lock RUN_DIR — noclobber, so two starts cannot both win. The lock
-# records the run's start dir (start=, D7).
+# records the run's start dir (start=, D7) and, for a single-plan run, its
+# spec (spec=, #42 AC38: RUN_SPEC), so story_dir resolves in any process.
 take_lock() {
+  [ -n "$RUN_SLUG" ] || RUN_SPEC="$(start_state get spec 2>/dev/null)"
   ( set -C
-    printf 'pid=%s\nrun=%s\nstarted=%s\nstart=%s\n' "$$" "$1" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$START_DIR" > "$LOCK"
+    { printf 'pid=%s\nrun=%s\nstarted=%s\nstart=%s\n' "$$" "$1" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$START_DIR"
+      [ -z "$RUN_SPEC" ] || printf 'spec=%s\n' "$RUN_SPEC"; } > "$LOCK"
   ) 2>/dev/null
 }
 
@@ -416,7 +472,7 @@ RUN_SLUG=""   # a manifest run's slug (run_paths); empty for a single-plan run
 preflight() {
   FAILED=0
   _pf_mf="${1:-}"
-  _stage="$(state get stage 2>/dev/null)" || {
+  _stage="$(start_state get stage 2>/dev/null)" || {
     refuse "no studio state here (run from the project checkout)"
     exit 2
   }
@@ -425,13 +481,16 @@ preflight() {
       refuse "uncommitted .studio/config.json — commit it first"
     fi
   else
-  plan="$(state get plan 2>/dev/null)"
-  spec="$(state get spec 2>/dev/null)"
+  plan="$(start_state get plan 2>/dev/null)"
+  spec="$(start_state get spec 2>/dev/null)"
   case "$spec:$plan" in
-    :*|-:*|*:|*:-) refuse "no spec or plan set (studio-state get spec, get plan)" ;;
+    :*|-:*|*:|*:-)
+      # AC38: name each active story's checkout (another checkout's pointer).
+      _pf_w="$(start_state stories 2>/dev/null | ST_D="$START_DIR" awk -F'\t' '$6 == "active" && $1 != ENVIRON["ST_D"] { printf " — the story is in %s", $1 }')"
+      refuse "no spec or plan set (studio-state get spec, get plan)$_pf_w" ;;
     *)
       # Whole line: an approval of docs/plan.md.old does not approve docs/plan.md.
-      state show 2>/dev/null | sed -n 's/^- [0-9-]* plan approved //p' | grep -qxF -- "$plan" \
+      start_state show 2>/dev/null | sed -n 's/^- [0-9-]* plan approved //p' | grep -qxF -- "$plan" \
         || refuse "plan not approved: no 'plan approved $plan' ledger line"
       if [ -n "$(git -C "$START_DIR" status --porcelain -- "$spec" "$plan" 2>/dev/null)" ]; then
         refuse "uncommitted spec or plan — commit them first"
@@ -547,20 +606,26 @@ gate_room_check() {
 ledger_of() {
   ( cd "$1" && sh "$STATE_BIN" show 2>/dev/null ) | sed -n '/^## Feature ledger: /,$p' | sed 1d
 }
+# feature_dir [STORY_DIR] — the story's feature checkout: `worktree` where its
+# pointer is (story_dir, or the given dir), else that dir itself.
 feature_dir() {
-  _w="$(cd "$START_DIR" && sh "$STATE_BIN" worktree 2>/dev/null)"
-  if [ -n "$_w" ] && [ -d "$_w" ]; then printf '%s\n' "$_w"; else printf '%s\n' "$START_DIR"; fi
+  _fd_s="${1:-$(story_dir)}"
+  _w="$(cd "$_fd_s" && sh "$STATE_BIN" worktree 2>/dev/null)"
+  if [ -n "$_w" ] && [ -d "$_w" ]; then printf '%s\n' "$_w"; else printf '%s\n' "$_fd_s"; fi
 }
 # snapshot STOPS_FILE — the progress signature, and the Stop: lines of the
 # feature and start checkouts, sorted: each line suffixed with a tab and its
 # occurrence number in its own ledger, then de-duplicated across the two (the
 # feature ledger starts as a copy of the start's). A stop written again with
 # the same text on the same day is a new `<line>\t2`, so a comm -13 of two
-# snapshots finds it; a reader strips the suffix (new_stop).
+# snapshots finds it; a reader strips the suffix (new_stop). The start side is
+# the story's checkout (story_dir, resolved once here; #42 R2), never a new
+# story started in START_DIR after the hand-off.
 snapshot() {
-  FEATURE_DIR="$(feature_dir)"
+  story_resolve || true; _sn_d="$STORY_DIR"
+  FEATURE_DIR="$(feature_dir "$_sn_d")"
   _l="$(ledger_of "$FEATURE_DIR")"
-  SIG_STAGE="$(state get stage)"; SIG_TASK="$(state get task)"
+  SIG_STAGE="$(cd "$_sn_d" && sh "$STATE_BIN" get stage)"; SIG_TASK="$(cd "$_sn_d" && sh "$STATE_BIN" get task)"
   SIG_FRD="$(printf '%s\n' "$_l" | grep -c '^- [0-9-]* final review done$')"
   SIG_SHIPPED="$(printf '%s\n' "$_l" | grep -c '^- [0-9-]* shipped ')"
   # check lines count in D2's truth region: after the last `adopt reset` line.
@@ -571,10 +636,15 @@ snapshot() {
   # $1.start: the start checkout's Stop: lines (the whole set before
   # isolation, when one ledger is both), so take_new_stop can tell a Stop
   # written before isolation, or in both ledgers, from a feature-only one.
-  if [ "$FEATURE_DIR" = "$START_DIR" ]; then   # one ledger: read it once
-    printf '%s\n' "$_l" | stop_lines | sort -u > "$1"; cp "$1" "$1.start"
+  # Once the story was handed to its worktree (story_dir is not START_DIR),
+  # the start checkout holds no part of it: the start side is empty, so a
+  # Stop: there is feature-side (AC17-18 holds), and START_DIR's own pointer,
+  # idle or a new story, is never read (R2).
+  if [ "$FEATURE_DIR" = "$_sn_d" ]; then   # one ledger: read it once
+    printf '%s\n' "$_l" | stop_lines | sort -u > "$1"
+    if [ "$_sn_d" = "$START_DIR" ]; then cp "$1" "$1.start"; else : > "$1.start"; fi
   else
-    ledger_of "$START_DIR" | stop_lines | sort -u > "$1.start"
+    ledger_of "$_sn_d" | stop_lines | sort -u > "$1.start"
     { printf '%s\n' "$_l" | stop_lines; cat "$1.start"; } | sort -u > "$1"
   fi
 }
@@ -940,7 +1010,8 @@ unit_reap() {
 
 # ---- The user-level run registry: status from any directory ----
 # REGISTRY holds one file per live run (<run dir name>-<pid>: root=,
-# start=, run=, pid=, started= lines), written when the run takes its lock
+# start=, run=, pid=, started= lines; then origin= when given and, for a
+# single-plan run, spec=, #42), written when the run takes its lock
 # and moved to REGISTRY/last (with ended=) when it unlocks. Paths are
 # STATE_ROOT as studio-state prints it, so a project reached through a
 # symlink (GameDev -> GameDev.nosync) is one project.
@@ -980,7 +1051,8 @@ reg_write() {
   REG_ENTRY="$REGISTRY/$(basename "$RUN_DIR")-$$"
   { printf 'root=%s\nstart=%s\nrun=%s\npid=%s\nstarted=%s\n' "$STATE_ROOT" "$START_DIR" "$RUN_DIR" "$$" \
       "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    [ -z "${RUN_ORIGIN:-}" ] || printf 'origin=%s\n' "$RUN_ORIGIN"; } > "$REG_ENTRY" 2>/dev/null || REG_ENTRY=""
+    [ -z "${RUN_ORIGIN:-}" ] || printf 'origin=%s\n' "$RUN_ORIGIN"
+    [ -z "${RUN_SPEC:-}" ] || printf 'spec=%s\n' "$RUN_SPEC"; } > "$REG_ENTRY" 2>/dev/null || REG_ENTRY=""
 }
 # reg_end — this run's entry becomes REGISTRY/last (the newest ended run).
 reg_end() {
@@ -995,13 +1067,14 @@ reg_end() {
 # env words are LAUNCH_ENV (manifest mode: the story's, story_launch_env),
 # else OMEGA_AUTOPILOT=1; STUDIO_GATE_HELD never reaches a session (D17).
 # Under a lane (LDIR set) the pid is also written to LDIR/cpid. The session
-# starts in UNIT_CWD when set (manifest mode's final-step units), else in
-# START_DIR. STUDIO_UNIT_TAG (UNIT_TAG) marks every studio-gate the session
-# starts, so unit_reap can end the ones it leaves behind. STUDIO_START_DIR is
+# starts in UNIT_CWD when set (manifest mode's final-step units), else where
+# the story's pointer is (story_dir: START_DIR until a hand-off, #42).
+# STUDIO_UNIT_TAG (UNIT_TAG) marks every studio-gate the session starts, so
+# unit_reap can end the ones it leaves behind. STUDIO_START_DIR is
 # the run's start dir, for every unit (AC30, D42).
 start_session() {
   set -m 2>/dev/null || true   # own process group: a terminal Ctrl-C reaches only the runner (D6; a lane subshell too, D1c)
-  ( cd "${UNIT_CWD:-$START_DIR}" && unset STUDIO_GATE_HELD && eval "export ${LAUNCH_ENV:-OMEGA_AUTOPILOT=1}" \
+  ( cd "${UNIT_CWD:-$(story_dir)}" && unset STUDIO_GATE_HELD && eval "export ${LAUNCH_ENV:-OMEGA_AUTOPILOT=1}" \
       && STUDIO_UNIT_TAG="$UNIT_TAG" && export STUDIO_UNIT_TAG \
       && STUDIO_RUN_DIR="$RUN_DIR" && export STUDIO_RUN_DIR \
       && STUDIO_START_DIR="$START_DIR" && export STUDIO_START_DIR && exec claude-gd -p "$@" ) \
@@ -1129,7 +1202,7 @@ write_report() {
     _wr_m="$(msgs_left -)"
     [ -z "$_wr_m" ] || printf '\n## Operator messages left\n\n%s\n' "$_wr_m"
     if [ "$1" != done ]; then
-      printf '\n## Resume\n\ncd %s && %s start\n' "$(sq "$START_DIR")" "$(sq "$SELF_ABS")"
+      printf '\n## Resume\n\ncd %s && %s start\n' "$(sq "$(story_dir)")" "$(sq "$SELF_ABS")"
     fi
   } > "$RUN_DIR/report.md"
   case "$1" in
@@ -1213,6 +1286,8 @@ story_units() {
   n="${n:-0}"; noprog=0; suffix=""; _su_first=1
   STOP_ENDING=""; STOP_SRC=""
   while :; do
+    # #42 AC38: the story is where its pointer is; ambiguous or gone stops.
+    story_resolve || { ENDING="stop: $STORY_WHY"; return 0; }
     op_boundary "${CUR_ID:--}" || return 0
     # First pass takes the before-snapshot; later passes reuse the previous after-snapshot.
     if [ "$_su_first" = 1 ]; then snapshot "$UNIT_DIR/stops.before"; _su_first=0
@@ -1527,8 +1602,10 @@ ended_line() {
 single_status() {
   RUN_DIR="$1"
   { progress_compute single 1 || true; progress_overall; progress_done; }
+  # #42 AC38: the task where the story's pointer is, or why it does not resolve.
+  if story_resolve; then _ss_t="$(state get task 2>/dev/null)"; else _ss_t="$STORY_WHY"; fi
   printf 'run: %s\nunit: %s\ntask: %s\nspent: $%s\npid: %s\n' "$RUN_DIR" \
-    "$(cat "$RUN_DIR/current" 2>/dev/null)" "$(state get task 2>/dev/null)" "$(spent)" "$(lock_pid)"
+    "$(cat "$RUN_DIR/current" 2>/dev/null)" "$_ss_t" "$(spent)" "$(lock_pid)"
   if [ -f "$RUN_DIR/control/-.held" ]; then held_line "$(cat "$RUN_DIR/control/-.held")" -
   else _ps_now="$(unit_now_line "$RUN_DIR")"; [ -z "$_ps_now" ] || printf 'now: %s\n' "$_ps_now"; fi
   gate_line "$RUN_DIR"

@@ -214,9 +214,29 @@ test_progress_symlinked_run_not_past() {
   assert_not_contains "$TMP/st.out" "past units" "the current run, spelled through a symlink, is not a past run"
 }
 
+# #42 AC38: a single-plan run's task is read where its story's pointer is,
+# through the spec the lock persists, never from the idle start checkout.
+test_progress_task_follows_story() {
+  proj follow; rm -rf "$RD"; RD="$P/.studio/reports/overnight-20261005-010000"; mkdir -p "$RD"
+  printf '# Studio State\n\nstage: idle\nspec: -\nplan: -\ntask: -\nbranch: -\nmilestone: prototype\n\n## Ledger\n\n' > "$P/.studio/STATE.md"
+  ( cd "$P" && git worktree add -q "$TMP/follow-we" -b feat ) >/dev/null 2>&1
+  mkdir -p "$TMP/follow-we/.studio"
+  printf '# Studio State\n\nstage: execute\nspec: docs/s.md\nplan: docs/p.md\ntask: 1/4\nbranch: feat\n\n## Ledger\n\n' > "$TMP/follow-we/.studio/STATE.md"
+  units "$RD" T1 progress 10; units "$RD" T2 progress 10
+  running "$RD" "" T3 300
+  live; printf 'spec=docs/s.md\n' >> "$P/.studio/overnight.lock"
+  st
+  assert_eq 0 "$ST_RC" "a live single-plan run"
+  # From WE's 1/4: 3 tasks left plus review and finish, after the 2 done (the
+  # idle P's "-" would count 1 left: 2/5).
+  assert_contains "$TMP/st.out" "^progress: .* 2/7 units · ETA " "task-left comes from the story worktree's 1/4"
+  assert_contains "$TMP/st.out" "^task: 1/4$" "and so does the task line"
+}
+
 run_tests test_progress_fresh_no_data test_progress_mid_run_eta test_progress_past_run_median \
   test_progress_repair_adds_a_unit test_progress_chains_waits_and_held test_progress_ended_run_no_eta \
   test_progress_single_plan test_progress_retry_and_unit_kinds \
   test_progress_scale_with_past_rows test_progress_held_single_plan_no_eta \
   test_progress_ended_single_plan_ignores_project_task test_progress_resume_review_not_double_counted \
-  test_progress_symlinked_run_not_past
+  test_progress_symlinked_run_not_past \
+  test_progress_task_follows_story

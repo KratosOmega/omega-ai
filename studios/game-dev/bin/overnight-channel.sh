@@ -182,12 +182,20 @@ chan_open() {
 }
 # chan_ledger — the story's feature-ledger lines (`- <date> <text>`), read in
 # its feature checkout when one exists, else in the start checkout. Never
-# the verb's cwd (R22).
+# the verb's cwd (R22). A single-plan story (-) is read where its pointer is,
+# through the run's persisted spec (studio-overnight's story_dir, #42 AC38),
+# never from worktree's candidate list.
 chan_ledger() {
   ( cd "$CH_START" 2>/dev/null || exit 0
-    if [ "$CH_STORY" = - ]; then unset STUDIO_STORY; else STUDIO_STORY="$CH_STORY"; export STUDIO_STORY; fi
-    _cl_w="$(sh "$STATE_BIN" worktree 2>/dev/null)"
-    [ -z "$_cl_w" ] || [ ! -d "$_cl_w" ] || cd "$_cl_w"
+    if [ "$CH_STORY" = - ]; then
+      unset STUDIO_STORY
+      LOCK="${CH_LOCK:-$CH_ROOT/.studio/overnight.lock}"; START_DIR="$CH_START"; STATE_ROOT="$CH_ROOT"
+      cd "$(story_dir)" 2>/dev/null || exit 0
+    else
+      STUDIO_STORY="$CH_STORY"; export STUDIO_STORY
+      _cl_w="$(sh "$STATE_BIN" worktree 2>/dev/null)"
+      [ -z "$_cl_w" ] || [ ! -d "$_cl_w" ] || cd "$_cl_w"
+    fi
     sh "$STATE_BIN" show 2>/dev/null ) | sed -n '/^## Feature ledger: /,$p' | sed 1d
 }
 # chan_list DIR — the story's directives and messages, one TSV row each,
