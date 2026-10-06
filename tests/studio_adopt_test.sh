@@ -732,7 +732,30 @@ test_adopt_incident_tier2_two_refuse() {
     git -C "$_r2" add docs/runs/kan2.md; git -C "$_r2" commit -q -m "docs(run): kan2 manifest" ) >/dev/null 2>&1
   adopt "$W" seed S1
   assert_eq 1 "$AD_STATUS" "two pointer-less run worktrees list S1: refused"
-  assert_contains "$TMP/ad.err" "story S1 is listed by two run worktrees: " "same message as two tier-1 hits"
+  assert_contains "$TMP/ad.err" "story S1 is listed by two run worktrees: $RK, $_r2" "same message as two tier-1 hits, naming both"
+}
+
+# #50 final review M1: sourced with TMPD missing, a tier-2 hit still answers,
+# with the note as its only stderr line (no marker error; dash must not die).
+test_adopt_incident_tier2_no_tmpd() {
+  incident_repo itn noptr
+  adopt_lib
+  _st=0; ( cd "$W" && . "$TMP/adopt.lib" && TMPD="$TMP/itn-missing" && start_checkout S1 ) > "$TMP/itn.out" 2> "$TMP/itn.err" || _st=$?
+  assert_eq 0 "$_st" "start_checkout exits 0"
+  assert_eq "$RK" "$(cat "$TMP/itn.out")" "and names the run worktree"
+  assert_eq "note: run worktree $RK has no .studio/run — using its committed docs/runs/kan.md for S1" "$(cat "$TMP/itn.err")" "the note is the only stderr line"
+}
+
+# #50 R4: inspect resolves START_ROOT, so a plan only in the run worktree is
+# found (before, plan_file looked in the main checkout).
+test_adopt_inspect_reads_plan_from_run_worktree() {
+  incident_repo irp
+  _rp=docs/superpowers/plans/2026-09-02-rk.md
+  cp "$RK/$ORIG" "$RK/$_rp"
+  adopt "$W" inspect S1 --branch S9-b --plan "$_rp"
+  assert_eq 0 "$AD_STATUS" "inspect finds the plan in the run worktree"
+  assert_contains "$TMP/ad.out" "^k: 0/6$" "and counts its tasks"
+  assert_not_contains "$TMP/ad.err" "not found" "no plan-not-found refusal"
 }
 
 test_adopt_incident_no_run_worktree_refuses() {
@@ -747,6 +770,52 @@ test_adopt_incident_no_run_worktree_refuses() {
   adopt "$W" sync S1
   assert_eq 1 "$AD_STATUS" "sync refuses the same way"
   assert_contains "$TMP/ad.err" "no run worktree found for S1" "sync message"
+  assert_not_contains "$TMP/ad.err" "no adopted line" "sync: not the misleading ledger error either"
+}
+
+# #50 final review I1: the main checkout on main (the run lives in its own
+# worktree), and the run worktree is missed by tiers 1-2 — its pointer names a
+# missing manifest, or it has no pointer and an uncommitted manifest. The
+# adopted line in that run worktree's ledger means a run is involved: refuse,
+# never fall back to the main checkout with "ledger it from the start checkout".
+test_adopt_incident_main_on_main_refuses() {
+  incident_repo imm
+  ( set -e; git -C "$P" switch -q main; rm -f "$P/.studio/run" ) >/dev/null 2>&1
+  printf 'docs/runs/kann.md\n' > "$RK/.studio/run"
+  adopt "$W" seed S1
+  assert_eq 1 "$AD_STATUS" "pointer names a missing manifest, main on main: seed refuses"
+  assert_contains "$TMP/ad.err" "no run worktree found for S1: looked for" "says no run worktree was found"
+  assert_contains "$TMP/ad.err" "checked: $RK (run/kan, .studio/run → missing docs/runs/kann.md)" "names the missing manifest"
+  assert_contains "$TMP/ad.err" "; an adopted line for S1 is in $RK/.studio/ledger/S1.md — write .studio/run in S1's run worktree" "names the run worktree's ledger and the fix"
+  assert_not_contains "$TMP/ad.err" "no adopted line" "not the misleading ledger error"
+  assert_not_contains "$TMP/ad.err" "the main checkout" "main is on no run: no main-checkout clause"
+  adopt "$W" sync S1
+  assert_eq 1 "$AD_STATUS" "sync refuses the same way"
+  assert_contains "$TMP/ad.err" "no run worktree found for S1" "sync message"
+  rm -f "$RK/.studio/run"
+  ( cd "$RK" && git rm -q --cached docs/runs/kan.md && git commit -q -m "uncommit manifest" ) >/dev/null 2>&1
+  adopt "$W" seed S1
+  assert_eq 1 "$AD_STATUS" "no pointer, uncommitted manifest, main on main: seed refuses"
+  assert_contains "$TMP/ad.err" "checked: $RK (run/kan, no .studio/run); an adopted line for S1 is in $RK/.studio/ledger/S1.md" "names what was checked and where the line is"
+  assert_not_contains "$TMP/ad.err" "ledger it from the start checkout" "never sends the operator to the main checkout"
+  printf 'docs/runs/kan.md\n' > "$RK/.studio/run"
+  adopt "$W" seed S1
+  assert_eq 0 "$AD_STATUS" "the advised pointer fixes it"
+}
+
+# #50 final review M3: the main checkout on run/kan whose own manifest lacks
+# S1's row, with S1's adopted line in its ledger — it may be S1's own run, so
+# the refusal does not call it "another run".
+test_adopt_incident_main_own_run_not_another() {
+  adopt_repo ior 6 3
+  ( set -e; git -C "$P" switch -q -c run/kan; mkdir -p "$P/docs/runs"
+    printf '# Run: kan\nTarget: integration/kan\n\n| Story | Branch |\n|---|---|\n| S9 | S9-b |\n' > "$P/docs/runs/kan.md"
+    git -C "$P" add docs/runs/kan.md; git -C "$P" commit -q -m "docs(run): kan"
+    printf 'docs/runs/kan.md\n' > "$P/.studio/run" ) >/dev/null 2>&1
+  adopt "$W" seed S1
+  assert_eq 1 "$AD_STATUS" "main's manifest lacks S1: refused"
+  assert_contains "$TMP/ad.err" "the main checkout $P is on run/kan; an adopted line for S1 is in $P/.studio/ledger/S1.md — write" "names the main checkout's run and its ledger"
+  assert_not_contains "$TMP/ad.err" "(another run)" "not called another run"
 }
 
 test_adopt_run_target_from_start_checkout() {
@@ -1012,7 +1081,7 @@ test_sync_no_adopted_line_names_ledger() {
   assert_not_contains "$TMP/ad.err" "an adopted line for S1 is in" "no hint when only the start checkout has the line"
 }
 
-run_tests test_adopt_incident_adopted_line_in_main_ledger test_sync_no_adopted_line_names_ledger test_adopt_start_checkout_spaced_path test_adopt_seed_reads_ledger_from_run_worktree test_adopt_seed_start_dir_wins test_adopt_incident_seed_tier2 test_adopt_incident_seed_tier1 test_adopt_incident_tier2_two_refuse test_adopt_incident_no_run_worktree_refuses test_adopt_run_target_from_start_checkout test_adopt_start_checkout_from_run_worktree test_adopt_start_checkout_two_listings_refuse test_adopt_start_checkout_none_falls_back test_adopt_live_run_check_per_run_lock test_adopt_part_done_ignores_sync test_adopt_seed_short_sha_line_same_range test_sync_short_sha_truth_line test_sync_view_collision_counter test_sync_view_write_failure_commits_nothing test_sync_failed_commit_restores test_sync_bad_new_claim_is_plain_mismatch test_adopt_from_subdirectory test_sync_already_in_sync test_sync_accepts_claims test_sync_all_or_nothing test_sync_claim_end_differs \
+run_tests test_adopt_incident_main_on_main_refuses test_adopt_incident_main_own_run_not_another test_adopt_incident_tier2_no_tmpd test_adopt_inspect_reads_plan_from_run_worktree test_adopt_incident_adopted_line_in_main_ledger test_sync_no_adopted_line_names_ledger test_adopt_start_checkout_spaced_path test_adopt_seed_reads_ledger_from_run_worktree test_adopt_seed_start_dir_wins test_adopt_incident_seed_tier2 test_adopt_incident_seed_tier1 test_adopt_incident_tier2_two_refuse test_adopt_incident_no_run_worktree_refuses test_adopt_run_target_from_start_checkout test_adopt_start_checkout_from_run_worktree test_adopt_start_checkout_two_listings_refuse test_adopt_start_checkout_none_falls_back test_adopt_live_run_check_per_run_lock test_adopt_part_done_ignores_sync test_adopt_seed_short_sha_line_same_range test_sync_short_sha_truth_line test_sync_view_collision_counter test_sync_view_write_failure_commits_nothing test_sync_failed_commit_restores test_sync_bad_new_claim_is_plain_mismatch test_adopt_from_subdirectory test_sync_already_in_sync test_sync_accepts_claims test_sync_all_or_nothing test_sync_claim_end_differs \
   test_sync_truth_mismatches test_sync_ambiguous_short_sha test_sync_rewrite_message test_sync_views_keep_other_lines \
   test_sync_carries_rulings_once test_sync_landed_note test_sync_live_run_refusal test_sync_own_unit_exempt \
   test_sync_diverged_and_behind test_sync_preconditions test_adopt_workspace_lookup_two_trees test_sync_push_failure_warns \
