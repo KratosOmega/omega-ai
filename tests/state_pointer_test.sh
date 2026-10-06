@@ -185,6 +185,16 @@ test_state_init_local_is_auto_create() {
   assert_eq 1 "$_rc" "init --local is refused under STUDIO_STORY"
   assert_contains "$TMP/st.err" 'cannot be combined with STUDIO_STORY' "and says why"
   assert_missing "$WC/.studio/STATE.md" "the refusal writes nothing"
+  # T2#2: two concurrent calls both pass the early check while the mutex is held;
+  # the re-check under the mutex makes the second one exit 1 (AC8).
+  proj ilc; wt a feat/a; WA="$W"; hold_mutex
+  ( cd "$WA" && sh "$STATE_BIN" init --local ) > "$TMP/ic1.out" 2> "$TMP/ic1.err" & _i1=$!
+  ( cd "$WA" && sh "$STATE_BIN" init --local ) > "$TMP/ic2.out" 2> "$TMP/ic2.err" & _i2=$!
+  sleep 1; release_mutex
+  _r1=0; wait "$_i1" || _r1=$?; _r2=0; wait "$_i2" || _r2=$?
+  assert_eq "0 1" "$(printf '%s\n%s\n' "$_r1" "$_r2" | sort | tr '\n' ' ' | sed 's/ $//')" "of two concurrent init --local calls, one exits 1"
+  cat "$TMP/ic1.err" "$TMP/ic2.err" > "$TMP/ic.err"
+  assert_contains "$TMP/ic.err" 'init --local: .* already exists' "the loser says the pointer exists"
 }
 
 test_state_init_in_linked_worktree() {

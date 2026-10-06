@@ -727,6 +727,7 @@ case "$cmd" in
       # AC8: the explicit form of auto-create — the same function, under the
       # mutex (a no-op when <root>/.studio is missing, f3-N3).
       lock_or_fail
+      [ ! -f "$LOCAL" ] || fail "init --local: $LOCAL already exists"   # a concurrent call won
       make_local_pointer "$WORK_ROOT"
       printf 'initialised %s (local stage pointer)\n' "$LOCAL"; exit 0
     fi
