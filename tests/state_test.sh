@@ -680,7 +680,7 @@ test_state_rebuild_refuses_unseeded_adopted() {
     sh "$STATE_BIN" init
     printf '# P\n\n### Task 1: a\n\n### Task 2: b\n\n### Task 3: c\n' > docs/p.md
     export STUDIO_STORY=AD; sh "$STATE_BIN" init
-    sh "$STATE_BIN" set plan docs/p.md; sh "$STATE_BIN" set task 0/3; sh "$STATE_BIN" set branch AD-b
+    sh "$STATE_BIN" set plan docs/p.md; sh "$STATE_BIN" set task 2/3; sh "$STATE_BIN" set branch AD-b
     sh "$STATE_BIN" ledger "adopted docs/o.md -> docs/p.md"
     git worktree add -q -b AD-b "$TMP/story-ad-wt" ) >/dev/null 2>&1
   W="$TMP/story-ad-wt"
@@ -688,7 +688,7 @@ test_state_rebuild_refuses_unseeded_adopted() {
   assert_eq 1 "$st" "unseeded adopted story: check --rebuild exits 1"
   assert_contains "$TMP/out" "AD is adopted ($P/.studio/ledger/AD.md) but $W/.studio/ledger/AD.md has no adopt-base line" "names both ledgers"
   assert_contains "$TMP/out" "studio-adopt seed AD" "and the fix"
-  assert_eq 0/3 "$(cd "$W" && STUDIO_STORY=AD sh "$STATE_BIN" get task)" "task untouched"
+  assert_eq 2/3 "$(cd "$W" && STUDIO_STORY=AD sh "$STATE_BIN" get task)" "task untouched (a rebuild would set 0/3)"
   st=0; ( cd "$P" && STUDIO_STORY=AD sh "$STATE_BIN" check --rebuild ) > "$TMP/out" 2>&1 || st=$?
   assert_eq 1 "$st" "from the checkout holding the adopted line too"
   ( cd "$W" && STUDIO_STORY=AD sh "$STATE_BIN" ledger "adopt-base 0123456789abcdef0123456789abcdef01234567" \
@@ -701,7 +701,25 @@ test_state_rebuild_refuses_unseeded_adopted() {
   assert_eq 0 "$st" "a not-started adopted story (branch -) rebuilds as before"
 }
 
-run_tests test_state_rebuild_refuses_unseeded_adopted test_state_check_ignores_before_adopt_reset test_state_needs_init test_state_init test_state_get_set test_state_validation \
+# #50 final review M5: a started story that was never adopted (branch set, no
+# `adopted` line in any worktree) goes through the guard's scan and rebuilds.
+test_state_rebuild_started_not_adopted() {
+  P="$TMP/story-na"; mkdir -p "$P/docs"
+  ( cd "$P" && git init -q -b main && git -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
+    sh "$STATE_BIN" init
+    printf '# P\n\n### Task 1: a\n\n### Task 2: b\n\n### Task 3: c\n' > docs/p.md
+    export STUDIO_STORY=A; sh "$STATE_BIN" init
+    sh "$STATE_BIN" set plan docs/p.md; sh "$STATE_BIN" set task 0/3; sh "$STATE_BIN" set branch A-b
+    git worktree add -q -b A-b "$TMP/story-na-wt"
+    cd "$TMP/story-na-wt"; sh "$STATE_BIN" ledger "T1 complete aaaa..bbbb"; sh "$STATE_BIN" ledger "T2 complete bbbb..cccc" ) >/dev/null 2>&1
+  W="$TMP/story-na-wt"
+  st=0; ( cd "$W" && STUDIO_STORY=A sh "$STATE_BIN" check --rebuild ) > "$TMP/out" 2>&1 || st=$?
+  assert_eq 0 "$st" "started, never adopted: check --rebuild exits 0"
+  assert_not_contains "$TMP/out" "adopt-base" "no adopt guard refusal"
+  assert_eq 2/3 "$(cd "$W" && STUDIO_STORY=A sh "$STATE_BIN" get task)" "and rebuilds k/N from the ledger"
+}
+
+run_tests test_state_rebuild_refuses_unseeded_adopted test_state_rebuild_started_not_adopted test_state_check_ignores_before_adopt_reset test_state_needs_init test_state_init test_state_get_set test_state_validation \
   test_state_ledger test_state_ledger_keeps_all_words test_state_ledger_folds_newlines \
   test_state_set_keeps_backslashes test_state_show test_state_resolves_to_main_checkout \
   test_state_init_writes_config_ledger_and_gitignore_once test_state_init_gitignore_appends_safely \
