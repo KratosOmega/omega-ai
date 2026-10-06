@@ -336,6 +336,20 @@ truth_lines() {
   awk '/^- [0-9-]+ adopt reset /{ n = NR } { l[NR] = $0 } END { for (i = n + 1; i <= NR; i++) print l[i] }' "$1"
 }
 
+# adopted_hint ID SKIP… — #50 D2: when a worktree other than SKIP… has an
+# `adopted` line for ID in its .studio/ledger/ID.md (truth region), print
+# "; an adopted line for ID is in <ledgers> — ledger it from the start
+# checkout"; else nothing. Appended to the "no adopted line" refusals.
+adopted_hint() {
+  _ax_id="$1"; shift
+  _ax_hits="$(git worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p' | while IFS= read -r _ax_w; do
+      for _ax_s in "$@"; do [ "$_ax_w" = "$_ax_s" ] && continue 2; done
+      _ax_f="$_ax_w/.studio/ledger/$_ax_id.md"
+      if [ -f "$_ax_f" ] && truth_lines "$_ax_f" | grep -q '^- [0-9-]* adopted .* -> '; then printf '%s\n' "$_ax_f"; fi
+    done | paste -sd, - | sed 's/,/, /g')"
+  [ -z "$_ax_hits" ] || printf '; an adopted line for %s is in %s — ledger it from the start checkout' "$_ax_id" "$_ax_hits"
+}
+
 # docs_paths ID — space-separated docs paths of a story (D22): the original,
 # the converted plan, the spec, and the converted plan's `Context:` paths,
 # from `adopted`/`source` lines of the start checkout's story ledger.
@@ -510,7 +524,7 @@ cmd_seed() {
     _sd_adopted="$(sed -n 's/^- [0-9-]* \(adopted .* -> .*\)$/\1/p' "$_sd_src" | tail -n 1)"
     _sd_source="$(sed -n 's/^- [0-9-]* \(source .*\)$/\1/p' "$_sd_src" | tail -n 1)"
   fi
-  [ -n "$_sd_adopted" ] || { echo "no adopted line for $ID in the start checkout" >&2; return 1; }
+  [ -n "$_sd_adopted" ] || { echo "no adopted line for $ID in $_sd_src (start checkout $START_ROOT)$(adopted_hint "$ID" "$START_ROOT")" >&2; return 1; }
   _sd_rest="${_sd_adopted#adopted }"; _sd_orig="${_sd_rest%% -> *}"; _sd_conv="${_sd_rest#* -> }"
 
   BRANCH="$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
@@ -775,10 +789,10 @@ cmd_sync() {
 
   # The truth: the ledger as it stands in this tree.
   _sy_led="$TOPLEVEL/.studio/ledger/$ID.md"
-  [ -f "$_sy_led" ] || { echo "no ledger for $ID on $BRANCH — run: studio-adopt seed $ID" >&2; return 1; }
+  [ -f "$_sy_led" ] || { echo "no ledger for $ID on $BRANCH ($_sy_led; start checkout $START_ROOT) — run: studio-adopt seed $ID$(adopted_hint "$ID" "$TOPLEVEL" "$START_ROOT")" >&2; return 1; }
   ledger_texts "$_sy_led" > "$TMPD/sd.truth"
   _sy_ad="$(sed -n 's/^adopted \(.* -> .*\)$/\1/p' "$TMPD/sd.truth" | tail -n 1)"
-  [ -n "$_sy_ad" ] || { echo "no adopted line for $ID in the ledger of $BRANCH — run: studio-adopt seed $ID" >&2; return 1; }
+  [ -n "$_sy_ad" ] || { echo "no adopted line for $ID in $_sy_led (the ledger of $BRANCH; start checkout $START_ROOT) — run: studio-adopt seed $ID$(adopted_hint "$ID" "$TOPLEVEL" "$START_ROOT")" >&2; return 1; }
   ORIG_PLAN="${_sy_ad%% -> *}"; CONV_PLAN="${_sy_ad#* -> }"
   ADOPT_BASE="$(sed -n 's/^adopt-base //p' "$TMPD/sd.truth" | tail -n 1)"
   [ -n "$ADOPT_BASE" ] || { echo "no adopt-base for $ID in the ledger of $BRANCH — run: studio-adopt seed $ID" >&2; return 1; }

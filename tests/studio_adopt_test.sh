@@ -990,7 +990,29 @@ test_sync_view_write_failure_commits_nothing() {
   assert_eq "$_o" "$(git -C "$W" rev-parse origin/S1-b)" "nothing pushed"
 }
 
-run_tests test_adopt_start_checkout_spaced_path test_adopt_seed_reads_ledger_from_run_worktree test_adopt_seed_start_dir_wins test_adopt_incident_seed_tier2 test_adopt_incident_seed_tier1 test_adopt_incident_tier2_two_refuse test_adopt_incident_no_run_worktree_refuses test_adopt_run_target_from_start_checkout test_adopt_start_checkout_from_run_worktree test_adopt_start_checkout_two_listings_refuse test_adopt_start_checkout_none_falls_back test_adopt_live_run_check_per_run_lock test_adopt_part_done_ignores_sync test_adopt_seed_short_sha_line_same_range test_sync_short_sha_truth_line test_sync_view_collision_counter test_sync_view_write_failure_commits_nothing test_sync_failed_commit_restores test_sync_bad_new_claim_is_plain_mismatch test_adopt_from_subdirectory test_sync_already_in_sync test_sync_accepts_claims test_sync_all_or_nothing test_sync_claim_end_differs \
+test_adopt_incident_adopted_line_in_main_ledger() {
+  incident_repo iml
+  move_adoption_lines "$RK" "$P"
+  adopt "$W" seed S1
+  assert_eq 1 "$AD_STATUS" "adopted line only in the main checkout's ledger: seed refuses"
+  assert_contains "$TMP/ad.err" "no adopted line for S1 in $RK/.studio/ledger/S1.md (start checkout $RK)" "names the ledger read and the start checkout"
+  assert_contains "$TMP/ad.err" "an adopted line for S1 is in $P/.studio/ledger/S1.md — ledger it from the start checkout" "and where the line is"
+  adopt "$W" sync S1
+  assert_eq 1 "$AD_STATUS" "sync refuses too"
+  assert_contains "$TMP/ad.err" "no ledger for S1 on S1-b ($W/.studio/ledger/S1.md; start checkout $RK) — run: studio-adopt seed S1" "sync names the ledger it looked for"
+  assert_contains "$TMP/ad.err" "an adopted line for S1 is in $P/.studio/ledger/S1.md" "and the hint"
+}
+
+test_sync_no_adopted_line_names_ledger() {
+  sync_repo nal
+  grep -v ' adopted ' "$W/.studio/ledger/S1.md" > "$TMP/nal.led"; cp "$TMP/nal.led" "$W/.studio/ledger/S1.md"
+  adopt "$W" sync S1
+  assert_eq 1 "$AD_STATUS" "no adopted line in the story ledger: sync refuses"
+  assert_contains "$TMP/ad.err" "no adopted line for S1 in $W/.studio/ledger/S1.md (the ledger of S1-b; start checkout $P) — run: studio-adopt seed S1" "names the ledger and the start checkout"
+  assert_not_contains "$TMP/ad.err" "an adopted line for S1 is in" "no hint when only the start checkout has the line"
+}
+
+run_tests test_adopt_incident_adopted_line_in_main_ledger test_sync_no_adopted_line_names_ledger test_adopt_start_checkout_spaced_path test_adopt_seed_reads_ledger_from_run_worktree test_adopt_seed_start_dir_wins test_adopt_incident_seed_tier2 test_adopt_incident_seed_tier1 test_adopt_incident_tier2_two_refuse test_adopt_incident_no_run_worktree_refuses test_adopt_run_target_from_start_checkout test_adopt_start_checkout_from_run_worktree test_adopt_start_checkout_two_listings_refuse test_adopt_start_checkout_none_falls_back test_adopt_live_run_check_per_run_lock test_adopt_part_done_ignores_sync test_adopt_seed_short_sha_line_same_range test_sync_short_sha_truth_line test_sync_view_collision_counter test_sync_view_write_failure_commits_nothing test_sync_failed_commit_restores test_sync_bad_new_claim_is_plain_mismatch test_adopt_from_subdirectory test_sync_already_in_sync test_sync_accepts_claims test_sync_all_or_nothing test_sync_claim_end_differs \
   test_sync_truth_mismatches test_sync_ambiguous_short_sha test_sync_rewrite_message test_sync_views_keep_other_lines \
   test_sync_carries_rulings_once test_sync_landed_note test_sync_live_run_refusal test_sync_own_unit_exempt \
   test_sync_diverged_and_behind test_sync_preconditions test_adopt_workspace_lookup_two_trees test_sync_push_failure_warns \
