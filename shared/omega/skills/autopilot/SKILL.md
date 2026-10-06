@@ -55,6 +55,9 @@ session (it is on `PATH` only inside a `claude-gd` session).
 
 1. **Discovery.** A live run never stops discovery. With no slug, list:
    - the **runs being planned**: run worktrees (`git worktree list --porcelain`, `branch refs/heads/run/*`) whose `.studio/run` names a manifest with no `<root>/.studio/runs/<slug>/landed.tsv`;
+     - also a run worktree with no `.studio/run` whose `docs/runs/<slug>.md` is committed (`git -C <dir> ls-files --error-unmatch docs/runs/<slug>.md`, for `run/<slug>`): list it the same way.
+       On resume, rewrite the missing pointer first: `printf '%s\n' docs/runs/<slug>.md > .studio/run` in that worktree.
+       The pointer is uncommitted local state, so a re-created worktree loses it.
    - the **started runs**: records under `<root>/.studio/runs/` without `done`, live or not, as `studio-overnight status` prints them.
 
    Ask one `AskUserQuestion` with each run, and "new run". `/omega:autopilot <slug>` skips the question.
@@ -139,7 +142,9 @@ session (it is on `PATH` only inside a `claude-gd` session).
 
    The question sweep for manifest stories belongs to `/game-dev:plan` (it writes `## Decisions` and ledgers `Decisions swept <id>`); this skill does not repeat it.
 3. **Seed every story** once every row is `planned`, in manifest order. Every `studio-state` call below runs with `STUDIO_STORY=<id>`.
-   - A `plan` story that was adopted (its `<id>.md` holds `verdict plan`): first, with `STUDIO_STORY=<id>`, `studio-state ledger "adopted <original> -> <new plan>"` (`<new plan>` from `next`'s `plan=`), before the seeding below.
+   - Check that the run worktree has `.studio/run` before the first seed (write it as in step 1 when missing): `studio-adopt seed` finds the story's run through it, and falls back to the committed manifest only with a note.
+   - A `plan` story that was adopted (its `<id>.md` holds `verdict plan`): first, with `STUDIO_STORY=<id>`, `studio-state ledger "adopted <original> -> <new plan>"` (`<new plan>` from `next`'s `plan=`), before the seeding below
+     — ledgered from the run worktree, never from the main checkout (`studio-state ledger` writes the ledger of the checkout the shell is in).
    - Each story, not-started and half-done alike, in the run worktree (on `run/<slug>`), never in a story worktree: `studio-state init`; `set spec <spec>`; `set plan <plan>` (from `next`'s `spec=` and `plan=`); `set task 0/<N>` (`N` = `awk '/^## Backlog/ { exit } /^### Task [0-9]/ { n++ } END { print n + 0 }' <plan>` — the tasks above `## Backlog` only, since a task the producer cut keeps its heading there — run here where the plan exists — a story worktree's `check --rebuild` then takes `N` from the story file and never needs the plan); then the spec-slug ledger's `spec approved <spec>`, `plan approved <plan>` and `Decisions swept <id>` lines are re-ledgered through `studio-state ledger "<text after the date>"`, so each carries today's date.
      They land in the run worktree's `.studio/ledger/<id>.md` — the file the runner's preflight reads, and the one it requires clean — and are committed on `run/<slug>` below.
    - **Not started** (no branch): in the run worktree, `set stage plan`, `set branch -`.
@@ -148,6 +153,7 @@ session (it is on `PATH` only inside a `claude-gd` session).
         When another checkout holds `<Branch>`, stop with "switch that checkout off <Branch> first".
      2. When the branch has `.studio/ledger/<spec slug>.md` and no `.studio/ledger/<id>.md`: `git mv` it to `.studio/ledger/<id>.md` and commit `chore(studio): ledger keyed by story`.
      3. In that worktree, only: `set branch <Branch>`, `set stage execute`, then for an adopted story `studio-adopt seed <id>` (add `--base <sha>` when inspect was given one; after step 3.2's re-key and before `studio-state check --rebuild`: seed refuses a pointer with no branch, so `set branch` comes first), then `studio-state check --rebuild` (the "each story" lines already ran in this checkout) — seed writes the story's `T<n> complete` lines from the SDD ledger (a not-started adopted story has no seed: execute §0 records its base); the rebuild keeps `N` from the seeded `task 0/<N>` and sets the longest contiguous run of `T<n> complete` lines.
+        A failed seed stops here: when `studio-adopt seed <id>` exits non-zero, print its stderr line and stop; never run `studio-state check --rebuild`, `next` or the start after it (a rebuild of an unseeded adopted story refuses anyway).
         A gap exits 1: stop and name the missing task (*Does not fit*).
         `N/N` with `final review done` resumes at the finish; a `shipped` line: `set stage idle` (it waits to land); a merged PR or a head already in `origin/<Target>` is landed — the runner records it at start.
         An open bundle-2 PR into `main` in an integration run is named in `report.md`, never closed.
@@ -157,7 +163,7 @@ session (it is on `PATH` only inside a `claude-gd` session).
    - Fill each row's Spec and Plan cells, then `git add docs/runs/<slug>.md .studio/config.json <specs> <plans> .studio/ledger/<id>.md …` (every story's ledger, half-done ones included), `git commit -m "docs(run): <slug> planned"`, `git push -u origin run/<slug>`.
      Write that commit's sha (`git rev-parse HEAD`) as `Docs:`, then commit `docs(run): <slug> docs <short sha>` and push `run/<slug>` again.
 4. **Readiness checklist.** Print it; every line must pass:
-   - `studio-overnight start --dry-run <manifest>` exits 0 (the runner's own preflight: the manifest, `Docs:` on `origin/run/<slug>`, each plan's `Story:`, `Spec:` lines and `## Decisions`, each story's state and ledger, `claude-gd`, `gh auth status`, the deny list, config, `merge_command` in direct mode, no conflicting live or stopped run (slug, story, branch));
+   - `studio-overnight start --dry-run <manifest>` exits 0 (the runner's own preflight: the manifest, `Docs:` on `origin/run/<slug>`, each plan's `Story:`, `Spec:` lines and `## Decisions`, each story's state and ledger, `claude-gd`, `gh auth status`, the deny list, config, `merge_command` in direct mode, no conflicting live or stopped run (slug, story, branch), the start checkout's `.studio/run` naming this manifest, every adopted story with a branch seeded on it);
    - the baseline test run is green — `studio-test`, exit 0, run in the run worktree after `worktree_setup`;
    - the engine binary resolves — `studio-test` or `GODOT_PATH`;
    - for each adopted story: `studio-adopt sync <id>` from its worktree exits 0 (a not-started story is skipped, with a note).

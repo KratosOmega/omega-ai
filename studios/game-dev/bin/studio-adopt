@@ -79,24 +79,106 @@ state_root() {
   sh "$SELF_DIR/studio-state" root 2>/dev/null || true
 }
 
-# start_checkout ID — the checkout whose .studio/run manifest lists ID
-# (#39 AC20, D40): a porcelain worktree on run/* (the main checkout
-# included). Two refuse; none prints state_root.
-start_checkout() {
+# sc_resolve ID — ID's start checkout and its run manifest, as
+# "<checkout><TAB><manifest or empty>" (#50 D1):
+#   1. a run/* worktree (the main checkout included) whose .studio/run names a
+#      manifest with a row for ID (#39 AC20, D40);
+#   2. else a run/* worktree with no .studio/run whose committed
+#      docs/runs/<slug>.md (for run/<slug>) has a row for ID — with a one-line
+#      stderr note, once per invocation;
+#   3. else, when the main checkout is on run/* (another run's checkout), or
+#      when a run/* worktree's ledger has an `adopted` line for ID (a run is
+#      involved, but tiers 1-2 missed its worktree: no pointer and an
+#      uncommitted manifest, or a pointer naming a missing file), refuse,
+#      naming what was looked for, every run worktree checked and where the
+#      adopted line is (#50 final review I1);
+#   4. else state_root and the manifest its .studio/run names (no run: a
+#      manual adopt).
+# Two hits in one tier refuse. Status 1 after a refusal (one stderr line).
+# Its only temp file is the optional $TMPD/sc.noted marker, skipped when TMPD
+# is unset or missing (callers may source this without one).
+sc_resolve() {
   _sc_id="$1"
-  # One path per line, never word-split: a project path may hold a space.
-  _sc_hits="$(git worktree list --porcelain 2>/dev/null \
-    | awk '/^worktree /{ w = substr($0, 10) } /^branch refs\/heads\/run\//{ print w }' \
-    | while IFS= read -r _sc_w; do
-        _sc_m="$(head -n 1 "$_sc_w/.studio/run" 2>/dev/null)"; [ -n "$_sc_m" ] || continue
-        [ "${_sc_m#/}" != "$_sc_m" ] || _sc_m="$_sc_w/$_sc_m"   # relative to the worktree
-        [ -z "$(manifest_branch "$_sc_m" "$_sc_id")" ] || printf '%s\n' "$_sc_w"
+  # One record per line, never word-split: a project path may hold a space.
+  _sc_all="$(git worktree list --porcelain 2>/dev/null \
+    | awk '/^worktree /{ w = substr($0, 10) } /^branch refs\/heads\/run\//{ print w "\t" substr($0, 23) }' \
+    | while IFS="$TAB" read -r _sc_w _sc_s; do
+        _sc_m="$(head -n 1 "$_sc_w/.studio/run" 2>/dev/null)"
+        if [ -n "$_sc_m" ]; then
+          _sc_p="$_sc_m"
+          [ "${_sc_m#/}" != "$_sc_m" ] || _sc_m="$_sc_w/$_sc_m"   # relative to the worktree
+          if [ -f "$_sc_m" ]; then
+            printf 'seen\t%s (run/%s, .studio/run)\n' "$_sc_w" "$_sc_s"
+            if [ -n "$(manifest_branch "$_sc_m" "$_sc_id")" ]; then printf '1\t%s\t%s\n' "$_sc_w" "$_sc_m"; fi
+          else
+            printf 'seen\t%s (run/%s, .studio/run → missing %s)\n' "$_sc_w" "$_sc_s" "$_sc_p"
+          fi
+        else
+          _sc_c="docs/runs/$_sc_s.md"
+          printf 'seen\t%s (run/%s, no .studio/run)\n' "$_sc_w" "$_sc_s"
+          if git -C "$_sc_w" ls-files --error-unmatch -- "$_sc_c" >/dev/null 2>&1 && [ -f "$_sc_w/$_sc_c" ] \
+             && [ -n "$(manifest_branch "$_sc_w/$_sc_c" "$_sc_id")" ]; then printf '2\t%s\t%s\n' "$_sc_w" "$_sc_w/$_sc_c"; fi
+        fi
+        _sc_f="$_sc_w/.studio/ledger/$_sc_id.md"
+        if [ -f "$_sc_f" ] && truth_lines "$_sc_f" | grep -q '^- [0-9-]* adopted .* -> '; then printf 'led\t%s\n' "$_sc_f"; fi
       done)"
-  _sc_n="$(printf '%s' "$_sc_hits" | grep -c .)"
-  if [ "$_sc_n" -gt 1 ]; then
-    echo "story $_sc_id is listed by two run worktrees: $(printf '%s\n' "$_sc_hits" | paste -sd, - | sed 's/,/, /g')" >&2; return 1
+  for _sc_t in 1 2; do
+    _sc_h="$(printf '%s\n' "$_sc_all" | awk -F'\t' -v t="$_sc_t" '$1 == t { print $2 "\t" $3 }')"
+    _sc_n="$(printf '%s' "$_sc_h" | grep -c .)"
+    if [ "$_sc_n" -gt 1 ]; then
+      printf '%s\n' "story $_sc_id is listed by two run worktrees: $(printf '%s\n' "$_sc_h" | cut -f1 | paste -sd, - | sed 's/,/, /g')" >&2; return 1
+    fi
+    [ "$_sc_n" = 1 ] || continue
+    # The marker is optional: a redirect to a missing TMPD would kill a dash
+    # subshell (`:` is a special built-in) and leak an error line in bash.
+    if [ "$_sc_t" = 2 ] && { [ ! -d "${TMPD:-}" ] || [ ! -e "$TMPD/sc.noted" ]; }; then
+      if [ -d "${TMPD:-}" ]; then : > "$TMPD/sc.noted"; fi
+      _sc_w="${_sc_h%%"$TAB"*}"
+      printf '%s\n' "note: run worktree $_sc_w has no .studio/run — using its committed ${_sc_h#*"$TAB""$_sc_w"/} for $_sc_id" >&2
+    fi
+    printf '%s\n' "$_sc_h"; return 0
+  done
+  _sc_r="$(state_root)"
+  _sc_b="$(git -C "$_sc_r" symbolic-ref -q --short HEAD 2>/dev/null || true)"
+  _sc_l="$(printf '%s\n' "$_sc_all" | sed -n "s/^led$TAB//p")"
+  _sc_x=""
+  case "$_sc_b" in
+    run/*)
+      # "(another run)" only when the main checkout's own ledger does not
+      # adopt ID: with that line it may be ID's own run lacking the row.
+      if printf '%s\n' "$_sc_l" | grep -Fxq -- "$_sc_r/.studio/ledger/$_sc_id.md"; then _sc_x="; the main checkout $_sc_r is on $_sc_b"
+      else _sc_x="; the main checkout $_sc_r is on $_sc_b (another run)"; fi ;;
+  esac
+  if [ -n "$_sc_x" ] || [ -n "$_sc_l" ]; then
+    [ -z "$_sc_l" ] || _sc_x="$_sc_x; an adopted line for $_sc_id is in $(printf '%s\n' "$_sc_l" | paste -sd, - | sed 's/,/, /g')"
+    printf '%s\n' "no run worktree found for $_sc_id: looked for a run/* worktree whose .studio/run (or, without one, committed docs/runs/<slug>.md) has a row for $_sc_id; checked: $(printf '%s\n' "$_sc_all" | sed -n "s/^seen$TAB//p" | paste -sd';' - | sed 's/;/; /g')$_sc_x — write .studio/run in $_sc_id's run worktree (printf '%s\\n' docs/runs/<slug>.md > .studio/run), or set STUDIO_START_DIR" >&2
+    return 1
   fi
-  if [ "$_sc_n" = 1 ]; then printf '%s\n' "$_sc_hits"; else state_root; fi
+  _sc_m="$(head -n 1 "$_sc_r/.studio/run" 2>/dev/null || true)"
+  case "$_sc_m" in ''|/*) ;; *) _sc_m="$_sc_r/$_sc_m" ;; esac
+  [ -n "$_sc_m" ] && [ -f "$_sc_m" ] || _sc_m=""
+  printf '%s\t%s\n' "$_sc_r" "$_sc_m"
+}
+
+# start_checkout ID — sc_resolve's checkout.
+start_checkout() {
+  _sk_l="$(sc_resolve "$1")" || return 1
+  printf '%s\n' "${_sk_l%%"$TAB"*}"
+}
+
+# start_manifest ID — the run manifest of ID's start checkout: the one
+# $STUDIO_START_DIR/.studio/run names when STUDIO_START_DIR is set, else
+# sc_resolve's. Nothing when none.
+start_manifest() {
+  if [ -n "${STUDIO_START_DIR:-}" ]; then
+    _sm_m="$(head -n 1 "$STUDIO_START_DIR/.studio/run" 2>/dev/null || true)"
+    case "$_sm_m" in ''|/*) ;; *) _sm_m="$STUDIO_START_DIR/$_sm_m" ;; esac
+  else
+    _sm_l="$(sc_resolve "$1")" || return 1
+    _sm_m="${_sm_l#*"$TAB"}"
+  fi
+  if [ -n "$_sm_m" ] && [ -f "$_sm_m" ]; then printf '%s\n' "$_sm_m"; fi
+  return 0
 }
 
 # start_root ID — AC20's start checkout: $STUDIO_START_DIR when set, else
@@ -258,9 +340,13 @@ part_done() {
 run_target() {
   _rt_m="${STUDIO_RUN:-}"
   if [ -z "$_rt_m" ]; then
-    if [ -n "${1:-}" ]; then _rt_r="$(start_checkout "$1")" || return 1; else _rt_r="$(state_root)"; fi
-    _rt_m="$(head -n 1 "$_rt_r/.studio/run" 2>/dev/null || true)"
-    case "$_rt_m" in ''|/*) ;; *) _rt_m="$_rt_r/$_rt_m" ;; esac
+    if [ -n "${1:-}" ]; then
+      _rt_m="$(start_manifest "$1")" || return 1
+    else
+      _rt_r="$(state_root)"
+      _rt_m="$(head -n 1 "$_rt_r/.studio/run" 2>/dev/null || true)"
+      case "$_rt_m" in ''|/*) ;; *) _rt_m="$_rt_r/$_rt_m" ;; esac
+    fi
   fi
   [ -n "$_rt_m" ] && [ -f "$_rt_m" ] || return 0
   sed -n 's/^Target:[[:space:]]*//p' "$_rt_m" | head -n 1
@@ -271,6 +357,20 @@ run_target() {
 # the last `adopt reset` line.
 truth_lines() {
   awk '/^- [0-9-]+ adopt reset /{ n = NR } { l[NR] = $0 } END { for (i = n + 1; i <= NR; i++) print l[i] }' "$1"
+}
+
+# adopted_hint ID SKIP… — #50 D2: when a worktree other than SKIP… has an
+# `adopted` line for ID in its .studio/ledger/ID.md (truth region), print
+# "; an adopted line for ID is in <ledgers> — ledger it from the start
+# checkout"; else nothing. Appended to the "no adopted line" refusals.
+adopted_hint() {
+  _ax_id="$1"; shift
+  _ax_hits="$(git worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p' | while IFS= read -r _ax_w; do
+      for _ax_s in "$@"; do [ "$_ax_w" = "$_ax_s" ] && continue 2; done
+      _ax_f="$_ax_w/.studio/ledger/$_ax_id.md"
+      if [ -f "$_ax_f" ] && truth_lines "$_ax_f" | grep -q '^- [0-9-]* adopted .* -> '; then printf '%s\n' "$_ax_f"; fi
+    done | paste -sd, - | sed 's/,/, /g')"
+  [ -z "$_ax_hits" ] || printf '; an adopted line for %s is in %s — ledger it from the start checkout' "$_ax_id" "$_ax_hits"
 }
 
 # docs_paths ID — space-separated docs paths of a story (D22): the original,
@@ -352,6 +452,7 @@ cmd_inspect() {
 
   STATE_ROOT="$(state_root)"
   TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+  START_ROOT="$(start_root "$ID")" || return 1
   _in_pf="$(plan_file "$_in_plan")" || return 1
   N="$(task_count "$_in_pf")"
   [ "$N" -gt 0 ] || { echo "$_in_plan has no tasks" >&2; return 1; }
@@ -446,7 +547,7 @@ cmd_seed() {
     _sd_adopted="$(sed -n 's/^- [0-9-]* \(adopted .* -> .*\)$/\1/p' "$_sd_src" | tail -n 1)"
     _sd_source="$(sed -n 's/^- [0-9-]* \(source .*\)$/\1/p' "$_sd_src" | tail -n 1)"
   fi
-  [ -n "$_sd_adopted" ] || { echo "no adopted line for $ID in the start checkout" >&2; return 1; }
+  [ -n "$_sd_adopted" ] || { printf '%s\n' "no adopted line for $ID in $_sd_src (start checkout $START_ROOT)$(adopted_hint "$ID" "$START_ROOT")" >&2; return 1; }
   _sd_rest="${_sd_adopted#adopted }"; _sd_orig="${_sd_rest%% -> *}"; _sd_conv="${_sd_rest#* -> }"
 
   BRANCH="$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
@@ -568,9 +669,7 @@ git_retry() {
 run_manifest() {
   _rm_m="${IN_RUN:-}"
   if [ -z "$_rm_m" ]; then
-    _rm_r="$(start_checkout "$ID")" || return 1
-    _rm_m="$(head -n 1 "$_rm_r/.studio/run" 2>/dev/null || true)"
-    case "$_rm_m" in ''|/*) ;; *) _rm_m="$_rm_r/$_rm_m" ;; esac
+    _rm_m="$(start_manifest "$ID")" || return 1
   fi
   if [ -n "$_rm_m" ] && [ -f "$_rm_m" ]; then printf '%s\n' "$_rm_m"; fi
   return 0
@@ -713,10 +812,10 @@ cmd_sync() {
 
   # The truth: the ledger as it stands in this tree.
   _sy_led="$TOPLEVEL/.studio/ledger/$ID.md"
-  [ -f "$_sy_led" ] || { echo "no ledger for $ID on $BRANCH — run: studio-adopt seed $ID" >&2; return 1; }
+  [ -f "$_sy_led" ] || { printf '%s\n' "no ledger for $ID on $BRANCH ($_sy_led; start checkout $START_ROOT) — run: studio-adopt seed $ID$(adopted_hint "$ID" "$TOPLEVEL" "$START_ROOT")" >&2; return 1; }
   ledger_texts "$_sy_led" > "$TMPD/sd.truth"
   _sy_ad="$(sed -n 's/^adopted \(.* -> .*\)$/\1/p' "$TMPD/sd.truth" | tail -n 1)"
-  [ -n "$_sy_ad" ] || { echo "no adopted line for $ID in the ledger of $BRANCH — run: studio-adopt seed $ID" >&2; return 1; }
+  [ -n "$_sy_ad" ] || { printf '%s\n' "no adopted line for $ID in $_sy_led (the ledger of $BRANCH; start checkout $START_ROOT) — run: studio-adopt seed $ID$(adopted_hint "$ID" "$TOPLEVEL" "$START_ROOT")" >&2; return 1; }
   ORIG_PLAN="${_sy_ad%% -> *}"; CONV_PLAN="${_sy_ad#* -> }"
   ADOPT_BASE="$(sed -n 's/^adopt-base //p' "$TMPD/sd.truth" | tail -n 1)"
   [ -n "$ADOPT_BASE" ] || { echo "no adopt-base for $ID in the ledger of $BRANCH — run: studio-adopt seed $ID" >&2; return 1; }

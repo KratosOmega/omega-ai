@@ -14,6 +14,53 @@ approval page in `artifacts/`.
 
 ## Log
 
+### 2026-10-06 — Adopted story starts from its own run worktree (#50)
+
+- Root cause. The 10-05 `no adopted line` (with Target `integration/other`) came
+  from the pre-#45 `studio-adopt` installed at the time. The same symptom had two
+  latent paths still on main:
+  - a run worktree without `.studio/run` (git-excluded, so it is lost when the
+    worktree is re-created) made `start_checkout` fall back silently to the main
+    checkout, i.e. another live run's ledger, Target and manifest;
+  - an `adopted` line ledgered from the main checkout instead of the run worktree.
+- `start_checkout` is now one lookup, in tiers:
+  1. a `run/*` worktree (the main checkout included) whose `.studio/run` manifest
+     lists the story;
+  2. else a `run/*` worktree with no `.studio/run` whose committed
+     `docs/runs/<slug>.md` lists it, with a one-line `note:`;
+  3. else refuse with `no run worktree found for <id>: looked for …; checked: …`
+     when the main checkout is on another run, or when a `run/*` worktree's ledger
+     holds the story's `adopted` line (a pointer naming a missing manifest shows
+     as `.studio/run → missing <file>`);
+  4. else, with no run involved (a manual adopt), the main checkout as before.
+
+  Two hits in one tier still refuse. The Target and manifest come from the
+  checkout that was resolved, and `inspect` reads plans from it too.
+- Seed's and sync's `no adopted line` / `no ledger` refusals name the ledger read,
+  the start checkout and any other ledger holding the `adopted` line.
+- Restart guard: `STUDIO_STORY=<id> studio-state check --rebuild` refuses an
+  adopted, started story whose ledger here has no `adopt-base` line, so it can
+  never be reset to task 1. Run `studio-adopt seed <id>` there first.
+- Start readiness: `studio-overnight start`, `--dry-run` and `--detach` refuse
+  (exit 2) when the start checkout has no `.studio/run`, or one that does not
+  name this run's manifest (a missing file or another `# Run:` slug), and when an
+  adopted story whose branch exists has no `adopt-base` (the hint names its
+  worktree, or `the <Branch> worktree` when that is gone). A story whose branch is
+  gone after landing, or not started yet, is skipped.
+- Autopilot: discovery lists a `run/*` worktree that lost its pointer (committed
+  manifest present) and re-creates the pointer on resume; `adopted` is ledgered
+  from the run worktree, never the main checkout; seeding waits for the run
+  worktree's `.studio/run`; a failed seed stops; the readiness checklist names
+  the new dry-run checks.
+- Recovery for a run worktree that lost its pointer, in that worktree:
+  `printf '%s\n' docs/runs/<slug>.md > .studio/run`.
+- Behaviour change: a manual adopt (no run) while another run holds the main
+  checkout now refuses at tier 3 instead of using that run's ledger and Target.
+  Set `STUDIO_START_DIR` to the checkout holding the story's `adopted` line.
+- Reinstall only after the PR merges, and only when `studio-overnight status`
+  shows no live run; never pull into the main checkout during a live run.
+- Plan: `plans/2026-10-06-adopt-run-worktree.md`; no separate spec (issue #50).
+
 ### 2026-10-05 — A stage pointer per checkout (#42)
 
 - Each checkout holds its own stage pointer at `<work root>/.studio/STATE.md`; a

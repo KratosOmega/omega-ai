@@ -569,6 +569,26 @@ truth_lines() {
 ledger_nums() { [ -f "$1" ] || return 0; truth_lines "$1" | sed -n 's/^- [0-9-]* T\([0-9]*\) complete.*/\1/p' | sort -n -u; }
 # ledger_k FILE — the contiguous `T<n> complete` count from T1 (0 without a ledger).
 ledger_k() { _lk=0; for _m in $(ledger_nums "$1"); do if [ "$_m" -eq $((_lk + 1)) ]; then _lk="$_m"; fi; done; printf '%s\n' "$_lk"; }
+# adopt_guard — #50 D3, before check --rebuild under STUDIO_STORY: refuse an
+# adopted, started story this checkout never seeded. Adopted: some worktree's
+# .studio/ledger/<id>.md has an `adopted` line after its last `adopt reset`.
+# Started: the story pointer has a branch. Seeded here: this checkout's ledger
+# has an `adopt-base` line after its last `adopt reset` (seed and execute §0's
+# new-branch path write it). Otherwise the rebuild would set task 0/N and the
+# story would restart from task 1.
+adopt_guard() {
+  _ag_b="$(field branch)"
+  case "$_ag_b" in ''|-) return 0 ;; esac
+  _ag_lf="$(ledger_file)"
+  if [ -f "$_ag_lf" ] && truth_lines "$_ag_lf" | grep -q '^- [0-9-]* adopt-base '; then return 0; fi
+  _ag_at="$(git worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p' | while IFS= read -r _ag_w; do
+      _ag_f="$_ag_w/.studio/ledger/$STORY.md"
+      if [ -f "$_ag_f" ] && truth_lines "$_ag_f" | grep -q '^- [0-9-]* adopted .* -> '; then printf '%s\n' "$_ag_f"; fi
+    done | head -n 1)"
+  [ -n "$_ag_at" ] || return 0
+  fail "check --rebuild: $STORY is adopted ($_ag_at) but $_ag_lf has no adopt-base line — never seeded here; a rebuild would restart it from task 1. Run studio-adopt seed $STORY in the checkout of $_ag_b first."
+}
+
 # plan_task_count FILE — the `### Task <n>` headings above `## Backlog` (a producer cut keeps its heading).
 plan_task_count() { awk '/^## Backlog/ { exit } /^### Task [0-9]/ { n++ } END { print n + 0 }' "$1"; }
 
@@ -884,6 +904,7 @@ case "$cmd" in
     fi
     [ "$rebuild" = 0 ] || [ -n "$STORY" ] || lock_or_fail
     if [ -n "$STORY" ] && [ "$rebuild" = "1" ]; then
+      adopt_guard
       _task="$(field task)"
       case "$_task" in
         ''|-)
