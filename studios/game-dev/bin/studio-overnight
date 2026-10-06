@@ -625,6 +625,9 @@ snapshot() {
   story_resolve || true; _sn_d="$STORY_DIR"
   FEATURE_DIR="$(feature_dir "$_sn_d")"
   _l="$(ledger_of "$FEATURE_DIR")"
+  # That read can adopt a pre-#42 story into its worktree (AC18), idling the
+  # pointer resolved above: resolve again before reading stage and task.
+  story_resolve || true; _sn_d="$STORY_DIR"
   SIG_STAGE="$(cd "$_sn_d" && sh "$STATE_BIN" get stage)"; SIG_TASK="$(cd "$_sn_d" && sh "$STATE_BIN" get task)"
   SIG_FRD="$(printf '%s\n' "$_l" | grep -c '^- [0-9-]* final review done$')"
   SIG_SHIPPED="$(printf '%s\n' "$_l" | grep -c '^- [0-9-]* shipped ')"

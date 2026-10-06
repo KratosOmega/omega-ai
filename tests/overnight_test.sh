@@ -2058,6 +2058,31 @@ test_single_plan_rerun_after_stop_before_handoff() {
   assert_eq "$(cd "$TMP_WT/wt-feat" && pwd -P)" "$(cat "$CALLS/3.pwd")" "unit 2 of the re-run runs in the story worktree"
   assert_contains "$(last_run_dir)/report.md" "^Ending: done$" "and it finishes"
 }
+# I1: a pre-#42 layout (P at execute, branch feat recorded, a live pointer-less
+# worktree on feat): snapshot's ledger read adopts the story into the worktree,
+# and the run follows it instead of stopping on P's now-idle stage.
+test_single_plan_follows_adopted_legacy_story() {
+  fixture ald
+  ( cd "$P" && sh "$STATE_BIN" set stage execute && sh "$STATE_BIN" set task 1/2 \
+      && sh "$STATE_BIN" set branch feat && git worktree add -q "$TMP_WT/wt-feat" -b feat ) >/dev/null 2>&1
+  scenario "task 2/2; wtledger T2 complete b..c; wtledger final review done" \
+           "wtledger shipped https://x/pull/1; stage idle; task -"
+  run_start
+  assert_contains "$(last_run_dir)/report.md" "^Ending: done$" "a legacy pre-run layout finishes done"
+  assert_not_contains "$(last_run_dir)/report.md" "unexpected stage idle" "no stale-stage stop"
+  assert_eq 2 "$(calls)" "both units ran"
+}
+# I1 (M2): the stub's legacybranch inside unit 1 (the pre-#42 (c)) does not stop the run.
+test_single_plan_legacybranch_in_unit_follows() {
+  fixture alb
+  scenario "legacybranch feat; task 2/2" \
+           "wtledger T2 complete b..c; wtledger final review done" \
+           "wtledger shipped https://x/pull/1; stage idle; task -"
+  ( cd "$P" && sh "$STATE_BIN" set stage execute && sh "$STATE_BIN" set task 1/2 ) >/dev/null 2>&1
+  run_start
+  assert_contains "$(last_run_dir)/report.md" "^Ending: done$" "legacybranch in unit 1 finishes done"
+  assert_not_contains "$(last_run_dir)/report.md" "unexpected stage idle" "no stale-stage stop after unit 1"
+}
 test_single_plan_story_not_found_stops() {
   fixture snf
   scenario "stage execute; branch feat; task 1/2; wtledger T1 complete a..b; rmwt feat"
@@ -2242,4 +2267,5 @@ run_tests test_overnight_report_done test_overnight_report_not_done test_overnig
   test_single_plan_ambiguous_story_stops test_single_plan_preflight_names_story \
   test_single_plan_from_story_worktree test_single_plan_in_place_keeps_main_pointer \
   test_channel_ledger_follows_story test_status_reads_persisted_spec \
+  test_single_plan_follows_adopted_legacy_story test_single_plan_legacybranch_in_unit_follows \
   test_single_plan_ignores_new_story_in_start
