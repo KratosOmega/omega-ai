@@ -118,7 +118,10 @@ mirrors each live run on its own Run issue.
      to start. Stop there.
 2. **Start (board).** Create an issue such as "Tonight: <slug>", assign it to
    the omega game-dev agent, and ask it to start the overnight run
-   `docs/runs/<slug>.md`. The agent runs `studio-overnight start --detach`,
+   `docs/runs/<slug>.md` from the run worktree
+   `<project>/.claude/worktrees/run-<slug>`. The manifest is only on
+   `run/<slug>`, so paste the start line autopilot printed (`cd '<run worktree>'
+   && studio-overnight start --detach docs/runs/<slug>.md`). The agent runs it,
    replies with the run name and ends; the runner keeps going.
    Starting from the terminal instead also works. The run then shows as a
    top-level Run issue, and no agent posts a summary at the end.
@@ -141,9 +144,12 @@ Before the first real run:
   runs on its own as a launchd service.
 - The Mac stays plugged in. The runner holds `caffeinate -i`, which stops idle
   sleep but not sleep from closing the lid on battery.
-- One run per project at a time: a second `start` in the same project is
-  refused. Put the whole night in one manifest and use lanes. Runs in different
-  projects can go side by side, each under its own request issue.
+- Several runs can be live in one project, each planned with its own
+  `/omega:autopilot` "new run" and started from its own request issue. Runs may
+  not share a slug, story id or branch (the start is refused); runs that touch
+  the same files only get a warning. All runs share the project's session cap
+  (`overnight.max_sessions`, default 6) and run their tests one at a time.
+  Related stories still go best in one manifest, with lanes.
 
 ## Commands
 
