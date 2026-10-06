@@ -115,6 +115,7 @@ test_autopilot_contract() {
     assert_contains "$S" "$lit" "autopilot adopt branch: $lit"
   done
   test_autopilot_adopt_order
+  test_autopilot_adopt_ready
   test_autopilot_run_worktree
   test_autopilot_discovery_lists_runs
   test_autopilot_start_from_run_worktree
@@ -132,6 +133,22 @@ test_autopilot_contract() {
 }
 
 # The AC5 order (spec): the five phrases appear in the skill in this order.
+# #50: the run worktree's pointer is re-created, adopted lines and seeds come
+# from the run worktree, a failed seed stops, readiness names the new checks.
+test_autopilot_adopt_ready() {
+  S="$REPO_ROOT/shared/omega/skills/autopilot/SKILL.md"
+  for lit in 'a run worktree with no `.studio/run` whose `docs/runs/<slug>.md` is committed' \
+    'rewrite the missing pointer first' \
+    'ledgered from the run worktree, never from the main checkout' \
+    'the run worktree has `.studio/run` before the first seed' \
+    'A failed seed stops here' \
+    'never run `studio-state check --rebuild`, `next` or the start after it' \
+    "the start checkout's \`.studio/run\`" \
+    'every adopted story with a branch seeded on it'; do
+    assert_contains "$S" "$lit" "autopilot #50: $lit"
+  done
+}
+
 test_autopilot_adopt_order() {
   S="$REPO_ROOT/shared/omega/skills/autopilot/SKILL.md"
   _prev=0
