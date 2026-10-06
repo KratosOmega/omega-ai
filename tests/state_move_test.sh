@@ -459,6 +459,23 @@ test_state_take_hint_under_stale_branch() {
   assert_eq "(no story in this checkout)" "$(tail -n 1 "$TMP/show.out")" "no hint in an agent worktree"
 }
 
+test_state_take_refuses_in_place_story() {
+  # I1: an in-place story — P itself on feat at execute — is being executed in the
+  # main checkout, which is a live worktree too: no hint in WX, and take exits 4 (AC16, AC28).
+  proj tip; git -C "$P" checkout -q -b feat >/dev/null 2>&1; plan_in_p
+  st "$P" set branch feat >/dev/null; st "$P" set stage execute >/dev/null
+  git -C "$P" worktree add -q -b other "$P-x" main >/dev/null 2>&1; WX="$P-x"; _s="$(sum "$P/.studio/STATE.md")"
+  st "$WX" show > "$TMP/show.out"
+  assert_eq "(no story in this checkout)" "$(tail -n 1 "$TMP/show.out")" "no take hint while P executes it in place"
+  for _fo in "" --force; do
+    st_rc "$WX" take $_fo docs/s.md
+    assert_eq 4 "$ST_RC" "take${_fo:+ $_fo} of the in-place story exits 4"
+    assert_eq "studio-state: docs/s.md is being executed in $P — continue it there" "$(cat "$TMP/st.err")" "naming the main checkout"
+  done
+  assert_eq "$_s" "$(sum "$P/.studio/STATE.md")" "P is unchanged"
+  assert_missing "$WX/.studio/STATE.md" "and WX has no pointer"
+}
+
 test_state_mutex_serialises_moves() {
   proj msm; plan_in_p; st "$P" set stage execute >/dev/null; wt e feat/e; WE="$W"; hold_mutex
   ( cd "$P" && sh "$STATE_BIN" handoff "$WE" ) > /dev/null 2> "$TMP/m1" & _hp=$!
@@ -522,7 +539,7 @@ test_state_free_text_notes_are_not_records() {
 run_tests test_state_handoff_moves_story test_state_handoff_order_and_self_heal \
   test_state_self_heal_ignores_completed_handoff test_state_self_heal_scope test_state_move_record_parse \
   test_state_handoff_refusals test_state_take_after_stop_before_handoff test_state_take_main_planned_story \
-  test_state_take_refusals test_state_write_after_take_refused test_state_take_restores_removed_worktree \
+  test_state_take_refusals test_state_take_refuses_in_place_story test_state_write_after_take_refused test_state_take_restores_removed_worktree \
   test_state_take_restores_renamed_branch test_state_adopt_legacy_execute test_state_adopt_legacy_finished \
   test_state_adopt_skips_next_story test_state_take_hint_under_stale_branch test_state_mutex_serialises_moves \
   test_state_mutex_single_acquisition test_state_free_text_notes_are_not_records

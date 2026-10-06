@@ -107,6 +107,12 @@ test_state_worktree_from_local_pointer() {
   assert_eq 1 "$ST_RC" "on a detached HEAD it exits 1"
   assert_eq "studio-state: this checkout's story is on feat/e, but a detached HEAD is checked out here — switch this checkout back to feat/e" \
     "$(cat "$TMP/st.err")" "naming a detached HEAD"
+  # I1 (T5 M1): the main checkout holding feat/e is another live worktree too.
+  git -C "$P" checkout -q feat/e >/dev/null 2>&1; git -C "$WE" switch -q feat/z >/dev/null 2>&1
+  st_rc "$WE" worktree
+  assert_eq 1 "$ST_RC" "with feat/e checked out in P it exits 1"
+  assert_eq "studio-state: this checkout's story is on feat/e, which is checked out in $P — switch this checkout back to feat/e" \
+    "$(cat "$TMP/st.err")" "naming the main checkout"
 }
 
 test_state_worktree_candidates_from_main() {
