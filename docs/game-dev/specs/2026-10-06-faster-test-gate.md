@@ -1,7 +1,8 @@
 # Faster test gate: parallel, sharded, hermetic suites — Spec
 
 Date: 2026-10-06
-Status: Draft for the operator. Operator rulings 1–3 are folded in.
+Status: Draft for the operator. Operator rulings 1–3 are folded in, and so are the spec falsifier's findings
+(1 Critical, 6 Important, 7 Minor; see "Falsifier findings" at the end).
 Story: #54 (GitHub issue). Branch `54-faster-test-gate`, off `origin/main` 6f2445b.
 Classification: test infrastructure. Production scripts change only through test-only knobs that default to today's behaviour.
 
@@ -16,8 +17,8 @@ story that touches it, waits on this gate.
 
 Cut the gate's wall-clock time as far as possible with no loss of coverage or strength. The rules from the issue are binding:
 
-1. No test is deleted, skipped, merged away or weakened. Each suite's assertion count stays ≥ its baseline, and any
-   exception is justified line by line in the PR.
+1. No test is deleted, skipped, merged away or weakened. Each suite's assertion count stays ≥ its floor (its count on
+   `origin/main`), and any exception is justified line by line in the PR.
 2. Timing-behaviour tests keep real clocks. That covers timeouts, Ctrl-C/TERM, the detach 10 s window, lock contention,
    the watchdog and "under N s" checks.
 3. Faster polling is allowed only in pure wait loops, each with a generous ceiling that returns early. Event waits replace
@@ -58,12 +59,23 @@ Cut the gate's wall-clock time as far as possible with no loss of coverage or st
     - C4: machine-wide `ps -A … grep 'sleep 48xx'` (studio_setup `:71`, `:113`, `:122`);
     - C5: `pgrep -f 'sleep 301'` (lanes `:2284`);
     - C6: `^sleep 483x$` scans plus `pkill -f` (lanes `:3126`, `:3178-3182`, `:4008-4014`).
-  - **Load.** Under 2× load, the `state_pointer` "< 2–3 s" checks, `overnight_progress`'s "baseline + 3 s" check,
-    `overnight_test`'s claim-without-run-dir "< 20 s" check and sighup-while-held all failed.
+  - **Load.** Under 2× load these failed: the `state_pointer` "< 2–3 s" checks, `overnight_progress`'s "baseline + 3 s"
+    check, `overnight_test`'s claim-without-run-dir "< 20 s" check, sighup-while-held,
+    `test_lanes_setup_preflight_refuses_linked_only` (5 FAILs, the 120 s watchdog) and
+    `test_lanes_detach_timeout_no_lock_ends_child`. In the falsifier's all-alone sweep at load ~12, toolkit's
+    `test_run_detects_script_errors` and `test_run_passes_scene_and_windowed` (`studio-run --seconds 1`) failed and then
+    passed 3/3 alone.
 
   Ruled out: writes into the checkout, the real `~/.claude-gamedev/runs`, fixed temp paths, locks, pid-based liveness
   checks and machine-wide state. The old rule that overnight and lanes "must not run at the same time" is explained by
   C2 and C3 alone.
+- **Runner argv (falsifier C-1).** `MFP` is relative (`docs/runs/demo.md`, lanes `:532`). A live `ps` shows the runner and
+  every lane as `sh …/studios/game-dev/bin/studio-overnight start docs/runs/demo.md`, and the `--detach` child
+  (`studio-overnight:1386-1388`) is the same. So no runner, lane or detached child carries the suite's `$TMP` in argv
+  today, and `pgrep -f "$TMP"` alone cannot see them. R2 fixes this with a per-suite runner symlink under `$TMP`.
+- **macOS `mktemp` ignores `TMPDIR`** for a bare `mktemp -d` (falsifier probe: `TMPDIR=x mktemp -d` gives
+  `/var/folders/…`; the man page reads `_CS_DARWIN_USER_TEMP_DIR` first). An explicit template
+  `mktemp -d "${TMPDIR:-/tmp}/<name>.XXXXXX"` honours it.
 - **Wait audit**: every `sleep` is classed as follows:
   - A: a dead wait that can become an event;
   - B: timing under test;
@@ -77,66 +89,78 @@ Cut the gate's wall-clock time as far as possible with no loss of coverage or st
   argument tuple plus `git remote set-url`. It is a NO-GO for `state_*`'s `proj`, where the saving is too small (~14 s).
   Loaded-machine estimates of the build cost saved: lanes ~300–350 s, overnight ~160–190 s. Unloaded figures are about
   half that.
-- **Job-control probe** (`scratchpad/setm-probe.sh`, 2026-10-06, stdin from `/dev/null`, no tty):
+- **Job-control probes** (2026-10-06, scratchpad `setm-probe.sh`, `falsify/tty-probe.sh`, `falsify/ttys-probe.sh`,
+  `plan-probe/setsid-setm.sh`, `plan-probe/own-group.sh`):
 
   | Launch | macOS `/bin/sh` | `/bin/dash` |
   |---|---|---|
-  | `set -m; cmd &` | own group, INT trappable | "can't access tty; job control turned off": INT stays ignored, no own group |
-  | `perl -e '$SIG{INT}=$SIG{QUIT}="DEFAULT"; setpgrp(0,0); exec @ARGV' cmd &` | own group, INT trappable | own group, INT trappable |
+  | `set -m; cmd &`, no tty | own group, INT trappable | "can't access tty; job control turned off": INT stays ignored, no own group |
+  | perl `setpgrp(0,0)` launcher, no tty | own group, INT trappable | own group, INT trappable |
+  | perl `setpgrp(0,0)` launcher, **with a tty**, suite runs `set -m` | fine | the job is SIGTTIN-stopped (state `T`) for ever: the gate hangs to its timeout |
+  | perl `POSIX::setsid()` launcher (own session, no controlling tty) | own group and session, INT trappable; a `set -m` inside still gives its job its own group | own group and session, INT trappable, never stopped; a `set -m` inside is refused as with no tty |
+  | test-side `( own_group cmd ) &` (perl: INT/QUIT default, `setpgrp`, exec), under the setsid launcher | own group, INT trappable, `$!` is the command | same |
 
-  The runner therefore launches jobs with the perl form, not with `set -m`. studio-overnight already uses
-  `perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV'` for `--detach`.
+  So run_all launches each job with `POSIX::setsid` (the form `studio-overnight --detach` already uses), and the four
+  test-side `set -m` sites (state_move `:511`, overnight `:637`, lanes `:1082`, `:1103`) move to the `own_group` helper.
+  Product scripts are unaffected: suites always start them as `sh <script>`, so they run under macOS `/bin/sh` whatever
+  `TEST_SH` is.
+- **dash on `origin/main` today** (probe 2026-10-06, `plan-probe/dash-probe.sh`, an export of 6f2445b, stdin
+  `/dev/null`, no tty): `lib_test` 112/0 and `studio_setup_test` 49/0 pass; `state_move_test` fails 2 of 244
+  (`test_state_mutex_single_acquisition`: "INT exits 130 got 0", "no target pointer was written"), at the `:511`
+  `set -m`. The falsifier saw `test_overnight_sigint` fail 2 under dash the same way. By reading, lanes'
+  `test_lanes_sigint` and `test_lanes_end_sessions_spaced_path` share the cause. This story fixes all four (the
+  `own_group` helper) and runs the whole gate under dash once (acceptance 5).
 
-All load-skewed numbers above are estimates. The real ones come from the baseline.
+The load-skewed numbers above are estimates. The real ones come from the A/B measurement (below).
 
-## Baseline (filled in the plan)
+## Measurement protocol (A/B, at the end)
 
-Measured serially on an idle machine at 6f2445b with per-test timing (load average < 4 at start). The plan fills this
-table from `scratchpad/baseline/`. The "after" columns come from acceptance run 1, and the run_all suite table's
-assertion floors are copied from the baseline column.
+The serial baseline taken on 2026-10-06 is **void**: the 1-minute load was 7.61 at its start (the protocol says < 4), another
+worktree's lanes suite ran during it, and the falsifier's probes ran beside it at load up to ~15. Its numbers are not used.
 
-| Suite | Baseline s | Baseline assertions | After s (parallel job sum) | After assertions |
-|---|---|---|---|---|
-| hook_test | | | | |
-| install_test | | | | |
-| lib_test | | | | |
-| omega_test | | | | |
-| overnight_lanes_test | | | | |
-| overnight_progress_test | | | | |
-| overnight_runs_test | | | | |
-| overnight_sessions_test | | | | |
-| overnight_test | | | | |
-| pointer_skills_execute_test | | | | |
-| pointer_skills_omega_test | | | | |
-| pointer_skills_route_test | | | | |
-| sdd_script_test | | | | |
-| state_guard_test | | | | |
-| state_move_test | | | | |
-| state_pointer_test | | | | |
-| state_stories_test | | | | |
-| state_test | | | | |
-| studio_adopt_test | | | | |
-| studio_brief_test | | | | |
-| studio_env_test | | | | |
-| studio_event_test | | | | |
-| studio_peers_test | | | | |
-| studio_setup_test | | | | |
-| studio_test | | | | |
-| sync_test | | | | |
-| toolkit_test | | | | |
-| **Total wall** | | | | |
+The before/after numbers come from one A/B pair, run back to back after the final fix wave and the acceptance runs:
 
-The table also gets the 20 slowest baseline tests (suite, test, seconds) and the exclusive phase's wall time after the change.
+1. **Idle check, before each run of the pair.** `pgrep -fl '_test\.sh|run_all\.sh'` prints nothing (no suite running
+   anywhere on the machine), and the 1-minute load average (`sysctl -n vm.loadavg`, field 2) is < 4. Both outputs are
+   written to the measurement log with a timestamp. The plan's wait script polls every 30 s until both hold.
+2. **A, the old gate.** An export of `origin/main` 6f2445b (`git archive`), with only its `tests/assert.sh` instrumented
+   to append `suite<TAB>test<TAB>seconds` per test (scratchpad `baseline/repo` holds the exact two-line change), driven
+   serially by the `baseline/drive.sh` form: each suite in name order, `sh <suite>`, recording seconds, exit status and
+   the final `N assertions, M failed` line per suite, and the total.
+3. **B, the new gate.** `sh tests/run_all.sh` in the story worktree at the default `TEST_JOBS`, started as soon as A ends
+   and the idle check passes again.
+4. **Watch.** A monitor samples the load and `pgrep` every 60 s during both runs. If a foreign suite appears, or the load
+   stays ≥ 6 for 5 minutes, the pair is void and is run again.
+5. **Report.** The PR gets: A's and B's wall time; per suite A's seconds and B's job-seconds sum; A's 20 slowest tests;
+   B's exclusive-phase seconds; the serial-after time (acceptance 4); and per suite A's and B's assertion counts.
+
+### Floors
+
+- A suite's **floor** is its assertion count on `origin/main`. run_all's suite table carries the floors. Until the A/B
+  run, the table carries provisional floors (the plan takes them from the falsifier's per-test sweep and the voided
+  run's green rows, whose counts do not depend on load). The A/B run's A counts replace them before the PR, and the
+  final gate runs with the A counts.
+- **Counts must be deterministic.** The only timing-dependent count found is lanes `test_lanes_round_trip_two_runs`
+  (`:3941-3946`): it asserts once per `*.peers` file that holds an "Other live runs" block, and how many units saw the
+  other run depends on timing (1127 vs 1128 across two clones). The fix keeps every check and fixes the count: the loop
+  runs over the 8 unit calls of the two stories (`story_calls S1`, `story_calls S2`; 4 each, already asserted), and for
+  each call asserts "no Other live runs block, or the block names the other run". Every check the old loop made is still
+  made, and a unit that wrongly names its own run still fails. The count becomes 8 + the existing "at least one unit
+  saw the block" assertion. Since the old loop asserted once per seeing unit and at most 8 units exist, the new lanes
+  count is ≥ any `origin/main` count, so the floor needs no exception. The PR states this line by line.
+- A sharded suite's count is summed over its jobs. Final sweeps (R3) run in every partition, so the sum is never below a
+  serial run's.
 
 ## Design overview
 
 - **Before.** One loop runs `sh "$f"` for each suite in the foreground. Output streams live. The exit code is 1 if any
   suite failed, and there is no summary.
 - **After.**
-  - Every suite is hermetic: it scrubs inherited variables, and it scans and kills only processes it can name.
+  - Every suite is hermetic: it scrubs inherited variables, keeps every temp file under `TMPDIR`, and scans and kills
+    only processes whose argv carries its own `$TMP`, or that it holds by pid.
   - `run_tests` can run one partition of a suite: a shard of the parallel tests, or the exclusive tests.
-  - `run_all.sh` runs every parallel partition in a bounded job pool. Each job gets its own process group, its own
-    `TMPDIR` and its own log. It then runs the exclusive partitions one at a time.
+  - `run_all.sh` runs every parallel partition in a bounded job pool. Each job gets its own session and process group,
+    its own `TMPDIR` and its own log. It then runs the exclusive partitions one at a time.
   - It prints each job as one block, followed by one summary, and checks that every listed test ran exactly once and
     that every suite reached its assertion floor.
   - Separately, dead sleeps become event waits, runner polls get test-only knobs, and the two big fixtures are copied
@@ -153,13 +177,17 @@ The sections below are the requirements. Each one has its interface, its failure
   T  <suite>  <partition>  <idx>  <test>  <seconds>  <assertions>  <failed>
   ```
 
-  It also appends one row per `run_tests` call:
+  It also appends one row per `run_tests` call, written before the first test runs (so it is there even when the
+  partition selects nothing):
 
   ```
-  L  <suite>  <partition>  <listed-count>
+  L  <suite>  <partition>  <listed-count>  <final-idxs>
   ```
 
-  - `<suite>` is `basename "$0"`.
+  `<final-idxs>` is the comma-separated idx list of the `TESTS_FINAL` tests, or `-` when there are none; run_all's
+  completeness check needs it.
+
+  - `<suite>` is `basename "$0" .sh`.
   - `<partition>` is `all`, `p<k>of<N>` or `x`.
   - `<idx>` is the test's 1-based position in the `run_tests` argument list.
   - `<seconds>` is whole seconds from `date +%s`.
@@ -175,7 +203,9 @@ The sections below are the requirements. Each one has its interface, its failure
 - **Tests (in `tests/harness_test.sh`):**
   - `test_timing_log_rows`: one `T` row per test, plus one `L` row, with correct deltas.
   - `test_timing_log_off_by_default`: no file is written when the variable is unset.
-  - `test_run_all_summary_and_slowest`: the summary has a row for every job and the slowest list is sorted.
+  - `test_timing_log_l_row_for_empty_partition`: a shard with no eligible tests still writes its `L` row.
+  - `test_run_all_summary_and_slowest` (in `tests/run_all_test.sh`): the summary has a row for every job and the slowest
+    list is sorted.
 
 ## R2. Hermetic suites
 
@@ -196,26 +226,71 @@ The sections below are the requirements. Each one has its interface, its failure
      `studio-state` would write to `.studio/stories/$STUDIO_STORY.md`.
    - The plan greps every suite for a `STUDIO_`/`OMEGA_`/`CLAUDE_` read that comes before its `. assert.sh` line. There
      must be none.
-2. **C1**: fixed in the runner (R4) by the perl launcher. Suites are unchanged.
-3. **C2–C6: name what you kill.** The rule is that every process a suite finds or kills by pattern carries that suite's
+2. **Temp files stay under `TMPDIR` (falsifier I-1).** Every `mktemp` in `tests/*_test.sh`, `tests/state_fixtures.sh`
+   and the stubs the suites write (lanes `:264`, `:468`, `:476`) uses an explicit template:
+   `mktemp -d "${TMPDIR:-/tmp}/<suite>.XXXXXX"` (or `mktemp "${TMPDIR:-/tmp}/<name>.XXXXXX"` for a file). A bare `mktemp`
+   ignores `TMPDIR` on macOS, so without this run_all's per-job `TMPDIR` would not hold the suites' temp files and its
+   cleanup by path would pass vacuously. Production scripts are out of scope; `studio-adopt:19`'s bare `mktemp -d`
+   escapes the per-job directory but stays correct (it removes its own dir).
+3. **C1 and job control.** C1 is fixed in the runner (R4) by the `POSIX::setsid` launcher. Inside the suites, the four
+   test-side `set -m` sites become the `own_group` helper from `assert.sh`:
+
+   ```sh
+   # own_group CMD… — exec CMD in a process group of its own with SIGINT/SIGQUIT at their defaults,
+   # as `set -m` does for a background job, but also under dash with no tty. Call it as the last
+   # command of a background subshell: `( cd "$P" && own_group sh "$RUNNER" start ) & PID=$!`.
+   own_group() { exec perl -e '$SIG{INT}=$SIG{QUIT}="DEFAULT"; setpgrp(0,0); exec @ARGV or die "exec: $!\n"' "$@"; }
+   ```
+
+   `$!` is the command's pid, because the subshell execs perl and perl execs the command. The sites are state_move
+   `:511`, overnight `start_bg` (`:637`), lanes `test_lanes_sigint` (`:1103`) and the spaced-path sessions (`:1082`).
+4. **C2–C6: name what you kill.** The rule is that every process a suite finds or kills by pattern carries that suite's
    `$TMP` in its argv. Otherwise it is found by a recorded pid.
-   - C2: kill the detach-refusal runner by recorded pid, or else `pkill -f "$TMP"`. Its argv holds `$MFP` under `$TMP`.
-   - C3: `pgrep -f "$TMP"` replaces `pgrep -f "$RUNNER"` in `detach_stop`, at `:2253` and in `test_lanes_no_orphans`.
-   - C4–C6: every pattern-checked sleeper becomes the marked sleeper `$TMP/bin/msleep <n>`, a symlink to
-     `$(command -v sleep)` made once per suite. The process is still a plain `sleep`, and only its argv[0] changes.
-     Checks become `pgrep -f "$TMP/bin/msleep <n>\$"` (anchored), and cleanup becomes `pkill -f "$TMP/bin/msleep"`.
-     This covers:
+   - **The runner carries `$TMP` (falsifier C-1).** The lanes and overnight suites set
+     `RUNNER="$TMP/bin/studio-overnight"`, a symlink to `$BIN/studio-overnight` made once per suite, and use it for every
+     runner call (`STUB_RUNNER` follows). `studio-overnight` resolves the link for `SELF_DIR` (`:31-37`), so its
+     siblings are still found in the real bin directory, while `SELF_ABS` keeps the link path. So the runner's argv,
+     every lane's (lanes are forked subshells of the runner) and the `--detach` child's (it re-execs `SELF_ABS`) all
+     carry `$TMP`. Messages that print `SELF_ABS` now print the link path; the assertions on them (lanes `:2090`,
+     `:2266-2267`) compare against `$RUNNER` or a pattern ending in `/studio-overnight'`, and the plan re-checks every
+     assertion that names the runner path. Unit tests that set `SELF_ABS="$BIN/studio-overnight"` themselves
+     (`:3523`) are unchanged.
+   - A live check pins it: `test_lanes_runner_argv_names_tmp` starts a run whose unit hangs, then asserts that
+     `ps -o args= -p <pid>` contains `$TMP` for the runner, for a lane (a pid under `lanes/<k>/`) and, in a second
+     part, for the `--detach` child (the pid in `detached: pid N`). It then stops both runs.
+   - C2: `pkill -f "$TMP/bin/studio-overnight start"` replaces `pkill -f "$RUNNER start"`.
+   - C3: `pgrep -f "$TMP"` replaces `pgrep -f '$TMP'; pgrep -f '$RUNNER'` in `detach_stop`, at `:2253` and in
+     `test_lanes_no_orphans`. It is now complete: every runner, lane, detached child and stub session carries `$TMP`.
+   - C4–C6: every pattern-checked sleeper becomes the marked sleeper `$TMP/bin/msleep <n>`. Checks become
+     `pgrep -f "$TMP/bin/msleep <n>\$"` (anchored), and cleanup becomes `pkill -f "$TMP/bin/msleep"`. This covers:
      - studio_setup's 4801, 4802, 4811 and 4821;
      - the lanes detach child's `sleep 301 & sleep 301`, through `STUDIO_OVERNIGHT_DETACH_CHILD_CMD`;
      - lanes 4831, 4834 and 4835;
      - spaced-path 301, 302 and 303.
-4. **Static guard** `test_no_unscoped_process_scans` (`harness_test.sh`). It fails if any line in `tests/*_test.sh`
-   that runs `pgrep`, `pkill` or `ps -A` lacks `$TMP`, `msleep` or a pid form (`-P`, `-p`, `-$pid`). This blocks
-   regressions of C2–C6.
-5. **Tests:**
+   - **`msleep`** is made by `mk_msleep` in `assert.sh` (falsifier M-7): a symlink `$TMP/bin/msleep` to
+     `$(command -v sleep)`, then a check that `"$TMP/bin/msleep" 0` succeeds. macOS and GNU `sleep` ignore argv[0], so
+     the process is a plain `sleep` whose argv[0] carries `$TMP`. A multi-call binary that dispatches on argv[0]
+     (busybox) fails that check, and `mk_msleep` then writes `$TMP/bin/msleep` as a two-line perl script
+     (`select(undef, undef, undef, $ARGV[0])`): one process whose argv (`perl $TMP/bin/msleep <n>`) still matches the
+     anchored pattern, and which inherits an ignored TERM the way `sleep` does.
+5. **Static guards** (`tests/harness_test.sh`). Each fails naming the file and line:
+   - `test_no_unscoped_process_scans`: a line in `tests/*_test.sh` that runs `pgrep`, `pkill` or `ps -A` must contain
+     `$TMP`, `msleep`, or a pid or group form (`-P`, `-p`, `-g`, `-$pid`, `-- -`), or carry a trailing
+     `# scan-ok: <reason>` comment (falsifier M-3). The known exemptions: overnight `:773` (a tool name in a PATH
+     list) and lanes `:2349` (`pgrep -f 'studio-gate studio-test'` filtered by `$CALLS` on the same line).
+   - `test_mktemp_uses_tmpdir_template`: every `mktemp` call in `tests/*_test.sh` and `tests/state_fixtures.sh` has a
+     `"${TMPDIR:-/tmp}/` template, or a `# scan-ok:` comment.
+   - `test_suite_tmp_under_tmpdir` (live): with a PATH-shadowed `mktemp` that logs what it created, run
+     `TESTS_ONLY=__none__ $TEST_SH tests/sync_test.sh` and `tests/state_guard_test.sh` (it sources `state_fixtures.sh`)
+     with `TMPDIR=$TMP/td`. Every logged path is under `$TMP/td`.
+6. **Tests:**
    - `test_env_scrub` (`harness_test.sh`) sources `assert.sh` in a child with these variables set:
      `STUDIO_STORY`, `STUDIO_RUN_DIR`, `OMEGA_AUTOPILOT`, `CLAUDE_CODE_SESSION_ID`, `CLAUDE_CONFIG_DIR`, `CLAUDECODE`,
      `GIT_DIR`, `TESTS_ONLY` and `TEST_SHARD`. Only the last two survive.
+   - `test_own_group_gives_group_and_int` (`harness_test.sh`): under `$TEST_SH`, `( own_group sh -c '<trap INT>' ) &`
+     yields a pid that leads its own group and runs its INT trap.
+   - `test_mk_msleep`: the marked sleeper runs, its argv matches `"$TMP/bin/msleep 1$"`, and a PATH whose `sleep` fails
+     on an unknown argv[0] gets the perl form.
    - The existing suites, run in parallel by acceptance runs 1–3, are the coupling test: before the fix, C2–C6 made
      tests fail under concurrency.
 
@@ -233,6 +308,8 @@ A suite declares the following before its `run_tests` call. All are optional.
 | `before_each` | function | If defined, `run_tests` calls it before each test. `TEST_NAME` holds the test's name. |
 | `is_real_clock` | provided by `assert.sh` | Returns true when `$TEST_NAME` is in `TESTS_REAL_CLOCK` or `TESTS_EXCLUSIVE`. |
 
+`assert.sh` also provides the shared helpers `own_group` and `mk_msleep` (R2) and `next_second` (R6).
+
 ### Environment
 
 - `TEST_PHASE`:
@@ -249,7 +326,9 @@ A suite declares the following before its `run_tests` call. All are optional.
 ### Validation
 
 Each of these fails loudly, the way an unknown test name does today. The harness adds one failed assertion with the
-message shown, the run continues, and `run_tests` returns non-zero.
+message shown, the run continues, and `run_tests` returns non-zero. With a bad `TEST_PHASE` or `TEST_SHARD` the
+partition is unknown, so no test runs (the `L` row's partition is `bad`); with a bad tag list every selected test
+still runs.
 
 | Case | Failure message |
 |---|---|
@@ -287,7 +366,7 @@ runs it in a child shell under `${TEST_SH:-sh}`.
 |---|---|---|
 | `TEST_JOBS` | max(1, ncpu − 2). ncpu is `getconf _NPROCESSORS_ONLN`, else `sysctl -n hw.ncpu`, else 1. On the operator's Mac that is 8 logical CPUs, so 6 jobs. | The number of concurrent jobs. `1` is serial mode. Anything other than a positive integer exits 2. |
 | `TEST_SUITES` | all `tests/*_test.sh` | Space-separated suite names, with or without `_test.sh`. An unknown name exits 2. A partial run prints "partial run: not the merge gate". |
-| `TEST_LOG_DIR` | a fresh `mktemp -d` | Job logs, `timing.tsv` and `summary.tsv`. A directory run_all created itself is removed when the run is green, and kept (with its path printed) otherwise. A caller-given one is never removed. |
+| `TEST_LOG_DIR` | a fresh `mktemp -d "${TMPDIR:-/tmp}/run_all.XXXXXX"`, resolved with `pwd -P` | Job logs, `timing.tsv` and `summary.tsv`. A directory run_all created itself is removed when the run is green, and kept (with its path printed) otherwise. A caller-given one is never removed, and is resolved with `pwd -P` too. |
 | `TEST_SLOWEST` | 20 | Length of the slowest-tests list. |
 | `TEST_JOB_TIMEOUT` | 7200 s | A job still running after this many seconds is killed (its whole group) and fails with `timed out after N s`. Today a hung suite hangs the gate forever. 7200 s is longer than today's whole serial gate. |
 | `TEST_SH` | `sh` | The shell that runs each suite. The dash acceptance run uses it. |
@@ -300,14 +379,16 @@ The suite table is the one place for shard counts and assertion floors. It lives
 
 ```
 # suite                    shards  floor
-overnight_lanes_test       8       <baseline>
-overnight_test             4       <baseline>
+overnight_lanes_test       8       <floor>
+overnight_test             4       <floor>
 ...one row per suite; heaviest first (this is also the launch order)...
 ```
 
-- The initial shard counts are lanes 8 and overnight 4, and the plan re-tunes them from the baseline. The rule is that
-  no job's expected time exceeds the total job time ÷ the default `TEST_JOBS`. Each shard pays the suite's top-level
-  setup and builds its own fixture templates, and the plan measures that cost with `TESTS_ONLY=__none__ sh tests/<suite>.sh`.
+- The initial shard counts are lanes 8 and overnight 4, and the plan re-tunes them from measured job times. The rule is
+  that no job's expected time exceeds the total job time ÷ the default `TEST_JOBS`. Each shard pays the suite's
+  top-level setup and builds its own fixture templates, and the plan measures that cost with
+  `TESTS_ONLY=__none__ sh tests/<suite>.sh`.
+- Floors are as in "Floors" above.
 - A suite with no row runs as one job with floor 1. run_all prints a note naming it, so a new suite works at once.
 
 ### Parallel mode (`TEST_JOBS` > 1)
@@ -316,17 +397,20 @@ overnight_test             4       <baseline>
    - a suite with shards N > 1 gives N jobs with `TEST_PHASE=parallel TEST_SHARD=k/N`;
    - any other suite gives one job with `TEST_PHASE=parallel`.
 
-   Each job's environment adds `TMPDIR=$TEST_LOG_DIR/<job>/tmp` and `TEST_TIMING_LOG`. With its own `TMPDIR`, every
-   `mktemp` in the suite, its stubs and the bins lands under a directory run_all owns, and that directory is unique per job.
+   Each job's environment adds `TMPDIR=$TEST_LOG_DIR/<job>/tmp` and `TEST_TIMING_LOG`. With R2.2's templates, every
+   suite temp dir, and so every stub, fixture and runner path under it, lands under a directory run_all owns, and that
+   directory is unique per job.
 2. **Launch.** Each job is started in the background as:
 
    ```
-   env … perl -e '$SIG{INT}=$SIG{QUIT}="DEFAULT"; setpgrp(0,0); exec @ARGV or die "exec: $!\n"' \
-     sh -c "$TEST_SH \"\$1\" > \"\$2\" 2>&1; echo \$? > \"\$3\"" _ <suite> <log> <rcfile> &
+   env … perl -MPOSIX -e '$SIG{INT}=$SIG{QUIT}="DEFAULT"; POSIX::setsid() or die "setsid: $!\n"; exec @ARGV or die "exec: $!\n"' \
+     sh -c "$TEST_SH \"\$1\" > \"\$2\" 2>&1; echo \$? > \"\$3.tmp\" && mv \"\$3.tmp\" \"\$3\"" _ <suite> <log> <rcfile> &
    ```
 
-   This fixes C1. The job has default INT, so the SIGINT tests work, and it leads its own process group, so it can be
-   stopped as a whole.
+   This fixes C1. The job has default INT, so the SIGINT tests work. It leads its own session and process group, so it
+   can be stopped as a whole, and it has no controlling terminal, so a dash suite can never be stopped by SIGTTIN
+   (falsifier I-2). The rc file is written to a temp name and renamed, so run_all never reads a created-but-empty rc
+   file (falsifier M-2).
 3. **Pool.** At most `TEST_JOBS` jobs are live at once. Every 0.2 s run_all checks each live job:
    - if its rc file exists, the job is done;
    - if `kill -0` fails and there is no rc file, the job died without a status;
@@ -345,7 +429,7 @@ overnight_test             4       <baseline>
 
 Today's behaviour: each suite runs whole (no `TEST_PHASE`, no shard) in the foreground, in name order, with output
 streamed under `=== <file> ===`. The only additions are the timing log, the summary and the checks below. A terminal
-Ctrl-C reaches the suite directly, as today.
+Ctrl-C reaches the suite directly, as today. Serial mode needs no perl.
 
 ### Checks: a job is red when any of these holds
 
@@ -355,16 +439,20 @@ Ctrl-C reaches the suite directly, as today.
 - It died without a status.
 - It timed out.
 
-### Checks: a suite is red when either of these holds
+### Checks: a suite is red when any of these holds
 
 The suite-level checks look at the suite's `L` and `T` rows in the timing log, from every partition.
 
-- **Completeness.** The distinct `idx` values are not exactly {1..L}, where L is the listed count, which must agree
-  across partitions. That means some listed test never ran.
-- **Floor.** The suite's assertions summed over its jobs are below its floor. Final sweeps add assertions in every
-  partition, so the sum is never smaller than a serial run's.
+- **No `L` row** (falsifier M-6). A suite that never reached `run_tests` (it died in its top-level setup, or does not
+  use the harness) is red with `no run_tests row`.
+- **Listed count.** The `L` rows' listed counts differ across the suite's partitions.
+- **Completeness, exactly once** (falsifier M-1). Let L be the listed count and P the number of the suite's `L` rows (one per partition that ran).
+  Every idx in 1..L that is not a final test has exactly one `T` row across all partitions, and every final idx has
+  exactly P rows (one per partition). A missing idx is `test <idx> never ran`; an extra is `test <idx> (<name>) ran <n>
+  times`.
+- **Floor.** The suite's assertions summed over its jobs are below its floor.
 
-Both checks are skipped, and the skip is printed, when `TESTS_ONLY` is set: a partial run is not a gate.
+Every check is skipped, and the skip is printed, when `TESTS_ONLY` is set: a partial run is not a gate.
 
 ### Exit status
 
@@ -377,14 +465,15 @@ Both checks are skipped, and the skip is printed, when `TESTS_ONLY` is set: a pa
 
 ### Ctrl-C and TERM
 
-run_all traps INT, TERM and HUP. On a signal it:
+run_all traps INT, TERM and HUP. Its jobs are in sessions of their own, so a terminal Ctrl-C reaches only run_all, which
+forwards it. On a signal it:
 
-1. sends the same signal to every live job's group (`kill -<SIG> -- -<pid>`). This is what a terminal Ctrl-C does to
+1. sends the same signal to every live job's group (`kill -<SIG> -<pid>`; no `--`, which dash rejects). This is what a terminal Ctrl-C does to
    today's serial gate;
 2. waits up to 10 s, polling every 0.2 s, for the groups to be gone;
 3. sends `kill -KILL` to any group still alive;
-4. runs `pkill -f "$TEST_LOG_DIR"` to catch processes a test moved into a group of its own (`start_bg`'s `set -m`, the
-   detach child's `setsid`). Their argv carries the job's `$TMP`, which is under `$TEST_LOG_DIR`;
+4. runs `pkill -f "$TEST_LOG_DIR"` to catch processes a test moved into a group of its own (`own_group`, the detach
+   child's `setsid`). Their argv carries the job's `$TMP` (R2.4), which is under `$TEST_LOG_DIR` (R2.2);
 5. prints the finished jobs' summary marked `interrupted`, keeps the log dir and exits 128+N.
 
 ### Failure handling
@@ -394,25 +483,32 @@ run_all traps INT, TERM and HUP. On a signal it:
 - **Cannot create the log dir.** Exit 2.
 - **A job's rc file is unreadable.** The job is red, with the reason `no status`.
 
-### Tests (`harness_test.sh`)
+### Tests (`tests/run_all_test.sh`)
 
 Each test drives `$TEST_SH tests/run_all.sh` with `RUN_ALL_SUITES_DIR` and `RUN_ALL_TABLE` pointing at fixture suites
-under `$TMP`.
+under `$TMP`. The fixture suites are self-contained: they print the summary line and write their own `L` and `T` rows,
+so these tests pin run_all's contract independently of `assert.sh`.
 
 - `test_run_all_green_parallel`: exit 0, one contiguous block per job, a summary row per job.
 - `test_run_all_red_suite_fails_gate`.
 - `test_run_all_missing_summary_line_is_red`: the suite `exit 0`s halfway.
+- `test_run_all_no_l_row_is_red`: the suite prints a green summary line but writes no `L` row.
 - `test_run_all_below_floor_is_red`.
 - `test_run_all_unran_test_is_red`: the suite's `L` row says 3 but only 2 `T` rows are written.
+- `test_run_all_double_run_is_red`: an idx has two `T` rows.
 - `test_run_all_respects_job_bound`: each fixture job takes an `mkdir` slot counter, and the recorded maximum is ≤ `TEST_JOBS`.
 - `test_run_all_exclusive_runs_alone_after_pool`: exclusive jobs start after the last parallel job ends, and the counter
   never exceeds 1 while they run.
 - `test_run_all_serial_mode_is_today`: `TEST_JOBS=1` gives name order and no `TEST_PHASE` in the suites' environment.
 - `test_run_all_job_sees_trappable_int`: a fixture suite traps INT, sends INT to itself, and records that the trap ran.
   This is the C1 regression test.
-- `test_run_all_ctrl_c_cleans_up`: run_all is started through the perl launcher, with fixture suites holding
-  `$TMP/bin/msleep 300` sleepers. INT is sent to run_all. Within 15 s, run_all has exited 130, no process matches the
-  log dir, and the summary says `interrupted`.
+- `test_run_all_job_has_own_session`: a fixture suite records `$PPID` and `ps -o pgid=,tty= -p $$`: the pgid equals
+  `$PPID` (the job's `sh -c` wrapper, which perl made a session leader) and differs from run_all's, and the tty is `??` (macOS) or `?` (Linux), i.e. none. (macOS `ps -o sess=` prints 0, so it is not used.)
+- `test_run_all_job_tmpdir_is_per_job`: two fixture jobs record `TMPDIR`; each is under the log dir, and they differ.
+- `test_run_all_ctrl_c_cleans_up`: run_all is started through the setsid launcher, with fixture suites that each start
+  `( own_group "$TMP/bin/msleep" 300 ) &` (a sleeper in a group of its own, as `start_bg` does, so only step 4 can reach
+  it) and then sleep. INT is sent to run_all. Within 15 s, run_all has exited 130, `pgrep -f "$LOGDIR"` is empty, and
+  the summary says `interrupted`.
 - `test_run_all_job_timeout`: with `TEST_JOB_TIMEOUT=2` and a fixture suite sleeping 30 s, the job is red with `timed out`.
 - `test_run_all_bad_jobs_value`.
 - `test_run_all_unknown_suite`.
@@ -423,11 +519,33 @@ under `$TMP`.
   - (a) asserts an upper bound on elapsed time;
   - (b) needs a short fixed sleep (≤ 3 s) in the code under test or a stub to still be running when the test acts, as
     in signal-in-window and lock-contention races;
-  - (c) failed under the audit's 2× load and passed alone.
+  - (c) failed under load (the audit's 2× load run, the falsifier's sweeps, or any later loaded run) and passed alone;
+  - (d) gives the code under test a short window it must beat: a timeout, deadline, `--seconds`, session limit or stub
+    sleep of ≤ 6 s that the behaviour under test must finish inside (or must outlast), so CPU starvation can flip it
+    (falsifier I-4: toolkit's `--seconds 1` tests).
 
-  A lower-bound-only assertion ("waited at least N s") stays parallel, because load can only make it pass.
-- **Seed list from the audits.** The plan's classification task reads each one, confirms it, and adds any other test that
-  meets the criterion:
+  A lower-bound-only assertion ("waited at least N s") stays parallel, because load can only make it pass. A short
+  sleep that R6 turns into an event wait no longer gives a window, so the test is classified on the code after R6.
+- **Mechanical scan.** `tests/exclusive_scan.awk` lists, per test function, the lines that hint at (a), (b) or (d):
+  - a: `date +%s` arithmetic compared with `-lt`/`-le`, or an "under N s" / "< N s" message;
+  - b: `kill -INT|-TERM|-HUP|-QUIT|-s` sent by the test;
+  - d: a literal `sleep 1`…`sleep 6` in a scenario, stub or shell-text command, `--seconds 1`…`6`, or a
+    `*_SECONDS=`/`*_WAIT=`/`*_TIMEOUT=` value of 1…6.
+
+  It prints `suite<TAB>test<TAB>flags<TAB>evidence-lines`. On 6f2445b it flags 85 tests (lanes 47, overnight 17,
+  toolkit 11, studio_setup 4, state_pointer 3, state_move 1, overnight_runs 1, overnight_progress 1).
+- **The ruling table lives in each suite**, directly above its `TESTS_EXCLUSIVE` line, one comment line per test:
+
+  ```
+  # exclusive-scan: <test> in  (<criterion>) <one-line reason>
+  # exclusive-scan: <test> out (<flag>) <one-line reason, e.g. "sleep 3 became a release-file wait (R6)">
+  ```
+
+  `test_exclusive_scan_candidates_ruled` (`harness_test.sh`) runs the scan over every suite and fails when a flagged
+  test has no ruling line, when a ruling names a test the suite does not list, when an `in` test is not in
+  `TESTS_EXCLUSIVE`, or when an `out` test is. A test can also be ruled `in` without a scan flag (criterion (c)), and
+  then needs its ruling line too. The PR reproduces the rulings as one table.
+- **Seed list.** Ruled `in` by the audits and the falsifier. The plan confirms each against the code after R6:
 
   | Suite | Tests |
   |---|---|
@@ -437,12 +555,18 @@ under `$TMP`.
   | overnight_runs | `test_mutex_stale_reap_lock_broken` |
   | hook | `test_inbox_hook_silent_outside_units` |
   | overnight | `test_overnight_overhead`, `test_overnight_timeout`, `test_overnight_inhibitor`, `test_overnight_claim_without_run_dir`, `test_inbox_lock_busy`, `test_overnight_sighup_while_held`, `test_overnight_sigterm`, `test_overnight_sigint`, `test_overnight_stop_beats_resume`, `test_overnight_resume_wins_at_deadline` |
-  | lanes | `test_lanes_slot_wait_not_in_session_minutes`, `test_lanes_direct_merge_timeout`, `test_lanes_direct_merge_timeout_after_merge_lands`, `test_lanes_direct_merge_timeout_term_ignored`, `test_lanes_sigint`, `test_lanes_end_sessions_spaced_path`, `test_lanes_lock_race_single_vs_manifest`, `test_lanes_recheck_race_one_wins`, `test_lanes_heartbeat` |
+  | lanes | `test_lanes_slot_wait_not_in_session_minutes`, `test_lanes_direct_merge_timeout`, `test_lanes_direct_merge_timeout_after_merge_lands`, `test_lanes_direct_merge_timeout_term_ignored`, `test_lanes_sigint`, `test_lanes_end_sessions_spaced_path`, `test_lanes_lock_race_single_vs_manifest`, `test_lanes_recheck_race_one_wins`, `test_lanes_heartbeat`, `test_lanes_setup_preflight_refuses_linked_only` (c), `test_lanes_detach_timeout_no_lock_ends_child` (c) |
   | studio_setup | `test_setup_timeout_ends_group`, `test_setup_timer_starts_after_lock`, `test_setup_timeout_kills_term_ignorer`, `test_setup_signal_stops_child_and_releases_lock` |
-  | toolkit | `test_run_terminates_a_long_process`, `test_gate_three_reclaimers_never_overlap`, `test_gate_stale_reclaim_race` |
+  | toolkit | `test_run_terminates_a_long_process`, `test_gate_three_reclaimers_never_overlap`, `test_gate_stale_reclaim_race`, `test_run_detects_script_errors` (c, d), `test_run_passes_scene_and_windowed` (c, d) |
 
+- **Ruled by the plan.** The falsifier's static candidates, each with a stub sleep ≤ 3 s or a short window to act in:
+  lanes `test_lanes_stop_file`, `test_lanes_runner_gone`, `test_lanes_per_run_lock_paths`,
+  `test_lanes_two_runs_each_own_lock`, `test_lanes_gate_repair_halt`, `test_lanes_status_reaps_dead_runner`,
+  `test_lanes_slot_cap_one_alternates`; overnight `test_overnight_status`, `test_overnight_stop_file`. Most are class A,
+  so after R6 their window is a release file and they are expected `out`; the ruling line records it either way. Every
+  other scan flag gets its ruling the same way.
 - **Changing membership.** Moving a test out of the list needs evidence: 3 green parallel runs under load with the test
-  in the parallel phase. Adding a test needs only the criterion.
+  in the parallel phase, or the R6 conversion that removed its window. Adding a test needs only the criterion.
 - **Cost.** The exclusive phase is serial and is now the floor of the gate's wall time. The PR reports how long it takes.
 
 ## R6. Dead waits, test side
@@ -474,14 +598,14 @@ under `$TMP`.
   - overnight `bg_end`: 1 s → 0.2 s;
   - studio_setup's uncapped `gate.lock/pid` loop (`:78`) gets a 20 s ceiling;
   - the lanes `bggate` pid wait (`:290`) gets a 60 s ceiling.
-- **New run-dir second.** The resume `sleep 1`s (class D, 6 sites) become `next_second`: poll every 0.1 s until
-  `date +%s` changes, with a 3 s ceiling.
+- **New run-dir second.** The resume `sleep 1`s (class D, 6 sites) become `next_second` (in `assert.sh`): poll every
+  0.1 s until `date +%s` changes, with a 3 s ceiling.
 - **Fractional sleep.** Neither bash 3.2 nor dash has a `sleep` builtin, so both run `/bin/sleep`, which accepts decimals
   on macOS, GNU and busybox. The repo already relies on this in `overnight-runs.sh` (`sleep 0.1`) and in many tests.
   `$(( ))` is integer-only, so every converted loop counts ticks; none multiplies by a fraction.
 - **Tests.** The converted tests themselves, with the same assertions plus the `wait.timeout` check.
   `test_stub_waitexist_and_run_token` (in lanes) checks `-e` on an empty file, `@RUN@` expansion and the timeout record
-  at a 1 s ceiling.
+  at a 1 s ceiling. `test_next_second` (`harness_test.sh`) checks that the second changed and that it returned within 1.5 s.
 
 ## R7. Runner-side poll knobs (test-only, production default)
 
@@ -493,6 +617,12 @@ Each knob accepts only `1` (the default), `0.5`, `0.2` or `0.1`. These map to 1,
   `sleep <knob>`. The real-clock budget is never shorter, and at the default the loop is identical to today.
 - **`date`-based loops** keep their `date +%s` test.
 - **Any other value** is refused with one stderr line, `<script>: <KNOB> must be 1, 0.5, 0.2 or 0.1, got <v>`, and exit 2.
+- **Read and validated once, at startup** (falsifier M-5), into script-local variables (`*_POLL`, `*_TPS`), before any
+  subcommand runs. So a bad value is refused before a run starts, never mid-lane, and `--detach`'s strip of `STUDIO_*`
+  (`studio-overnight:1353`) cannot lose the detach knob: the window reads the local copy.
+- **Sourced alone.** `overnight-lanes.sh` is also sourced directly by a unit test (`test_lanes_end_sessions_spaced_path`),
+  without `studio-overnight`'s startup. Its loops use `${REAP_POLL:-1}` and `${REAP_TPS:-1}`, so that path runs at the
+  production value.
 
 | Knob | Script (header where it is named) | Loops | Budget kept |
 |---|---|---|---|
@@ -550,9 +680,13 @@ The rest of the rule-2 tests also go in `TESTS_REAL_CLOCK`. The plan confirms th
   run in parallel:
   - setup: a TERM-ignoring command is not KILLed before 5 s;
   - reap: a TERM-ignoring session is not KILLed before GRACE;
-  - detach: the lock-held timeout message comes no sooner than 10 s;
+  - detach: with `STUDIO_OVERNIGHT_DETACH_STATUS_CMD` set to a command that appends one line to a counter file and
+    fails, and `STUDIO_OVERNIGHT_DETACH_CHILD_CMD="$TMP/bin/msleep 301"` (a child that never locks), the timeout
+    message comes no sooner than 10 s, and the counter holds exactly 50 lines (10 s × 5 ticks). The window counts
+    ticks, so 50 is exact under any load, and it proves the knob survived `--detach`'s `STUDIO_*` strip (M-5);
   - gate: the waiting message is not repeated within 60 s, checked with a 3 s hold.
-- `test_<knob>_rejects_bad_value`, one per knob.
+- `test_<knob>_rejects_bad_value`, one per knob; the overnight ones assert the refusal comes before any run directory
+  or lock exists.
 - `test_knobs_named_in_headers` (`harness_test.sh`): each knob name appears in its script's header or help block.
 
 ## R8. Template fixtures
@@ -562,11 +696,16 @@ The rest of the rule-2 tests also go in `TESTS_REAL_CLOCK`. The plan confirms th
     NAME is not part of the key: per the audit, only `.git/config`'s remote URL holds it.
   - **First use of a key.** The existing body builds the fixture once, as `$TMP/tpl/l-<key>/p` with the bare repo at
     `…/p.git`. The marker `…/ok` is written only after every step succeeded.
-  - **Every call.** `cp -Rp` the work tree and the bare repo to `$TMP/NAME` and `$TMP/NAME.git`, then run
+  - **Every call.** `rm -rf "$TMP/NAME" "$TMP/NAME.git"` first (falsifier I-6: `cp -Rp` onto an existing directory
+    nests the copy inside it), then `cp -Rp` the work tree and the bare repo to `$TMP/NAME` and `$TMP/NAME.git`, then run
     `git -C "$TMP/NAME" remote set-url origin "$TMP/NAME.git"`. The per-test dirs (`calls-NAME`, `gh-NAME`, `scen-NAME`,
     `wts-NAME`) are still created fresh, and the existing tail (exports, `unset LANES_*`) is unchanged.
 - **`overnight_test.sh` `fixture NAME [CONFIG_JSON]`.** The same scheme, with the key `cksum` of the config JSON. The
-  empty key covers its 157 calls with no config.
+  empty key covers its 157 calls with no config. The fixture removes `$TMP/NAME` and `$TMP/NAME.git` before it builds
+  or copies, in both modes, so a reused name (`fixture hcf` twice, `:1085-1086`) always gets a fresh project with the
+  second call's config. Today the second call re-inits over the first project and keeps going after a failed
+  `git remote add`; the test only reads the config the second call wrote, which a fresh project also has. Its `$CALLS`
+  and scenario handling is unchanged.
 - **Failure.** A failed build removes the template dir and fails the test with today's "… setup failed" message. Without
   the `ok` marker a template is never reused, and the next call rebuilds it.
 - **Off switch.** `LANES_FIXTURE_TEMPLATES` and `OVERNIGHT_FIXTURE_TEMPLATES` are suite-local and named in each suite's
@@ -574,12 +713,15 @@ The rest of the rule-2 tests also go in `TESTS_REAL_CLOCK`. The plan confirms th
 - **Tests:**
   - `test_lanes_fixture_copy_equals_build` covers three shapes: `A:-` integration; `A:- B:A`; and direct with
     `LANES_TASKS=2` and a config. For each it compares a copy against a fresh build:
+    - `diff -r` of the two work trees, excluding `.git` but including git-ignored files such as `.studio/STATE.md`
+      (falsifier M-4), after rewriting each tree's own NAME to a placeholder;
     - `git log --all --format='%T %s'`, so tree hashes are equal;
     - `git status --porcelain` is empty;
     - `git rev-parse origin/run/demo` equals `HEAD`;
     - the remote URL is `$TMP/NAME.git`;
     - `grep -rF "$TMP/tpl"` finds nothing in the copy.
-  - `test_overnight_fixture_copy_equals_build`: the same checks, with and without config.
+  - `test_overnight_fixture_copy_equals_build`: the same checks, with and without config, plus a same-name double call
+    (`fixture X '{"a":1}'` then `fixture X '{"b":2}'`): the second copy has the second config and no nested `X/X`.
   - `test_fixture_template_failed_build_not_reused`: a PATH-shadowed `git` fails `push` once.
 - **Before rollout,** the plan greps both suites for `-nt`, `-newer` and sha comparisons across two fixtures. Copies
   share commit shas, so none may depend on fresh ones.
@@ -595,7 +737,8 @@ The rest of the rule-2 tests also go in `TESTS_REAL_CLOCK`. The plan confirms th
     `TEST_SUITES="…" sh tests/run_all.sh` and exits with its status.
 - **Mapping,** first match wins:
   1. `tests/assert.sh`, `tests/run_all.sh` and `lib/**` map to **all suites**.
-  2. `tests/<x>_test.sh` maps to itself, and `tests/run_affected.sh` maps to `harness_test`.
+  2. `tests/<x>_test.sh` maps to itself; `tests/run_affected.sh` maps to `run_affected_test`; `tests/exclusive_scan.awk`
+     maps to `harness_test`.
   3. `docs/**` maps to the suites whose text names the file's path or its directory, and otherwise to nothing. It
      prints `no suite reads <path>`.
   4. Any other file: take the reverse-reference closure, which is a fixed point over the code files (`tests/`,
@@ -605,9 +748,9 @@ The rest of the rule-2 tests also go in `TESTS_REAL_CLOCK`. The plan confirms th
      affected suites are the suites in the closure. If there are none, the file is unknown and maps to **all suites**.
   5. A missing REF, or a failed merge-base, exits 2 with `run_affected: base <REF> not found — git fetch, or pass --base`.
      No changes prints `no changes against <REF>` and exits 0.
-- **Tests (`harness_test.sh`).** They use a fixture git repo under `$TMP` with a copied `run_affected.sh`, a mini layout
-  (`lib/common.sh`, `tests/assert.sh`, `tests/run_all.sh`, `tests/a_test.sh`, `tests/b_test.sh`, a `bin/tool` that
-  sources `bin/lib.sh`, `docs/x.md`, `docs/y.md` named by `b_test`, and `unknown.txt`), and `--list`:
+- **Tests (`tests/run_affected_test.sh`).** They use a fixture git repo under `$TMP` with a copied `run_affected.sh`, a
+  mini layout (`lib/common.sh`, `tests/assert.sh`, `tests/run_all.sh`, `tests/a_test.sh`, `tests/b_test.sh`, a
+  `bin/tool` that sources `bin/lib.sh`, `docs/x.md`, `docs/y.md` named by `b_test`, and `unknown.txt`), and `--list`:
   - `test_affected_suite_change_maps_to_itself`;
   - `test_affected_shared_files_map_to_all` (`assert.sh`, `run_all.sh`, `lib/common.sh`);
   - `test_affected_sourced_lib_maps_through_closure` (`bin/lib.sh` → `bin/tool` → `a_test`);
@@ -619,33 +762,40 @@ The rest of the rule-2 tests also go in `TESTS_REAL_CLOCK`. The plan confirms th
 
 ## Files
 
-- `tests/assert.sh`: the env scrub (R2), and in `run_tests` the partitions, validation, `before_each`, `TEST_NAME`,
-  `is_real_clock` and the timing log (R1, R3).
+- `tests/assert.sh`: the env scrub (R2), the helpers `own_group`, `mk_msleep` and `next_second`, and in `run_tests` the
+  partitions, validation, `before_each`, `TEST_NAME`, `is_real_clock` and the timing log (R1, R3).
 - `tests/run_all.sh`: rewritten (R4), with the suite table.
 - `tests/run_affected.sh`: new (R9).
-- `tests/harness_test.sh`: new suite for R1–R4, R7's header check and R9. Its fixtures are generated under `$TMP`, so
-  there are no new fixture files.
-- `tests/lib_test.sh`: the nested `run_tests` call clears the `TEST_*` variables.
+- `tests/exclusive_scan.awk`: new (R5).
+- `tests/harness_test.sh`: new suite for R1, R2's guards and helpers, R3, R5's ruling check, R6's `next_second` and R7's
+  header check.
+- `tests/run_all_test.sh`: new suite for R4.
+- `tests/run_affected_test.sh`: new suite for R9.
+  The three new suites generate their fixtures under `$TMP`, so there are no new fixture files.
+- `tests/lib_test.sh`: the nested `run_tests` call clears the `TEST_*` variables; its `mktemp` template.
 - `tests/overnight_lanes_test.sh`:
-  - C2, C3, C5 and C6;
-  - tags;
+  - the `$TMP/bin/studio-overnight` runner link and `test_lanes_runner_argv_names_tmp`;
+  - C2, C3, C5 and C6; `own_group` at `:1082`/`:1103`; the stub `mktemp` templates;
+  - the deterministic peers loop;
+  - tags with their ruling lines;
   - `before_each`;
   - stub `waitexist`/`@RUN@`/`wait.timeout`;
   - class-A conversions, helper ticks and `next_second`;
   - the template `lanes_fixture`;
   - `test_stub_waitexist_and_run_token` and the R7 lanes tests.
-- `tests/overnight_test.sh`: tags, `before_each`, stub support, class-A conversions, `bg_end` ticks, the template
-  `fixture` and the R7 reap test.
-- `tests/studio_setup_test.sh`: C4 via `msleep`, tags, `before_each`, class-A conversions, the `:78` ceiling and the R7
-  setup tests.
-- `tests/toolkit_test.sh`: tags and the R7 gate tests.
+- `tests/overnight_test.sh`: the runner link, `own_group` in `start_bg`, tags with ruling lines, `before_each`, stub
+  support, class-A conversions, `bg_end` ticks, the template `fixture` (with the rm-first rule) and the R7 reap tests.
+- `tests/studio_setup_test.sh`: C4 via `msleep`, tags with ruling lines, `before_each`, class-A conversions, the `:78`
+  ceiling and the R7 setup tests.
+- `tests/toolkit_test.sh`: tags with ruling lines and the R7 gate tests.
 - `tests/hook_test.sh`: tags, and the class-A conversion (kill the writer after `t1`).
-- `tests/state_pointer_test.sh`, `tests/state_move_test.sh`, `tests/overnight_runs_test.sh`,
-  `tests/overnight_progress_test.sh`: tags only.
+- `tests/state_pointer_test.sh`, `tests/state_move_test.sh` (also `own_group` at `:511`), `tests/overnight_runs_test.sh`,
+  `tests/overnight_progress_test.sh`: tags with ruling lines.
+- `tests/state_fixtures.sh` and every other suite that calls `mktemp`: the `${TMPDIR:-/tmp}` template.
 - `studios/game-dev/bin/studio-setup`, `studio-gate`, `studio-overnight`, `overnight-lanes.sh`: the R7 knobs only.
 - `README.md` (Tests section): parallel default, `TEST_JOBS`, `TEST_JOBS=1`, `run_affected.sh` (not a gate), and the tags
-  for suite authors.
-- `docs/game-dev/PROGRESS.md`: the entry, with the baseline and after numbers.
+  and ruling lines for suite authors.
+- `docs/game-dev/PROGRESS.md`: the entry, with the A/B numbers.
 
 ## Every new knob
 
@@ -670,44 +820,48 @@ The existing `STUDIO_OVERNIGHT_POLL_SECONDS` is newly set to 1 by `before_each` 
 
 ## Acceptance and verification
 
-1. **Baseline.** The serial run at 6f2445b on an idle machine, recorded in the Baseline table, with the 20 slowest tests.
+1. **Floors.** run_all's table holds every suite's `origin/main` count (provisional until the A/B run, then A's counts).
 2. **Three consecutive green full gates.** `sh tests/run_all.sh` at the default `TEST_JOBS`, with no code change between
    runs. Run 2 runs under `yes > /dev/null` × N, with N = half the logical CPUs (4 on the operator's Mac), started
    before the gate and killed after it. Any red resets the count and is root-caused (systematic debugging). It is never
    fixed by widening a threshold or retrying. If an exclusive-phase test fails only under the external load, the same
    test is run under the same load on `origin/main`'s serial gate. If it fails there too, the operator decides.
-3. **Assertion counts.** Each suite's count is ≥ its baseline. run_all's floor check enforces this on every run, and the
-   PR shows the before/after table.
+3. **Assertion counts.** Each suite's count is ≥ its floor. run_all's floor check enforces this on every run, and the
+   PR shows the before/after table from the A/B pair.
 4. **Serial mode.** `TEST_JOBS=1 sh tests/run_all.sh` once, green. This proves the standalone path, with every test in
    listed order and the fast knobs on. It also gives the PR the "serial after" time, which shows the non-parallel saving.
-5. **dash.** `TEST_SH=dash dash tests/harness_test.sh` and `dash tests/lib_test.sh` are green. The harness tests drive
-   run_all and fixture suites through `$TEST_SH`.
+5. **dash.** `TEST_SH=dash sh tests/run_all.sh` once, the whole gate. It must be green, except for a failure that also
+   happens on `origin/main` under dash (checked by running the same tests with `TESTS_ONLY` under
+   `dash tests/<suite>.sh` in an export of 6f2445b). Each such pre-existing failure is listed in the PR by suite, test
+   and message, and gets a follow-up GitHub issue; none is hidden, skipped or tagged away. The four known ones
+   (state_move, overnight and two lanes `set -m` sites) are fixed by `own_group` in this story.
 6. **Ctrl-C by hand, in a real terminal.** Start the full gate and press Ctrl-C after 2 minutes. It must return within
-   15 s with exit 130, and `pgrep -f <log dir>` must be empty.
+   15 s with exit 130, and both `pgrep -f <log dir>` and `pgrep -f "$PWD/studios/"` must be empty (no suite process and
+   no product script started from this checkout survives).
 7. **No production behaviour change.** `git diff origin/main -- studios shared lib '*.sh'` touches only knob reads,
    validation and tick math. Each default is today's literal, which the reviewer checks line by line, and the R7
    carriers pass at production values.
-8. **The PR reports:**
-   - baseline vs new wall time, in total and per suite;
+8. **A/B measurement,** as in "Measurement protocol", after 2–6.
+9. **The PR reports:**
+   - A vs B wall time, in total and per suite;
    - the exclusive phase's time;
    - the serial-after time;
-   - the assertion table;
-   - the final shard counts.
+   - the assertion table, with the lanes peers-loop change justified line by line;
+   - the R5 ruling table;
+   - the final shard counts;
+   - the dash result and any follow-up issues.
 
 ## Implementation order
 
-1. R1 measurement. The baseline already uses a prototype of the timing row.
-2. R2 hermetic fixes and the static guard.
-3. R3 partitions with `harness_test.sh`.
-4. R4 runner.
-5. R5 tags.
-6. R6 test-side waits.
-7. R7 knobs.
-8. R8 templates.
-9. R9 `run_affected.sh`.
-10. Shard tuning, the acceptance runs, and the README and PROGRESS updates.
+1. R1, R3 and the R2 helpers in `assert.sh` (the harness API every suite codes against), with `harness_test.sh`.
+2. R4 runner with `run_all_test.sh`; R7 knobs in the four production scripts; R9 `run_affected.sh`. These do not depend
+   on each other or on step 1's code, only on its documented interface.
+3. Per suite: R2 hermetic fixes, R6 waits, R8 templates, `before_each`, R5 tags and rulings.
+4. R2/R5 static guards in `harness_test.sh` (green only once step 3 is in).
+5. Shard tuning, floors, the acceptance runs, the A/B pair, and the README and PROGRESS updates.
 
-Steps 2 and 3 come before 4 because a parallel runner without them is red on every run (C1 to C3).
+A parallel gate without steps 1–3 is red on every run (C1 to C3), so the parallel default only becomes the merge gate
+once step 3 is integrated.
 
 ## Risks
 
@@ -715,22 +869,22 @@ Steps 2 and 3 come before 4 because a parallel runner without them is red on eve
   when suites are CPU-bound (git, fork). That caps the speedup near 4×, and timing tests under load are why the
   exclusive phase exists. `TEST_JOBS` is the override. See Falsify F4.
 - **Hidden order dependence.** Sharding reorders tests. A test that relied on an earlier test's leftovers fails loudly in
-  its shard and is fixed in the test. The silent case, a sweep that passes vacuously, is handled by `TESTS_FINAL`.
-- **The orphan sweep is narrower.** `pgrep -f "$TMP"` misses a leaked process whose argv lacks `$TMP`; the old
-  `pgrep -f "$RUNNER"` also matched other suites' runners. Per the audit, every lanes runner launch carries `$MFP`/`$P`
-  in argv, and the plan re-verifies this with grep.
+  its shard and is fixed in the test. The silent case, a sweep that passes vacuously, is handled by `TESTS_FINAL`. The
+  falsifier ran all 539 tests of the 25 smaller suites alone, and the exclusive-phase sets of lanes and overnight alone,
+  with no order failure.
+- **The orphan sweep narrows to `$TMP`.** It is complete only because every runner, lane and detached child now carries
+  `$TMP` through the runner link; `test_lanes_runner_argv_names_tmp` fails if that ever stops being true.
 - **Two gates on one machine.** For example, the operator's gate next to an agent's in another worktree. The other gate's
   parallel phase loads this gate's exclusive phase. This is not solved: lower `TEST_JOBS` on a shared machine.
-- **The exclusive phase is serial.** Its length is now the floor of the wall time. Membership follows R5's criterion and
-  evidence rule.
+- **The exclusive phase is serial.** Its length is now the floor of the wall time. Membership follows R5's criterion,
+  the scan and its rulings.
 - **Fast knobs could hide a bug that only shows at 1 s cadence.** The carriers run every knobbed loop at its production
   value.
 - **Shared commit shas across template copies.** No test may depend on fresh shas. The plan greps for this (R8).
-- **dash and job control in the code under test.** Without a tty, dash refuses `set -m` (probe). Today's suites
-  (`start_bg`) and product scripts (`studio-gate`, `studio-setup`, `start_session`) use `set -m`, so the full suites under
-  dash with no tty are not known to pass. That is pre-existing and outside this story, which proves dash on the harness
-  only. The plan files a follow-up issue.
-- **`TMPDIR` per job.** A tool that ignores `TMPDIR` (a hard-coded `/tmp`) escapes the per-job cleanup but stays correct.
+- **dash.** Suites now avoid `set -m` (`own_group`), and product scripts always run under `sh`. A dash failure found by
+  acceptance 5 that also fails on `origin/main` is pre-existing; it is reported and gets a follow-up issue.
+- **`TMPDIR` per job.** A production tool that ignores `TMPDIR` (`studio-adopt:19`'s bare `mktemp -d`, or a hard-coded
+  `/tmp`) escapes the per-job cleanup but stays correct.
 
 ## Rejected alternatives
 
@@ -739,16 +893,22 @@ Steps 2 and 3 come before 4 because a parallel runner without them is red on eve
 - **Lower global concurrency** (for example 2 jobs) to dodge load. It still is not safe for the tight thresholds, and it
   throws away most of the speedup.
 - **Merging, dropping or skipping slow tests.** This violates rule 1.
-- **`set -m` per job.** dash without a tty refuses job control, leaving SIGINT ignored (probe). The perl launcher works in
-  both shells and has precedent in the repo.
+- **`set -m` per job.** dash without a tty refuses job control, leaving SIGINT ignored (probe).
+- **A perl `setpgrp` launcher.** With a terminal, a dash suite that runs `set -m` in a background process group is
+  stopped by SIGTTIN for ever (falsifier I-2). `POSIX::setsid` gives the job no controlling terminal, so this cannot
+  happen, and it has precedent in `studio-overnight --detach`.
+- **Matching the runner by `$MFP` or `$P` in argv.** `MFP` is relative and `$P` is not in the runner's argv (C-1). The
+  runner link puts `$TMP` there without touching production code.
+- **Assertion floor = the minimum over several baselines** (the falsifier's other I-3 option). It tolerates a varying
+  count instead of removing the variation; the fixed-count loop removes it.
 - **Parallel suites without sharding.** The lanes suite alone sets the wall time (about 7100 s under 2× load in the audit).
 - **One test per job (work stealing) or timing-weighted shard packing.** Both pay the suite setup per test or make shard
   assignment non-deterministic. Round-robin by index is deterministic, complete by construction, and easy to reproduce.
   Tuning happens through the shard counts.
 - **Rewriting `timed_gate` to be event-driven** (an audit option). It changes a production code path. Ruling 2 chose
   knobs that default to today.
-- **`xargs -P` or GNU parallel as the pool.** Neither gives per-job process groups with SIGINT reset, block output and
-  floor checks under plain POSIX sh, and GNU parallel is not installed by default.
+- **`xargs -P` or GNU parallel as the pool.** Neither gives per-job sessions with SIGINT reset, block output and floor
+  checks under plain POSIX sh, and GNU parallel is not installed by default.
 - **Event waits for the B\* sleeps** (signal and lock-race windows). Rule 2 keeps them on real clocks.
 - **Templates for `state_*`'s `proj`.** About 14 s saved is not worth the extra code.
 
@@ -756,29 +916,50 @@ Steps 2 and 3 come before 4 because a parallel runner without them is red on eve
 
 - `tests/probes/`, `tests/pressure/` and `integrations/multica/tests/run.sh`, which are not part of this gate.
 - CI configuration.
-- Making the whole suite pass under dash with no tty (see Risks).
+- Fixing a dash failure in production code that `origin/main` already has: it is reported with a follow-up issue
+  (acceptance 5).
 - A machine-wide lock between concurrent gates.
 
 ## Falsify
 
 Five claims that would sink the design if false, each with its cheapest check:
 
-- **F1. The perl launcher gives every job a default SIGINT and its own process group** under macOS `/bin/sh` and dash with
-  no tty, so the SIGINT tests pass in parallel. *Check:* `scratchpad/setm-probe.sh` already passes both shells (2026-10-06).
-  Next, run `test_state_mutex_single_acquisition` and `test_overnight_sigint` through the launcher in the background
-  under both shells (`TESTS_ONLY`, about 30 s).
+- **F1. The setsid launcher gives every job a default SIGINT, its own session and group, and no terminal,** under macOS
+  `/bin/sh` and dash, with and without a tty, so the SIGINT tests pass in parallel. *Check:* `falsify/ttys-probe.sh`
+  (dash, with a tty: never stopped, rc 0) and `plan-probe/setsid-setm.sh` (bash: a `set -m` inside still gives its job a
+  group and a trappable INT). The plan re-runs `test_state_mutex_single_acquisition`, `test_overnight_sigint` and
+  `test_lanes_sigint` through run_all under both shells once `own_group` is in.
 - **F2. Apart from the `TESTS_FINAL` sweeps, no test depends on state left by an earlier test,** so a shard can run any
-  subset alone. *Check:* use awk to list every lanes and overnight test function that reads `$P`, `$MFP` or `$CALLS`
-  before calling its own fixture builder, then run each flagged test alone with `TESTS_ONLY`. This takes minutes and
-  needs no full shard run.
-- **F3. Every load-sensitive assertion is covered by R5's criterion,** so the parallel phase is green under load.
-  *Check:* every failure in the audit's 2× load run is in the seed list (true by construction). Then, before the
-  acceptance runs, run the parallel phase of the 9 suites that hold timing asserts, twice at `TEST_JOBS=6` with
-  `yes` × 4. Any failure outside the list falsifies the claim.
+  subset alone. *Checked by the falsifier:* all 539 tests of the 25 smaller suites alone (only 3 load failures), and
+  the lanes and overnight exclusive sets alone (49 and 30 assertions, 0 failed). Lanes and overnight shards are covered
+  by acceptance runs 1–3.
+- **F3. Every load-sensitive assertion is covered by R5,** so the parallel phase is green under load. *Check:* the scan
+  and its rulings (R5), the observed failures in the seed list, then, before the acceptance runs, the parallel phase of
+  the suites that hold timing asserts twice at `TEST_JOBS=6` with `yes` × 4. Any failure outside the list falsifies the
+  claim and adds the test by criterion (c).
 - **F4. The gate is mostly waiting or single-threaded, so 6 jobs on 4 physical cores cut wall time by about 3× or more.**
-  *Check:* `/usr/bin/time -p` on a 20-test `TESTS_ONLY` slice of lanes and one of overnight. If (user + sys) / real is
-  close to 1 or above, the work is CPU-bound and the speedup is capped by cores. The plan would then lean on R6–R8 and
-  set the shard counts accordingly.
-- **F5. A template copy is equivalent to a fresh build for every key.** *Check:* build and copy the three most common
-  shapes (`A:-`, `A:- B:-`, direct with config) and compare tree hashes, status, the remote URL and `grep -rF` for the
-  template path. Then grep both suites for `-nt`, `-newer` and sha comparisons across fixtures. This takes about 1 minute.
+  *Check:* `/usr/bin/time -p` on a 20-test `TESTS_ONLY` slice of lanes and one of overnight, on an idle machine. If
+  (user + sys) / real is close to 1 or above, the work is CPU-bound and the speedup is capped by cores. The plan would
+  then lean on R6–R8 and set the shard counts accordingly.
+- **F5. A template copy is equivalent to a fresh build for every key, including a reused name.** *Check:* the
+  equivalence tests (R8), with `diff -r` over the work trees and the same-name double call; then grep both suites for
+  `-nt`, `-newer` and sha comparisons across fixtures.
+
+## Falsifier findings (2026-10-06) and where each is resolved
+
+| # | Finding | Resolution |
+|---|---|---|
+| C-1 | The runner's argv holds a relative `$MFP`, not `$TMP`; `pgrep -f "$TMP"` alone was blind to runners and lanes | R2.4: `$TMP/bin/studio-overnight` runner link in lanes and overnight; `test_lanes_runner_argv_names_tmp`; re-check of runner-path assertions |
+| I-1 | macOS `mktemp` ignores `TMPDIR` | R2.2: explicit `${TMPDIR:-/tmp}` templates everywhere; static and live guards (R2.5); Ctrl-C test uses an `own_group` sleeper |
+| I-2 | The `setpgrp` launcher hangs dash with a tty; dash fails SIGINT tests without one | R4 launch: `POSIX::setsid`; R2.3: `own_group` replaces test-side `set -m` |
+| I-3 | Lanes assertion count is timing-dependent | "Floors": the peers loop asserts a fixed 8 + 1 |
+| I-4 | Seed list incomplete; criteria missed short windows | R5: criterion (d), the scan, ruling lines with a guard test, 4 observed failures added, static candidates listed for ruling |
+| I-5 | The baseline was not idle | "Measurement protocol": the old numbers are void; an A/B pair on an idle machine at the end |
+| I-6 | A reused fixture name breaks copy equivalence | R8: rm-first in both modes; the double-call case in the equivalence test |
+| M-1 | Completeness counted distinct idx | R4: exactly one row per non-final idx, P rows per final |
+| M-2 | rc file read between create and write | R4 launch: write `rc.tmp`, then `mv` |
+| M-3 | Static guard false positives | R2.5: `-g` allowed; `# scan-ok:` exemption |
+| M-4 | Equivalence missed ignored files | R8: `diff -r` of the work trees |
+| M-5 | `--detach` strips `STUDIO_*` before the window | R7: knobs read and validated once at startup into local variables |
+| M-6 | A suite with no `L` row was not red | R4: `no run_tests row` |
+| M-7 | `msleep` symlink breaks under busybox | R2.4: `mk_msleep` checks the link and falls back to a perl sleeper |
