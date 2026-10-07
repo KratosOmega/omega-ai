@@ -7,10 +7,15 @@ set -u
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 . "$REPO_ROOT/tests/assert.sh"
 
-RUNNER="$REPO_ROOT/studios/game-dev/bin/studio-overnight"
 STATE_BIN="$REPO_ROOT/studios/game-dev/bin/studio-state"
-TMP="$(cd "$(mktemp -d)" && pwd -P)"
+TMP="$(cd "$(mktemp -d "${TMPDIR:-/tmp}/overnight_test.XXXXXX")" && pwd -P)"
 trap 'rm -rf "$TMP"' EXIT
+# The runner is reached through a link under $TMP, so every runner process carries
+# $TMP in its argv (a scan or a kill by pattern finds only this run's).
+mkdir -p "$TMP/bin"
+ln -s "$REPO_ROOT/studios/game-dev/bin/studio-overnight" "$TMP/bin/studio-overnight"
+RUNNER="$TMP/bin/studio-overnight"
+mk_msleep
 # The runner's user-level registry lives under $HOME: never the real one.
 HOME="$TMP/home"; export HOME; mkdir -p "$HOME"
 FAKE="$TMP/fakebin"
@@ -630,14 +635,13 @@ test_overnight_overhead() {
   if [ "$g" -le 5 ]; then _pass "runner overhead between units <= 5 s (min of two: ${g}s)"; else _fail "runner overhead ${g}s > 5 s"; fi
 }
 
-# start_bg [ARGS] — the runner in the background with job control on, so it
-# is not started with SIGINT ignored (POSIX ignores it for async lists in a
-# non-interactive shell, and an ignored-on-entry signal cannot be trapped).
+# start_bg [ARGS] — the runner in the background in a process group of its own
+# (own_group), so it is not started with SIGINT ignored (POSIX ignores it for async
+# lists in a non-interactive shell, and an ignored-on-entry signal cannot be trapped).
+# `set -m` does not work under dash with no tty. RPID is the runner's pid.
 start_bg() {
-  set -m 2>/dev/null
-  ( cd "$P" && exec sh "$RUNNER" start "$@" ) > "$TMP/bg.out" 2> "$TMP/bg.err" &
+  ( cd "$P" && own_group sh "$RUNNER" start "$@" ) > "$TMP/bg.out" 2> "$TMP/bg.err" &
   RPID=$!
-  set +m 2>/dev/null
 }
 # wait_for FILE — up to 10 s.
 wait_for() { _i=0; while [ ! -e "$1" ] && [ "$_i" -lt 50 ]; do sleep 0.2; _i=$((_i + 1)); done; }
@@ -668,7 +672,7 @@ bg_alive() {
 # bg_end SECS MSG — passes MSG when the start_bg run ends within SECS (else
 # KILLs it and fails); then bg_status.
 bg_end() {
-  _be_i=0; while bg_alive && [ "$_be_i" -lt "$1" ]; do sleep 1; _be_i=$((_be_i + 1)); done
+  _be_i=0; while bg_alive && [ "$_be_i" -lt $(( $1 * 5 )) ]; do sleep 0.2; _be_i=$((_be_i + 1)); done
   TESTS_RUN=$((TESTS_RUN + 1))
   if bg_alive; then kill -KILL "$RPID" 2>/dev/null; _fail "$2 (still running after $1 s)"; else _pass "$2"; fi
   bg_status
@@ -800,7 +804,7 @@ test_overnight_claim_without_run_dir() {
 make_minbin() {
   mkdir -p "$TMP/minbin"
   for u in sh git sed awk grep sort comm date ps pkill kill sleep cat mkdir rm touch \
-           head tail tr cut ln dirname basename readlink wc uname mktemp cp mv chmod env printf; do
+           head tail tr cut ln dirname basename readlink wc uname mktemp cp mv chmod env printf; do # scan-ok: a tool name in a PATH list
     p="$(command -v "$u" 2>/dev/null)" && case "$p" in /*) ln -sf "$p" "$TMP/minbin/$u" ;; esac
   done
   for f in claude claude-gd gh; do ln -sf "$FAKE/$f" "$TMP/minbin/$f"; done
@@ -1660,6 +1664,18 @@ test_overnight_hold_deadline() {
   assert_eq 2 "$(calls)" "no unit ran while held"
   holds_off
 }
+# D9: the hold wait at its production 5 s poll (the knob unset). The deadline is 3 s,
+# so the first poll after it is the one at 5 s; the lower bound holds under any load.
+test_overnight_hold_default_poll() {
+  fixture hdp; holds_on 3; unset STUDIO_OVERNIGHT_POLL_SECONDS
+  scenario "$ISO1" "wtledger Stop: need art"
+  t0="$(date +%s)"; run_start; t1="$(date +%s)"
+  assert_eq 1 "$RS_STATUS" "the run ends 1"
+  assert_contains "$(last_run_dir)/report.md" "^Ending: stop: need art (held 0h0m, no reply)$" "the deadline ended the hold"
+  assert_eq 1 "$([ $((t1 - t0)) -ge 5 ] && echo 1 || echo 0)" "the hold waited one full 5 s poll"
+  assert_eq 2 "$(calls)" "no unit ran while held"
+  holds_off
+}
 test_overnight_stop_beats_resume() {
   fixture sbr; holds_on 60; STUDIO_OVERNIGHT_POLL_SECONDS=3
   scenario "$ISO1" "wtledger Stop: need art" "wtledger final review done"
@@ -2234,6 +2250,20 @@ test_overnight_help_setup_preflight() {
   sh "$RUNNER" --help > "$TMP/help-pf.txt" 2>&1
   assert_contains "$TMP/help-pf.txt" "Preflighted: start runs it once in a scratch linked" "help: worktree_setup says it is preflighted"
 }
+TESTS_EXCLUSIVE="test_overnight_overhead test_overnight_timeout test_overnight_inhibitor test_overnight_claim_without_run_dir test_inbox_lock_busy test_overnight_sighup_while_held test_overnight_sigterm test_overnight_sigint test_overnight_stop_beats_resume test_overnight_resume_wins_at_deadline"
+TESTS_REAL_CLOCK="test_overnight_kill_after_grace test_overnight_sighup test_inbox_lock_released_on_signal test_overnight_hold_default_poll"
+# The knobs run at their production value in the real-clock and exclusive tests; every
+# other test polls fast. A test that sets its own POLL_SECONDS (holds_on) still wins.
+before_each() {
+  unset STUDIO_SETUP_POLL_SECONDS STUDIO_GATE_POLL_SECONDS \
+        STUDIO_OVERNIGHT_REAP_POLL_SECONDS STUDIO_OVERNIGHT_DETACH_POLL_SECONDS STUDIO_OVERNIGHT_POLL_SECONDS
+  is_real_clock && return 0
+  STUDIO_SETUP_POLL_SECONDS=0.2; STUDIO_GATE_POLL_SECONDS=0.2
+  STUDIO_OVERNIGHT_REAP_POLL_SECONDS=0.2; STUDIO_OVERNIGHT_DETACH_POLL_SECONDS=0.2
+  STUDIO_OVERNIGHT_POLL_SECONDS=1   # land-lock and hold polls: 5 s -> 1 s (existing knob, whole seconds)
+  export STUDIO_SETUP_POLL_SECONDS STUDIO_GATE_POLL_SECONDS STUDIO_OVERNIGHT_REAP_POLL_SECONDS \
+         STUDIO_OVERNIGHT_DETACH_POLL_SECONDS STUDIO_OVERNIGHT_POLL_SECONDS
+}
 run_tests test_overnight_setup_preflight_single test_overnight_help_setup_preflight \
   test_overnight_report_done test_overnight_report_not_done test_overnight_preflight_env_warns_not_blocks \
   test_overnight_report_anchors test_overnight_resume_quote test_overnight_label_t1 \
@@ -2288,7 +2318,7 @@ run_tests test_overnight_setup_preflight_single test_overnight_help_setup_prefli
   test_overnight_start_ledger_stop_ends_at_once \
   test_overnight_resume_runs_next_unit \
   test_overnight_new_stop_holds_again \
-  test_overnight_hold_deadline \
+  test_overnight_hold_deadline test_overnight_hold_default_poll \
   test_overnight_stop_beats_resume \
   test_overnight_resume_wins_at_deadline \
   test_overnight_requeue_then_hold \
