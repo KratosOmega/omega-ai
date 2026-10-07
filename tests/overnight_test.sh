@@ -15,7 +15,7 @@ trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/bin"
 ln -s "$REPO_ROOT/studios/game-dev/bin/studio-overnight" "$TMP/bin/studio-overnight"
 RUNNER="$TMP/bin/studio-overnight"
-mk_msleep || exit 1
+mk_msleep || { printf 'overnight_test: mk_msleep failed\n' >&2; exit 1; }
 # The runner's user-level registry lives under $HOME: never the real one.
 HOME="$TMP/home"; export HOME; mkdir -p "$HOME"
 FAKE="$TMP/fakebin"
@@ -745,8 +745,13 @@ test_overnight_reap_poll_keeps_budget() {
   scenario "stage execute; ignoreterm; hang" "task 1/2"
   STUDIO_OVERNIGHT_REAP_POLL_SECONDS=0.2; export STUDIO_OVERNIGHT_REAP_POLL_SECONDS
   start_bg; unset STUDIO_OVERNIGHT_REAP_POLL_SECONDS
-  wait_for "$CALLS/1.t0"; sleep 1
+  wait_for "$CALLS/1.t0"
   spid="$(cat "$CALLS/1.pid")"
+  # The hang loop's sleep child exists only after the TERM trap is installed, so the
+  # HUP's TERM can never land before the trap.
+  _i=0
+  until pgrep -x -P "$spid" sleep >/dev/null 2>&1 || [ "$_i" -ge 300 ]; do sleep 0.2; _i=$((_i+1)); done  # scan-ok: pid-scoped
+  assert_eq 1 "$([ "$_i" -lt 300 ] && echo 1 || echo 0)" "the session reached its hang loop (TERM is ignored by now)"
   _t0=$(date +%s)
   kill -HUP "$RPID"; bg_status
   _el=$(( $(date +%s) - _t0 ))
@@ -1636,7 +1641,7 @@ test_overnight_hold_on_feature_stop() {
   verb status
   assert_contains "$V_OUT" "^held — stop: need art — until [0-9][0-9]:[0-9][0-9] — say / resume / stop -$" "status shows the held line"
   verb stop -; assert_eq "stop requested: - stops within one poll" "$(cat "$V_OUT")" "stop - on the held story"
-  bg_end 60 "the run ends within a poll"
+  bg_end 60 "the run ends"
   assert_eq 1 "$BG_STATUS" "a stopped run exits 1"
   assert_contains "$R/report.md" "^Ending: stop: need art$" "stop on a held story ends it with its why (AC23)"
   assert_eq "" "$(ls -A "$R/control")" "no control file is left (R25)"
@@ -1892,7 +1897,7 @@ test_overnight_stop_held_by_operator() {
   scenario "$ISO1; holdop" "wtledger final review done"
   start_bg; wait_held 60
   assert_contains "$R/control/-.held" "^held held by operator until " "held by the operator"
-  verb stop -; bg_end 60 "the run ends within a poll"
+  verb stop -; bg_end 60 "the run ends"
   assert_contains "$R/report.md" "^Ending: stopped by operator$" "a stop on an operator-held story is stopped by operator (R5)"
   assert_eq 1 "$(calls)" "no unit ran"
   holds_off
@@ -2352,7 +2357,8 @@ FAKE
 # exclusive-scan: test_overnight_overhead in (a) it bounds the runner's own gap between units, a pure elapsed ceiling that a loaded machine breaks
 # exclusive-scan: test_overnight_timeout in (a) it asserts the watchdog cut a long session far short of its sleep, which needs a quiet machine
 # exclusive-scan: test_overnight_kill_after_grace out (d) the one-second watchdog only has to fire, and a late start gives the same ending; the grace runs on the real clock, so the test is also in the real-clock list
-# exclusive-scan: test_overnight_reap_poll_keeps_budget out (b) the HUP lands after an event wait on the session file, and the elapsed check is a lower bound only
+# exclusive-scan: test_overnight_reap_poll_keeps_budget out (b) the HUP lands after an event wait for the session's hang loop, which only starts once its TERM trap is set, and the elapsed check is a lower bound only
+# exclusive-scan: test_overnight_inhibitor in (seed) a spec seed kept in the exclusive phase; its caffeinate-death wait is an event with a long ceiling
 # exclusive-scan: test_overnight_sigterm in (b) the TERM must land while the one live session is still inside its sleep, a short window
 # exclusive-scan: test_overnight_sigint in (b) the INT must land while the one live session is still inside its sleep, a short window
 # exclusive-scan: test_overnight_sighup out (b) the session sleeps for a long time and the HUP lands after an event wait, so no window; it is in the real-clock list
