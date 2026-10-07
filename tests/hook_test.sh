@@ -869,7 +869,7 @@ test_skill_bootstrap_stage_line() {
   assert_not_contains "$_b" 'When `.studio/STATE.md` exists' "the file-exists wording is gone"
 }
 
-# exclusive-scan: test_inbox_hook_silent_outside_units in (a) asserts the hook returns inside a 1 s ceiling with a writer holding the fifo open
+# exclusive-scan: test_inbox_hook_silent_outside_units in (a, c) asserts the hook returns inside a 1 s ceiling with a writer holding the fifo open
 TESTS_EXCLUSIVE="test_inbox_hook_silent_outside_units"
 run_tests test_session_start_stage_per_checkout test_session_start_take_hint \
   test_session_start_never_writes test_skill_bootstrap_stage_line test_hook_files test_hook_output_shape test_hook_defaults_from_studio_json \

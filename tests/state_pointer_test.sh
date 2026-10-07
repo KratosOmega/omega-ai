@@ -399,7 +399,7 @@ test_state_legacy_pointer_resolves() {
   assert_contains "$WB/.studio/STATE.md" '^stage: brainstorm$' "into its own file"
 }
 
-# exclusive-scan: test_state_story_writes_unchanged in (c) asserts STUDIO_STORY calls take at most 2 s while the mutex is held; failed under load (audit)
+# exclusive-scan: test_state_story_writes_unchanged in (a, c) asserts STUDIO_STORY calls take at most 2 s while the mutex is held; failed under load (audit)
 # exclusive-scan: test_state_milestone_without_main in (a) asserts local writes take at most 3 s
 # exclusive-scan: test_state_every_write_holds_mutex in (a) asserts STUDIO_STORY writes take at most 3 s while the mutex is held
 # exclusive-scan: test_state_dead_holder_reaped_fast in (a) asserts a dead holder is reaped inside a 2 s ceiling

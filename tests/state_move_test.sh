@@ -508,7 +508,7 @@ test_state_mutex_single_acquisition() {
   dead_mutex; assert_eq "" "$(git -C "$P" status --porcelain)" "a dangling link never shows in git status"
   # INT during a paused move: exit 130, no link, no target pointer.
   proj si; plan_in_p; st "$P" set stage execute >/dev/null; wt e feat/e; WE="$W"
-  ( cd "$P" && STUDIO_STATE_TEST_SEAM=pause3 own_group sh "$STATE_BIN" handoff "$WE" ) >/dev/null 2>&1 & _hp=$!
+  ( cd "$P" && own_group env STUDIO_STATE_TEST_SEAM=pause3 sh "$STATE_BIN" handoff "$WE" ) >/dev/null 2>&1 & _hp=$!
   # Wait for the pause itself (the intent line): bash drops an INT that lands while it
   # waits on a foreground child that does not die of it, so an early INT can be lost.
   _i=0; while ! grep -q "^- [0-9-]* handing$T" "$P/.studio/STATE.md" && [ "$_i" -lt 100 ]; do sleep 0.1; _i=$((_i + 1)); done
