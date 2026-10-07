@@ -38,10 +38,14 @@ echo $(( $(cat "'"$TMP"'/slots.n") - 1 )) > "'"$TMP"'/slots.n"; rmdir "'"$TMP"'/
 SLOTX="$(printf '%s' "$SLOT" | sed 's/slots\./slotsx./g')"
 
 reset() { rm -rf "$SD" "$TMP"/slots* "$TMP/order" "$TMP/phase"; mkdir -p "$SD"; : > "$TMP/table"; }
+# HERMETIC: the run_all knobs a caller may have exported (TEST_SUITES=run_all from run_affected,
+# TESTS_ONLY from a developer focusing one test), reset to their defaults (empty) for a nested
+# run. TEST_SH is kept on purpose: the dash acceptance run passes it down.
+HERMETIC="TEST_SUITES= TESTS_ONLY= TEST_JOB_TIMEOUT= TEST_SLOWEST= TEST_JOBS= TEST_LOG_DIR= TEST_PHASE= TEST_SHARD= TEST_TIMING_LOG="
 # ra NAME [VAR=val …] — run run_all.sh on the fixtures; output in $TMP/NAME.out, status in $RC.
 ra() {
   _n="$1"; shift; RC=0
-  env RUN_ALL_SUITES_DIR="$SD" RUN_ALL_TABLE="$TMP/table" TEST_LOG_DIR="$TMP/log-$_n" TEST_JOBS=3 "$@" \
+  env $HERMETIC RUN_ALL_SUITES_DIR="$SD" RUN_ALL_TABLE="$TMP/table" TEST_LOG_DIR="$TMP/log-$_n" TEST_JOBS=3 "$@" \
     ${TEST_SH:-sh} "$REPO_ROOT/tests/run_all.sh" > "$TMP/$_n.out" 2>&1 || RC=$?
 }
 cnt() { grep -cF -- "$2" "$1" 2>/dev/null; true; }
@@ -50,7 +54,7 @@ under() { case "$1" in "$2"*) echo 1 ;; *) echo 0 ;; esac; }
 rows() { wc -l < "$1" | tr -d ' '; }
 # ra_bg NAME JOBS — run_all in a session of its own, as a terminal gives it; pid in $_ra.
 ra_bg() {
-  RUN_ALL_SUITES_DIR="$SD" RUN_ALL_TABLE="$TMP/table" TEST_LOG_DIR="$TMP/log-$1" TEST_JOBS="$2" \
+  env $HERMETIC RUN_ALL_SUITES_DIR="$SD" RUN_ALL_TABLE="$TMP/table" TEST_LOG_DIR="$TMP/log-$1" TEST_JOBS="$2" \
     perl -MPOSIX -e '$SIG{INT}="DEFAULT"; POSIX::setsid() or die; exec @ARGV' \
     ${TEST_SH:-sh} "$REPO_ROOT/tests/run_all.sh" > "$TMP/$1.out" 2>&1 &
   _ra=$!
@@ -198,19 +202,24 @@ test_run_all_ctrl_c_cleans_up() {
 touch "'"$TMP"'/ready-$$"; sleep 300'
   fx cca 1 "$_b"; fx ccb 1 "$_b"
   printf 'cca_test 1 1\nccb_test 1 1\n' > "$TMP/table"
+  # a neighbour: a process under another log dir whose path shares log-cc as a prefix
+  mkdir -p "$TMP/log-cc2/bin"; ln -sf "$(command -v sleep)" "$TMP/log-cc2/bin/msleep"
+  "$TMP/log-cc2/bin/msleep" 300 & _nb=$!
   ra_bg cc 2
   _i=0; while [ "$(ls "$TMP"/ready-* 2>/dev/null | wc -l)" -lt 2 ] && [ "$_i" -lt 100 ]; do sleep 0.1; _i=$((_i + 1)); done
   kill -INT "$_ra"
   _i=0; while kill -0 "$_ra" 2>/dev/null && [ "$_i" -lt 150 ]; do sleep 0.1; _i=$((_i + 1)); done
   _rc=0; wait "$_ra" || _rc=$?
   assert_eq 130 "$_rc" "INT ends run_all with 130 within 15 s"
-  assert_eq "" "$(pgrep -f "$TMP/log-cc" 2>/dev/null)" "no job process, and no sleeper in a group of its own, survives"
+  assert_eq "" "$(pgrep -f "$TMP/log-cc/" 2>/dev/null)" "no job process, and no sleeper in a group of its own, survives"
   assert_contains "$TMP/cc.out" "interrupted" "the summary says interrupted"
+  assert_eq 1 "$(kill -0 "$_nb" 2>/dev/null && echo 1 || echo 0)" "a process under a neighbouring log dir is untouched"
+  kill "$_nb" 2>/dev/null; wait "$_nb" 2>/dev/null; true
 }
 
 test_run_all_serial_ctrl_c() {
-  reset
-  fx sca 1 "echo \$\$ > \"$TMP/pid-a\"; touch \"$TMP/ready-a\"; sleep 300"
+  reset; mkdir -p "$TMP/bin"; ln -sf "$(command -v sleep)" "$TMP/bin/msleep-sc"
+  fx sca 1 "echo \$\$ > \"$TMP/pid-a\"; touch \"$TMP/ready-a\"; \"$TMP/bin/msleep-sc\" 300"
   ra_bg sc 1
   _i=0; while [ ! -f "$TMP/ready-a" ] && [ "$_i" -lt 100 ]; do sleep 0.1; _i=$((_i + 1)); done
   # a terminal's Ctrl-C reaches the whole foreground group
@@ -220,8 +229,10 @@ test_run_all_serial_ctrl_c() {
   assert_eq 130 "$_rc" "INT ends serial run_all with 130 within 15 s"
   assert_contains "$TMP/sc.out" "interrupted" "the summary says interrupted"
   _p="$(cat "$TMP/pid-a" 2>/dev/null)"
-  assert_eq "" "$(pgrep -P "${_p:-0}" 2>/dev/null)" "no sleep survives under the suite"
+  # by argv, not pgrep -P: an orphan is reparented to pid 1, so -P of a dead suite is always empty
+  assert_eq "" "$(pgrep -f "$TMP/bin/msleep-sc" 2>/dev/null)" "no sleep the suite started survives"
   assert_eq 1 "$(kill -0 "${_p:-0}" 2>/dev/null && echo 0 || echo 1)" "the suite itself is gone"
+  pkill -KILL -f "$TMP/bin/msleep-sc" 2>/dev/null; true
 }
 
 test_run_all_job_timeout() {
@@ -229,12 +240,81 @@ test_run_all_job_timeout() {
   _b='mkdir -p "$TMPDIR/bin"; ln -s "$(command -v sleep)" "$TMPDIR/bin/msleep"; ( exec perl -e '"'"'setpgrp(0,0); exec @ARGV'"'"' "$TMPDIR/bin/msleep" 300 ) & sleep 30'
   fx to 1 "$_b"
   _t0=$(date +%s)
-  ra to TEST_JOB_TIMEOUT=2
+  ra to TEST_JOB_TIMEOUT=2 "TEST_LOG_DIR=$TMP/log t o"
   _el=$(( $(date +%s) - _t0 ))
   assert_eq 1 "$RC" "a timed-out job fails the gate"
   assert_eq 1 "$([ "$_el" -le 15 ] && echo 1 || echo 0)" "the timeout ends the run within 15 s (took $_el)"
-  assert_eq 1 "$(cnt "$TMP/log-to/summary.tsv" "red: timed out after 2 s")" "the verdict names the timeout"
-  assert_eq "" "$(pgrep -f "$TMP/log-to" 2>/dev/null)" "nothing survives, not even a sleeper in a group of its own"
+  assert_eq 1 "$(cnt "$TMP/log t o/summary.tsv" "red: timed out after 2 s")" "the verdict names the timeout"
+  assert_eq "" "$(pgrep -f "$TMP/log t o/" 2>/dev/null)" "nothing survives, not even a sleeper in a group of its own (log dir with spaces)"
+}
+
+# HANG: a fixture body that hangs 20 s in a sleeper tagged by its job dir.
+HANG='mkdir -p "$TMPDIR/bin"; ln -sf "$(command -v sleep)" "$TMPDIR/bin/msleep"; "$TMPDIR/bin/msleep" 20'
+
+test_run_all_reused_log_dir_keeps_timeout() {
+  reset; fx rl 1
+  ra rl
+  assert_eq 0 "$RC" "the first run into the dir is green"
+  fx rl 1 "$HANG"
+  _t0=$(date +%s)
+  ra rl TEST_JOB_TIMEOUT=2
+  _el=$(( $(date +%s) - _t0 ))
+  assert_eq 1 "$RC" "a hung job in a reused log dir still fails the gate"
+  assert_eq 1 "$(cnt "$TMP/log-rl/summary.tsv" "red: timed out after 2 s")" "the previous run's rc does not end the job: it times out"
+  assert_eq 1 "$([ "$_el" -le 15 ] && echo 1 || echo 0)" "within 15 s (took $_el)"
+}
+
+test_run_all_stale_rc_is_not_a_status() {
+  reset; fx fr 1 'printf "0\nan-earlier-run\n" > "$TMPDIR/../rc"; '"$HANG"
+  _t0=$(date +%s)
+  ra fr TEST_JOB_TIMEOUT=2
+  _el=$(( $(date +%s) - _t0 ))
+  assert_eq 1 "$RC" "an rc from another run, written while the job runs, is not its status"
+  assert_eq 1 "$(cnt "$TMP/log-fr/summary.tsv" "red: timed out after 2 s")" "the job still times out"
+  assert_eq 1 "$([ "$_el" -le 15 ] && echo 1 || echo 0)" "within 15 s (took $_el)"
+}
+
+test_run_all_finished_job_leaves_nothing() {
+  reset
+  fx lk 1 'mkdir -p "$TMPDIR/bin"; ln -s "$(command -v sleep)" "$TMPDIR/bin/msleep"
+( exec perl -e '"'"'setpgrp(0,0); exec @ARGV'"'"' "$TMPDIR/bin/msleep" 300 ) &
+sleep 300 & echo $! > "'"$TMP"'/grp.pid"'
+  cat > "$SD/lx_test.sh" <<XEOF
+TESTS_EXCLUSIVE=t1
+pt=p1of1; [ "\${TEST_PHASE:-}" = exclusive ] && pt=x
+row() { [ -z "\${TEST_TIMING_LOG:-}" ] || printf '%s\n' "\$1" >> "\$TEST_TIMING_LOG"; }
+row "\$(printf 'L\t%s\t%s\t1\t-' lx_test "\$pt")"
+if [ "\$pt" = x ]; then
+  { pgrep -f "$TMP/log-lk/lk_test.p1of1/"; kill -0 "\$(cat "$TMP/grp.pid")" 2>/dev/null && echo group-sleeper; } > "$TMP/during-x"
+  row "\$(printf 'T\t%s\tx\t1\tt1\t0\t1\t0' lx_test)"
+fi
+printf '\n1 assertions, 0 failed\n'
+XEOF
+  ra lk
+  assert_eq 0 "$RC" "leftovers are killed, not a red"
+  assert_file "$TMP/during-x" "the exclusive job ran"
+  assert_eq "" "$(cat "$TMP/during-x" 2>/dev/null)" "nothing a finished job left is running when the exclusive phase starts"
+  assert_eq "" "$(pgrep -f "$TMP/log-lk/" 2>/dev/null)" "nothing from a job dir outlives run_all"
+  assert_eq 1 "$(kill -0 "$(cat "$TMP/grp.pid" 2>/dev/null || echo 0)" 2>/dev/null && echo 0 || echo 1)" "the sleeper left in the job's own group is gone"
+  assert_contains "$TMP/lk.out" "lk_test.p1of1 left processes running" "the job's block says it left processes"
+  pkill -KILL -f "$TMP/log-lk/" 2>/dev/null; kill -KILL "$(cat "$TMP/grp.pid" 2>/dev/null || echo 0)" 2>/dev/null; true
+}
+
+test_run_all_test_helpers_hermetic() {
+  reset; fx he 1; printf 'he_test 1 5\n' > "$TMP/table"
+  _r="$(export TEST_SUITES=nope TESTS_ONLY=nope TEST_JOB_TIMEOUT=x TEST_SLOWEST=x; ra he; echo "$RC")"
+  assert_eq 1 "$_r" "ra ignores the caller's TEST_SUITES, TESTS_ONLY and knobs"
+  assert_eq 1 "$(cnt "$TMP/he.out" "he_test: 1 assertions, below its floor 5")" "ra's run ran the suite checks"
+  _r="$(export TEST_SUITES=nope TESTS_ONLY=nope TEST_JOB_TIMEOUT=x TEST_SLOWEST=x; ra_bg hb 2; _x=0; wait "$_ra" || _x=$?; echo "$_x")"
+  assert_eq 1 "$_r" "ra_bg ignores them too"
+  assert_eq 1 "$(cnt "$TMP/hb.out" "he_test: 1 assertions, below its floor 5")" "ra_bg's run ran the suite checks"
+}
+
+test_run_all_duplicate_table_row() {
+  reset; fx du 1; printf 'du_test 1 1\ndu_test 1 1\n' > "$TMP/table"
+  ra du
+  assert_eq 2 "$RC" "a suite named twice in the table exits 2"
+  assert_eq 1 "$(cnt "$TMP/du.out" "duplicate row for du_test")" "it names the suite"
 }
 
 test_run_all_bad_jobs_value() {
@@ -287,4 +367,6 @@ run_tests test_run_all_green_parallel test_run_all_red_suite_fails_gate \
   test_run_all_job_has_own_session test_run_all_job_tmpdir_is_per_job \
   test_run_all_ctrl_c_cleans_up test_run_all_serial_ctrl_c test_run_all_job_timeout \
   test_run_all_bad_jobs_value test_run_all_unknown_suite test_run_all_summary_and_slowest \
-  test_run_all_log_dir_with_space
+  test_run_all_log_dir_with_space test_run_all_reused_log_dir_keeps_timeout \
+  test_run_all_stale_rc_is_not_a_status test_run_all_finished_job_leaves_nothing \
+  test_run_all_test_helpers_hermetic test_run_all_duplicate_table_row

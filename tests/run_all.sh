@@ -4,7 +4,8 @@
 # Parallel (default): each suite, or each shard of a sharded suite, is one job in a pool of
 # at most TEST_JOBS, in a session and process group of its own (POSIX::setsid), with its own
 # TMPDIR and log; then the TESTS_EXCLUSIVE tests of each suite that has them run alone. Each
-# job's output is printed whole when it ends, then a summary and the slowest tests. A job is
+# job's output is printed whole when it ends, then a summary and the slowest tests. What a
+# job leaves running when it ends (in its group, or under its job dir) is killed then. A job is
 # red on a non-zero exit, a missing or failing summary line, no status or a timeout; a suite
 # is red when it wrote no run_tests row, a listed test did not run exactly once (finals once
 # per partition), or its assertions are below its floor in the table below.
@@ -38,8 +39,7 @@ table() {
   cat <<'EOF'
 # suite                      shards  floor
 overnight_lanes_test         8       1128
-# floor: set by controller (T0 step 2)
-overnight_test               4       0
+overnight_test               4       1132
 toolkit_test                 1       175
 studio_adopt_test            1       306
 install_test                 1       369
@@ -78,6 +78,7 @@ command -v "$TEST_SH" >/dev/null 2>&1 || die2 "TEST_SH '$TEST_SH' not found"
 
 TABLE="$(table | awk '/^[[:space:]]*(#|$)/ { next }
   NF != 3 || $2 !~ /^[1-9][0-9]*$/ || $3 !~ /^[0-9]+$/ { print "BAD row " NR ": " $0; next }
+  seen[$1]++ { print "BAD row " NR ": duplicate row for " $1; next }
   { print $1, $2, $3 }')"
 case "$TABLE" in *"BAD row"*) die2 "table $(printf '%s\n' "$TABLE" | grep '^BAD' | head -n 1 | sed 's/^BAD //')" ;; esac
 for _s in $(printf '%s\n' "$TABLE" | awk '{ print $1 }'); do
@@ -113,26 +114,64 @@ for _s in $ORDER; do printf '%s\t%s\n' "$_s" "$(row_of "$_s" 3)" >> "$LOGDIR/flo
 for _s in $NOROW; do echo "run_all: $_s has no table row: one job, floor 1"; done
 
 LIVE=""; QUEUE=""; RED=0; XSECS=0; SUITE_RED=""; T_START=$(date +%s)
+# RUNID tags this run's rc files (line 2), so an rc left by an earlier run into a reused
+# TEST_LOG_DIR, or written late by a straggler of one, is never read as a job's status.
+RUNID="$$.$T_START"; LAUNCHING=""; LAUNCH_PREV=""
+# Set $! before any launch: under set -u it is unbound until the first background job, and
+# launch and on_signal compare it to tell whether a job had been started.
+: & wait "$!"
 PERL_LAUNCH='$SIG{INT}=$SIG{QUIT}="DEFAULT"; POSIX::setsid() or die "setsid: $!\n"; exec @ARGV or die "exec: $!\n"'
 alive() { kill -0 "$1" 2>/dev/null || return 1; case "$(ps -o stat= -p "$1" 2>/dev/null)" in Z*|'') return 1 ;; esac; }
 count() { echo $#; }
+# rc_ok DIR — DIR/rc exists and this run wrote it. rc_of DIR — its status, else nothing.
+rc_ok() { [ -f "$1/rc" ] && [ "$(sed -n 2p "$1/rc" 2>/dev/null)" = "$RUNID" ]; }
+rc_of() { rc_ok "$1" && sed -n 1p "$1/rc"; }
+# rx PATH — PATH as an extended regex that matches only itself (for pgrep/pkill -f).
+rx() { printf '%s\n' "$1" | sed 's/[]\\.*^$+?(){}|[]/\\&/g'; }
+# sweep JOB — TERM, then KILL, every process whose argv names the job's dir: what left the
+# job's group (own_group, setsid) under its TMPDIR (D4). Waits up to 1 s after each signal.
+sweep() {
+  _sp="$(rx "$LOGDIR/$1/")"
+  pgrep -f "$_sp" >/dev/null 2>&1 || return 0
+  for _sig in TERM KILL; do
+    pkill -"$_sig" -f "$_sp" 2>/dev/null; _sw=0
+    while pgrep -f "$_sp" >/dev/null 2>&1 && [ "$_sw" -lt 10 ]; do sleep 0.1; _sw=$((_sw + 1)); done
+  done
+}
+# drop JOB — remove JOB from LIVE.
+drop() { _dl=""; for _x in $LIVE; do [ "$_x" = "$1" ] || _dl="$_dl $_x"; done; LIVE="$_dl"; }
+# JOB_SH: the job wrapper. rc is written to a temp name and renamed (never read half-written);
+# line 1 is the status, line 2 this run's RUNID.
+JOB_SH='"$TEST_SH" "$1" > "$2" 2>&1 < /dev/null; _r=$?; printf "%s\n%s\n" "$_r" "$4" > "$3.tmp" && mv "$3.tmp" "$3"'
 
 # launch JOB SUITE PHASE SHARD PART — one parallel job: own session and group, own TMPDIR.
+# The job dir starts empty: nothing of a previous run into the same TEST_LOG_DIR survives.
 launch() {
-  _d="$LOGDIR/$1"; mkdir -p "$_d/tmp"
+  _d="$LOGDIR/$1"; rm -rf "$_d"; mkdir -p "$_d/tmp"
   printf '%s %s\n' "$2" "$5" > "$_d/meta"; date +%s > "$_d/t0"
+  LAUNCH_PREV="$!"; LAUNCHING="$1"
   env TMPDIR="$_d/tmp" TEST_TIMING_LOG="$LOGDIR/timing.tsv" TEST_PHASE="$3" TEST_SHARD="$4" TEST_SH="$TEST_SH" \
     perl -MPOSIX -e "$PERL_LAUNCH" \
-    sh -c "$TEST_SH \"\$1\" > \"\$2\" 2>&1 < /dev/null; echo \$? > \"\$3.tmp\" && mv \"\$3.tmp\" \"\$3\"" \
-    _ "$SDIR/$2.sh" "$_d/log" "$_d/rc" &
+    sh -c "$JOB_SH" _ "$SDIR/$2.sh" "$_d/log" "$_d/rc" "$RUNID" &
   printf '%s\n' "$!" > "$_d/pid"
-  LIVE="$LIVE $1"
+  LIVE="$LIVE $1"; LAUNCHING=""
+}
+# reap PID JOB — the job has ended: wait for it, then KILL what it left behind, in its group
+# or escaped from it, so nothing of a finished job runs on into the exclusive phase or past
+# run_all (R4.5). Leftovers are noted in the job's log, not made red.
+reap() {
+  wait "$1" 2>/dev/null; _left=0
+  if kill -0 "-$1" 2>/dev/null; then _left=1; kill -KILL "-$1" 2>/dev/null; fi
+  if pgrep -f "$(rx "$LOGDIR/$2/")" >/dev/null 2>&1; then _left=1; sweep "$2"; fi
+  [ "$_left" = 0 ] || printf '\nrun_all: %s left processes running after it ended; killed them\n' "$2" >> "$LOGDIR/$2/log"
 }
 # finish JOB REASON [quiet] — one summary row; print the job's block unless quiet.
+# A job is finished once (the done marker), even if a signal lands mid-pool.
 finish() {
   _d="$LOGDIR/$1"; _why="$2"; read -r _s _pt < "$_d/meta"
+  [ ! -f "$_d/done" ] || return 0
   _secs=$(( $(date +%s) - $(cat "$_d/t0") ))
-  _rc="$(cat "$_d/rc" 2>/dev/null)"
+  _rc="$(rc_of "$_d")"
   _sum="$(grep -E '^[0-9]+ assertions, [0-9]+ failed$' "$_d/log" 2>/dev/null | tail -n 1)"
   _a="${_sum%% *}"; _f="$(printf '%s\n' "$_sum" | sed -n 's/^.* assertions, \([0-9]*\) failed$/\1/p')"
   _nt="$(awk -F'\t' -v s="$_s" -v p="$_pt" '$1 == "T" && $2 == s && $3 == p { n++ } END { print n + 0 }' "$LOGDIR/timing.tsv")"
@@ -146,30 +185,30 @@ finish() {
   if [ -z "$_why" ]; then _v=green; else _v="red: $_why"; RED=1; fi
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$_s" "$_pt" "$_secs" "$_nt" "${_a:-0}" "${_f:-0}" "$_v" >> "$LOGDIR/summary.tsv"
   [ "${3:-}" = quiet ] || { printf '\n=== %s [%s] %s s ===\n' "$_s" "$_pt" "$_secs"; cat "$_d/log"; }
+  : > "$_d/done"
 }
 # stop_group PID JOB — TERM the job's group, KILL it after 5 s, then sweep what escaped it (D4).
 stop_group() {
   kill -TERM "-$1" 2>/dev/null; _sg=0
   while kill -0 "-$1" 2>/dev/null && [ "$_sg" -lt 25 ]; do sleep 0.2; _sg=$((_sg + 1)); done
   kill -KILL "-$1" 2>/dev/null
-  pkill -f "$LOGDIR/$2/" 2>/dev/null
+  sweep "$2"
 }
 # pool MAX — run the QUEUE words "job|suite|phase|shard|part" with at most MAX jobs live.
 pool() {
   _pmax="$1"; _plast=$(date +%s)
   while [ -n "$QUEUE" ] || [ -n "$LIVE" ]; do
-    _keep=""
     for _j in $LIVE; do
       _d="$LOGDIR/$_j"; _p="$(cat "$_d/pid")"
-      if [ -f "$_d/rc" ]; then wait "$_p" 2>/dev/null; finish "$_j" ""
+      if rc_ok "$_d"; then reap "$_p" "$_j"; finish "$_j" ""
       elif ! alive "$_p"; then
-        wait "$_p" 2>/dev/null
-        if [ -f "$_d/rc" ]; then finish "$_j" ""; else finish "$_j" "no status"; fi
+        reap "$_p" "$_j"
+        if rc_ok "$_d"; then finish "$_j" ""; else finish "$_j" "no status"; fi
       elif [ $(( $(date +%s) - $(cat "$_d/t0") )) -ge "$TIMEOUT" ]; then
         stop_group "$_p" "$_j"; wait "$_p" 2>/dev/null; finish "$_j" "timed out after $TIMEOUT s"
-      else _keep="$_keep $_j"; fi
+      else continue; fi
+      drop "$_j"
     done
-    LIVE="$_keep"
     while [ -n "$QUEUE" ] && [ "$(count $LIVE)" -lt "$_pmax" ]; do
       set -- $QUEUE; _q="$1"; shift; QUEUE="$*"
       _oifs="$IFS"; IFS='|'; set -- $_q; IFS="$_oifs"
@@ -199,9 +238,9 @@ parallel_mode() {
 }
 serial_mode() {
   for _s in $SEL; do
-    _d="$LOGDIR/$_s"; mkdir -p "$_d"; date +%s > "$_d/t0"; printf '%s all\n' "$_s" > "$_d/meta"
+    _d="$LOGDIR/$_s"; rm -rf "$_d"; mkdir -p "$_d"; date +%s > "$_d/t0"; printf '%s all\n' "$_s" > "$_d/meta"
     printf '\n=== %s ===\n' "$_s.sh"
-    { TEST_TIMING_LOG="$LOGDIR/timing.tsv" "$TEST_SH" "$SDIR/$_s.sh"; echo $? > "$_d/rc"; } 2>&1 | tee "$_d/log"
+    { TEST_TIMING_LOG="$LOGDIR/timing.tsv" "$TEST_SH" "$SDIR/$_s.sh"; printf '%s\n%s\n' "$?" "$RUNID" > "$_d/rc"; } 2>&1 | tee "$_d/log"
     finish "$_s" "" quiet
   done
 }
@@ -242,9 +281,17 @@ summary() {
     | sort -t "$(printf '\t')" -k1,1nr | head -n "$TEST_SLOWEST" \
     | awk -F'\t' '{ printf "  %5s s  %s [%s] %s\n", $1, $2, $3, $4 }'
 }
-# on_signal N NAME — forward to every live job's group, wait 10 s, KILL, sweep the log dir.
+# on_signal N NAME — forward to every live job's group, wait 10 s, KILL, sweep each job's dir.
 on_signal() {
   trap '' INT TERM HUP
+  for _j in $LIVE; do [ ! -f "$LOGDIR/$_j/done" ] || drop "$_j"; done
+  # A signal between launch's `&` and its LIVE update: the job is $! (it differs from the
+  # last background pid before the launch only once the job was started). It may not have
+  # reached its setsid yet, so it also gets a pid KILL below (it is unreaped: no pid reuse).
+  _late=""
+  if [ -n "$LAUNCHING" ] && ! in_list "$LAUNCHING" "$LIVE" && [ "$!" != "$LAUNCH_PREV" ]; then
+    printf '%s\n' "$!" > "$LOGDIR/$LAUNCHING/pid"; LIVE="$LIVE $LAUNCHING"; _late="$!"
+  fi
   for _j in $LIVE; do kill -"$2" "-$(cat "$LOGDIR/$_j/pid")" 2>/dev/null; done
   _w=0
   while [ "$_w" -lt 50 ]; do
@@ -254,7 +301,8 @@ on_signal() {
     sleep 0.2; _w=$((_w + 1))
   done
   for _j in $LIVE; do kill -KILL "-$(cat "$LOGDIR/$_j/pid")" 2>/dev/null; done
-  pkill -f "$LOGDIR" 2>/dev/null
+  [ -z "$_late" ] || kill -KILL "$_late" 2>/dev/null
+  for _j in $LIVE; do sweep "$_j"; done
   for _j in $LIVE; do wait "$(cat "$LOGDIR/$_j/pid")" 2>/dev/null; finish "$_j" interrupted; done
   summary interrupted
   printf 'run_all: interrupted — logs kept in %s\n' "$LOGDIR" >&2
