@@ -267,6 +267,115 @@ test_exclusive_scan_ignores_comments_and_top_level() {
     "comment lines and lines after a test's closing brace create no flag; code with a trailing comment still does"
 }
 
+# ---- static guards (spec R2.5, R5, R7). Each takes the tests dir as its parameter; the tests
+# below pass ${GUARD_TESTS_DIR:-tests}. Every offender is printed as file:line.
+GUARD_DIR() { printf '%s' "${GUARD_TESTS_DIR:-$REPO_ROOT/tests}"; }
+
+# guard_unscoped_scans DIR — pgrep/pkill/ps -A lines (not comments) that name no $TMP, msleep,
+# pid, group or session scope and carry no "# scan-ok:".
+guard_unscoped_scans() {
+  grep -nE '(^|[^a-z])(pgrep|pkill|ps -A)' "$1"/*_test.sh | awk -F: ' # scan-ok: the guard itself (an awk comment)
+    { t = substr($0, length($1) + length($2) + 3)
+      if (t ~ /^[ \t]*#/) next
+      if (index(t, "$TMP") || index(t, "msleep") || index(t, "-P ") || index(t, "-p ") || index(t, "-g ") ||
+          index(t, "\"-$") || index(t, "-- -") || index(t, "# scan-ok:")) next
+      n = split($1, p, "/"); print p[n] ":" $2 }'
+}
+
+# guard_mktemp_templates DIR — mktemp command lines (not comments) without "${TMPDIR:-/tmp}/".
+guard_mktemp_templates() {
+  _gp='mktemp($|[)"`]| +[-"$/])'    # scan-ok: the guard's own pattern
+  grep -nE "$_gp" "$1"/*_test.sh "$1"/state_fixtures.sh | awk -F: '
+    { t = substr($0, length($1) + length($2) + 3)
+      if (t ~ /^[ \t]*#/) next
+      if (index(t, "${TMPDIR:-/tmp}/") || index(t, "# scan-ok:")) next
+      n = split($1, p, "/"); print p[n] ":" $2 }'
+}
+
+test_no_unscoped_process_scans() {
+  assert_eq "" "$(guard_unscoped_scans "$(GUARD_DIR)")" \
+    "every pgrep/pkill/ps -A in a suite is scoped to \$TMP, a pid or a group (offenders: file:line)"
+}
+
+test_mktemp_uses_tmpdir_template() {
+  assert_eq "" "$(guard_mktemp_templates "$(GUARD_DIR)")" \
+    "every mktemp in a suite or state_fixtures.sh uses a \${TMPDIR:-/tmp}/ template (offenders: file:line)"
+}
+
+test_suite_tmp_under_tmpdir() {
+  mkdir -p "$TMP/shadow" "$TMP/td"; : > "$TMP/mk.log"
+  { printf '#!/bin/sh\n'
+    printf 'out=$("%s" "$@") || exit $?\n' "$(command -v mktemp)"  # scan-ok: builds the shadow
+    printf 'printf "%%s\\n" "$out" >> "%s"\n' "$TMP/mk.log"
+    printf 'printf "%%s\\n" "$out"\n'
+  } > "$TMP/shadow/mktemp"  # scan-ok: the shadow itself
+  chmod +x "$TMP/shadow/mktemp"  # scan-ok: the shadow itself
+  for _s in sync_test state_guard_test; do
+    : > "$TMP/mk.log"
+    ( cd "$REPO_ROOT" && env TEST_PHASE= TEST_SHARD= TEST_TIMING_LOG= TESTS_ONLY=__none__ TMPDIR="$TMP/td" \
+        PATH="$TMP/shadow:$PATH" ${TEST_SH:-sh} "$REPO_ROOT/tests/$_s.sh" ) > "$TMP/$_s.out" 2>&1
+    assert_eq 1 "$([ -s "$TMP/mk.log" ] && echo 1 || echo 0)" "$_s called mktemp through the shadow"
+    assert_eq "" "$(grep -vF "$TMP/td/" "$TMP/mk.log" | sed "s|^|$_s: |")" "every mktemp result of $_s is under TMPDIR"
+  done
+}
+
+# guard_exclusive_rulings DIR — the five ruling checks over every suite in DIR.
+guard_exclusive_rulings() {
+  for _f in "$1"/*_test.sh; do
+    _b="$(basename "$_f")"
+    # one tagged stream in $TMP/gr.all: S flagged test, R ruling, E TESTS_EXCLUSIVE member, L run_tests word
+    awk -f "$REPO_ROOT/tests/exclusive_scan.awk" "$_f" | awk -F'\t' '{ print "S\t" $2 "\t" $4 }' > "$TMP/gr.all"
+    grep -nE '^# exclusive-scan: [^ ]+ (in|out) ' "$_f" | awk -F: -v b="$_b" '{ split(substr($0, length($1) + 2), w, " "); print "R\t" w[3] "\t" w[4] "\t" b ":" $1 }' >> "$TMP/gr.all"
+    # the last ^TESTS_EXCLUSIVE= line, with its backslash continuations (earlier ones sit in fixtures)
+    awk '/^TESTS_EXCLUSIVE=/ { s = $0; while (s ~ /\\$/ && (getline nx) > 0) s = s "\n" nx; last = s } END { if (last != "") print last }' "$_f" > "$TMP/gr.excl.sh"
+    ( TESTS_EXCLUSIVE=""; eval "$(cat "$TMP/gr.excl.sh")"; for _w in $TESTS_EXCLUSIVE; do printf 'E\t%s\n' "$_w"; done ) >> "$TMP/gr.all"
+    # the words of the last run_tests call (continuation lines included)
+    awk '/^run_tests/ { s = ""; seen = 1 } seen { gsub(/\\/, " "); s = s " " $0 } END { n = split(s, w, " "); for (i = 1; i <= n; i++) print "L\t" w[i] }' "$_f" >> "$TMP/gr.all"
+    awk -F'\t' -v b="$_b" '
+      $1 == "S" { fl[$2] = $3 }
+      $1 == "R" { rv[$2] = $3; rl[$2] = $4 }
+      $1 == "E" { ex[$2] = 1 }
+      $1 == "L" { li[$2] = 1 }
+      END {
+        for (t in fl) if (!(t in rv)) print b ": flagged test " t " has no ruling (" fl[t] ")"
+        for (t in rv) {
+          if (!(t in li)) print rl[t] ": ruling for " t ", which run_tests does not list"
+          if (rv[t] ~ /^in/ && !(t in ex)) print rl[t] ": " t " is ruled in but missing from TESTS_EXCLUSIVE"
+          if (rv[t] ~ /^out/ && (t in ex)) print rl[t] ": " t " is ruled out but listed in TESTS_EXCLUSIVE"
+        }
+        for (t in ex) if (!(t in rv) || rv[t] !~ /^in/) print b ": " t " is in TESTS_EXCLUSIVE with no in ruling"
+      }' "$TMP/gr.all"
+  done | sort
+}
+
+test_exclusive_scan_candidates_ruled() {
+  assert_eq "" "$(guard_exclusive_rulings "$(GUARD_DIR)")" \
+    "every scan-flagged test has an in/out ruling that matches TESTS_EXCLUSIVE (offenders: file:line)"
+}
+
+# guard_knobs_named DIR — the header/help/suite checks of spec R7.
+guard_knobs_named() {
+  _bin="$REPO_ROOT/studios/game-dev/bin"
+  _need() { # LABEL TEXT NAME…
+    _lb="$1"; _tx="$2"; shift 2
+    for _k in "$@"; do case "$_tx" in *"$_k"*) ;; *) printf '%s: %s is not named\n' "$_lb" "$_k" ;; esac; done
+  }
+  _need "studio-setup header" "$(sed -n '1,40p' "$_bin/studio-setup")" STUDIO_SETUP_POLL_SECONDS
+  _need "studio-gate header" "$(sed -n '1,30p' "$_bin/studio-gate")" STUDIO_GATE_POLL_SECONDS
+  _need "studio-overnight --help" "$(sh "$_bin/studio-overnight" --help 2>&1)" \
+    STUDIO_OVERNIGHT_REAP_POLL_SECONDS STUDIO_OVERNIGHT_DETACH_POLL_SECONDS
+  _need "overnight-lanes.sh" "$(cat "$_bin/overnight-lanes.sh")" STUDIO_OVERNIGHT_REAP_POLL_SECONDS
+  _need "assert.sh header" "$(sed -n '1,30p' "$REPO_ROOT/tests/assert.sh")" TEST_PHASE TEST_SHARD TEST_TIMING_LOG
+  _need "run_all.sh header" "$(sed -n '1,30p' "$REPO_ROOT/tests/run_all.sh")" TEST_JOBS TEST_SUITES TEST_LOG_DIR \
+    TEST_SLOWEST TEST_JOB_TIMEOUT TEST_SH RUN_ALL_SUITES_DIR RUN_ALL_TABLE
+  _need "overnight_lanes_test.sh" "$(cat "$1/overnight_lanes_test.sh")" LANES_FIXTURE_TEMPLATES
+  _need "overnight_test.sh" "$(cat "$1/overnight_test.sh")" OVERNIGHT_FIXTURE_TEMPLATES
+}
+
+test_knobs_named_in_headers() {
+  assert_eq "" "$(guard_knobs_named "$(GUARD_DIR)")" "every R7 and harness knob is named where its users look"
+}
+
 # exclusive-scan: test_next_second in (a) asserts elapsed < 1.5 s
 # exclusive-scan: test_own_group_gives_group_and_int out (b) the SIGINT goes to a private sh the test started in its own group, never to the harness's group, and nothing else's timing is at stake
 TESTS_EXCLUSIVE="test_next_second"
@@ -277,4 +386,6 @@ run_tests test_shards_cover_every_test_once test_no_phase_runs_all_in_order \
   test_partition_named_in_output test_timing_log_rows test_timing_log_off_by_default \
   test_timing_log_l_row_for_empty_partition test_env_scrub test_own_group_gives_group_and_int \
   test_mk_msleep test_next_second test_harness_private_names_unused \
-  test_exclusive_scan_flags_fixture test_exclusive_scan_ignores_comments_and_top_level
+  test_exclusive_scan_flags_fixture test_exclusive_scan_ignores_comments_and_top_level \
+  test_no_unscoped_process_scans test_mktemp_uses_tmpdir_template test_suite_tmp_under_tmpdir \
+  test_exclusive_scan_candidates_ruled test_knobs_named_in_headers
