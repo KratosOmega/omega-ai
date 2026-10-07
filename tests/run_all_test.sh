@@ -359,6 +359,14 @@ test_run_all_log_dir_with_space() {
   assert_eq 1 "$([ -d "$TMP/log dir" ] && echo 1 || echo 0)" "the caller's dir is kept"
 }
 
+# exclusive-scan: test_run_all_respects_job_bound in (d) the slot fixtures each hold a slot for one second, and the exact peak of two needs the pool's jobs to overlap in that window
+# exclusive-scan: test_run_all_job_sees_trappable_int out (b) the job signals itself and the trap fires at once; no window and no timing assertion
+# exclusive-scan: test_run_all_ctrl_c_cleans_up in (a, c) INT must end run_all and sweep every job's processes inside a fixed ceiling, which a loaded machine can miss
+# exclusive-scan: test_run_all_serial_ctrl_c in (a, c) INT must end serial run_all inside a fixed ceiling, which a loaded machine can miss
+# exclusive-scan: test_run_all_job_timeout in (a, d) a two-second job timeout must end the run and sweep escaped processes inside a fixed ceiling
+# exclusive-scan: test_run_all_reused_log_dir_keeps_timeout in (a, d) a two-second job timeout must still fire in a reused log dir, inside a fixed ceiling
+# exclusive-scan: test_run_all_stale_rc_is_not_a_status in (a, d) a two-second job timeout must still fire past a stale rc file, inside a fixed ceiling
+TESTS_EXCLUSIVE="test_run_all_respects_job_bound test_run_all_ctrl_c_cleans_up test_run_all_serial_ctrl_c test_run_all_job_timeout test_run_all_reused_log_dir_keeps_timeout test_run_all_stale_rc_is_not_a_status"
 run_tests test_run_all_green_parallel test_run_all_red_suite_fails_gate \
   test_run_all_missing_summary_line_is_red test_run_all_no_l_row_is_red \
   test_run_all_below_floor_is_red test_run_all_unran_test_is_red test_run_all_double_run_is_red \
