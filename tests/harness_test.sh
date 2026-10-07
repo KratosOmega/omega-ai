@@ -245,6 +245,28 @@ test_exclusive_scan_flags_fixture() {
     "the scan reports no fixture rows (test_a..test_e) for harness_test.sh itself"
 }
 
+# gen_scan_fixture2 FILE — comments inside a test, and top-level lines after its closing brace.
+gen_scan_fixture2() {
+  sed 's/^|//' > "$1" <<'FIX'
+|test_f() {
+|  # exclusive-scan: test_f in (a) asserts elapsed under 5 s and sends kill -TERM
+|    # sleep 2 inside --seconds 1 text
+|  assert_eq 1 1 clean
+|}
+|# a top-level comment: kill -INT "$p" within 3 s
+|kill -TERM "$q"
+|run --seconds 1
+|test_g() {
+|  run --seconds 2 # trailing comment keeps the code flag
+|}
+FIX
+}
+test_exclusive_scan_ignores_comments_and_top_level() {
+  gen_scan_fixture2 "$TMP/scan2_test.sh"
+  assert_eq "test_g d " "$(awk -f "$REPO_ROOT/tests/exclusive_scan.awk" "$TMP/scan2_test.sh" | awk -F'\t' '{ printf "%s %s ", $2, $3 }')" \
+    "comment lines and lines after a test's closing brace create no flag; code with a trailing comment still does"
+}
+
 # exclusive-scan: test_next_second in (a) asserts elapsed < 1.5 s
 # exclusive-scan: test_own_group_gives_group_and_int out (b) the SIGINT goes to a private sh the test started in its own group, never to the harness's group, and nothing else's timing is at stake
 TESTS_EXCLUSIVE="test_next_second"
@@ -255,4 +277,4 @@ run_tests test_shards_cover_every_test_once test_no_phase_runs_all_in_order \
   test_partition_named_in_output test_timing_log_rows test_timing_log_off_by_default \
   test_timing_log_l_row_for_empty_partition test_env_scrub test_own_group_gives_group_and_int \
   test_mk_msleep test_next_second test_harness_private_names_unused \
-  test_exclusive_scan_flags_fixture
+  test_exclusive_scan_flags_fixture test_exclusive_scan_ignores_comments_and_top_level

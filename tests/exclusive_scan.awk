@@ -2,6 +2,7 @@
 #  a: an elapsed upper bound (date +%s arithmetic compared with -lt/-le, or "under N s"/"well under" text)
 #  b: a signal sent to a live process the test started (kill -INT/-TERM/-HUP/-QUIT/-s)
 #  d: a short window: a literal sleep/--seconds/*_SECONDS=/*_WAIT=/*_MINUTES-free value 1..6 that code under test or a stub must beat
+#  Comment lines (first non-blank char #) and lines after a test's closing "}" at column 0 are never scanned.
 # Output: suite<TAB>test<TAB>flags<TAB>first evidence line numbers
 function flush() {
   if (name != "" && flags != "") printf "%s\t%s\t%s\t%s\n", suite, name, flags, ev
@@ -15,6 +16,10 @@ FNR == 1 { flush(); suite = FILENAME; sub(/.*\//, "", suite); sub(/\.sh$/, "", s
 /^test_[A-Za-z0-9_]*\(\) *\{/ { flush(); name = $0; sub(/\(.*/, "", name); next }
 /^[A-Za-z_][A-Za-z0-9_]*\(\) *\{/ { flush(); next }
 name == "" { next }
+# A column-0 closing brace ends the test function: later top-level lines belong to no test.
+/^\}/ { flush(); next }
+# Comment lines (first non-blank char is #) never create a flag.
+/^[ \t]*#/ { next }
 {
   line = $0
   if (line ~ /date \+%s/ && line ~ /-l[te] [0-9]/) flag("a")
