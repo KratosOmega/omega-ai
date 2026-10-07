@@ -6,11 +6,13 @@
 # Sourced by studio-overnight after its own helpers (say, sq, refuse, state,
 # cfg*, deny_rules, model_for, label_for, with_launch_args, print_launch,
 # run_unit, row, snapshot, story_units, acquire_run_lock, run_setup, unlock)
-# are defined and its preflight has run; never run on its own. Reads studio
-# state and the manifest; never writes either. It redefines stop_requested,
+# are defined and its preflight has run; it sources overnight-ids.sh itself
+# (story ids, #56: ids_check). Never run on its own. Reads studio state and
+# the manifest; never writes either. It redefines stop_requested,
 # spent_all, spent, run_populate, lock_recheck and the session_* slot calls
 # (#39 D19) for manifest mode.
 [ -n "${SELF_DIR:-}" ] || { echo "overnight-lanes.sh: sourced by studio-overnight" >&2; exit 2; }
+. "$SELF_DIR/overnight-ids.sh"   # story ids (#56): ids_check, used by mf_check and lanes_next
 
 # git_retry ARGS… — git ARGS, retried up to three times (sleeps 1, 2, 4 s)
 # while its stderr says a lock or ref could not be taken (D21). Stdout passes
