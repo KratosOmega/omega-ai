@@ -43,13 +43,20 @@ if [ -z "$BASE" ]; then
 fi
 echo "run_affected: base $REF $BASE" >&2
 
-{ git diff --name-only --no-renames "$BASE"; git ls-files --others --exclude-standard; } |
-  sort -u > "$WORK/changed"
-# New paths of renames: their old path is also in the list, so a rename target
-# nobody references is covered by its old path rather than being "unknown".
-git diff --name-only --diff-filter=R -M "$BASE" | sort -u > "$WORK/renamed"
+if git diff --name-only --no-renames "$BASE" > "$WORK/tracked" 2>/dev/null &&
+   git diff -M --name-status --diff-filter=R "$BASE" > "$WORK/rstatus" 2>/dev/null &&
+   git ls-files --others --exclude-standard > "$WORK/untracked" 2>/dev/null; then
+  :
+else
+  echo "run_affected: git diff failed against $BASE - not guessing, run sh tests/run_all.sh" >&2
+  exit 1
+fi
+sort -u "$WORK/tracked" "$WORK/untracked" > "$WORK/changed"
+# Rename pairs old<TAB>new. A rename target nobody references is covered by its
+# old path only if the old path reached an existing suite (else it is unknown).
+awk -F'	' '{ print $2 "\t" $3 }' "$WORK/rstatus" > "$WORK/pairs"
 if [ ! -s "$WORK/changed" ]; then
-  echo "no changes against $REF"
+  echo "no changes against $REF" >&2
   exit 0
 fi
 
@@ -106,6 +113,17 @@ closure() {
   done
 }
 
+# old_covers NEW: true if NEW is a rename target whose old path already selected
+# an existing suite (or all suites, for a shared file).
+old_covers() {
+  _old=$(awk -F'	' -v n="$1" '$2 == n { print $1; exit }' "$WORK/pairs")
+  [ -n "$_old" ] || return 1
+  case "$_old" in
+    tests/assert.sh|tests/run_all.sh|lib/*) return 0 ;;
+  esac
+  [ -n "$(closure "$_old" | grep -xFf "$WORK/all")" ]
+}
+
 while IFS= read -r f; do
   case "$f" in
     tests/assert.sh|tests/run_all.sh|lib/*) add_all "shared: $f"; continue ;;
@@ -131,7 +149,7 @@ while IFS= read -r f; do
   _hit=$(closure "$f")
   if [ -n "$_hit" ]; then
     for _s in $_hit; do add_suite "$_s" "via $f"; done
-  elif ! grep -qxF -- "$f" "$WORK/renamed"; then
+  elif ! old_covers "$f"; then
     add_all "unknown: $f"
   fi
 done < "$WORK/changed"
@@ -153,6 +171,7 @@ SUITES=$(cut -f1 "$WORK/final" | tr '\n' ' ' | sed 's/ $//')
 ALL=$(tr '\n' ' ' < "$WORK/all" | sed 's/ $//')
 rm -rf "$WORK"; trap - EXIT
 if [ "$SUITES" = "$ALL" ]; then
+  unset TEST_SUITES   # "all" means all, not an inherited selection
   exec sh tests/run_all.sh
 fi
 TEST_SUITES="$SUITES"

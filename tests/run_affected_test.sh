@@ -104,6 +104,44 @@ test_affected_rename_counts_both_paths() {
   git -C "$R" mv bin/lib.sh bin/lib2.sh
   git -C "$R" commit -q -m rename
   assert_eq "a_test" "$(list)" "the old path of a rename reaches its readers"
+  assert_not_contains "$TMP/o" "unknown" "a rename target whose old path reached a suite is not unknown"
+}
+
+test_affected_rename_of_unreferenced_old_path_is_unknown() {
+  repo s10
+  git -C "$R" checkout -q -b feat
+  git -C "$R" mv docs/x.md bin/plugin.sh
+  git -C "$R" commit -q -m rename
+  assert_eq "a_test b_test" "$(list)" "doc nobody reads renamed into bin/ maps to all"
+  assert_contains "$TMP/o" "unknown: bin/plugin.sh" "new path is unknown"
+}
+
+test_affected_rename_out_of_suite_dir_is_unknown() {
+  repo s11
+  git -C "$R" checkout -q -b feat
+  mkdir -p "$R/tests/sub"
+  git -C "$R" mv tests/b_test.sh tests/sub/b_test.sh
+  git -C "$R" commit -q -m rename
+  assert_eq "a_test" "$(list)" "a suite moved out of tests/ must not select nothing"
+  assert_contains "$TMP/o" "unknown: tests/sub/b_test.sh" "new path is unknown"
+}
+
+test_affected_git_diff_failure_is_loud() {
+  repo s12
+  echo m >> "$R/bin/lib.sh"
+  printf 'garbage' > "$R/.git/index"
+  _rc=0
+  ( cd "$R" && ${TEST_SH:-sh} tests/run_affected.sh --list ) > "$TMP/o" 2>"$TMP/err" || _rc=$?
+  assert_eq 1 "$([ "$_rc" -ne 0 ] && echo 1 || echo 0)" "a failed git diff exits non-zero"
+  assert_not_contains "$TMP/o" "no changes" "no false no-changes report"
+  assert_contains "$TMP/err" "run_affected: git diff failed" "says so on stderr"
+}
+
+test_affected_all_suites_ignores_inherited_test_suites() {
+  repo s13
+  printf '%s\n' 'echo "SUITES=${TEST_SUITES-unset}"' > "$R/tests/run_all.sh"
+  ( cd "$R" && TEST_SUITES=foo ${TEST_SH:-sh} tests/run_affected.sh 2>/dev/null ) > "$TMP/o"
+  assert_contains "$TMP/o" "SUITES=unset" "all suites means all, not an inherited TEST_SUITES"
 }
 
 test_affected_missing_base_exits_2() {
@@ -120,10 +158,14 @@ test_affected_no_changes() {
   ( cd "$R" && ${TEST_SH:-sh} tests/run_affected.sh --list ) > "$TMP/o" 2>&1 || _rc=$?
   assert_eq 0 "$_rc" "no changes exits 0"
   assert_contains "$TMP/o" "no changes against origin/main" "says so"
+  ( cd "$R" && ${TEST_SH:-sh} tests/run_affected.sh --list 2>/dev/null ) > "$TMP/o"
+  assert_eq "" "$(cat "$TMP/o")" "--list stdout stays empty when nothing changed"
 }
 
 run_tests test_affected_suite_change_maps_to_itself test_affected_shared_files_map_to_all \
   test_affected_sourced_lib_maps_through_closure test_affected_docs_map_to_readers_or_none \
   test_affected_unknown_maps_to_all test_affected_deleted_and_untracked_files \
   test_affected_rename_counts_both_paths test_affected_missing_base_exits_2 \
-  test_affected_no_changes
+  test_affected_no_changes test_affected_rename_of_unreferenced_old_path_is_unknown \
+  test_affected_rename_out_of_suite_dir_is_unknown test_affected_git_diff_failure_is_loud \
+  test_affected_all_suites_ignores_inherited_test_suites
