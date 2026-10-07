@@ -18,11 +18,15 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 . "$REPO_ROOT/tests/assert.sh"
 
 BIN="$REPO_ROOT/studios/game-dev/bin"
-RUNNER="$BIN/studio-overnight"
 STATE_BIN="$BIN/studio-state"
 ADOPT_BIN="$BIN/studio-adopt"
-TMP="$(cd "$(mktemp -d)" && pwd -P)"
+TMP="$(cd "$(mktemp -d "${TMPDIR:-/tmp}/overnight_lanes_test.XXXXXX")" && pwd -P)"
 trap 'rm -rf "$TMP"' EXIT
+# The runner is reached through a link under $TMP, so its argv (and its lanes',
+# and a --detach child's) names $TMP: pgrep -f "$TMP" finds only this run's.
+mkdir -p "$TMP/bin" && ln -s "$BIN/studio-overnight" "$TMP/bin/studio-overnight" && mk_msleep \
+  || { echo "lanes: setup failed" >&2; exit 1; }
+RUNNER="$TMP/bin/studio-overnight"
 # The runner's user-level registry lives under $HOME: never the real one.
 HOME="$TMP/home"; export HOME; mkdir -p "$HOME"
 FAKE="$TMP/fakebin"
@@ -261,7 +265,7 @@ auto() {
 
 # push_to BRANCH FILE — commit FILE (content: BRANCH) to origin's BRANCH via a temp clone.
 push_to() {
-  _pd="$(mktemp -d)"
+  _pd="$(mktemp -d "${TMPDIR:-/tmp}/lanes-stub.XXXXXX")"
   ( git clone -q "$(git remote get-url origin)" "$_pd/c" && cd "$_pd/c" && git checkout -q "$1" \
     && printf '%s\n' "$1" > "$2" && git add "$2" && git commit -qm "$1 moves: $2" && git push -q origin "$1" ) >&2
   rm -rf "$_pd"
@@ -288,7 +292,7 @@ for act in "$@"; do
                       # shells are), left running when the session ends.
                       perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV' sh "$(dirname "$STUB_STATE_BIN")/studio-gate" studio-test -- \
                         sh -c "echo \$\$ > '$CALLS/bggate.pid'; sleep $s" < /dev/null > /dev/null 2>&1 &
-                      while [ ! -s "$CALLS/bggate.pid" ]; do sleep 0.1; done ;;
+                      _bi=0; while [ ! -s "$CALLS/bggate.pid" ] && [ "$_bi" -lt 600 ]; do sleep 0.1; _bi=$((_bi + 1)); done ;;
     "emit "*)         cat "${act#emit }" ;;
     "stop "*)         terminal=1; w="$(story_wt)"
                       ( [ -z "$w" ] || cd "$w"; st ledger "Stop: ${act#stop }" ) ;;
@@ -465,7 +469,7 @@ f="$GH/pr-$1"; rc=0
 case "$out" in
   ok|mergehang)
     head="$(sed -n 's/^head=//p' "$f" | tail -n 1)"; base="$(sed -n 's/^base=//p' "$f" | tail -n 1)"
-    url="$(git remote get-url origin)"; d="$(mktemp -d)"
+    url="$(git remote get-url origin)"; d="$(mktemp -d "${TMPDIR:-/tmp}/lanes-stub.XXXXXX")"
     ( cd "$d" && git clone -q "$url" c && cd c && git checkout -q "$base" \
       && git merge -q --no-ff --no-edit "origin/$head" && git push -q origin "$base" \
       && printf 'state=MERGED\noid=%s\n' "$(git rev-parse HEAD)" >> "$f" \
@@ -473,7 +477,7 @@ case "$out" in
     rm -rf "$d" ;;
   ghonly|lagoid|nofetch)
     head="$(sed -n 's/^head=//p' "$f" | tail -n 1)"; base="$(sed -n 's/^base=//p' "$f" | tail -n 1)"
-    url="$(git remote get-url origin)"; d="$(mktemp -d)"
+    url="$(git remote get-url origin)"; d="$(mktemp -d "${TMPDIR:-/tmp}/lanes-stub.XXXXXX")"
     ( cd "$d" && git clone -q "$url" c && cd c && git checkout -q "$base" \
       && git merge -q --no-ff --no-edit "origin/$head" \
       && { [ "$out" = ghonly ] || git push -q origin "$base"; } \
@@ -1010,7 +1014,7 @@ test_lanes_docs_revision() {
 # wait_for COND SECS — eval COND once a second until it holds, up to SECS.
 wait_for() {
   _wf_i=0
-  while ! eval "$1" && [ "$_wf_i" -lt "$2" ]; do sleep 1; _wf_i=$((_wf_i + 1)); done
+  while ! eval "$1" && [ "$_wf_i" -lt $(( $2 * 5 )) ]; do sleep 0.2; _wf_i=$((_wf_i + 1)); done
 }
 # pid_alive PID — the pid runs and is not a zombie.
 pid_alive() {
@@ -1021,7 +1025,7 @@ pid_alive() {
 # KILLs it and fails MSG. Reaps PID (a child of this shell) into WP_STATUS.
 wait_pid_or_fail() {
   _wp_i=0
-  while pid_alive "$1" && [ "$_wp_i" -lt "$2" ]; do sleep 1; _wp_i=$((_wp_i + 1)); done
+  while pid_alive "$1" && [ "$_wp_i" -lt $(( $2 * 5 )) ]; do sleep 0.2; _wp_i=$((_wp_i + 1)); done
   TESTS_RUN=$((TESTS_RUN + 1))
   if pid_alive "$1"; then kill -KILL "$1" 2>/dev/null; _fail "$3 (still alive after $2 s)"
   else _pass "$3"; fi
@@ -1110,8 +1114,8 @@ test_lanes_end_sessions_spaced_path() {
     SELF_DIR="$BIN"; GRACE=2; RUN_DIR="$TMP/spaced run/r"
     . "$BIN/overnight-lanes.sh"
     mkdir -p "$RUN_DIR/lanes/1" "$RUN_DIR/lanes/2"
-    set -m; sleep 301 & _c1=$!; sleep 302 & _c2=$!; set +m
-    sleep 303 & _w1=$!
+    ( own_group "$TMP/bin/msleep" 301 ) & _c1=$!; ( own_group "$TMP/bin/msleep" 302 ) & _c2=$!
+    "$TMP/bin/msleep" 303 & _w1=$!
     printf '%s\n' "$_c1" > "$RUN_DIR/lanes/1/cpid"; printf '%s\n' "$_w1" > "$RUN_DIR/lanes/1/wpid"
     printf '%s\n' "$_c2" > "$RUN_DIR/lanes/2/cpid"
     lanes_end_sessions 1
@@ -1131,10 +1135,8 @@ test_lanes_sigint() {
   LANES_CONFIG='{"overnight": {"max_lanes": 2}}'; export LANES_CONFIG
   lanes_fixture sigint integration A:- B:- D:-
   printf 'sleep 3\n' > "$SCEN/A"; printf 'sleep 3\n' > "$SCEN/B"
-  set -m 2>/dev/null   # job control, as overnight_test.sh's start_bg: SIGINT is not ignored
-  ( cd "$P" && exec sh "$RUNNER" start "$MFP" ) > "$TMP/si.out" 2>&1 &
-  RPID=$!
-  set +m 2>/dev/null
+  # own_group: a group of its own with SIGINT not ignored (as a terminal's Ctrl-C reaches it)
+  ( cd "$P" && own_group sh "$RUNNER" start "$MFP" ) > "$TMP/si.out" 2>&1 & RPID=$!
   wait_for "[ -f '$CALLS/2.t0' ]" 20
   kill -INT "$RPID"
   wait_pid_or_fail "$RPID" 60 "the runner ends after SIGINT"
@@ -2235,7 +2237,7 @@ test_lanes_reap_names_final_pr() {
 detach_stop() {
   ( cd "$P" && sh "$RUNNER" stop ) > /dev/null 2>&1
   wait_for "[ ! -f '$P/.studio/runs/demo/lock' ]" 60
-  wait_for "[ -z \"\$(pgrep -f '$TMP'; pgrep -f '$RUNNER')\" ]" 20
+  wait_for "[ -z \"\$(pgrep -f '$TMP')\" ]" 20
 }
 test_lanes_detach_strips_env() {
   lanes_fixture det integration A:-
@@ -2281,8 +2283,8 @@ test_lanes_detach_child_refusal_surfaces() {
   # to the suite's output while the detach below runs.
   wait "$RPID" 2>/dev/null
   st=0; ( cd "$P" && sh "$RUNNER" start --detach "$MFP" ) > "$TMP/detk.out" 2>&1 || st=$?
-  pkill -f "$TMP/fakebin/claude" 2>/dev/null; pkill -f "$RUNNER start" 2>/dev/null
-  wait_for "[ -z \"\$(pgrep -f '$TMP'; pgrep -f '$RUNNER')\" ]" 20
+  pkill -f "$TMP/fakebin/claude" 2>/dev/null; pkill -f "$TMP/bin/studio-overnight start" 2>/dev/null
+  wait_for "[ -z \"\$(pgrep -f '$TMP')\" ]" 20
   assert_eq 2 "$st" "a refused detached start exits with the refusal"
   assert_contains "$TMP/detk.out" "lanes still run" "and shows the child's message"
   assert_not_contains "$TMP/detk.out" "^detached:" "and prints no success line"
@@ -2306,21 +2308,21 @@ test_lanes_detach_timeout_lock_held_points_at_status() {
 test_lanes_detach_timeout_no_lock_ends_child() {
   lanes_fixture dtn integration A:-
   export STUDIO_OVERNIGHT_DETACH_STATUS_CMD=false
-  export STUDIO_OVERNIGHT_DETACH_CHILD_CMD="sleep 301 & sleep 301"
+  export STUDIO_OVERNIGHT_DETACH_CHILD_CMD="$TMP/bin/msleep 301 & $TMP/bin/msleep 301"
   st=0; ( cd "$P" && sh "$RUNNER" start --detach "$MFP" ) > "$TMP/dtn.out" 2>&1 || st=$?
   unset STUDIO_OVERNIGHT_DETACH_STATUS_CMD STUDIO_OVERNIGHT_DETACH_CHILD_CMD
   assert_eq 1 "$st" "a status timeout exits 1"
   assert_contains "$TMP/dtn.out" "never took the lock" "the message says the child was ended"
   assert_contains "$TMP/dtn.out" "start " "and the plain command is printed"
   sleep 1
-  assert_eq 0 "$(pgrep -f 'sleep 301' | wc -l | tr -d ' ')" "no child survives"
+  assert_eq 0 "$(pgrep -f "$TMP/bin/msleep 301\$" | wc -l | tr -d ' ')" "no child survives"
 }
 test_lanes_detach_poll_keeps_budget() {
   lanes_fixture dpk integration A:-
   : > "$TMP/dpk.count"
   STUDIO_OVERNIGHT_DETACH_POLL_SECONDS=0.2
   STUDIO_OVERNIGHT_DETACH_STATUS_CMD="echo x >> '$TMP/dpk.count'; false"
-  STUDIO_OVERNIGHT_DETACH_CHILD_CMD="sleep 309"
+  STUDIO_OVERNIGHT_DETACH_CHILD_CMD="$TMP/bin/msleep 309"
   export STUDIO_OVERNIGHT_DETACH_POLL_SECONDS STUDIO_OVERNIGHT_DETACH_STATUS_CMD STUDIO_OVERNIGHT_DETACH_CHILD_CMD
   _t0=$(date +%s); st=0
   ( cd "$P" && sh "$RUNNER" start --detach "$MFP" ) > "$TMP/dpk.out" 2>&1 || st=$?
@@ -2403,7 +2405,7 @@ test_lanes_left_gate_reaped() {
   _gp="$(cat "$CALLS/bggate.pid" 2>/dev/null)"
   assert_eq 0 "$LS_STATUS" "A lands after its left-behind gate is ended"
   assert_status 1 "the left-behind gate's command is gone" -- kill -0 "${_gp:-999999}"
-  assert_eq "" "$(pgrep -f 'studio-gate studio-test' 2>/dev/null | while read -r p; do ps -o args= -p "$p" | grep -F "$CALLS" ; done)" "no studio-gate of this run survives"
+  assert_eq "" "$(pgrep -f 'studio-gate studio-test' 2>/dev/null | while read -r p; do ps -o args= -p "$p" | grep -F "$CALLS" ; done)" "no studio-gate of this run survives"   # scan-ok: filtered by $CALLS on the same line
   assert_missing "$P/.studio/gate.lock" "the gate lock is free after the run"
   assert_missing "$P/.studio/gate.units" "every unit's gate registry is cleared"
   assert_contains "$LS_ERR" "left a gate running after it ended (pid [0-9]*) — ended it" "the runner says it ended the gate"
@@ -2910,7 +2912,7 @@ test_lanes_hold_during_last_unit_lands_and_clears() {
 
 # Last: no process any test started is still alive.
 test_lanes_no_orphans() {
-  _left="$(pgrep -f "$TMP" 2>/dev/null; pgrep -f "$RUNNER" 2>/dev/null)"
+  _left="$(pgrep -f "$TMP" 2>/dev/null)"
   assert_eq "" "$_left" "no stub session, lane or runner outlives its test"
 }
 
@@ -3170,7 +3172,7 @@ test_lanes_setup_preflight_dry_run_skips() {
   assert_eq "" "$(pf_wts)" "no scratch worktree"
 }
 test_lanes_setup_preflight_interrupt_cleans() {
-  LANES_CONFIG='{"worktree_setup": "case $(pwd -P) in */setup-preflight-*) : > '"$TMP"'/pf-int; sleep 4831;; esac"}'; export LANES_CONFIG
+  LANES_CONFIG='{"worktree_setup": "case $(pwd -P) in */setup-preflight-*) : > '"$TMP"'/pf-int; '"$TMP"'/bin/msleep 4831;; esac"}'; export LANES_CONFIG
   rm -f "$TMP/pf-int"
   lanes_fixture pfi integration A:-
   lanes_bg
@@ -3180,7 +3182,7 @@ test_lanes_setup_preflight_interrupt_cleans() {
   assert_eq 2 "$WP_STATUS" "exit 2: nothing started"
   assert_contains "$TMP/lbg.err" "worktree_setup check interrupted — nothing started" "it says so"
   sleep 1
-  assert_eq 0 "$(ps -A -o args= | grep -c '^sleep 4831$')" "the setup's processes are gone"
+  assert_eq 0 "$(pgrep -f "$TMP/bin/msleep 4831\$" | wc -l | tr -d ' ')" "the setup's processes are gone"
   assert_eq "" "$(pf_wts)" "no scratch worktree is left"
   assert_missing "$P/.studio/gate.lock" "the gate lock is released"
   assert_eq 0 "$(calls)" "no unit ran"
@@ -3222,7 +3224,7 @@ test_lanes_setup_preflight_bad_config() {
   assert_missing "$P/.studio/runs/demo/lock" "no run lock was taken"
 }
 test_lanes_setup_preflight_timeout() {
-  LANES_CONFIG='{"worktree_setup": "case $(pwd -P) in */setup-preflight-*) sleep 4834;; esac"}'; export LANES_CONFIG
+  LANES_CONFIG='{"worktree_setup": "case $(pwd -P) in */setup-preflight-*) '"$TMP"'/bin/msleep 4834;; esac"}'; export LANES_CONFIG
   lanes_fixture pft integration A:-
   STUDIO_SETUP_TIMEOUT_SECONDS=1; export STUDIO_SETUP_TIMEOUT_SECONDS
   run_lanes start "$MFP"
@@ -3232,11 +3234,11 @@ test_lanes_setup_preflight_timeout() {
   _pl="$(sed -n 's/.* — log \([^ ]*\.log\) — .*/\1/p' "$LS_ERR" | head -n 1)"
   assert_eq 1 "$([ -f "$_pl" ] && echo 1 || echo 0)" "the named log exists after the scratch worktree is gone"
   assert_eq "" "$(pf_wts)" "no scratch worktree is left"
-  wait_for '[ -z "$(pgrep -f "^sleep 4834$")" ]' 20
-  assert_eq "" "$(pgrep -f '^sleep 4834$')" "the timed-out command is gone"
+  wait_for '[ -z "$(pgrep -f "$TMP/bin/msleep 4834\$")" ]' 20
+  assert_eq "" "$(pgrep -f "$TMP/bin/msleep 4834\$")" "the timed-out command is gone"
   assert_missing "$P/.studio/gate.lock" "the gate lock is released"
   assert_eq 0 "$(calls)" "no unit ran"
-  pkill -f '^sleep 4834$' 2>/dev/null
+  pkill -f "$TMP/bin/msleep" 2>/dev/null
 }
 
 test_lanes_setup_fail_holds() {
@@ -4154,11 +4156,14 @@ test_lanes_round_trip_two_runs() {
   assert_eq 1 "$([ "$(cat "$CALLS/max")" -le 2 ] && echo 1 || echo 0)" "never more than 2 sessions at once (max $(cat "$CALLS/max"))"
   # Units that started while the other run was live saw it in their peers block.
   _seen=0
-  for _pf in "$CALLS"/*.peers; do
-    grep -q '^Other live runs$' "$_pf" || continue
-    _seen=$((_seen + 1)); _pn="${_pf##*/}"; _pn="${_pn%.peers}"
+  # One assertion per call (4 per story, asserted above), so the count is fixed.
+  for _pn in $(story_calls S1) $(story_calls S2); do
     case "$(cat "$CALLS/$_pn.story")" in S1) _other=beta ;; *) _other=alpha ;; esac
-    assert_contains "$_pf" "$_other" "call $_pn names the other run ($_other)"
+    _ok=1
+    if grep -q '^Other live runs$' "$CALLS/$_pn.peers" 2>/dev/null; then
+      _seen=$((_seen + 1)); grep -q "$_other" "$CALLS/$_pn.peers" || _ok=0
+    fi
+    assert_eq 1 "$_ok" "call $_pn: no Other live runs block, or it names the other run ($_other)"
   done
   assert_eq 1 "$([ "$_seen" -ge 1 ] && echo 1 || echo 0)" "at least one unit saw the Other live runs block"
 }
@@ -4210,7 +4215,7 @@ test_lanes_detach_setup_preflight_refused() {
 }
 # A11: TERM to `start --detach` while its foreground check runs the setup.
 test_lanes_detach_setup_preflight_interrupt() {
-  LANES_CONFIG='{"worktree_setup": "case $(pwd -P) in */setup-preflight-*) : > '"$TMP"'/pf-dint; sleep 4835;; esac"}'; export LANES_CONFIG
+  LANES_CONFIG='{"worktree_setup": "case $(pwd -P) in */setup-preflight-*) : > '"$TMP"'/pf-dint; '"$TMP"'/bin/msleep 4835;; esac"}'; export LANES_CONFIG
   rm -f "$TMP/pf-dint"
   lanes_fixture pfdi integration A:-
   ( cd "$P" && exec sh "$RUNNER" start --detach "$MFP" ) > "$TMP/pfdi.out" 2>&1 < /dev/null &
@@ -4221,13 +4226,13 @@ test_lanes_detach_setup_preflight_interrupt() {
   wait_pid_or_fail "$_pdi" 20 "TERM during detach's check ends it promptly"
   assert_eq 2 "$WP_STATUS" "exit 2: nothing started"
   assert_eq 1 "$(grep -c 'worktree_setup check interrupted — nothing started' "$TMP/pfdi.out")" "it says so, once"
-  wait_for '[ -z "$(pgrep -f "^sleep 4835$")" ] && [ -z "$(pf_wts)" ]' 20
-  assert_eq "" "$(pgrep -f '^sleep 4835$')" "the setup's processes are gone"
+  wait_for '[ -z "$(pgrep -f "$TMP/bin/msleep 4835\$")" ] && [ -z "$(pf_wts)" ]' 20
+  assert_eq "" "$(pgrep -f "$TMP/bin/msleep 4835\$")" "the setup's processes are gone"
   assert_eq "" "$(pf_wts)" "no scratch worktree is left"
   assert_missing "$P/.studio/gate.lock" "the gate lock is released"
   assert_eq "" "$(ls "$P/.studio/reports" 2>/dev/null | grep '^overnight-demo-detached-')" "no detached child log: no child was started"
   assert_eq 0 "$(calls)" "no unit ran"
-  pkill -f '^sleep 4835$' 2>/dev/null
+  pkill -f "$TMP/bin/msleep" 2>/dev/null
 }
 test_lanes_detach_setup_preflight_runs_once() {
   LANES_CONFIG='{"worktree_setup": "case $(pwd -P) in */setup-preflight-*) echo pf >> '"$TMP"'/pf-det;; esac"}'; export LANES_CONFIG
@@ -4265,6 +4270,64 @@ test_lanes_setup_checked_env_binds_to_sha() {
   assert_missing "$TMP/pf-env" "the base's own commit skips the check"
   assert_contains "$LS_ERR" "^studio-overnight: worktree_setup: checked by start --detach at $_pfe_short$" "the skip is logged"
   assert_not_contains "$CALLS/1.fullenv" "STUDIO_OVERNIGHT_SETUP_CHECKED" "the variable is not passed on to unit sessions"
+}
+
+test_lanes_runner_argv_names_tmp() {
+  lanes_fixture argv integration A:-
+  # TERM is a stop request (the running unit finishes), so the unit waits on a release file.
+  printf 'waitfor %s\n' "$TMP/argv.go1" > "$SCEN/A"
+  lanes_bg
+  wait_for "[ -f '$CALLS/1.t0' ]" 30
+  _lane="$(cat "$(last_lanes_dir)/claims/1/pid" 2>/dev/null)"
+  ps -o args= -p "$RPID" > "$TMP/argv.runner" 2>/dev/null; ps -o args= -p "${_lane:-0}" > "$TMP/argv.lane" 2>/dev/null
+  assert_contains "$TMP/argv.runner" "$TMP/bin/studio-overnight start" "the runner's argv carries \$TMP"
+  assert_contains "$TMP/argv.lane" "$TMP/bin/studio-overnight start" "a lane's argv carries \$TMP"
+  kill -TERM "$RPID"; echo go > "$TMP/argv.go1"
+  wait_pid_or_fail "$RPID" 60 "the attached run ends on TERM, after its unit"
+  lanes_fixture argv2 integration A:-
+  printf 'waitfor %s\n' "$TMP/argv.go2" > "$SCEN/A"
+  ( cd "$P" && sh "$RUNNER" start --detach "$MFP" ) > "$TMP/argv.det" 2>&1
+  _dp="$(sed -n 's/^detached: pid \([0-9]*\),.*/\1/p' "$TMP/argv.det")"
+  ps -o args= -p "${_dp:-0}" > "$TMP/argv.child" 2>/dev/null
+  assert_contains "$TMP/argv.child" "$TMP/bin/studio-overnight start" "the --detach child's argv carries \$TMP"
+  [ -z "$_dp" ] || kill -TERM "$_dp" 2>/dev/null
+  echo go > "$TMP/argv.go2"
+  wait_for "[ ! -f '$P/.studio/runs/demo/lock' ]" 60
+  wait_for "[ -z \"\$(pgrep -f '$TMP/bin/studio-overnight')\" ]" 20
+}
+# The waiting-chain wait at its production poll (5 s; before_each leaves the
+# knob unset for real-clock tests): C waits for A and B, then starts after them.
+test_lanes_wait_deps_default_poll() {
+  lanes_fixture wdd integration A:- B:- C:A,B
+  printf 'sleep 2\n' > "$SCEN/A"
+  run_lanes start "$MFP"
+  assert_eq 0 "$LS_STATUS" "all three land at the default poll"
+  assert_contains "$(last_lanes_dir)/stories/C" "^landed " "the waiting story lands"
+  g="$(dep_gap)"
+  assert_eq 1 "$([ "$g" -ge 0 ] && echo 1 || echo 0)" "C starts no earlier than its last dependency's landing (${g}s)"
+}
+
+# Partitions. The exclusive seeds are the spec's lanes list (R5); rulings come with R6.
+TESTS_EXCLUSIVE="test_lanes_slot_wait_not_in_session_minutes test_lanes_direct_merge_timeout \
+  test_lanes_direct_merge_timeout_after_merge_lands test_lanes_direct_merge_timeout_term_ignored \
+  test_lanes_sigint test_lanes_end_sessions_spaced_path test_lanes_lock_race_single_vs_manifest \
+  test_lanes_recheck_race_one_wins test_lanes_heartbeat test_lanes_setup_preflight_refuses_linked_only \
+  test_lanes_detach_timeout_no_lock_ends_child"
+TESTS_FINAL="test_lanes_no_orphans"
+# Real-clock: timing-behaviour tests (rule 2) and the carriers of each production-value knob (R7).
+TESTS_REAL_CLOCK="test_lanes_sync_repair_stops test_lanes_timed_out_outcome \
+  test_lanes_slot_cap_two_across_runs test_lanes_gate_never_overlaps \
+  test_lanes_left_gate_reaped test_lanes_land_conflict_one_repair \
+  test_lanes_detach_timeout_lock_held_points_at_status test_lanes_wait_deps_default_poll"
+before_each() {
+  unset STUDIO_SETUP_POLL_SECONDS STUDIO_GATE_POLL_SECONDS \
+        STUDIO_OVERNIGHT_REAP_POLL_SECONDS STUDIO_OVERNIGHT_DETACH_POLL_SECONDS STUDIO_OVERNIGHT_POLL_SECONDS
+  is_real_clock && return 0
+  STUDIO_SETUP_POLL_SECONDS=0.2; STUDIO_GATE_POLL_SECONDS=0.2
+  STUDIO_OVERNIGHT_REAP_POLL_SECONDS=0.2; STUDIO_OVERNIGHT_DETACH_POLL_SECONDS=0.2
+  STUDIO_OVERNIGHT_POLL_SECONDS=1   # land-lock and hold polls: 5 s -> 1 s (existing knob, whole seconds)
+  export STUDIO_SETUP_POLL_SECONDS STUDIO_GATE_POLL_SECONDS STUDIO_OVERNIGHT_REAP_POLL_SECONDS \
+         STUDIO_OVERNIGHT_DETACH_POLL_SECONDS STUDIO_OVERNIGHT_POLL_SECONDS
 }
 
 run_tests test_lanes_setup_preflight_refuses_linked_only test_lanes_setup_preflight_pass_launches \
@@ -4330,4 +4393,5 @@ run_tests test_lanes_setup_preflight_refuses_linked_only test_lanes_setup_prefli
   test_lanes_session_wait_event_and_status test_lanes_max_sessions_preflight \
   test_lanes_round_trip_two_runs test_lanes_round_trip_sync_conflict test_lanes_round_trip_stop_one_of_two \
   test_lanes_ready_needs_run_pointer test_lanes_ready_adopted_unseeded test_lanes_ready_stale_worktree_and_landed \
+  test_lanes_runner_argv_names_tmp test_lanes_wait_deps_default_poll \
   test_lanes_no_orphans
