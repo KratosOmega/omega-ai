@@ -1020,6 +1020,7 @@ test_lanes_budget_sums_all_lanes() {
   assert_eq 1 "$(story_calls B | wc -l | tr -d ' ')" "B launched once"
   assert_contains "$(last_lanes_dir)/stories/A" "^stopped stop: run budget$" "A stops once the sum passes too"
   assert_missing "$CALLS/wait.timeout" "no stub wait hit its ceiling"
+  rw_kill
 }
 test_lanes_overhead() {
   lanes_fixture overhead integration A:-
@@ -1068,9 +1069,17 @@ wait_for() {
 # release_when TAG COND — in the background: once COND holds (60 s ceiling),
 # create $SCEN/release-TAG, which a stub `waitexist` is holding on. A COND that
 # never holds leaves the file out, so the stub's wait hits its ceiling and
-# writes $CALLS/wait.timeout, which the test asserts missing.
+# writes $CALLS/wait.timeout, which the test asserts missing. The watcher's pid is
+# recorded; a test that calls release_when ends with rw_kill, and before_each runs it
+# too, so a watcher never outlives its test.
 release_when() {
   ( wait_for "$2" 60; if eval "$2"; then : > "$SCEN/release-$1"; fi ) > /dev/null 2>&1 &
+  printf '%s\n' "$!" >> "$TMP/rw.pids"
+}
+rw_kill() {
+  [ -f "$TMP/rw.pids" ] || return 0
+  while read -r _rw_p; do kill "$_rw_p" 2>/dev/null; done < "$TMP/rw.pids"
+  rm -f "$TMP/rw.pids"
 }
 # pid_alive PID — the pid runs and is not a zombie.
 pid_alive() {
@@ -1480,6 +1489,7 @@ test_lanes_land_lock_reclaim() {
   assert_eq 2 "$(wc -l < "$P/.studio/runs/demo/landed.tsv" | tr -d ' ')" "two landed lines"
   assert_eq "" "$(ls -d "$R/land.lock" 2>/dev/null)" "the land lock is released"
   assert_missing "$CALLS/wait.timeout" "no stub wait hit its ceiling"
+  rw_kill
 }
 test_lanes_land_shipped_resume() {
   # A half-done story already at stage idle with a shipped line, its branch
@@ -2157,7 +2167,7 @@ test_lanes_status_per_story() {
   ( cd "$P" && exec sh "$RUNNER" start "$MFP" ) > /dev/null 2>&1 & RPID=$!
   wait_for "[ -n \"\$(story_calls A)\" ]" 20
   # C's chain is claimed and A's unit.now is written: status shows both.
-  wait_for 'chain_unit_now 1 && [ -d "$(last_lanes_dir)/claims/2" ]' 60
+  wait_for 'chain_unit_now 1 && [ -s "$(last_lanes_dir)/claims/2/lane" ]' 60
   ( cd "$P" && sh "$RUNNER" status ) > "$TMP/st.out"; st=$?
   : > "$SCEN/release-stat"
   wait_pid_or_fail "$RPID" 60 "the run ends"
@@ -4166,6 +4176,7 @@ test_lanes_slot_wait_not_in_session_minutes() {
   assert_eq 0 "$LS_STATUS" "B lands after its wait"
   assert_contains "$R/events.jsonl" '"event":"session_wait".*"story":"B"' "B waited for the slot"
   assert_not_contains "$R/lanes/1/units.tsv" "timed out" "the wait is not session time: no unit timed out"
+  rw_kill
 }
 test_lanes_session_wait_event_and_status() {
   LANES_CONFIG='{"overnight": {"max_lanes": 2, "max_sessions": 1}}'; export LANES_CONFIG
@@ -4430,7 +4441,7 @@ test_stub_waitexist_and_run_token() {
   _sw_t0="$(date +%s)"
   ( cd "$_sw" && CALLS="$_sw/calls" SCEN="$_sw/scen" STUDIO_RUN_DIR="$_sw/run" STUDIO_STORY=A STUDIO_RUN=/dev/null \
       sh "$FAKE/claude" -p go ) > /dev/null 2>&1
-  assert_eq 1 "$([ $(( $(date +%s) - _sw_t0 )) -lt 20 ] && echo 1 || echo 0)" "waitexist on an existing empty file returns at once"
+  assert_eq 1 "$([ $(( $(date +%s) - _sw_t0 )) -lt 5 ] && echo 1 || echo 0)" "waitexist on an existing empty file returns at once"
   assert_missing "$_sw/calls/wait.timeout" "an existing empty file is no timeout"
   printf 'waitexist @RUN@/gone; noop\n' > "$_sw/scen/A"; rm -rf "$_sw/calls"; mkdir -p "$_sw/calls"
   ( cd "$_sw" && STUB_WAIT_TICKS=10 CALLS="$_sw/calls" SCEN="$_sw/scen" STUDIO_RUN_DIR="$_sw/run" STUDIO_STORY=A STUDIO_RUN=/dev/null \
@@ -4577,6 +4588,7 @@ TESTS_REAL_CLOCK="test_lanes_sync_repair_stops test_lanes_timed_out_outcome \
   test_lanes_left_gate_reaped test_lanes_land_conflict_one_repair \
   test_lanes_detach_timeout_lock_held_points_at_status test_lanes_wait_deps_default_poll"
 before_each() {
+  rw_kill
   unset STUDIO_SETUP_POLL_SECONDS STUDIO_GATE_POLL_SECONDS \
         STUDIO_OVERNIGHT_REAP_POLL_SECONDS STUDIO_OVERNIGHT_DETACH_POLL_SECONDS STUDIO_OVERNIGHT_POLL_SECONDS
   is_real_clock && return 0
