@@ -117,6 +117,7 @@ test_autopilot_contract() {
   test_autopilot_adopt_order
   test_autopilot_adopt_ready
   test_autopilot_run_worktree
+  test_autopilot_story_ids
   test_autopilot_discovery_lists_runs
   test_autopilot_start_from_run_worktree
   test_autopilot_off_stop_rule
@@ -173,6 +174,24 @@ test_autopilot_adopt_order() {
   if [ "$_b" -gt 0 ] && [ "$_s" -gt "$_b" ] && [ "$_r" -gt "$_s" ]; then
     _pass "adopt order: set branch, then seed, then check --rebuild"
   else _fail "adopt order: set branch ($_b), seed ($_s), check --rebuild ($_r)"; fi
+}
+
+# #56: a story id once used is not handed out again: the slug and a fetch
+# come before the story list; the default id; check-id on every id.
+test_autopilot_story_ids() {
+  S="$REPO_ROOT/shared/omega/skills/autopilot/SKILL.md"
+  assert_contains "$S" 'studio-overnight check-id <id> --ticket <t> --slug <slug> --plan -' "the story list checks every id"
+  assert_contains "$S" 'otherwise `<slug>-S<n>`' "the default id when the ticket does not fit"
+  assert_contains "$S" '`KAN-1541-1`, `KAN-1541-2`' "rows sharing a ticket"
+  assert_contains "$S" 'a story id `check-id` refuses' "a failing next names a taken id"
+  _f="$(grep -n -F -m1 -- '**The slug and a fetch, before the story list.**' "$S" | cut -d: -f1)"
+  _g="$(grep -n -F -m1 -- 'Then run `git fetch origin`, so the story ids' "$S" | cut -d: -f1)"
+  _l="$(grep -n -F -m1 -- 'Then ask the story list' "$S" | cut -d: -f1)"
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if [ -n "$_f" ] && [ -n "$_g" ] && [ -n "$_l" ] && [ "$_f" -lt "$_l" ] && [ "$_g" -lt "$_l" ]; then
+    _pass "the slug check and the fetch come before the story list"
+  else _fail "the slug check and the fetch come before the story list ($_f, $_g, $_l)"; fi
+  assert_not_contains "$S" '`git fetch origin`, then `git worktree add' "the run worktree step no longer fetches after the story list"
 }
 
 # #39 AC15: a new run gets its own run worktree; the main checkout is never switched.

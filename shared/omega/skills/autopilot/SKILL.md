@@ -73,12 +73,15 @@ session (it is on `PATH` only inside a `claude-gd` session).
      - **how many lanes** — lanes are parallel dependency chains, while tests still run one at a time. The answer is `.studio/config.json`'s `overnight.max_lanes` (`0` = one lane per chain).
         It must be an integer from 0 to 8 (the runner's range); refuse any other answer and ask again.
         Write it only in the run worktree (see *The run worktree*), never in the main checkout: merge it into the existing file, so every other key is kept (`merge_command` included): `python3 -c 'import json,sys; p=".studio/config.json"; c=json.load(open(p)); c.setdefault("overnight", {})["max_lanes"]=int(sys.argv[1]); open(p,"w").write(json.dumps(c, indent=2)+"\n")' <n>`; with no `.studio/config.json`, write `{"overnight": {"max_lanes": <n>}}`.
-   - Then ask the story list: each story's id, branch, ticket (`-` when none) and the earlier rows it depends on. Refuse and re-ask an id or branch that another run uses (AC8: a live or stopped run's story id or branch). A story whose branch already exists (local or `origin/<Branch>`) is half-done.
+   - **The slug and a fetch, before the story list.** Settle the run slug now (from `/omega:autopilot <slug>` or an `integration slug=<slug>` line; with neither, ask for it before the story list) and check it: not `off`, not all digits, not used by a live or stopped run. A done record is archived: `mv <root>/.studio/runs/<slug> <root>/.studio/runs/<slug>.$(date -u +%Y%m%dT%H%M%SZ)`. Then run `git fetch origin`, so the story ids below are checked against a fresh `origin/<default>`.
+   - Then ask the story list: each story's id, branch, ticket (`-` when none) and the earlier rows it depends on. Refuse and re-ask an id or branch that another run uses (AC8: a live or stopped run's story id or branch).
+     **Story ids are never reused in a project** (a ledger is keyed by its id and outlives the run). Propose each id by default: the ticket when it matches `^[A-Za-z0-9._-]+$` (`KAN-1541`; rows sharing a ticket get `KAN-1541-1`, `KAN-1541-2`), otherwise `<slug>-S<n>` (a ticket such as `#56` or a URL does not fit). Check every id, proposed or typed, from the main checkout: `studio-overnight check-id <id> --ticket <t> --slug <slug> --plan -` (`<t>` the row's ticket, or `-`). Exit 1: refuse and re-ask with its message and its suggested id, as for an id another run uses; exit 2: the id does not match the pattern, or `origin/HEAD` is not set (`git remote set-head origin --auto`).
+     A story whose branch already exists (local or `origin/<Branch>`) is half-done.
      In the same question, ask each story's **source plan** and **source spec** (a path, or `-` for none): a story with source plan `-` is a fresh story, unchanged. Refuse and re-ask a path that is not repo-relative, not normalized (no `./`, no `..`) or not tracked (`git ls-files --error-unmatch`).
      For a story with a source plan, in the run worktree: `STUDIO_STORY=<id> studio-state init` (the ledger refuses a story with no pointer), then `studio-state ledger "source <plan> spec <spec or ->"` with `STUDIO_STORY=<id>`. These facts survive `/clear` and step 3; they are committed on `run/<slug>` with the manifest.
    - **The run worktree (before any planning stage).** The main checkout's branch is never switched. In order:
-     1. Check the slug: not `off`, not all digits, not used by a live or stopped run. A done record is archived: `mv <root>/.studio/runs/<slug> <root>/.studio/runs/<slug>.$(date -u +%Y%m%dT%H%M%SZ)`.
-     2. `git fetch origin`, then `git worktree add --no-track -b run/<slug> <root>/.claude/worktrees/run-<slug> origin/<default>`, or `git worktree add <path> run/<slug>` when the branch exists.
+     1. The slug was checked, and `origin` fetched, before the story list (above).
+     2. `git worktree add --no-track -b run/<slug> <root>/.claude/worktrees/run-<slug> origin/<default>`, or `git worktree add <path> run/<slug>` when the branch exists.
      3. Enter it with **Enter the feature checkout** (`EnterWorktree path:`, else `cd`) and check it with `git rev-parse --show-toplevel`.
      4. Print the path.
      5. Run `studio-state init --local`, then `worktree_setup` when configured.
@@ -138,7 +141,7 @@ session (it is on `PATH` only inside a `claude-gd` session).
    - `next: /game-dev:plan <slug>/<id>` — when that row's spec is already approved, set `STATE.md` for it first: `studio-state set stage plan`, then `studio-state set spec <spec>`.
    - Either way: Print `/clear`, then the command, and stop. The stage runs in its own session and ends by printing `next`'s command; `/omega:autopilot` resumes here through `.studio/run`, so the loop survives `/clear`.
    - `next: /omega:autopilot <slug>` — every row is `planned`: go to step 3.
-   - When `next` exits non-zero: show its message, fix what it names (the manifest, a missing or ambiguous spec or plan), and stop; nothing is seeded.
+   - When `next` exits non-zero: show its message, fix what it names (the manifest, a missing or ambiguous spec or plan, a story id `check-id` refuses: rename that row to the id it suggests), and stop; nothing is seeded.
 
    The question sweep for manifest stories belongs to `/game-dev:plan` (it writes `## Decisions` and ledgers `Decisions swept <id>`); this skill does not repeat it.
 3. **Seed every story** once every row is `planned`, in manifest order. Every `studio-state` call below runs with `STUDIO_STORY=<id>`.
@@ -163,7 +166,7 @@ session (it is on `PATH` only inside a `claude-gd` session).
    - Fill each row's Spec and Plan cells, then `git add docs/runs/<slug>.md .studio/config.json <specs> <plans> .studio/ledger/<id>.md …` (every story's ledger, half-done ones included), `git commit -m "docs(run): <slug> planned"`, `git push -u origin run/<slug>`.
      Write that commit's sha (`git rev-parse HEAD`) as `Docs:`, then commit `docs(run): <slug> docs <short sha>` and push `run/<slug>` again.
 4. **Readiness checklist.** Print it; every line must pass:
-   - `studio-overnight start --dry-run <manifest>` exits 0 (the runner's own preflight: the manifest, `Docs:` on `origin/run/<slug>`, each plan's `Story:`, `Spec:` lines and `## Decisions`, each story's state and ledger, `claude-gd`, `gh auth status`, the deny list, config, `merge_command` in direct mode, no conflicting live or stopped run (slug, story, branch), the start checkout's `.studio/run` naming this manifest, every adopted story with a branch seeded on it);
+   - `studio-overnight start --dry-run <manifest>` exits 0 (the runner's own preflight: the manifest, `Docs:` on `origin/run/<slug>`, each plan's `Story:`, `Spec:` lines and `## Decisions`, each story's state and ledger, `claude-gd`, `gh auth status`, the deny list, config, `merge_command` in direct mode, no conflicting live or stopped run (slug, story, branch), no story id another story already used (`check-id`'s rules), the start checkout's `.studio/run` naming this manifest, every adopted story with a branch seeded on it);
    - the baseline test run is green — `studio-test`, exit 0, run in the run worktree after `worktree_setup`;
    - the engine binary resolves — `studio-test` or `GODOT_PATH`;
    - for each adopted story: `studio-adopt sync <id>` from its worktree exits 0 (a not-started story is skipped, with a note).

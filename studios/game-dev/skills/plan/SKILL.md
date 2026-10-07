@@ -175,11 +175,19 @@ approved in §0).
 3. Enter it with execute's **Enter the feature checkout** procedure
    (`EnterWorktree path:`, else `cd`), and check it with
    `git rev-parse --show-toplevel`.
-4. Run `studio-state show` after entering and print it.
-5. Continue as the `<id>` form under that worktree's `.studio/run`, with
+4. Run `studio-overnight check-id <id>` there first (its Plan, Ticket and
+   slug come from the worktree's `.studio/run`). On a non-zero exit, print
+   its output and stop, before writing any file or ledger line: another
+   story in this project already used the id.
+5. Run `studio-state show` after entering and print it.
+6. Continue as the `<id>` form under that worktree's `.studio/run`, with
    every file path absolute under it.
 
-The bare `<id>` form keeps today's meaning in the current checkout.
+Invoked as `<id>` where the current checkout's `.studio/run` names a
+manifest that lists it, run the same `studio-overnight check-id <id>` first,
+before §0 writes anything. The bare `<id>` form keeps today's meaning in the
+current checkout: outside a manifest its ledger is spec-slug keyed, and the
+id is not checked.
 
 **Not a manifest story** (no `.studio/run`, or its manifest does not list the
 id): print `Next: run /clear, then /game-dev:execute` (subagent-driven by
