@@ -80,6 +80,9 @@ test_affected_docs_map_to_readers_or_none() {
   echo m >> "$R/docs/x.md"
   assert_eq "" "$(list)" "a doc nobody reads maps to nothing (docs/y.md is not the dir docs)"
   assert_contains "$TMP/err" "no suite reads docs/x.md" "names the unread doc"
+  ( cd "$R" && ${TEST_SH:-sh} tests/run_affected.sh 2> "$TMP/err" ) > "$TMP/o"
+  assert_eq "" "$(cat "$TMP/o")" "the no-suites-affected status stays off stdout"
+  assert_contains "$TMP/err" "run_affected: no suites affected" "and goes to stderr"
 }
 
 test_affected_unknown_maps_to_all() {

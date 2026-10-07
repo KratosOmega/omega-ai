@@ -640,8 +640,6 @@ test_skill_contracts() {
   assert_eq 7 "$ran" "seven skill contracts ran"
 }
 
-# exclusive-scan: test_pre_tool_use out (a) "within" is in a comment about paths inside the repository, not an elapsed-time assertion
-TESTS_EXCLUSIVE=""
 
 run_tests test_plugin_files test_skill_stubs test_marketplace \
   test_mode_round_trip test_mode_validation test_mode_brief test_mode_env_autopilot \

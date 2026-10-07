@@ -30,7 +30,12 @@ unset TEST_PHASE TEST_SHARD TEST_TIMING_LOG
 die2() { printf 'run_all: %s\n' "$*" >&2; exit 2; }
 posint() { case "$1" in ''|*[!0-9]*|0*) return 1 ;; esac; }
 in_list() { case " $2 " in *" $1 "*) return 0 ;; esac; return 1; }
-ncpu() { _c="$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null)"; posint "$_c" || _c=1; echo "$_c"; }
+ncpu() {
+  _c="$(getconf _NPROCESSORS_ONLN 2>/dev/null)"
+  posint "$_c" || _c="$(sysctl -n hw.ncpu 2>/dev/null)"   # getconf may print "undefined" and exit 0
+  posint "$_c" || _c=1
+  echo "$_c"
+}
 
 # The suite table: shard counts and assertion floors (each suite's count on origin/main).
 # Heaviest first: this is also the launch order. A suite with no row runs as one job, floor 1.
@@ -42,7 +47,7 @@ overnight_lanes_test         8       1128
 overnight_test               4       1132
 toolkit_test                 1       175
 studio_adopt_test            1       306
-install_test                 1       369
+install_test                 1       475
 studio_setup_test            1       49
 hook_test                    1       287
 studio_test                  1       661
@@ -231,7 +236,7 @@ parallel_mode() {
   pool "$TEST_JOBS"
   _x0=$(date +%s)
   for _s in $ORDER; do
-    if grep -q '^TESTS_EXCLUSIVE=' "$SDIR/$_s.sh"; then QUEUE="$QUEUE $_s.x|$_s|exclusive||x"; fi
+    if grep -q "^TESTS_EXCLUSIVE=[\"']*[^\"' ]" "$SDIR/$_s.sh"; then QUEUE="$QUEUE $_s.x|$_s|exclusive||x"; fi
   done
   pool 1
   XSECS=$(( $(date +%s) - _x0 ))

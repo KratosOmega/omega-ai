@@ -274,6 +274,16 @@ test_run_all_stale_rc_is_not_a_status() {
   assert_eq 1 "$([ "$_el" -le 15 ] && echo 1 || echo 0)" "within 15 s (took $_el)"
 }
 
+test_run_all_empty_exclusive_list_queues_no_job() {
+  reset
+  fx ee 1
+  { printf 'TESTS_EXCLUSIVE=""\n'; cat "$SD/ee_test.sh"; } > "$SD/ee_test.sh.new" && mv "$SD/ee_test.sh.new" "$SD/ee_test.sh"
+  ra ee
+  assert_eq 0 "$RC" "a suite with an empty exclusive list is green"
+  assert_eq 0 "$(cnt "$TMP/ee.out" "ee_test.x")" "an empty TESTS_EXCLUSIVE queues no exclusive job"
+  assert_eq 0 "$(ls "$TMP/log-ee" 2>/dev/null | grep -c 'ee_test\.x')" "and leaves no exclusive log"
+}
+
 test_run_all_finished_job_leaves_nothing() {
   reset
   fx lk 1 'mkdir -p "$TMPDIR/bin"; ln -s "$(command -v sleep)" "$TMPDIR/bin/msleep"
@@ -377,4 +387,5 @@ run_tests test_run_all_green_parallel test_run_all_red_suite_fails_gate \
   test_run_all_bad_jobs_value test_run_all_unknown_suite test_run_all_summary_and_slowest \
   test_run_all_log_dir_with_space test_run_all_reused_log_dir_keeps_timeout \
   test_run_all_stale_rc_is_not_a_status test_run_all_finished_job_leaves_nothing \
-  test_run_all_test_helpers_hermetic test_run_all_duplicate_table_row
+  test_run_all_test_helpers_hermetic test_run_all_duplicate_table_row \
+  test_run_all_empty_exclusive_list_queues_no_job

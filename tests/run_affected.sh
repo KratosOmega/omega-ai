@@ -163,7 +163,7 @@ if [ "$LIST" = 1 ]; then
 fi
 
 if [ ! -s "$WORK/final" ]; then
-  echo "run_affected: no suites affected"
+  echo "run_affected: no suites affected" >&2
   exit 0
 fi
 echo "run_affected: in-progress check only — the merge gate is sh tests/run_all.sh" >&2

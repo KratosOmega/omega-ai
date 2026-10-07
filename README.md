@@ -359,7 +359,8 @@ floor. The summary lists the slowest tests; `TEST_SLOWEST` sets how many.
 
 - `TEST_JOBS=1` is the old serial gate: each suite whole, in name order, no perl.
 - `TEST_SUITES="state_test hook_test"` and `TESTS_ONLY="test_a test_b"` narrow a run.
-  Both skip the completeness checks, so a narrowed run is not the gate.
+  `TESTS_ONLY` skips the completeness checks; `TEST_SUITES` runs them on the selected
+  suites only. Neither is the merge gate.
 - `TEST_SH=dash` runs every suite under dash (the portability check).
 - Two gates on one machine slow each other's exclusive phase; lower `TEST_JOBS`.
 
