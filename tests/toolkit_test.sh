@@ -10,7 +10,7 @@ BIN="$STUDIO/bin"
 # Physical path: the adapter scripts resolve the project with pwd -P, so
 # assertions that quote $TMP must use the same spelling (/var -> /private/var on macOS).
 unset STUDIO_GATE_POLL_SECONDS STUDIO_SETUP_POLL_SECONDS
-TMP="$(cd "$(mktemp -d)" && pwd -P)"
+TMP="$(cd "$(mktemp -d "${TMPDIR:-/tmp}/toolkit.XXXXXX")" && pwd -P)"
 trap 'rm -rf "$TMP"' EXIT
 
 # A stub Godot. It records its arguments, honours --path and
@@ -887,6 +887,20 @@ test_gate_times_window_per_who() {
   assert_not_contains "$GP/.studio/gate.times" '^11 setup ' "the oldest setup lines went"
 }
 
+TESTS_REAL_CLOCK="test_gate_no_overlap test_gate_waiting_message test_gate_poll_keeps_budget test_gate_signal_waits_for_child_then_releases test_gate_signal_reaches_the_grandchild"
+# exclusive-scan: test_run_clean out (d) stub exits at once and a one second --seconds cap only caps it; it passed the load sweep that failed the two tests below (I-4)
+# exclusive-scan: test_run_detects_script_errors in (c, d) failed under load, passed alone (I-4): the stub must print inside a one second --seconds cap
+# exclusive-scan: test_run_passes_scene_and_windowed in (c, d) failed under load, passed alone (I-4): the stub must start inside a one second --seconds cap
+# exclusive-scan: test_run_terminates_a_long_process in (a, d) asserts the engine is gone inside a 10 s ceiling, with a one second --seconds window
+# exclusive-scan: test_run_traps_signals_to_avoid_orphaning_the_child out (b) only greps run.sh for its trap text; no signal is sent
+# exclusive-scan: test_run_imports_when_dot_godot_is_absent out (d) stub exits at once and a one second --seconds cap only caps it; it passed the load sweep (I-4)
+# exclusive-scan: test_gate_no_overlap out (d) checks only the order of three 2 s holds, never an upper bound; real clock
+# exclusive-scan: test_gate_stale_reclaim_race in (b) two reclaimers race on a dead lock while each holds 1 s
+# exclusive-scan: test_gate_poll_rejects_bad_value out (d) the bad knob value 2 is refused at once; no window
+# exclusive-scan: test_gate_signal_waits_for_child_then_releases out (b) TERM is sent after an event wait on the child's pid; the long sleep is no window; real clock
+# exclusive-scan: test_gate_three_reclaimers_never_overlap in (d) staggered starts 0.6 s and 1.3 s must land inside a 1 s slow mv and 2 s holds
+# exclusive-scan: test_gate_signal_reaches_the_grandchild out (b) TERM is sent after an event wait on the grandchild's pid; real clock
+TESTS_EXCLUSIVE="test_run_terminates_a_long_process test_gate_three_reclaimers_never_overlap test_gate_stale_reclaim_race test_run_detects_script_errors test_run_passes_scene_and_windowed"
 run_tests test_gate_times_window_per_who test_gate_no_overlap test_gate_status_and_held test_gate_stale_reclaim_race \
   test_gate_waiting_message test_gate_poll_keeps_budget test_gate_poll_rejects_bad_value test_gate_records_pid_and_who test_gate_without_a_project_just_runs \
   test_gate_signal_waits_for_child_then_releases test_gate_three_reclaimers_never_overlap \
