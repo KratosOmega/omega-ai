@@ -117,6 +117,7 @@ test_autopilot_contract() {
   test_autopilot_adopt_order
   test_autopilot_adopt_ready
   test_autopilot_run_worktree
+  test_autopilot_story_ids
   test_autopilot_discovery_lists_runs
   test_autopilot_start_from_run_worktree
   test_autopilot_off_stop_rule
@@ -173,6 +174,31 @@ test_autopilot_adopt_order() {
   if [ "$_b" -gt 0 ] && [ "$_s" -gt "$_b" ] && [ "$_r" -gt "$_s" ]; then
     _pass "adopt order: set branch, then seed, then check --rebuild"
   else _fail "adopt order: set branch ($_b), seed ($_s), check --rebuild ($_r)"; fi
+}
+
+# #56: a story id once used is not handed out again: the slug and a fetch
+# come before the story list; the default id; check-id on every id.
+test_autopilot_story_ids() {
+  S="$REPO_ROOT/shared/omega/skills/autopilot/SKILL.md"
+  assert_contains "$S" 'studio-overnight check-id <id> --ticket <t> --slug <slug> --plan - --branch <Branch>' "the story list checks every id, with its branch"
+  assert_contains "$S" 'Exit 2: stop and print its output' "check-id's exit 2 stops: a usage or environment problem"
+  assert_contains "$S" 'not a taken id' "exit 2 is not a taken id"
+  assert_contains "$S" 'the slug must match `\^\[A-Za-z0-9\._-\]+\$`' "the slug's pattern"
+  assert_contains "$S" "a suggestion that is already another row's id in this list is not used" "a suggestion never duplicates a row being built"
+  assert_contains "$S" "the plan's \`Story:\` line" "a rename touches the plan's Story: line"
+  assert_contains "$S" '`git mv .studio/ledger/<id>.md .studio/ledger/<new id>.md`' "a rename moves the ledger"
+  assert_contains "$S" 'the story file `<root>/.studio/stories/<id>.md` moves to `<new id>.md`' "and the story file"
+  assert_contains "$S" 'otherwise `<slug>-S<n>`' "the default id when the ticket does not fit"
+  assert_contains "$S" '`KAN-1541-1`, `KAN-1541-2`' "rows sharing a ticket"
+  assert_contains "$S" 'a story id `check-id` refuses' "a failing next names a taken id"
+  _f="$(grep -n -F -m1 -- '**The slug and a fetch, before the story list.**' "$S" | cut -d: -f1)"
+  _g="$(grep -n -F -m1 -- 'Then run `git fetch origin`, so the story ids' "$S" | cut -d: -f1)"
+  _l="$(grep -n -F -m1 -- 'Then ask the story list' "$S" | cut -d: -f1)"
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if [ -n "$_f" ] && [ -n "$_g" ] && [ -n "$_l" ] && [ "$_f" -lt "$_l" ] && [ "$_g" -lt "$_l" ]; then
+    _pass "the slug check and the fetch come before the story list"
+  else _fail "the slug check and the fetch come before the story list ($_f, $_g, $_l)"; fi
+  assert_not_contains "$S" '`git fetch origin`, then `git worktree add' "the run worktree step no longer fetches after the story list"
 }
 
 # #39 AC15: a new run gets its own run worktree; the main checkout is never switched.

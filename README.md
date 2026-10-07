@@ -97,7 +97,7 @@ The shim puts `studios/game-dev/bin/` on `PATH`. From a Godot project root:
 | `studio-run [--scene S] [--seconds N] [--windowed]` | Boots the project for N seconds and scans the log for script errors | 0 clean · 1 errors or a failed import · 2 no Godot |
 | `studio-lint [PATH]` | `gdlint` and `gdformat --check` when gdtoolkit is installed | 0 clean · 1 findings · 3 not installed |
 | `studio-state …` | Reads and writes `.studio/STATE.md` | 0 · 1 |
-| `studio-overnight start [<manifest>] \| status [--run] \| watch [--run] \| stop [--run \| --all] \| next \| say \| said \| unsay \| hold \| resume` | Runs approved plans unattended, one fresh headless session per unit, and takes messages and holds while it runs; see below | start: 0 done · 1 other ending · 2 refused; the channel verbs: 0 · 1 refused · 2 usage |
+| `studio-overnight start [<manifest>] \| status [--run] \| watch [--run] \| stop [--run \| --all] \| next \| check-id \| say \| said \| unsay \| hold \| resume` | Runs approved plans unattended, one fresh headless session per unit, and takes messages and holds while it runs; see below | start: 0 done · 1 other ending · 2 refused; the channel verbs: 0 · 1 refused · 2 usage; check-id: 0 free · 1 taken · 2 usage |
 
 The verbs never name Godot; `studios/game-dev/engines/godot/` does. Godot is
 found through `GODOT_PATH`, then `/Applications/Godot*.app`, then `godot` on
@@ -129,6 +129,11 @@ stories as parallel lanes of dependency chains:
   `STUDIO_*` variables (watch it with `status`, end it with `stop`).
 - `studio-overnight next` reads the manifest and the ledgers and prints the one
   next planning command for the stories not yet planned.
+- `studio-overnight check-id <id>` says whether a story id is free. Ledgers are
+  keyed by story id and outlive the run, so an id once used in the project is
+  never handed out again: `/omega:autopilot` proposes the ticket (`KAN-1541`)
+  or `<slug>-S<n>` and checks each id; brainstorm, plan, `next` and `start`
+  refuse a taken one, naming why and a free id to use instead.
 - Two modes, set in the manifest. **integration**: the runner merges each
   shipped story into `integration/<slug>`, runs one full gate, and opens one
   draft PR into `main`; nothing reaches `main` until you land that PR.

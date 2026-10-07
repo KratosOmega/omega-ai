@@ -13,6 +13,10 @@ a short spec — but it never disappears.
 
 ## 0. State
 
+- **Invoked as `<slug>/<id>`, or as `<id>` under a manifest that lists it:**
+  run that form's steps first (**`<slug>/<id>` form**, below: `<slug>/<id>`
+  enters the run worktree; either way `studio-overnight check-id <id>`),
+  before anything here.
 - When `studio-state get stage` exits 0, state is on. On exit 1 with
   `project.godot` present, ask once
   whether to initialise studio state; on yes run `studio-state init`. On no,
@@ -224,11 +228,19 @@ An explicit list. Anything cut in step 4 goes here with a one-line reason.
 3. Enter it with execute's **Enter the feature checkout** procedure
    (`EnterWorktree path:`, else `cd`), and check it with
    `git rev-parse --show-toplevel`.
-4. Run `studio-state show` after entering and print it.
-5. Continue as the `<id>` form under that worktree's `.studio/run`, with
+4. Run `studio-overnight check-id <id>` there first (its Plan, Ticket,
+   Branch and slug come from the worktree's `.studio/run`). On a non-zero exit, print
+   its output and stop, before writing any file or ledger line: another
+   story in this project already used the id.
+5. Run `studio-state show` after entering and print it.
+6. Continue as the `<id>` form under that worktree's `.studio/run`, with
    every file path absolute under it.
 
-The bare `<id>` form keeps today's meaning in the current checkout.
+Invoked as `<id>` where the current checkout's `.studio/run` names a
+manifest that lists it, run the same `studio-overnight check-id <id>` first,
+before §0 writes anything. The bare `<id>` form keeps today's meaning in the
+current checkout: outside a manifest its ledger is spec-slug keyed, and the
+id is not checked.
 
 **Epic under a manifest.** Invoked with an id under an active manifest
 (`.studio/run` names a manifest that lists it), write one spec for the whole
@@ -245,6 +257,9 @@ story the user puts in the epic:
 The `Acceptance criteria` cell holds comma-separated AC numbers or ranges
 (`1, 3-5`) from `## Acceptance criteria`, and nothing else. `studio-brief
 final` prints exactly those numbered items.
+
+The `Story` cells are the manifest's own ids, copied exactly (`KAN-1541`,
+`<slug>-S1`); never invent or renumber one.
 
 Every section states a decision. A section that reads as a possibility is
 not finished. A bounded spec writes `n/a` in a section that does not apply

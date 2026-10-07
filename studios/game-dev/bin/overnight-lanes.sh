@@ -6,11 +6,13 @@
 # Sourced by studio-overnight after its own helpers (say, sq, refuse, state,
 # cfg*, deny_rules, model_for, label_for, with_launch_args, print_launch,
 # run_unit, row, snapshot, story_units, acquire_run_lock, run_setup, unlock)
-# are defined and its preflight has run; never run on its own. Reads studio
-# state and the manifest; never writes either. It redefines stop_requested,
+# are defined and its preflight has run; it sources overnight-ids.sh itself
+# (story ids, #56: ids_check). Never run on its own. Reads studio state and
+# the manifest; never writes either. It redefines stop_requested,
 # spent_all, spent, run_populate, lock_recheck and the session_* slot calls
 # (#39 D19) for manifest mode.
 [ -n "${SELF_DIR:-}" ] || { echo "overnight-lanes.sh: sourced by studio-overnight" >&2; exit 2; }
+. "$SELF_DIR/overnight-ids.sh"   # story ids (#56): ids_check, used by mf_check and lanes_next
 
 # git_retry ARGS… — git ARGS, retried up to three times (sleeps 1, 2, 4 s)
 # while its stderr says a lock or ref could not be taken (D21). Stdout passes
@@ -115,7 +117,7 @@ mf_conflicts() {
     _mc_s="${_mc_r%/landed.tsv}"; _mc_s="${_mc_s##*/}"
     if [ "$_mc_s" = "$MF_SLUG" ]; then
       if runs_record_done "$STATE_ROOT" "$_mc_s"; then
-        printf 'run %s is done: archive its record first: mv %s %s.<utc ts>\n' \
+        printf 'run %s is done: archive its record first: mv %s %s.<utc ts> (its story ids stay taken: a story carried into the new run keeps its id and its branch)\n' \
           "$_mc_s" "$(sq "$STATE_ROOT/.studio/runs/$_mc_s")" "$(sq "$STATE_ROOT/.studio/runs/$_mc_s")"
       fi
       continue                                    # own open record: a resume
@@ -125,10 +127,11 @@ mf_conflicts() {
     _mc_rows="$(runs_rows "$STATE_ROOT" "$_mc_s")" || continue
     # The way out (AC8): resume from its newest report's manifest path (the
     # report's own fallback when unrecorded), or abandon it by archiving the
-    # record as a done one is archived.
+    # record as a done one is archived. Its ids stay taken (#56 rule 3),
+    # except for a story carried into the new run on its own branch (FI1).
     _mc_rd="${_mc_rows%/rows.tsv}"; _mc_rec="$STATE_ROOT/.studio/runs/$_mc_s"
     _mc_mf="$(head -n 1 "$_mc_rd/manifest.path" 2>/dev/null)"; [ -n "$_mc_mf" ] || _mc_mf="docs/runs/$_mc_s.md"
-    mf_rows_clash "$_mc_rows" "stopped run $_mc_s (record $_mc_rec, report $_mc_rd) — resume it ($(sq "$SELF_ABS") start $_mc_mf) or abandon it (mv $(sq "$_mc_rec") $(sq "$_mc_rec").<utc ts>) or pick another"
+    mf_rows_clash "$_mc_rows" "stopped run $_mc_s (record $_mc_rec, report $_mc_rd) — resume it ($(sq "$SELF_ABS") start $_mc_mf) or abandon it (mv $(sq "$_mc_rec") $(sq "$_mc_rec").<utc ts>: a story carried into a new run keeps its id and its branch) or pick another"
   done
 }
 # mf_overlap_warn — warn (D38, AC9) for each other live run whose unfinished
@@ -226,10 +229,22 @@ EOF_MC
       || refuse "manifest: origin/integration/$MF_SLUG does not exist (create it from origin/$DEFAULT_BRANCH and push it)"
   fi
 
+  # #56 R3: story ids are checked against the default branch fetched above;
+  # a dangling origin/HEAD (its ref gone) would make every id look free.
+  _mck_db=""
+  if [ -n "$DEFAULT_BRANCH" ]; then
+    _mck_db="$(ids_default_branch)" || refuse "origin/HEAD is not set — run: git remote set-head origin --auto"
+  fi
   # Per story (first row of each id): state, ledger, and the plan at Docs:.
-  awk -F'\t' '!($1 in seen) { seen[$1] = 1; print $1 "\t" $5 }' "$MF_ROWS" > "$MF_TMP/stories"
-  while IFS='	' read -r _id _plan; do
+  # An empty cell is '-': a tab is IFS whitespace, so an empty one would
+  # collapse and shift the next cell into its place.
+  awk -F'\t' 'function c(v) { return v == "" ? "-" : v }
+    !($1 in seen) { seen[$1] = 1; print $1 "\t" c($5) "\t" c($3) "\t" c($2) }' "$MF_ROWS" > "$MF_TMP/stories"
+  while IFS='	' read -r _id _plan _tkt _mck_br; do
     printf '%s\n' "$_id" | grep -Eq '^[A-Za-z0-9._-]+$' || continue
+    # #56 R3: the backstop. The row's Branch: a story carried over keeps its id (FI1).
+    [ -z "$_mck_db" ] \
+      || ids_check "$_id" "$_tkt" "$MF_SLUG" "$_plan" "$_mck_db" "$MF_ROWS" refuse "$_mck_br" < /dev/null || :
     if [ ! -f "$STATE_ROOT/.studio/stories/$_id.md" ]; then
       refuse "$_id: no story file (.studio/stories/$_id.md; studio-state init with STUDIO_STORY=$_id)"
     else
@@ -1997,7 +2012,15 @@ lanes_run() {
   MF_ROWS="$RUN_DIR/rows.tsv"; CHAINS="$RUN_DIR/chains"
   rm -rf "$MF_TMP"; MF_TMP=""
   RECORD="$STATE_ROOT/.studio/runs/$MF_SLUG"
-  mkdir -p "$RECORD" && touch "$RECORD/landed.tsv" || { rm -f "$LOCK"; say "cannot create $RECORD"; exit 2; }
+  # The record keeps every row the run ever had: check-id's rule 3 (#56 D2).
+  # This start's rows, then earlier rows of ids it no longer lists (any case),
+  # through a tmp file and mv, so a reader never sees a partial file.
+  mkdir -p "$RECORD" && touch "$RECORD/landed.tsv" \
+    && { cat "$RECORD/rows.tsv" 2>/dev/null || :; } | awk -F'\t' -v cur="$MF_ROWS" '
+         BEGIN { while ((getline l < cur) > 0) { split(l, a, "\t"); k[tolower(a[1])] = 1; print l } }
+         !(tolower($1) in k) { k[tolower($1)] = 1; print }' > "$RECORD/rows.tsv.$$" \
+    && mv "$RECORD/rows.tsv.$$" "$RECORD/rows.tsv" \
+    || { rm -f "$LOCK" "$RECORD/rows.tsv.$$"; say "cannot create $RECORD"; exit 2; }
   for _id in $(cut -f1 "$MF_ROWS" | awk '!seen[$0]++'); do story_write "$_id" queued; done
   lanes_resume
   LANES_LIVE=1; LANE_PIDS=""
@@ -2084,6 +2107,11 @@ next_match() {
   return 0
 }
 
+# ln_has FILE TEXT — FILE has a ledger line whose text after `- <date> ` is
+# exactly TEXT (#56 R4: `Decisions swept S10` is not `Decisions swept S1`,
+# and `plan approved <plan>.old` does not approve <plan>).
+ln_has() { sed -n 's/^- [0-9-]* //p' "$1" 2>/dev/null | grep -qxF -- "$2"; }
+
 # lanes_next MANIFEST — classify each row (brainstorm | plan | planned) from
 # files and ledger lines alone and print one line per row, then the one next
 # command. Pure read: no preflight, no studio state written.
@@ -2091,9 +2119,14 @@ lanes_next() {
   MF_ROWS="$(mktemp "${TMPDIR:-/tmp}/lanes-next.XXXXXX")" || exit 2
   trap 'rm -f "$MF_ROWS"' EXIT
   mf_load "$1" || exit 2
+  _ln_db="$(ids_default_branch)" || { say "origin/HEAD is not set — run: git remote set-head origin --auto"; exit 2; }
   _ln_bs=""; _ln_pl=""
   while IFS="$(printf '\t')" read -r _ln_id _ln_b _ln_t _ln_spec _ln_plan _ln_d; do
     [ -n "$_ln_id" ] || continue
+    # #56 R3: a story id used before in this project is refused before classification.
+    if ids_ok "$_ln_id"; then
+      ids_check "$_ln_id" "$_ln_t" "$MF_SLUG" "${_ln_plan:--}" "$_ln_db" "$MF_ROWS" say "${_ln_b:--}" < /dev/null || exit 2
+    fi
     if [ "$_ln_spec" = - ] || [ -z "$_ln_spec" ]; then
       _ln_spec="$(next_match spec "$_ln_id")" || exit 2
     fi
@@ -2104,10 +2137,10 @@ lanes_next() {
     if [ -n "$_ln_spec" ]; then
       _ln_slug="$(basename "$_ln_spec" | sed -e 's/\.md$//' -e 's/^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}-//')"
       _ln_led="$START_DIR/.studio/ledger/$_ln_slug.md"
-      if [ -f "$_ln_led" ] && grep -qF "spec approved $_ln_spec" "$_ln_led"; then
+      if [ -f "$_ln_led" ] && ln_has "$_ln_led" "spec approved $_ln_spec"; then
         _ln_class=plan
-        if [ -n "$_ln_plan" ] && grep -qF "plan approved $_ln_plan" "$_ln_led" \
-           && grep -qF "Decisions swept $_ln_id" "$_ln_led"; then
+        if [ -n "$_ln_plan" ] && ln_has "$_ln_led" "plan approved $_ln_plan" \
+           && ln_has "$_ln_led" "Decisions swept $_ln_id"; then
           _ln_class=planned
         fi
       fi

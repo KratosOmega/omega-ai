@@ -14,6 +14,7 @@
 # Exit: start 0 done · 1 any other ending · 2 refused. status 0 this
 # project's run is live · 1 no run · 3 (outside a project) live elsewhere.
 # watch 0. stop 0 stop requested · 1 no run.
+# check-id 0 free · 1 taken · 2 usage.
 # Self-contained on purpose (copy mode); calls its siblings studio-state
 # (the single-plan story is read where its pointer is: story_dir, #42),
 # studio-event and studio-env, and sources overnight-lanes.sh, -channel.sh and
@@ -260,7 +261,7 @@ take_lock() {
 
 usage() {
   cat <<EOF
-usage: $SELF_ABS start [--dry-run | --detach] [<manifest>] | status [--run <slug>] | status --follow | watch [--run <slug>] [<seconds>] | stop | stop --run <slug> | stop --all | next [<manifest>] | activity <unit.jsonl> | deny-rules [--dir <path>]
+usage: $SELF_ABS start [--dry-run | --detach] [<manifest>] | status [--run <slug>] | status --follow | watch [--run <slug>] [<seconds>] | stop | stop --run <slug> | stop --all | next [<manifest>] | check-id <id> [--plan <path>|-] [--ticket <ticket>|-] [--slug <slug>] [--branch <branch>|-] | activity <unit.jsonl> | deny-rules [--dir <path>]
        $SELF_ABS say|said|unsay|hold|resume|stop <story> [--run <run>] … (talking to a live run; below)
 
   start [--dry-run]  preflight, then run the approved plan one unit per fresh
@@ -292,6 +293,18 @@ usage: $SELF_ABS start [--dry-run | --detach] [<manifest>] | status [--run <slug
   next [<manifest>]  the planning loop: classify each manifest row (brainstorm,
                      plan, planned) and print the one next command; no argument
                      reads .studio/run. Reads files and ledger lines only.
+  check-id <id> [--plan <path>|-] [--ticket <ticket>|-] [--slug <slug>] [--branch <branch>|-]
+                     is <id> free for a new story? Taken (any case) when
+                     origin/<default> holds another story's .studio/ledger/<id>.md
+                     (its last plan approved or adopted path is not this
+                     story's plan), another run's origin/integration/<slug>
+                     holds it, another run's record under .studio/runs/
+                     (archived ones too) lists it on another branch than
+                     --branch (a story carried over keeps its id), or a plan under
+                     docs/game-dev/plans/ on origin/<default> says Story: <id>.
+                     Defaults: the row of .studio/run's manifest. No fetch.
+                     Exit 0 free · 1 taken (each reason, then a free id to use
+                     instead) · 2 usage
   status             the live run: a progress bar with a rough finish time, dir, unit,
                      task k/N, spend, pid, and the machine readout (studio-env)
                      (exit 1: no run)
@@ -1983,6 +1996,11 @@ case "$1" in
     [ "$#" -eq 2 ] && [ -f "$2" ] || { usage >&2; exit 2; }
     unit_activity "$2"; exit 0 ;;
   deny-rules) shift; cmd_deny_rules "$@" ;;
+  check-id)
+    shift
+    . "$SELF_DIR/overnight-lanes.sh"   # mf_load, row_field; it sources overnight-ids.sh
+    cmd_check_id "$@"
+    exit $? ;;
   next)
     shift
     [ "$#" -le 1 ] || { usage >&2; exit 2; }

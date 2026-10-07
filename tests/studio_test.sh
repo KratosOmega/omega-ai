@@ -489,6 +489,33 @@ test_execute_peers_brief_rule() {
   assert_contains "$E" 'every implementer and fixer brief' "§2 copies the block into every brief"
 }
 
+# #56: plan and brainstorm check a manifest story's id first; the Stories
+# table copies the manifest's ids.
+test_plan_brainstorm_check_id() {
+  PL="$REPO_ROOT/studios/game-dev/skills/plan/SKILL.md"
+  BR="$REPO_ROOT/studios/game-dev/skills/brainstorm/SKILL.md"
+  for f in "$PL" "$BR"; do
+    assert_contains "$f" 'Run `studio-overnight check-id <id>` there first' "$f checks the id after entering the run worktree"
+    assert_contains "$f" 'before writing any file or ledger line' "$f stops before any write"
+    assert_contains "$f" 'run the same `studio-overnight check-id <id>` first' "$f checks the <id> form under a manifest too"
+    _a="$(grep -n -F -m1 -- 'Run `studio-overnight check-id <id>` there first' "$f" | cut -d: -f1)"
+    _b="$(grep -n -F -m1 -- 'Run `studio-state show` after entering' "$f" | cut -d: -f1)"
+    TESTS_RUN=$((TESTS_RUN + 1))
+    if [ -n "$_a" ] && [ -n "$_b" ] && [ "$_a" -lt "$_b" ]; then _pass "$f: check-id is the first step after entering"
+    else _fail "$f: check-id is the first step after entering ($_a, $_b)"; fi
+  done
+  assert_contains "$BR" "The \`Story\` cells are the manifest's own ids" "the Stories table copies the manifest's ids"
+  for f in "$PL" "$BR"; do
+    # §0 points at the <slug>/<id> steps (check-id included), which run first.
+    _p="$(grep -n -F -m1 -- 'run that form'"'"'s steps first' "$f" | cut -d: -f1)"
+    _z="$(grep -n -m1 '^## 0\. ' "$f" | cut -d: -f1)"; _o="$(grep -n -m1 '^## 1\. ' "$f" | cut -d: -f1)"
+    TESTS_RUN=$((TESTS_RUN + 1))
+    if [ -n "$_p" ] && [ -n "$_z" ] && [ -n "$_o" ] && [ "$_z" -lt "$_p" ] && [ "$_p" -lt "$_o" ]; then
+      _pass "$f: §0 points at the <slug>/<id> steps first"
+    else _fail "$f: §0 points at the <slug>/<id> steps first ($_z, $_p, $_o)"; fi
+  done
+}
+
 test_plan_brainstorm_slug_form() {
   PL="$REPO_ROOT/studios/game-dev/skills/plan/SKILL.md"
   BR="$REPO_ROOT/studios/game-dev/skills/brainstorm/SKILL.md"
@@ -750,5 +777,5 @@ run_tests test_plugin_manifests test_skill_frontmatter test_agent_frontmatter \
   test_skill_review_playtest_ask_candidates test_skill_retro_resolves_story \
   test_no_ship_references test_superpowers_requires_referenced test_no_last_playtest_callers \
   test_execute_one_contract test_router_overnight_lock test_execute_lanes test_execute_lane_gate_foreground test_execute_land_and_progress test_execute_gate_repair test_execute_operator_messages test_execute_adopt test_final_wave_contracts \
-  test_plan_brainstorm_lanes test_execute_sync_repair_form test_execute_peers_brief_rule test_plan_brainstorm_slug_form \
+  test_plan_brainstorm_lanes test_execute_sync_repair_form test_execute_peers_brief_rule test_plan_brainstorm_slug_form test_plan_brainstorm_check_id \
   test_sdd_script_references
