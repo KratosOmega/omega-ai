@@ -505,6 +505,15 @@ test_plan_brainstorm_check_id() {
     else _fail "$f: check-id is the first step after entering ($_a, $_b)"; fi
   done
   assert_contains "$BR" "The \`Story\` cells are the manifest's own ids" "the Stories table copies the manifest's ids"
+  for f in "$PL" "$BR"; do
+    # §0 points at the <slug>/<id> steps (check-id included), which run first.
+    _p="$(grep -n -F -m1 -- 'run that form'"'"'s steps first' "$f" | cut -d: -f1)"
+    _z="$(grep -n -m1 '^## 0\. ' "$f" | cut -d: -f1)"; _o="$(grep -n -m1 '^## 1\. ' "$f" | cut -d: -f1)"
+    TESTS_RUN=$((TESTS_RUN + 1))
+    if [ -n "$_p" ] && [ -n "$_z" ] && [ -n "$_o" ] && [ "$_z" -lt "$_p" ] && [ "$_p" -lt "$_o" ]; then
+      _pass "$f: §0 points at the <slug>/<id> steps first"
+    else _fail "$f: §0 points at the <slug>/<id> steps first ($_z, $_p, $_o)"; fi
+  done
 }
 
 test_plan_brainstorm_slug_form() {

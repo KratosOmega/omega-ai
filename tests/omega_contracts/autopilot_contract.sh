@@ -180,7 +180,14 @@ test_autopilot_adopt_order() {
 # come before the story list; the default id; check-id on every id.
 test_autopilot_story_ids() {
   S="$REPO_ROOT/shared/omega/skills/autopilot/SKILL.md"
-  assert_contains "$S" 'studio-overnight check-id <id> --ticket <t> --slug <slug> --plan -' "the story list checks every id"
+  assert_contains "$S" 'studio-overnight check-id <id> --ticket <t> --slug <slug> --plan - --branch <Branch>' "the story list checks every id, with its branch"
+  assert_contains "$S" 'Exit 2: stop and print its output' "check-id's exit 2 stops: a usage or environment problem"
+  assert_contains "$S" 'not a taken id' "exit 2 is not a taken id"
+  assert_contains "$S" 'the slug must match `\^\[A-Za-z0-9\._-\]+\$`' "the slug's pattern"
+  assert_contains "$S" "a suggestion that is already another row's id in this list is not used" "a suggestion never duplicates a row being built"
+  assert_contains "$S" "the plan's \`Story:\` line" "a rename touches the plan's Story: line"
+  assert_contains "$S" '`git mv .studio/ledger/<id>.md .studio/ledger/<new id>.md`' "a rename moves the ledger"
+  assert_contains "$S" 'the story file `<root>/.studio/stories/<id>.md` moves to `<new id>.md`' "and the story file"
   assert_contains "$S" 'otherwise `<slug>-S<n>`' "the default id when the ticket does not fit"
   assert_contains "$S" '`KAN-1541-1`, `KAN-1541-2`' "rows sharing a ticket"
   assert_contains "$S" 'a story id `check-id` refuses' "a failing next names a taken id"
