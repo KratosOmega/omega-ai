@@ -9,6 +9,7 @@ STUDIO="$REPO_ROOT/studios/game-dev"
 BIN="$STUDIO/bin"
 # Physical path: the adapter scripts resolve the project with pwd -P, so
 # assertions that quote $TMP must use the same spelling (/var -> /private/var on macOS).
+unset STUDIO_GATE_POLL_SECONDS STUDIO_SETUP_POLL_SECONDS
 TMP="$(cd "$(mktemp -d)" && pwd -P)"
 trap 'rm -rf "$TMP"' EXIT
 
@@ -762,7 +763,7 @@ test_gate_poll_keeps_budget() {
   ( cd "$GP" && sh "$GATE" holder -- sleep 13 ) >/dev/null 2>&1 &
   _i=0; while [ ! -s "$GP/.studio/gate.lock/pid" ] && [ "$_i" -lt 100 ]; do sleep 0.1; _i=$((_i + 1)); done
   _rc=0
-  ( cd "$GP" && STUDIO_GATE_POLL_SECONDS=0.2 sh "$GATE" waiter -- true ) 2> "$TMP/gw.err" || _rc=$?
+  ( cd "$GP" && STUDIO_GATE_POLL_SECONDS=0.1 sh "$GATE" waiter -- true ) 2> "$TMP/gw.err" || _rc=$?
   wait
   assert_eq 0 "$_rc" "the waiter exits 0 once the holder is done"
   assert_eq 1 "$(grep -c '^gate: waiting for' "$TMP/gw.err")" "one waiting line in 13 s: the 60 s cadence is not scaled"

@@ -152,6 +152,9 @@ test_setup_help() {
   assert_status 0 "--help exits 0" -- sh "$SETUP" --help
   sh "$SETUP" --help > "$TMP/help.out" 2>&1
   assert_contains "$TMP/help.out" 'worktree_setup' "--help prints the usage text"
+  STUDIO_SETUP_POLL_SECONDS=0.3; export STUDIO_SETUP_POLL_SECONDS
+  assert_status 0 "--help exits 0 even with a bad poll value" -- sh "$SETUP" --help
+  unset STUDIO_SETUP_POLL_SECONDS
 }
 
 test_setup_poll_keeps_budget() {
