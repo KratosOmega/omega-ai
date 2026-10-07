@@ -207,7 +207,7 @@ Risk: — . No repo files.
 - [ ] **Step 1: Base check.** Run `git fetch -q origin && git rev-parse origin/main`. If it is not 6f2445b, rebase `54-faster-test-gate` onto it, re-run the floor counts below for the suites that changed, and relocate this plan's anchors.
 - [ ] **Step 2: Overnight floor.** Read `$SP/plan-probe/count-overnight_test.log`. It is the 6f2445b export run alone, started during planning. Take the number from its last line, `N assertions, M failed`. If the file is missing or the run is not finished, run it alone:
   `sh "$SP/heavy.sh" "$SP/plan-probe/count-overnight_test.log" sh -c 'cd "$SP/plan-probe/repo" && sh tests/overnight_test.sh'`.
-  M must be 0. The value replaces `@OVERNIGHT_FLOOR@` in T2's table. That marker is the only one in this plan; T2's brief carries the number.
+  Measured during planning: **1132 assertions, 0 failed** (6f2445b, run alone). Re-measure only if origin/main moved.
 - [ ] **Step 3: Write `$SP/heavy.sh`:**
 
 ```sh
@@ -231,7 +231,7 @@ exit "$rc"
 | suite | floor | suite | floor | suite | floor |
 |---|---|---|---|---|---|
 | overnight_lanes_test | 1128 | studio_adopt_test | 306 | state_guard_test | 66 |
-| overnight_test | @OVERNIGHT_FLOOR@ | install_test | 369 | overnight_progress_test | 39 |
+| overnight_test | 1132 | install_test | 369 | overnight_progress_test | 39 |
 | studio_test | 661 | hook_test | 287 | overnight_runs_test | 41 |
 | omega_test | 503 | state_test | 245 | studio_env_test | 43 |
 | state_move_test | 244 | state_pointer_test | 179 | studio_event_test | 38 |
@@ -661,7 +661,7 @@ table() {
   cat <<'EOF'
 # suite                      shards  floor
 overnight_lanes_test         8       1128
-overnight_test               4       @OVERNIGHT_FLOOR@
+overnight_test               4       1132
 toolkit_test                 1       175
 studio_adopt_test            1       306
 install_test                 1       369
@@ -900,7 +900,7 @@ exit 1
 Notes for the implementer:
 - In serial mode, a terminal Ctrl-C reaches the foreground suite and run_all together, as today. `on_signal` then finds `LIVE` empty and prints the interrupted summary.
 - Keep the 0.2 s poll. Neither bash 3.2 nor dash has `wait -n`.
-- `@OVERNIGHT_FLOOR@` is the T0 number. The brief carries it; do not commit the marker.
+- The overnight floor 1132 was measured in T0 Step 2.
 - [ ] **Step 4: Run the acceptance commands.** Both runs must be green.
 - [ ] **Step 5: Commit:** `git add tests/run_all.sh tests/run_all_test.sh && git commit -m "test(run_all): parallel job pool, exclusive phase, summary and suite checks (#54)"`.
 
@@ -1794,6 +1794,6 @@ Also checked, and holding:
   - R9: T3.
   - Acceptance 1: F3, F6. Acceptance 2–6: F4. Acceptance 7: F1. Acceptance 8: F5. Acceptance 9: F7.
   - Files: T14, T16.
-- **Placeholders:** `@OVERNIGHT_FLOOR@` is the one deliberate marker. It is a measured value with its procedure in T0 Step 2, and the brief carries the number.
+- **Placeholders:** none. The overnight floor (1132) was measured during planning (T0 Step 2).
 - **Names:** knob locals, row formats, the job layout and the test names are used the same way in every task.
 - **Review Focus:** each of the five lines has its test in the owning task (T1, T2, T3).
