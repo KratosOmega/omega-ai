@@ -22,6 +22,14 @@ ids_default_branch() {
 }
 # ids_has FILE ID — FILE's first tab-separated column holds ID, in any case.
 ids_has() { [ -f "$1" ] && awk -F'\t' -v w="$(ids_lc "$2")" 'tolower($1) == w { f = 1 } END { exit !f }' "$1"; }
+# ids_row FILE ID BRANCH — the rows FILE (rows.tsv: id, branch, …) has a row
+# for ID, in any case, whose Branch is not BRANCH. A row on this story's own
+# Branch is the same story carried over from an earlier run: it keeps its id
+# (#56 FI1). BRANCH '-' or empty: unknown, so every row of ID counts.
+ids_row() {
+  [ -f "$1" ] && awk -F'\t' -v w="$(ids_lc "$2")" -v b="$3" \
+    'tolower($1) == w && (b == "" || b == "-" || $2 != b) { f = 1 } END { exit !f }' "$1"
+}
 # ids_ledgers REF ID — the .studio/ledger/<ID>.md paths on REF, matched in any
 # case by listing the directory (a case-sensitive `git show` would miss s1.md).
 ids_ledgers() {
@@ -45,10 +53,11 @@ ids_detail() {
   [ -z "$_idd" ] || printf ' (%s)' "$_idd"
 }
 
-# ids_reasons ID PLAN SLUG D — why ID is taken, one line per reason (the text
-# after "is taken: "), in the order rule 1, 4, 2, 3 (D4); nothing when free.
-# PLAN is this story's plan ('-' or empty: unknown), SLUG this run's slug
-# (may be empty), D the default branch.
+# ids_reasons ID PLAN SLUG D BRANCH — why ID is taken, one line per reason
+# (the text after "is taken: "), in the order rule 1, 4, 2, 3 (D4); nothing
+# when free. PLAN is this story's plan ('-' or empty: unknown), SLUG this
+# run's slug (may be empty), D the default branch, BRANCH this story's Branch
+# ('-', empty or absent: unknown, so no record row is excepted).
 ids_reasons() {
   _ir_ref="refs/remotes/origin/$4"
   # 1. A ledger on the default branch that is not this story's own.
@@ -79,24 +88,26 @@ ids_reasons() {
       printf "origin/integration/%s:%s belongs to run %s's integration branch\n" "$_ir_s" "$_ir_p" "$_ir_s"
     done
   done
-  # 3. Another run's record: live, stopped, done or archived <slug>.<ts> (D2, D3).
+  # 3. Another run's record: live, stopped, done or archived <slug>.<ts> (D2, D3),
+  #    except a row on this story's own Branch (carried over, FI1); landed.tsv
+  #    holds no story branch, so a landed id always counts.
   for _ir_d in "$STATE_ROOT"/.studio/runs/*/; do
     [ -d "$_ir_d" ] || continue
     _ir_d="${_ir_d%/}"; _ir_n="${_ir_d##*/}"
     [ "$_ir_n" != "$3" ] || continue
     _ir_b="$(printf '%s\n' "$_ir_n" | sed 's/\.[0-9]\{8\}T[0-9]\{6\}Z$//')"
-    if ids_has "$_ir_d/rows.tsv" "$1" || ids_has "$_ir_d/landed.tsv" "$1" \
+    if ids_row "$_ir_d/rows.tsv" "$1" "${5:-}" || ids_has "$_ir_d/landed.tsv" "$1" \
        || { [ ! -f "$_ir_d/rows.tsv" ] && [ "$_ir_b" != "$3" ] \
-            && _ir_rw="$(runs_rows "$STATE_ROOT" "$_ir_b")" && ids_has "$_ir_rw" "$1"; }; then
+            && _ir_rw="$(runs_rows "$STATE_ROOT" "$_ir_b")" && ids_row "$_ir_rw" "$1" "${5:-}"; }; then
       printf 'run %s (record .studio/runs/%s) lists it\n' "$_ir_b" "$_ir_n"
     fi
   done
 }
 
-# ids_suggest ID TICKET SLUG PLAN D ROWS — the first candidate that matches
-# the id pattern, is not ID, is not a row id in ROWS (any case) and is free by
-# ids_reasons: TICKET (when not ID), TICKET-2 … TICKET-9, then SLUG-S1 …
-# SLUG-S9. TICKET '-' or empty: none. 1 when no candidate is left.
+# ids_suggest ID TICKET SLUG PLAN D ROWS BRANCH — the first candidate that
+# matches the id pattern, is not ID, is not a row id in ROWS (any case) and is
+# free by ids_reasons: TICKET (when not ID), TICKET-2 … TICKET-9, then
+# SLUG-S1 … SLUG-S9. TICKET '-' or empty: none. 1 when no candidate is left.
 ids_suggest() {
   _is_c=""
   case "$2" in ''|-) ;; *)
@@ -112,25 +123,25 @@ $3-S$_is_n"; done
     [ -n "$_is_k" ] && ids_ok "$_is_k" || continue
     [ "$(ids_lc "$_is_k")" != "$(ids_lc "$1")" ] || continue
     [ -z "$6" ] || ! ids_has "$6" "$_is_k" || continue
-    [ -z "$(ids_reasons "$_is_k" "$4" "$3" "$5" < /dev/null)" ] || continue
+    [ -z "$(ids_reasons "$_is_k" "$4" "$3" "$5" "${7:-}" < /dev/null)" ] || continue
     printf '%s\n' "$_is_k"; break
   done)"
   [ -n "$_is_o" ] || return 1
   printf '%s\n' "$_is_o"
 }
 
-# ids_check ID TICKET SLUG PLAN D ROWS EMIT — 0 when ID is free. Taken: EMIT
-# (say or refuse) once per reason, then once with the suggestion; 1. The
-# here-document keeps EMIT in this shell, so refuse's FAILED=1 sticks.
+# ids_check ID TICKET SLUG PLAN D ROWS EMIT BRANCH — 0 when ID is free.
+# Taken: EMIT (say or refuse) once per reason, then once with the suggestion;
+# 1. The here-document keeps EMIT in this shell, so refuse's FAILED=1 sticks.
 ids_check() {
-  _ic_r="$(ids_reasons "$1" "$4" "$3" "$5" < /dev/null)"
+  _ic_r="$(ids_reasons "$1" "$4" "$3" "$5" "${8:-}" < /dev/null)"
   [ -n "$_ic_r" ] || return 0
   while IFS= read -r _ic_l; do
     "$7" "story id '$1' is taken: $_ic_l"
   done <<EOF_IC
 $_ic_r
 EOF_IC
-  if _ic_s="$(ids_suggest "$1" "$2" "$3" "$4" "$5" "$6" < /dev/null)"; then
+  if _ic_s="$(ids_suggest "$1" "$2" "$3" "$4" "$5" "$6" "${8:-}" < /dev/null)"; then
     "$7" "use '$_ic_s' instead"
   else
     "$7" "pick an unused id: the ticket, or <run slug>-S<n>"
@@ -139,17 +150,18 @@ EOF_IC
 }
 
 # cmd_check_id ARGS — `check-id <id> [--plan <path>|-] [--ticket <ticket>|-]
-# [--slug <slug>]` (R2). Defaults (D6): the row of .studio/run's manifest
-# that lists <id>. 0 free · 1 taken · 2 usage.
+# [--slug <slug>] [--branch <branch>|-]` (R2). Defaults (D6): the row of
+# .studio/run's manifest that lists <id> (any case). 0 free · 1 taken · 2 usage.
 cmd_check_id() {
-  _cc_id=""; _cc_p=""; _cc_t=""; _cc_s=""; _cc_hp=0; _cc_ht=0; _cc_hs=0
+  _cc_id=""; _cc_p=""; _cc_t=""; _cc_s=""; _cc_b=""; _cc_hp=0; _cc_ht=0; _cc_hs=0; _cc_hb=0
   while [ "$#" -gt 0 ]; do
     case "$1" in
-      --plan|--ticket|--slug)
+      --plan|--ticket|--slug|--branch)
         [ "$#" -ge 2 ] && [ -n "$2" ] || { usage >&2; return 2; }
         case "$1" in
           --plan) _cc_p="$2"; _cc_hp=1 ;;
           --ticket) _cc_t="$2"; _cc_ht=1 ;;
+          --branch) _cc_b="$2"; _cc_hb=1 ;;
           *) _cc_s="$2"; _cc_hs=1; [ "$_cc_s" != - ] || { _cc_s=""; _cc_hs=2; } ;;
         esac
         shift 2 ;;
@@ -166,16 +178,20 @@ cmd_check_id() {
   trap 'rm -f "$MF_ROWS"' EXIT
   _cc_m="$(head -n 1 "$START_DIR/.studio/run" 2>/dev/null)"
   case "$_cc_m" in ''|/*) ;; *) _cc_m="$START_DIR/$_cc_m" ;; esac
+  # The row's own spelling of the id: ids compare in any case (row_field does not).
   if [ -n "$_cc_m" ] && [ -f "$_cc_m" ] && mf_load "$_cc_m" \
-     && awk -F'\t' -v id="$_cc_id" '$1 == id { f = 1 } END { exit !f }' "$MF_ROWS"; then
-    [ "$_cc_hp" = 1 ] || _cc_p="$(row_field "$_cc_id" plan)"
-    [ "$_cc_ht" = 1 ] || _cc_t="$(row_field "$_cc_id" ticket)"
+     && _cc_r="$(awk -F'\t' -v w="$(ids_lc "$_cc_id")" 'tolower($1) == w { print $1; exit }' "$MF_ROWS")" \
+     && [ -n "$_cc_r" ]; then
+    [ "$_cc_hp" = 1 ] || _cc_p="$(row_field "$_cc_r" plan)"
+    [ "$_cc_ht" = 1 ] || _cc_t="$(row_field "$_cc_r" ticket)"
+    [ "$_cc_hb" = 1 ] || _cc_b="$(row_field "$_cc_r" branch)"
     [ "$_cc_hs" != 0 ] || _cc_s="$MF_SLUG"
   else
     : > "$MF_ROWS"
   fi
   [ -n "$_cc_p" ] || _cc_p=-
-  if ids_check "$_cc_id" "$_cc_t" "$_cc_s" "$_cc_p" "$_cc_d" "$MF_ROWS" say; then
+  [ -n "$_cc_b" ] || _cc_b=-
+  if ids_check "$_cc_id" "$_cc_t" "$_cc_s" "$_cc_p" "$_cc_d" "$MF_ROWS" say "$_cc_b"; then
     echo "check-id: $_cc_id is free"
     return 0
   fi

@@ -19,11 +19,12 @@ approval page in `artifacts/`.
 - Why: phoenix's new run reused the id `S1`, and its `S1` inherited KAN-1499's
   shipped ledger (`.studio/ledger/S1.md` on main: plan approved, T1-T2 complete,
   shipped), so the story would have resumed at task 2 of 2 on another story's plan.
-- `studio-overnight check-id <id> [--plan] [--ticket] [--slug]` says whether an
+- `studio-overnight check-id <id> [--plan] [--ticket] [--slug] [--branch]` says whether an
   id is free (0), taken (1, one line per reason and a suggested id) or misused
   (2). An id is taken by a ledger on the default branch that is not this story's
   own, a ledger on another run's integration branch, another run's record
-  (live, stopped, done or archived) that lists it, or a plan on the default
+  (live, stopped, done or archived) that lists it on another branch (a half-done
+  story carried into a new run on its own branch keeps its id), or a plan on the default
   branch with `Story: <id>`. Ids compare case-insensitively; it never fetches.
 - autopilot proposes `KAN-<n>` (the ticket) or `<slug>-S<n>` and checks each with
   `check-id`; brainstorm and plan check before writing; `next` and `start`

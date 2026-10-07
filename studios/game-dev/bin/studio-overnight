@@ -261,7 +261,7 @@ take_lock() {
 
 usage() {
   cat <<EOF
-usage: $SELF_ABS start [--dry-run | --detach] [<manifest>] | status [--run <slug>] | status --follow | watch [--run <slug>] [<seconds>] | stop | stop --run <slug> | stop --all | next [<manifest>] | check-id <id> [--plan <path>|-] [--ticket <ticket>|-] [--slug <slug>] | activity <unit.jsonl> | deny-rules [--dir <path>]
+usage: $SELF_ABS start [--dry-run | --detach] [<manifest>] | status [--run <slug>] | status --follow | watch [--run <slug>] [<seconds>] | stop | stop --run <slug> | stop --all | next [<manifest>] | check-id <id> [--plan <path>|-] [--ticket <ticket>|-] [--slug <slug>] [--branch <branch>|-] | activity <unit.jsonl> | deny-rules [--dir <path>]
        $SELF_ABS say|said|unsay|hold|resume|stop <story> [--run <run>] … (talking to a live run; below)
 
   start [--dry-run]  preflight, then run the approved plan one unit per fresh
@@ -293,13 +293,14 @@ usage: $SELF_ABS start [--dry-run | --detach] [<manifest>] | status [--run <slug
   next [<manifest>]  the planning loop: classify each manifest row (brainstorm,
                      plan, planned) and print the one next command; no argument
                      reads .studio/run. Reads files and ledger lines only.
-  check-id <id> [--plan <path>|-] [--ticket <ticket>|-] [--slug <slug>]
+  check-id <id> [--plan <path>|-] [--ticket <ticket>|-] [--slug <slug>] [--branch <branch>|-]
                      is <id> free for a new story? Taken (any case) when
                      origin/<default> holds another story's .studio/ledger/<id>.md
                      (its last plan approved or adopted path is not this
                      story's plan), another run's origin/integration/<slug>
                      holds it, another run's record under .studio/runs/
-                     (archived ones too) lists it, or a plan under
+                     (archived ones too) lists it on another branch than
+                     --branch (a story carried over keeps its id), or a plan under
                      docs/game-dev/plans/ on origin/<default> says Story: <id>.
                      Defaults: the row of .studio/run's manifest. No fetch.
                      Exit 0 free · 1 taken (each reason, then a free id to use

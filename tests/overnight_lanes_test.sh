@@ -3576,11 +3576,14 @@ test_lanes_preflight_refuses_stopped_record() {
   run_lanes start --dry-run "$MFP"
   assert_eq 2 "$LS_STATUS" "a story of a stopped run's record refuses"
   assert_contains "$LS_ERR" "story S1 is used by stopped run alpha (record $P/.studio/runs/alpha, report $P/.studio/reports/overnight-alpha-20261004-210000) — resume it" "names the run, its record and its newest report"
-  assert_contains "$LS_ERR" "— resume it ('.*' start docs/runs/alpha-real.md) or abandon it (mv '$P/.studio/runs/alpha' '$P/.studio/runs/alpha'.<utc ts>) or pick another id" "the way out: resume with the real manifest path, or abandon by archiving the record (AC8)"
+  assert_contains "$LS_ERR" "— resume it ('.*' start docs/runs/alpha-real.md) or abandon it (mv '$P/.studio/runs/alpha' '$P/.studio/runs/alpha'.<utc ts>: a story carried into a new run keeps its id and its branch) or pick another id" "the way out: resume with the real manifest path, or abandon by archiving the record (AC8)"
   assert_contains "$LS_ERR" "branch S1-b is used by stopped run alpha" "and its branch"
   : > "$P/.studio/runs/alpha/done"
   run_lanes start --dry-run "$MFP"
-  assert_eq 2 "$LS_STATUS" "a done record still lists S1 (#56 rule 3)"
+  assert_eq 0 "$LS_STATUS" "a done record's S1 on this story's branch S1-b: the same story carried over (#56 FI1)"
+  printf 'S1\told-b\tS1\t-\t-\t\n' > "$P/.studio/reports/overnight-alpha-20261004-210000/rows.tsv"
+  run_lanes start --dry-run "$MFP"
+  assert_eq 2 "$LS_STATUS" "a done record still lists S1 on another branch (#56 rule 3)"
   assert_not_contains "$LS_ERR" "is used by stopped run alpha" "it is no longer a stopped-run conflict (AC8)"
   assert_contains "$LS_ERR" "story id 'S1' is taken: run alpha (record \.studio/runs/alpha) lists it" "check-id's record rule names it"
 }
@@ -3589,10 +3592,21 @@ test_lanes_preflight_done_record_needs_archive() {
   mkdir -p "$P/.studio/runs/demo"; : > "$P/.studio/runs/demo/landed.tsv"; : > "$P/.studio/runs/demo/done"
   run_lanes start --dry-run "$MFP"
   assert_eq 2 "$LS_STATUS" "a new run named like a done record refuses"
-  assert_contains "$LS_ERR" "run demo is done: archive its record first: mv '$P/.studio/runs/demo' '$P/.studio/runs/demo'\.<utc ts>" "names the archive path"
+  assert_contains "$LS_ERR" "run demo is done: archive its record first: mv '$P/.studio/runs/demo' '$P/.studio/runs/demo'\.<utc ts> (its story ids stay taken: a story carried into the new run keeps its id and its branch)" "names the archive path"
   mv "$P/.studio/runs/demo" "$P/.studio/runs/demo.20261004T000000Z"
   run_lanes start --dry-run "$MFP"
   assert_eq 0 "$LS_STATUS" "after the archive it passes"
+  # A post-#56 done record keeps rows.tsv: archived, its ids stay taken by
+  # rule 3 unless the row is this story's, carried over on the same branch.
+  mkdir -p "$P/.studio/runs/demo"; : > "$P/.studio/runs/demo/landed.tsv"; : > "$P/.studio/runs/demo/done"
+  printf 'A\tA-b\tA\t-\t-\t\n' > "$P/.studio/runs/demo/rows.tsv"
+  rm -rf "$P/.studio/runs/demo.20261004T000000Z"; mv "$P/.studio/runs/demo" "$P/.studio/runs/demo.20261005T000000Z"
+  run_lanes start --dry-run "$MFP"
+  assert_eq 0 "$LS_STATUS" "an archived record with rows.tsv: A on A-b again is the same story carried over"
+  printf 'A\told-b\tA\t-\t-\t\n' > "$P/.studio/runs/demo.20261005T000000Z/rows.tsv"
+  run_lanes start --dry-run "$MFP"
+  assert_eq 2 "$LS_STATUS" "A on another branch in the archived record: taken"
+  assert_contains "$LS_ERR" "story id 'A' is taken: run demo (record \.studio/runs/demo\.20261005T000000Z) lists it" "names the archived record"
 }
 test_lanes_preflight_branch_forms() {
   lanes_fixture pfb integration A:-
@@ -3712,8 +3726,62 @@ test_lanes_ids_record_keeps_rows() {                # D2
   assert_eq 0 "$LS_STATUS" "the run is done"
   assert_file "$P/.studio/runs/demo/rows.tsv" "the record keeps the run's rows"
   assert_contains "$P/.studio/runs/demo/rows.tsv" "^A	A-b	" "A's row"
-  run_lanes check-id A --slug other --plan -
+  rm -rf "$P"/.studio/reports/overnight-demo-*   # no report fallback: the record's copy alone
+  run_lanes check-id A --slug other --plan - --branch -
   assert_contains "$LS_ERR" "story id 'A' is taken: run demo (record \.studio/runs/demo) lists it" "check-id reads it"
+}
+test_lanes_ids_record_rows_union() {                # review M3
+  lanes_fixture rru integration A:- B:-
+  run_lanes start "$MFP"
+  assert_eq 0 "$LS_STATUS" "the run is done"
+  rm -f "$P/.studio/runs/demo/done"   # a stopped record of this run: a resume
+  grep -v '^| B |' "$P/$MFP" > "$TMP/m" && mv "$TMP/m" "$P/$MFP"
+  ( cd "$P" && git add -A && git commit -qm "drop B" && git push -q origin run/demo ) >/dev/null 2>&1
+  run_lanes start "$MFP"
+  assert_contains "$P/.studio/runs/demo/rows.tsv" "^A	A-b	" "A's row"
+  assert_contains "$P/.studio/runs/demo/rows.tsv" "^B	B-b	" "a story dropped from the manifest keeps its row"
+  assert_eq 1 "$(grep -c '^A	' "$P/.studio/runs/demo/rows.tsv")" "one row per id"
+  assert_eq "" "$(ls "$P/.studio/runs/demo" | grep 'rows\.tsv\.')" "no tmp file left"
+}
+test_lanes_ids_next_needs_origin_head() {           # D8
+  LANES_CELLS=dash; export LANES_CELLS
+  lanes_fixture nho integration A:-
+  git -C "$P" remote set-head origin -d
+  run_lanes next "$MFP"
+  assert_eq 2 "$LS_STATUS" "next with origin/HEAD unset exits 2"
+  assert_contains "$LS_ERR" "origin/HEAD is not set — run: git remote set-head origin --auto" "with start's message"
+  assert_not_contains "$LS_OUT" "^A  " "before classifying anything"
+}
+test_lanes_ids_next_carried_over() {                # #56 FI1
+  LANES_CELLS=dash; export LANES_CELLS
+  lanes_fixture nco integration A:-
+  mkdir -p "$P/.studio/runs/old.20261001T000000Z"; printf 'A\tA-b\tA\t-\t-\t\n' > "$P/.studio/runs/old.20261001T000000Z/rows.tsv"
+  run_lanes next "$MFP"
+  assert_eq 0 "$LS_STATUS" "a story carried over from an archived run on its own branch keeps its id"
+  assert_contains "$LS_OUT" "^A  " "next classifies it"
+  printf 'A\told-b\tA\t-\t-\t\n' > "$P/.studio/runs/old.20261001T000000Z/rows.tsv"
+  run_lanes next "$MFP"
+  assert_eq 2 "$LS_STATUS" "the same id on another branch: taken"
+  assert_contains "$LS_ERR" "story id 'A' is taken: run old (record \.studio/runs/old\.20261001T000000Z) lists it" "names the record"
+}
+test_lanes_ids_start_needs_default_ref() {          # review m-A
+  lanes_pre_stale "$TMP/pre-sdr"
+  LANES_MAIN_PRE="$TMP/pre-sdr"; export LANES_MAIN_PRE
+  lanes_fixture sdr integration S1:-
+  git -C "$P" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/nope
+  run_lanes start --dry-run "$MFP"
+  assert_eq 2 "$LS_STATUS" "a dangling origin/HEAD refuses"
+  assert_contains "$LS_ERR" "origin/HEAD is not set — run: git remote set-head origin --auto" "with the origin/HEAD message"
+}
+test_lanes_ids_empty_cell_no_shift() {              # review m-2
+  lanes_fixture ecs integration A:-
+  sed 's#^| A | A-b | A | \([^|]*\) | [^|]* |#| A | A-b | KAN-1 | \1 |  |#' "$P/$MFP" > "$P/docs/runs/ec.md"
+  assert_contains "$P/docs/runs/ec.md" "^| A | A-b | KAN-1 | docs/game-dev/specs/2026-10-01-demo.md |  | - |\$" "the Plan cell is empty"
+  run_lanes start --dry-run docs/runs/ec.md
+  assert_eq 2 "$LS_STATUS" "an empty Plan refuses"
+  assert_contains "$LS_ERR" "manifest: A: Spec or Plan is '-'" "the row refusal"
+  assert_not_contains "$LS_ERR" "KAN-1 ledger line" "no ledger check of the Ticket as a plan"
+  assert_not_contains "$LS_ERR" "plan KAN-1 is not in Docs" "the Ticket is not read as the Plan"
 }
 test_lanes_recheck_race_one_wins() {
   lanes_fixture rcr integration A:-
@@ -4229,7 +4297,7 @@ run_tests test_lanes_setup_preflight_refuses_linked_only test_lanes_setup_prefli
   test_lanes_preflight_branch_forms test_lanes_preflight_slug_off_and_digits test_lanes_preflight_resume_own_record \
   test_lanes_ids_next_refuses_stale test_lanes_ids_start_refuses_stale test_lanes_ids_ticket_id_seeds_clean \
   test_lanes_ids_slug_id_plans_clean test_lanes_ids_own_adopted_dry_run test_lanes_ids_direct_resume_after_landing \
-  test_lanes_ids_record_keeps_rows \
+  test_lanes_ids_record_keeps_rows test_lanes_ids_record_rows_union test_lanes_ids_next_needs_origin_head test_lanes_ids_next_carried_over test_lanes_ids_start_needs_default_ref test_lanes_ids_empty_cell_no_shift \
   test_lanes_recheck_race_one_wins test_lanes_overlap_warning test_lanes_next_slug_forms \
   test_lanes_slot_cap_two_across_runs test_lanes_slot_cap_one_alternates test_lanes_slot_kill9_lane_reclaimed \
   test_lanes_slot_stop_ends_wait test_lanes_slot_enqueue_failure_retried test_lanes_session_release_clears_slotwait test_lanes_slot_released_every_exit test_lanes_slot_wait_not_in_session_minutes \

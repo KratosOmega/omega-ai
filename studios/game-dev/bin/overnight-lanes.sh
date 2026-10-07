@@ -117,7 +117,7 @@ mf_conflicts() {
     _mc_s="${_mc_r%/landed.tsv}"; _mc_s="${_mc_s##*/}"
     if [ "$_mc_s" = "$MF_SLUG" ]; then
       if runs_record_done "$STATE_ROOT" "$_mc_s"; then
-        printf 'run %s is done: archive its record first: mv %s %s.<utc ts>\n' \
+        printf 'run %s is done: archive its record first: mv %s %s.<utc ts> (its story ids stay taken: a story carried into the new run keeps its id and its branch)\n' \
           "$_mc_s" "$(sq "$STATE_ROOT/.studio/runs/$_mc_s")" "$(sq "$STATE_ROOT/.studio/runs/$_mc_s")"
       fi
       continue                                    # own open record: a resume
@@ -127,10 +127,11 @@ mf_conflicts() {
     _mc_rows="$(runs_rows "$STATE_ROOT" "$_mc_s")" || continue
     # The way out (AC8): resume from its newest report's manifest path (the
     # report's own fallback when unrecorded), or abandon it by archiving the
-    # record as a done one is archived.
+    # record as a done one is archived. Its ids stay taken (#56 rule 3),
+    # except for a story carried into the new run on its own branch (FI1).
     _mc_rd="${_mc_rows%/rows.tsv}"; _mc_rec="$STATE_ROOT/.studio/runs/$_mc_s"
     _mc_mf="$(head -n 1 "$_mc_rd/manifest.path" 2>/dev/null)"; [ -n "$_mc_mf" ] || _mc_mf="docs/runs/$_mc_s.md"
-    mf_rows_clash "$_mc_rows" "stopped run $_mc_s (record $_mc_rec, report $_mc_rd) — resume it ($(sq "$SELF_ABS") start $_mc_mf) or abandon it (mv $(sq "$_mc_rec") $(sq "$_mc_rec").<utc ts>) or pick another"
+    mf_rows_clash "$_mc_rows" "stopped run $_mc_s (record $_mc_rec, report $_mc_rd) — resume it ($(sq "$SELF_ABS") start $_mc_mf) or abandon it (mv $(sq "$_mc_rec") $(sq "$_mc_rec").<utc ts>: a story carried into a new run keeps its id and its branch) or pick another"
   done
 }
 # mf_overlap_warn — warn (D38, AC9) for each other live run whose unfinished
@@ -228,13 +229,22 @@ EOF_MC
       || refuse "manifest: origin/integration/$MF_SLUG does not exist (create it from origin/$DEFAULT_BRANCH and push it)"
   fi
 
+  # #56 R3: story ids are checked against the default branch fetched above;
+  # a dangling origin/HEAD (its ref gone) would make every id look free.
+  _mck_db=""
+  if [ -n "$DEFAULT_BRANCH" ]; then
+    _mck_db="$(ids_default_branch)" || refuse "origin/HEAD is not set — run: git remote set-head origin --auto"
+  fi
   # Per story (first row of each id): state, ledger, and the plan at Docs:.
-  awk -F'\t' '!($1 in seen) { seen[$1] = 1; print $1 "\t" $5 "\t" $3 }' "$MF_ROWS" > "$MF_TMP/stories"
-  while IFS='	' read -r _id _plan _tkt; do
+  # An empty cell is '-': a tab is IFS whitespace, so an empty one would
+  # collapse and shift the next cell into its place.
+  awk -F'\t' 'function c(v) { return v == "" ? "-" : v }
+    !($1 in seen) { seen[$1] = 1; print $1 "\t" c($5) "\t" c($3) "\t" c($2) }' "$MF_ROWS" > "$MF_TMP/stories"
+  while IFS='	' read -r _id _plan _tkt _mck_br; do
     printf '%s\n' "$_id" | grep -Eq '^[A-Za-z0-9._-]+$' || continue
-    # #56 R3: the backstop — the id is checked against the default branch fetched above.
-    [ -z "$DEFAULT_BRANCH" ] \
-      || ids_check "$_id" "$_tkt" "$MF_SLUG" "${_plan:--}" "$DEFAULT_BRANCH" "$MF_ROWS" refuse < /dev/null || :
+    # #56 R3: the backstop. The row's Branch: a story carried over keeps its id (FI1).
+    [ -z "$_mck_db" ] \
+      || ids_check "$_id" "$_tkt" "$MF_SLUG" "$_plan" "$_mck_db" "$MF_ROWS" refuse "$_mck_br" < /dev/null || :
     if [ ! -f "$STATE_ROOT/.studio/stories/$_id.md" ]; then
       refuse "$_id: no story file (.studio/stories/$_id.md; studio-state init with STUDIO_STORY=$_id)"
     else
@@ -2002,8 +2012,15 @@ lanes_run() {
   MF_ROWS="$RUN_DIR/rows.tsv"; CHAINS="$RUN_DIR/chains"
   rm -rf "$MF_TMP"; MF_TMP=""
   RECORD="$STATE_ROOT/.studio/runs/$MF_SLUG"
-  # the record keeps the run's rows: check-id's rule 3 (#56 D2)
-  mkdir -p "$RECORD" && touch "$RECORD/landed.tsv" && cp "$MF_ROWS" "$RECORD/rows.tsv" || { rm -f "$LOCK"; say "cannot create $RECORD"; exit 2; }
+  # The record keeps every row the run ever had: check-id's rule 3 (#56 D2).
+  # This start's rows, then earlier rows of ids it no longer lists (any case),
+  # through a tmp file and mv, so a reader never sees a partial file.
+  mkdir -p "$RECORD" && touch "$RECORD/landed.tsv" \
+    && { cat "$RECORD/rows.tsv" 2>/dev/null || :; } | awk -F'\t' -v cur="$MF_ROWS" '
+         BEGIN { while ((getline l < cur) > 0) { split(l, a, "\t"); k[tolower(a[1])] = 1; print l } }
+         !(tolower($1) in k) { k[tolower($1)] = 1; print }' > "$RECORD/rows.tsv.$$" \
+    && mv "$RECORD/rows.tsv.$$" "$RECORD/rows.tsv" \
+    || { rm -f "$LOCK" "$RECORD/rows.tsv.$$"; say "cannot create $RECORD"; exit 2; }
   for _id in $(cut -f1 "$MF_ROWS" | awk '!seen[$0]++'); do story_write "$_id" queued; done
   lanes_resume
   LANES_LIVE=1; LANE_PIDS=""
@@ -2108,7 +2125,7 @@ lanes_next() {
     [ -n "$_ln_id" ] || continue
     # #56 R3: a story id used before in this project is refused before classification.
     if ids_ok "$_ln_id"; then
-      ids_check "$_ln_id" "$_ln_t" "$MF_SLUG" "${_ln_plan:--}" "$_ln_db" "$MF_ROWS" say < /dev/null || exit 2
+      ids_check "$_ln_id" "$_ln_t" "$MF_SLUG" "${_ln_plan:--}" "$_ln_db" "$MF_ROWS" say "${_ln_b:--}" < /dev/null || exit 2
     fi
     if [ "$_ln_spec" = - ] || [ -z "$_ln_spec" ]; then
       _ln_spec="$(next_match spec "$_ln_id")" || exit 2

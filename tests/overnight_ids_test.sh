@@ -194,7 +194,8 @@ test_ids_slug_dash_and_readonly() {                  # review M3, M4 (writes not
 test_ids_run_records() {                             # spec test 7 (+ legacy, linked worktree)
   ids_fixture t7 - 'S1|-|-'
   _rr="$P/.studio/runs"
-  mkdir -p "$_rr/old"; printf 'S1\tS1-b\tS1\t-\t-\t\n' > "$_rr/old/rows.tsv"; : > "$_rr/old/landed.tsv"; : > "$_rr/old/done"
+  # Rows on another branch than this story's (S1-b): another story's id (#56 FI1).
+  mkdir -p "$_rr/old"; printf 'S1\told-b\tS1\t-\t-\t\n' > "$_rr/old/rows.tsv"; : > "$_rr/old/landed.tsv"; : > "$_rr/old/done"
   run_ids check-id S1
   assert_eq 1 "$IS_STATUS" "a done record's rows.tsv lists S1: taken"
   assert_contains "$IS_ERR" "story id 'S1' is taken: run old (record \.studio/runs/old) lists it\$" "names the run and its record"
@@ -210,14 +211,55 @@ test_ids_run_records() {                             # spec test 7 (+ legacy, li
   run_ids check-id S1
   assert_contains "$IS_ERR" "run legacy (record \.studio/runs/legacy) lists it" "a record written before #56: its landed.tsv (any case)"
   : > "$_rr/legacy/landed.tsv"; mkdir -p "$P/.studio/reports/overnight-legacy-20261001-000000"
-  printf 'S1\tS1-b\tS1\t-\t-\t\n' > "$P/.studio/reports/overnight-legacy-20261001-000000/rows.tsv"
+  printf 'S1\told-b\tS1\t-\t-\t\n' > "$P/.studio/reports/overnight-legacy-20261001-000000/rows.tsv"
   run_ids check-id S1
   assert_contains "$IS_ERR" "run legacy (record \.studio/runs/legacy) lists it" "and its newest report's rows.tsv (D2)"
-  rm -rf "$_rr/legacy"; mkdir -p "$_rr/demo"; printf 'S1\tS1-b\tS1\t-\t-\t\n' > "$_rr/demo/rows.tsv"
+  rm -rf "$_rr/legacy"; mkdir -p "$_rr/demo"; printf 'S1\told-b\tS1\t-\t-\t\n' > "$_rr/demo/rows.tsv"
   run_ids check-id S1
   assert_eq 0 "$IS_STATUS" "this run's own record does not count"
   run_ids check-id S1 --slug other
   assert_eq 1 "$IS_STATUS" "under another slug, demo's record is another run's"
+}
+# #56 FI1: a half-done story carried from an earlier run into a new one
+# keeps its id: a record's row on this story's own Branch does not count.
+test_ids_carried_over_branch() {
+  ids_fixture tco - 'S1|-|-'
+  _rr="$P/.studio/runs"
+  mkdir -p "$_rr/old.20261001T000000Z"; printf 's1\tS1-b\tS1\t-\t-\t\n' > "$_rr/old.20261001T000000Z/rows.tsv"
+  run_ids check-id S1
+  assert_eq 0 "$IS_STATUS" "an archived record's row on this story's branch (from the manifest row): the same story carried over"
+  run_ids check-id S1 --branch S1-b
+  assert_eq 0 "$IS_STATUS" "--branch names the same branch: free"
+  run_ids check-id S1 --branch other-b
+  assert_eq 1 "$IS_STATUS" "same id on a different branch: taken"
+  assert_contains "$IS_ERR" "story id 'S1' is taken: run old (record \.studio/runs/old\.20261001T000000Z) lists it\$" "names the record"
+  run_ids check-id S1 --branch -
+  assert_eq 1 "$IS_STATUS" "--branch -: unknown, no exception"
+  : > "$_rr/old.20261001T000000Z/rows.tsv"; printf 'S1\tintegration/old\tabc\t1\n' > "$_rr/old.20261001T000000Z/landed.tsv"
+  run_ids check-id S1
+  assert_eq 1 "$IS_STATUS" "a landed.tsv line has no branch: still taken"
+  rm -rf "$_rr/old.20261001T000000Z"; mkdir -p "$_rr/leg" "$P/.studio/reports/overnight-leg-20261001-000000"; : > "$_rr/leg/landed.tsv"
+  printf 'S1\tS1-b\tS1\t-\t-\t\n' > "$P/.studio/reports/overnight-leg-20261001-000000/rows.tsv"
+  run_ids check-id S1
+  assert_eq 0 "$IS_STATUS" "a pre-#56 record's report rows on this story's branch: carried over"
+  run_ids check-id S1 --branch x-b
+  assert_eq 1 "$IS_STATUS" "and on another branch: taken"
+  rm -f "$P/.studio/run"
+  run_ids check-id S1
+  assert_eq 1 "$IS_STATUS" "no manifest row: no default branch, no exception"
+  run_ids check-id S1 --branch S1-b
+  assert_eq 0 "$IS_STATUS" "--branch alone gives it"
+}
+test_ids_defaults_any_case() {                       # review m-B
+  _own=docs/game-dev/plans/2026-10-01-S1.md
+  mkdir -p "$TMP/pre-dc/.studio/ledger" "$TMP/pre-dc/docs/game-dev/plans"
+  printf -- '- 2026-10-01 plan approved %s\n' "$_own" > "$TMP/pre-dc/.studio/ledger/S1.md"
+  printf '# Plan\n\nStory: S1\n' > "$TMP/pre-dc/$_own"
+  ids_fixture tdc "$TMP/pre-dc" "S1|KAN-7|$_own"
+  run_ids check-id s1
+  assert_eq 0 "$IS_STATUS" "check-id s1 takes row S1's defaults (its Plan): its own ledger"
+  run_ids check-id s1 --plan -
+  assert_eq "studio-overnight: use 'KAN-7' instead" "$(tail -n 1 "$IS_ERR")" "and its Ticket"
 }
 test_ids_case_insensitive() {                        # spec test 8
   mkdir -p "$TMP/pre8/.studio/ledger"
@@ -266,12 +308,12 @@ test_ids_usage() {                                   # spec test 15
 test_ids_docs() {                                    # R5
   assert_status 2 "overnight-ids.sh refuses to run directly" -- sh "$BIN/overnight-ids.sh"
   sh "$RUNNER" --help > "$TMP/help" 2>&1
-  assert_contains "$TMP/help" "check-id <id> \[--plan <path>|-\] \[--ticket <ticket>|-\] \[--slug <slug>\]" "usage names check-id"
+  assert_contains "$TMP/help" "check-id <id> \[--plan <path>|-\] \[--ticket <ticket>|-\] \[--slug <slug>\] \[--branch <branch>|-\]" "usage names check-id"
   assert_contains "$TMP/help" "0 free · 1 taken" "and its exit codes"
   assert_contains "$REPO_ROOT/README.md" "studio-overnight check-id <id>" "README documents check-id"
   assert_contains "$REPO_ROOT/README.md" "check-id: 0 free · 1 taken · 2 usage" "README's table gives its exit codes"
 }
 
 run_tests test_ids_main_ledger_taken test_ids_main_plan_only test_ids_run_branch_plan_not_checked \
-  test_ids_own_ledger test_ids_integration_branches test_ids_integration_inherits_main test_ids_plan_case_and_color test_ids_default_ref_missing test_ids_slug_dash_and_readonly test_ids_run_records test_ids_case_insensitive \
+  test_ids_own_ledger test_ids_integration_branches test_ids_integration_inherits_main test_ids_plan_case_and_color test_ids_default_ref_missing test_ids_slug_dash_and_readonly test_ids_run_records test_ids_carried_over_branch test_ids_defaults_any_case test_ids_case_insensitive \
   test_ids_suggestion test_ids_defaults_need_listed_row test_ids_usage test_ids_docs

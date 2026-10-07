@@ -49,7 +49,7 @@ planned, not at kickoff.
 ### R2. `studio-overnight check-id`
 
 ```
-studio-overnight check-id <id> [--plan <path>|-] [--ticket <ticket>|-] [--slug <slug>]
+studio-overnight check-id <id> [--plan <path>|-] [--ticket <ticket>|-] [--slug <slug>] [--branch <branch>|-]
 ```
 
 Defaults: when `.studio/run` in the current checkout names a manifest that lists
@@ -79,7 +79,10 @@ show`.
 3. **Another run's record.** A run record under `<root>/.studio/runs/` other
    than this run's own (live, stopped, done or archived `<slug>.<ts>`) lists
    `<id>` in `rows.tsv`. This is local to the machine; rules 1–2 cover the
-   shared repo.
+   shared repo. A `rows.tsv` row whose Branch equals this story's Branch
+   (`--branch <b>|-`, default the manifest row's Branch cell) does not count:
+   it is the same story carried over from an abandoned or done run, which
+   keeps its id and branch (amended after the final review).
 4. **Plan on the default branch.** A file under `docs/game-dev/plans/` on
    `origin/<d>`, other than this story's plan, has a line exactly
    `Story: <id>`. Method: `git grep -l -F -e "Story: <id>" refs/remotes/origin/<d>
