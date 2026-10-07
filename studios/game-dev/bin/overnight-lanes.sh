@@ -2084,6 +2084,11 @@ next_match() {
   return 0
 }
 
+# ln_has FILE TEXT — FILE has a ledger line whose text after `- <date> ` is
+# exactly TEXT (#56 R4: `Decisions swept S10` is not `Decisions swept S1`,
+# and `plan approved <plan>.old` does not approve <plan>).
+ln_has() { sed -n 's/^- [0-9-]* //p' "$1" 2>/dev/null | grep -qxF -- "$2"; }
+
 # lanes_next MANIFEST — classify each row (brainstorm | plan | planned) from
 # files and ledger lines alone and print one line per row, then the one next
 # command. Pure read: no preflight, no studio state written.
@@ -2104,10 +2109,10 @@ lanes_next() {
     if [ -n "$_ln_spec" ]; then
       _ln_slug="$(basename "$_ln_spec" | sed -e 's/\.md$//' -e 's/^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}-//')"
       _ln_led="$START_DIR/.studio/ledger/$_ln_slug.md"
-      if [ -f "$_ln_led" ] && grep -qF "spec approved $_ln_spec" "$_ln_led"; then
+      if [ -f "$_ln_led" ] && ln_has "$_ln_led" "spec approved $_ln_spec"; then
         _ln_class=plan
-        if [ -n "$_ln_plan" ] && grep -qF "plan approved $_ln_plan" "$_ln_led" \
-           && grep -qF "Decisions swept $_ln_id" "$_ln_led"; then
+        if [ -n "$_ln_plan" ] && ln_has "$_ln_led" "plan approved $_ln_plan" \
+           && ln_has "$_ln_led" "Decisions swept $_ln_id"; then
           _ln_class=planned
         fi
       fi

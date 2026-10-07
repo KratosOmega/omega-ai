@@ -864,6 +864,26 @@ test_lanes_next_plan_before_autopilot() {
   assert_eq "$_before" "$(cd "$P" && git status --porcelain | wc -l | tr -d ' ')" "next writes nothing"
 }
 
+# #56 R4: next matches a ledger line whole, after `- <date> `.
+test_lanes_next_whole_line_ledger() {
+  LANES_CELLS=dash; export LANES_CELLS
+  lanes_fixture nwl integration S1:-
+  _wl_s=docs/game-dev/specs/2026-10-01-demo.md; _wl_p=docs/game-dev/plans/2026-10-01-S1.md
+  printf -- '- 2026-10-01 spec approved %s\n- 2026-10-01 plan approved %s\n- 2026-10-01 Decisions swept S10\n' "$_wl_s" "$_wl_p" > "$P/.studio/ledger/demo.md"
+  run_lanes next "$MFP"
+  assert_eq 0 "$LS_STATUS" "next exits 0"
+  assert_contains "$LS_OUT" "^S1  plan  spec=$_wl_s  plan=$_wl_p\$" "Decisions swept S10 does not sweep S1"
+  printf -- '- 2026-10-01 spec approved %s\n- 2026-10-01 plan approved %s.old\n- 2026-10-01 Decisions swept S1\n' "$_wl_s" "$_wl_p" > "$P/.studio/ledger/demo.md"
+  run_lanes next "$MFP"
+  assert_contains "$LS_OUT" "^S1  plan  " "plan approved <plan>.old does not approve <plan>"
+  printf -- '- 2026-10-01 spec approved %s.old\n' "$_wl_s" > "$P/.studio/ledger/demo.md"
+  run_lanes next "$MFP"
+  assert_contains "$LS_OUT" "^S1  brainstorm  " "spec approved <spec>.old does not approve <spec>"
+  printf -- '- 2026-10-01 spec approved %s\n- 2026-10-01 plan approved %s\n- 2026-10-01 Decisions swept S1\n' "$_wl_s" "$_wl_p" > "$P/.studio/ledger/demo.md"
+  run_lanes next "$MFP"
+  assert_contains "$LS_OUT" "^S1  planned  " "the exact lines still make it planned"
+}
+
 # story_calls ID — the stub call numbers of story ID, one per line.
 story_calls() { grep -lx "$1" "$CALLS"/*.story 2>/dev/null | sed 's#.*/\([0-9]*\)\.story$#\1#'; }
 
@@ -4061,6 +4081,7 @@ run_tests test_lanes_setup_preflight_refuses_linked_only test_lanes_setup_prefli
   test_lanes_preflight_story_checks test_lanes_preflight_story_state test_lanes_docs_unreachable \
   test_lanes_git_too_old test_lanes_sourced_only test_lanes_next \
   test_lanes_next_all_planned_and_ambiguous test_lanes_next_plan_before_autopilot \
+  test_lanes_next_whole_line_ledger \
   test_lanes_two_independent_to_landed test_lanes_max_lanes_one_serializes test_lanes_models_and_env \
   test_lanes_story_stop_isolated test_lanes_budget test_lanes_budget_sums_all_lanes test_lanes_overhead \
   test_lanes_docs_revision test_lanes_waiting_chain_starts_after_deps test_lanes_skip_on_stopped_dep \
