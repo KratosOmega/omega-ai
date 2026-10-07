@@ -297,7 +297,7 @@ XEOF
   assert_eq "" "$(pgrep -f "$TMP/log-lk/" 2>/dev/null)" "nothing from a job dir outlives run_all"
   assert_eq 1 "$(kill -0 "$(cat "$TMP/grp.pid" 2>/dev/null || echo 0)" 2>/dev/null && echo 0 || echo 1)" "the sleeper left in the job's own group is gone"
   assert_contains "$TMP/lk.out" "lk_test.p1of1 left processes running" "the job's block says it left processes"
-  pkill -KILL -f "$TMP/log-lk/" 2>/dev/null; kill -KILL "$(cat "$TMP/grp.pid" 2>/dev/null || echo 0)" 2>/dev/null; true
+  pkill -KILL -f "$TMP/log-lk/" 2>/dev/null; _gp="$(cat "$TMP/grp.pid" 2>/dev/null)"; case "$_gp" in ''|*[!0-9]*|0) ;; *) kill -KILL "$_gp" 2>/dev/null ;; esac; true
 }
 
 test_run_all_test_helpers_hermetic() {

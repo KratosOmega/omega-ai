@@ -184,8 +184,8 @@ finish() {
   fi
   if [ -z "$_why" ]; then _v=green; else _v="red: $_why"; RED=1; fi
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$_s" "$_pt" "$_secs" "$_nt" "${_a:-0}" "${_f:-0}" "$_v" >> "$LOGDIR/summary.tsv"
-  [ "${3:-}" = quiet ] || { printf '\n=== %s [%s] %s s ===\n' "$_s" "$_pt" "$_secs"; cat "$_d/log"; }
   : > "$_d/done"
+  [ "${3:-}" = quiet ] || { printf '\n=== %s [%s] %s s ===\n' "$_s" "$_pt" "$_secs"; cat "$_d/log"; }
 }
 # stop_group PID JOB — TERM the job's group, KILL it after 5 s, then sweep what escaped it (D4).
 stop_group() {
