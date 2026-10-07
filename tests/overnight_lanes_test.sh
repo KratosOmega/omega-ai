@@ -540,6 +540,10 @@ last_lanes_dir() { ls -d "$P"/.studio/reports/overnight-demo-* 2>/dev/null | tai
 # LANES_MAIN_PRE=<dir> commits <dir>'s files on main before run/demo is cut, so the run branch inherits them (#56).
 # Exports P, MFP, CALLS, GH,
 # TMP_WT and SCEN (an empty scenario dir: every unit is `auto`); unsets LANES_*.
+# LANES_FIXTURE_TEMPLATES (suite-local): 1 (default) builds each key once under
+# $TMP/tpl/l-<key>/ and copies it; 0 builds fresh every call.
+LANES_FIXTURE_TEMPLATES="${LANES_FIXTURE_TEMPLATES:-1}"
+lf_failed() { TESTS_RUN=$((TESTS_RUN + 1)); _fail "lanes_fixture $_lf_name: setup failed"; }
 lanes_fixture() {
   _lf_name="$1"; _lf_mode="$2"; shift 2
   P="$TMP/$_lf_name"; CALLS="$TMP/calls-$_lf_name"; GH="$TMP/gh-$_lf_name"; TMP_WT="$TMP/wts-$_lf_name"
@@ -547,50 +551,75 @@ lanes_fixture() {
   MFP=docs/runs/demo.md
   export P MFP CALLS GH TMP_WT SCEN
   rm -rf "$P" "$CALLS" "$GH" "$TMP_WT" "$SCEN" "$TMP/$_lf_name.git"
-  mkdir -p "$P" "$CALLS" "$GH" "$TMP_WT" "$SCEN"
-  git init -q --bare "$TMP/$_lf_name.git"
+  mkdir -p "$CALLS" "$GH" "$TMP_WT" "$SCEN"
+  if [ "$LANES_FIXTURE_TEMPLATES" = 0 ]; then
+    lf_build "$P" "$TMP/$_lf_name.git" "$_lf_mode" "$@" || lf_failed
+  else
+    # The key is the whole tuple the build reads (mode, rows, every LANES_* input, the stub path).
+    _lf_t="$TMP/tpl/l-$(printf '%s|' "$_lf_mode" "$@" "${LANES_CONFIG:-}" "${LANES_CELLS:-}" "${LANES_PROGRESS:-}" \
+      "${LANES_MAIN_MOVES:-}" "${LANES_TASKS:-}" "${LANES_MAIN_PRE:-}" "$(lf_pre_sum)" "$FAKE" | cksum | tr ' ' -)"
+    if [ ! -f "$_lf_t/ok" ]; then
+      if lf_build "$_lf_t/p" "$_lf_t/p.git" "$_lf_mode" "$@"; then : > "$_lf_t/ok"; else rm -rf "$_lf_t"; fi
+    fi
+    if [ -f "$_lf_t/ok" ] && cp -Rp "$_lf_t/p" "$P" && cp -Rp "$_lf_t/p.git" "$TMP/$_lf_name.git" \
+         && git -C "$P" remote set-url origin "$TMP/$_lf_name.git"; then :; else lf_failed; fi
+  fi
+  unset LANES_CONFIG LANES_CELLS LANES_PROGRESS LANES_MAIN_MOVES LANES_TASKS LANES_MAIN_PRE
+}
+# lf_pre_sum — LANES_MAIN_PRE's files and their contents, for the template key (empty when unset).
+lf_pre_sum() {
+  [ -n "${LANES_MAIN_PRE:-}" ] || return 0
+  ( cd "$LANES_MAIN_PRE" && find . -type f -exec cksum {} + | sort )
+}
+# lf_build DIR ORIGIN MODE ROW… — the fixture body at DIR with its bare origin at ORIGIN;
+# status non-zero on any failed step. Each step ends in `|| exit 1`, not set -e: lf_build runs
+# as an if/|| condition, where errexit is off even inside the subshell.
+lf_build() {
+  _lb_dir="$1"; _lb_origin="$2"; _lf_mode="$3"; shift 3
+  rm -rf "$_lb_dir" "$_lb_origin"; mkdir -p "$_lb_dir" && git init -q --bare "$_lb_origin" || return 1
   _lf_cfg="${LANES_CONFIG:-}"; [ -n "$_lf_cfg" ] || _lf_cfg='{}'
   _lf_cells="${LANES_CELLS:-}"; _lf_progress="${LANES_PROGRESS:-}"; _lf_moves="${LANES_MAIN_MOVES:-}"
   _lf_tasks="${LANES_TASKS:-1}"; _lf_pre="${LANES_MAIN_PRE:-}"
   _lf_spec=docs/game-dev/specs/2026-10-01-demo.md
-  ( set -e
-    cd "$P"
-    git init -q -b main
+  ( cd "$_lb_dir" || exit 1
+    git init -q -b main || exit 1
     if [ "$_lf_progress" = 1 ]; then
       mkdir -p docs/game-dev && printf '# Progress\n' > docs/game-dev/PROGRESS.md \
-        && git add docs/game-dev/PROGRESS.md && git commit -q -m init
+        && git add docs/game-dev/PROGRESS.md && git commit -q -m init || exit 1
     else
-      git commit -q --allow-empty -m init
+      git commit -q --allow-empty -m init || exit 1
     fi
-    if [ -n "$_lf_pre" ]; then cp -R "$_lf_pre/." . && git add -A && git commit -q -m "main: files before the run"; fi
-    git remote add origin "$TMP/$_lf_name.git" && git push -q origin main && git remote set-head origin main
-    git checkout -q -b run/demo
-    mkdir -p docs/game-dev/specs docs/game-dev/plans docs/runs
+    if [ -n "$_lf_pre" ]; then cp -R "$_lf_pre/." . && git add -A && git commit -q -m "main: files before the run" || exit 1; fi
+    git remote add origin "$_lb_origin" && git push -q origin main && git remote set-head origin main || exit 1
+    git checkout -q -b run/demo || exit 1
+    mkdir -p docs/game-dev/specs docs/game-dev/plans docs/runs || exit 1
     { printf '# Spec: demo\n\n## Acceptance criteria\n\n1. one\n2. two\n3. three\n\n## Stories\n\n'
       printf '| Story | Summary |\n|-------|---------|\n'
       for _r in "$@"; do printf '| %s | story %s |\n' "${_r%%:*}" "${_r%%:*}"; done
-    } > "$_lf_spec"
-    sh "$STATE_BIN" init >/dev/null
-    printf '%s\n' "$_lf_cfg" > .studio/config.json
+    } > "$_lf_spec" || exit 1
+    sh "$STATE_BIN" init >/dev/null || exit 1
+    printf '%s\n' "$_lf_cfg" > .studio/config.json || exit 1
     if [ "$_lf_mode" = direct ]; then
-      mkdir -p scripts && printf '#!/bin/sh\nexec sh %s "$@"\n' "'$FAKE/merge-stub'" > scripts/merge.sh && chmod +x scripts/merge.sh
+      mkdir -p scripts && printf '#!/bin/sh\nexec sh %s "$@"\n' "'$FAKE/merge-stub'" > scripts/merge.sh && chmod +x scripts/merge.sh || exit 1
     fi
     for _r in "$@"; do
       _id="${_r%%:*}"; _plan="docs/game-dev/plans/2026-10-01-$_id.md"
       printf '# Plan: %s\n\nStory: %s\n\n## Global Constraints\n\n- none\n\n## Decisions\n\n- none\n\n### Task 1: t\n\nSpec: %s:L1-2\nReview: final\n' \
-        "$_id" "$_id" "$_lf_spec" > "$_plan"
-      [ "$_lf_tasks" != 2 ] || printf '\n### Task 2: u\n\nSpec: %s:L1-2\nReview: final\n' "$_lf_spec" >> "$_plan"
+        "$_id" "$_id" "$_lf_spec" > "$_plan" || exit 1
+      [ "$_lf_tasks" != 2 ] || printf '\n### Task 2: u\n\nSpec: %s:L1-2\nReview: final\n' "$_lf_spec" >> "$_plan" || exit 1
       STUDIO_STORY="$_id"; export STUDIO_STORY
-      sh "$STATE_BIN" init >/dev/null
-      sh "$STATE_BIN" set spec "$_lf_spec"; sh "$STATE_BIN" set plan "$_plan"
-      sh "$STATE_BIN" ledger "spec approved $_lf_spec"
-      sh "$STATE_BIN" ledger "plan approved $_plan"
-      sh "$STATE_BIN" ledger "Decisions swept $_id"
-      sh "$STATE_BIN" set stage plan; sh "$STATE_BIN" set task "0/$_lf_tasks"
+      sh "$STATE_BIN" init >/dev/null || exit 1
+      sh "$STATE_BIN" set spec "$_lf_spec" || exit 1
+      sh "$STATE_BIN" set plan "$_plan" || exit 1
+      sh "$STATE_BIN" ledger "spec approved $_lf_spec" || exit 1
+      sh "$STATE_BIN" ledger "plan approved $_plan" || exit 1
+      sh "$STATE_BIN" ledger "Decisions swept $_id" || exit 1
+      sh "$STATE_BIN" set stage plan || exit 1
+      sh "$STATE_BIN" set task "0/$_lf_tasks" || exit 1
       unset STUDIO_STORY
     done
-    git add -A && git commit -q -m docs && git push -q origin run/demo
-    _docs="$(git rev-parse HEAD)"
+    git add -A && git commit -q -m docs && git push -q origin run/demo || exit 1
+    _docs="$(git rev-parse HEAD)" || exit 1
     if [ "$_lf_mode" = integration ]; then _target=integration/demo; else _target=main; fi
     { printf '# Run: demo\n\nMode: %s            # or: direct\nTarget: %s\nDocs: %s\nGoal: the demo goal\n\n' "$_lf_mode" "$_target" "$_docs"
       printf '| Story | Branch | Ticket | Spec | Plan | Depends on |\n|-------|--------|--------|------|------|------------|\n'
@@ -602,16 +631,15 @@ lanes_fixture() {
           printf '| %s | %s-b | %s | %s | docs/game-dev/plans/2026-10-01-%s.md | %s |\n' "$_id" "$_id" "$_id" "$_lf_spec" "$_id" "$_deps"
         fi
       done
-    } > "$MFP"
-    git add -A && git commit -q -m manifest && git push -q origin run/demo
-    printf '.studio/run\n' >> "$(git rev-parse --git-common-dir)/info/exclude"; printf '%s\n' "$MFP" > .studio/run
-    [ "$_lf_mode" != integration ] || git push -q origin origin/main:refs/heads/integration/demo
+    } > "$MFP" || exit 1
+    git add -A && git commit -q -m manifest && git push -q origin run/demo || exit 1
+    printf '.studio/run\n' >> "$(git rev-parse --git-common-dir)/info/exclude" && printf '%s\n' "$MFP" > .studio/run || exit 1
+    [ "$_lf_mode" != integration ] || git push -q origin origin/main:refs/heads/integration/demo || exit 1
     if [ -n "$_lf_moves" ]; then
       git checkout -q main && printf 'main\n' > "$_lf_moves" && git add "$_lf_moves" \
-        && git commit -q -m "main moves" && git push -q origin main && git checkout -q run/demo
+        && git commit -q -m "main moves" && git push -q origin main && git checkout -q run/demo || exit 1
     fi
-  ) >/dev/null 2>&1 || { TESTS_RUN=$((TESTS_RUN + 1)); _fail "lanes_fixture $_lf_name: setup failed"; }
-  unset LANES_CONFIG LANES_CELLS LANES_PROGRESS LANES_MAIN_MOVES LANES_TASKS LANES_MAIN_PRE
+  ) >/dev/null 2>&1
 }
 OLD_PLAN=docs/game-dev/plans/2026-10-02-mob-composer.md
 # lanes_pre_stale DIR — KAN-1499's shipped story S1 as phoenix's main held it
@@ -4414,6 +4442,88 @@ test_stub_waitexist_and_run_token() {
   assert_eq "$_sw/run/x" "$(cat "$_sw/calls/wait.timeout" 2>/dev/null)" "waitfor still needs a non-empty file; an empty one is recorded at its ceiling"
 }
 
+# lf_norm SRC DEST NAME — a copy of the work tree SRC at DEST (.git left out; git-ignored
+# files such as .studio/STATE.md are kept), with the tree's own path ($TMP/NAME) turned into
+# @N@ in every file that holds it.
+lf_norm() {
+  rm -rf "$2"; mkdir -p "$2"
+  ( cd "$1" && tar -cf - --exclude=./.git . ) | ( cd "$2" && tar -xf - )
+  for _ln_f in $(grep -rlF "$TMP/$3" "$2" 2>/dev/null); do
+    sed "s|$TMP/$3|@N@|g" "$_ln_f" > "$_ln_f.n" && mv "$_ln_f.n" "$_ln_f"
+  done
+}
+# A copied fixture equals a fresh build: the same tree (git-ignored files too), the same
+# commits, clean, origin/run/demo at HEAD, its own origin url, nothing naming the template.
+# The manifest names its docs commit by sha, which depends on the commit time, so the
+# manifest's Docs: line and the manifest commit's tree are compared by what they point at.
+test_lanes_fixture_copy_equals_build() {
+  _eq_save="$LANES_FIXTURE_TEMPLATES"
+  for _eq_shape in 1 2 3; do
+    for _eq_pass in A B; do
+      if [ "$_eq_pass" = A ]; then LANES_FIXTURE_TEMPLATES=1; else LANES_FIXTURE_TEMPLATES=0; fi
+      case "$_eq_shape" in
+        1) _eq_lbl="integration A:-"; lanes_fixture "eq$_eq_pass" integration A:- ;;
+        2) _eq_lbl="integration A:- B:A"; lanes_fixture "eq$_eq_pass" integration A:- B:A ;;
+        3) _eq_lbl="direct A:- tasks 2 config"
+           LANES_TASKS=2; LANES_CONFIG='{"overnight": {"max_lanes": 2}}'; export LANES_TASKS LANES_CONFIG
+           lanes_fixture "eq$_eq_pass" direct A:- ;;
+      esac
+    done
+    LANES_FIXTURE_TEMPLATES="$_eq_save"
+    lf_norm "$TMP/eqA" "$TMP/eqn/A" eqA; lf_norm "$TMP/eqB" "$TMP/eqn/B" eqB
+    for _eq_x in A B; do
+      _eq_dd="$(sed -n 's/^Docs: //p' "$TMP/eqn/$_eq_x/docs/runs/demo.md")"
+      assert_eq "$(git -C "$TMP/eq$_eq_x" log --all --format='%H %s' | sed -n 's/ docs$//p')" "$_eq_dd" "the manifest's Docs: names the docs commit [$_eq_lbl, $_eq_x]"
+      sed 's/^Docs: .*/Docs: @D@/' "$TMP/eqn/$_eq_x/docs/runs/demo.md" > "$TMP/eqn/$_eq_x/docs/runs/demo.md.n" \
+        && mv "$TMP/eqn/$_eq_x/docs/runs/demo.md.n" "$TMP/eqn/$_eq_x/docs/runs/demo.md"
+    done
+    _eq_d="$(diff -r "$TMP/eqn/A" "$TMP/eqn/B" 2>&1)"
+    assert_eq "" "$_eq_d" "a copied fixture's tree (git-ignored files too) equals a fresh build's [$_eq_lbl]"
+    assert_eq "$(git -C "$TMP/eqB" log --all --format='%T %s' | grep -v ' manifest$')" "$(git -C "$TMP/eqA" log --all --format='%T %s' | grep -v ' manifest$')" "the same commits (tree and subject; the manifest commit apart) [$_eq_lbl]"
+    assert_eq "" "$(git -C "$TMP/eqA" status --porcelain)$(git -C "$TMP/eqB" status --porcelain)" "both trees are clean [$_eq_lbl]"
+    assert_eq "$(git -C "$TMP/eqA" rev-parse HEAD)" "$(git -C "$TMP/eqA" rev-parse origin/run/demo)" "origin/run/demo is HEAD in the copy [$_eq_lbl]"
+    assert_eq "$TMP/eqA.git" "$(git -C "$TMP/eqA" remote get-url origin)" "the copy's origin is its own bare repo [$_eq_lbl]"
+    assert_eq "" "$(grep -rF "$TMP/tpl" "$TMP/eqA" 2>/dev/null | head -n 1)" "nothing in the copy names the template [$_eq_lbl]"
+  done
+  # A reused name is a fresh project, not a copy nested into the old one.
+  LANES_FIXTURE_TEMPLATES=1
+  LANES_CONFIG='{"a":1}'; export LANES_CONFIG; lanes_fixture eqX integration A:-
+  LANES_CONFIG='{"b":2}'; export LANES_CONFIG; lanes_fixture eqX integration A:-
+  LANES_FIXTURE_TEMPLATES="$_eq_save"
+  assert_eq '{"b":2}' "$(cat "$TMP/eqX/.studio/config.json")" "a second fixture of the same name carries the new config"
+  assert_missing "$TMP/eqX/eqX" "and does not nest the copy inside the old project"
+}
+test_fixture_template_failed_build_not_reused() {
+  mkdir -p "$TMP/fbbin"; _fb_real="$(command -v git)"
+  cat > "$TMP/fbbin/git" <<'FAKEGIT'
+#!/bin/sh
+for a in "$@"; do
+  if [ "$a" = push ] && [ ! -e "$FB_COUNT" ]; then : > "$FB_COUNT"; exit 1; fi
+done
+exec "$FB_REAL" "$@"
+FAKEGIT
+  chmod +x "$TMP/fbbin/git"
+  _fb_path="$PATH"; _fb_save="$LANES_FIXTURE_TEMPLATES"; LANES_FIXTURE_TEMPLATES=1
+  FB_COUNT="$TMP/fb.count"; FB_REAL="$_fb_real"; export FB_COUNT FB_REAL
+  PATH="$TMP/fbbin:$PATH"
+  _fb_cfg='{"fb": 1}'   # a tuple no other test builds, so its template is built here
+  _fb_key="$(printf '%s|' integration A:- "$_fb_cfg" "" "" "" "" "$FAKE" | cksum | tr ' ' -)"
+  _fb_before="$TESTS_FAILED"
+  LANES_CONFIG="$_fb_cfg"; export LANES_CONFIG
+  lanes_fixture fb1 integration A:- > "$TMP/fb1.out"
+  PATH="$_fb_path"; unset FB_COUNT FB_REAL
+  assert_contains "$TMP/fb1.out" "lanes_fixture fb1: setup failed" "a failed build is reported"
+  assert_eq $((_fb_before + 1)) "$TESTS_FAILED" "and counted as a failure"
+  TESTS_FAILED=$((TESTS_FAILED - 1))
+  assert_missing "$TMP/tpl/l-$_fb_key/ok" "a failed build leaves no ok marker"
+  LANES_CONFIG="$_fb_cfg"; export LANES_CONFIG
+  lanes_fixture fb2 integration A:-
+  LANES_FIXTURE_TEMPLATES="$_fb_save"
+  assert_eq "$_fb_before" "$TESTS_FAILED" "the next fixture of that tuple builds afresh and succeeds"
+  assert_file "$TMP/tpl/l-$_fb_key/ok" "the rebuilt template is marked ok"
+  assert_file "$TMP/fb2/docs/runs/demo.md" "and the project carries the manifest"
+}
+
 # Partitions. The exclusive seeds are the spec's lanes list (R5); rulings come with R6.
 TESTS_EXCLUSIVE="test_lanes_slot_wait_not_in_session_minutes test_lanes_direct_merge_timeout \
   test_lanes_direct_merge_timeout_after_merge_lands test_lanes_direct_merge_timeout_term_ignored \
@@ -4501,4 +4611,5 @@ run_tests test_stub_waitexist_and_run_token test_lanes_setup_preflight_refuses_l
   test_lanes_round_trip_two_runs test_lanes_round_trip_sync_conflict test_lanes_round_trip_stop_one_of_two \
   test_lanes_ready_needs_run_pointer test_lanes_ready_adopted_unseeded test_lanes_ready_stale_worktree_and_landed \
   test_lanes_runner_argv_names_tmp test_lanes_wait_deps_default_poll \
+  test_lanes_fixture_copy_equals_build test_fixture_template_failed_build_not_reused \
   test_lanes_no_orphans
