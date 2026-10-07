@@ -1,7 +1,7 @@
 # Unique story ids — a new story never inherits a dead story's ledger — Spec
 
-Story: #56 (GitHub issue). Status: Draft (design approved by the operator in
-chat, 2026-10-07; spec falsifier findings folded in; awaiting spec review).
+Story: #56 (GitHub issue). Status: Approved (operator, 2026-10-07; design approved in
+chat, spec falsifier findings folded in, written spec approved).
 Classification: architectural (the story-id contract is shared by the CLIs and
 three skills).
 
