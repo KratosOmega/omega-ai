@@ -1032,7 +1032,7 @@ test_lanes_docs_revision() {
 }
 # ---- T9: waiting chains, skips, crashed lanes and stops ----
 
-# wait_for COND SECS — eval COND once a second until it holds, up to SECS.
+# wait_for COND SECS — eval COND every 0.2 s until it holds, up to SECS.
 wait_for() {
   _wf_i=0
   while ! eval "$1" && [ "$_wf_i" -lt $(( $2 * 5 )) ]; do sleep 0.2; _wf_i=$((_wf_i + 1)); done
@@ -2361,7 +2361,7 @@ test_lanes_detach_timeout_lock_held_points_at_status() {
 test_lanes_detach_timeout_no_lock_ends_child() {
   lanes_fixture dtn integration A:-
   export STUDIO_OVERNIGHT_DETACH_STATUS_CMD=false
-  export STUDIO_OVERNIGHT_DETACH_CHILD_CMD="$TMP/bin/msleep 301 & $TMP/bin/msleep 301"
+  export STUDIO_OVERNIGHT_DETACH_CHILD_CMD="'$TMP/bin/msleep' 301 & '$TMP/bin/msleep' 301"
   st=0; ( cd "$P" && sh "$RUNNER" start --detach "$MFP" ) > "$TMP/dtn.out" 2>&1 || st=$?
   unset STUDIO_OVERNIGHT_DETACH_STATUS_CMD STUDIO_OVERNIGHT_DETACH_CHILD_CMD
   assert_eq 1 "$st" "a status timeout exits 1"
@@ -2375,7 +2375,7 @@ test_lanes_detach_poll_keeps_budget() {
   : > "$TMP/dpk.count"
   STUDIO_OVERNIGHT_DETACH_POLL_SECONDS=0.2
   STUDIO_OVERNIGHT_DETACH_STATUS_CMD="echo x >> '$TMP/dpk.count'; false"
-  STUDIO_OVERNIGHT_DETACH_CHILD_CMD="$TMP/bin/msleep 309"
+  STUDIO_OVERNIGHT_DETACH_CHILD_CMD="'$TMP/bin/msleep' 309"
   export STUDIO_OVERNIGHT_DETACH_POLL_SECONDS STUDIO_OVERNIGHT_DETACH_STATUS_CMD STUDIO_OVERNIGHT_DETACH_CHILD_CMD
   _t0=$(date +%s); st=0
   ( cd "$P" && sh "$RUNNER" start --detach "$MFP" ) > "$TMP/dpk.out" 2>&1 || st=$?
@@ -3243,7 +3243,7 @@ test_lanes_setup_preflight_dry_run_skips() {
   assert_eq "" "$(pf_wts)" "no scratch worktree"
 }
 test_lanes_setup_preflight_interrupt_cleans() {
-  LANES_CONFIG='{"worktree_setup": "case $(pwd -P) in */setup-preflight-*) : > '"$TMP"'/pf-int; '"$TMP"'/bin/msleep 4831;; esac"}'; export LANES_CONFIG
+  LANES_CONFIG='{"worktree_setup": "case $(pwd -P) in */setup-preflight-*) : > '"'$TMP/pf-int'"'; '"'$TMP/bin/msleep'"' 4831;; esac"}'; export LANES_CONFIG
   rm -f "$TMP/pf-int"
   lanes_fixture pfi integration A:-
   lanes_bg
@@ -3295,7 +3295,7 @@ test_lanes_setup_preflight_bad_config() {
   assert_missing "$P/.studio/runs/demo/lock" "no run lock was taken"
 }
 test_lanes_setup_preflight_timeout() {
-  LANES_CONFIG='{"worktree_setup": "case $(pwd -P) in */setup-preflight-*) '"$TMP"'/bin/msleep 4834;; esac"}'; export LANES_CONFIG
+  LANES_CONFIG='{"worktree_setup": "case $(pwd -P) in */setup-preflight-*) '"'$TMP/bin/msleep'"' 4834;; esac"}'; export LANES_CONFIG
   lanes_fixture pft integration A:-
   STUDIO_SETUP_TIMEOUT_SECONDS=1; export STUDIO_SETUP_TIMEOUT_SECONDS
   run_lanes start "$MFP"
@@ -3309,7 +3309,7 @@ test_lanes_setup_preflight_timeout() {
   assert_eq "" "$(pgrep -f "$TMP/bin/msleep 4834\$")" "the timed-out command is gone"
   assert_missing "$P/.studio/gate.lock" "the gate lock is released"
   assert_eq 0 "$(calls)" "no unit ran"
-  pkill -f "$TMP/bin/msleep" 2>/dev/null
+  pkill -f "$TMP/bin/msleep 4834\$" 2>/dev/null
 }
 
 test_lanes_setup_fail_holds() {
@@ -4302,7 +4302,7 @@ test_lanes_detach_setup_preflight_refused() {
 }
 # A11: TERM to `start --detach` while its foreground check runs the setup.
 test_lanes_detach_setup_preflight_interrupt() {
-  LANES_CONFIG='{"worktree_setup": "case $(pwd -P) in */setup-preflight-*) : > '"$TMP"'/pf-dint; '"$TMP"'/bin/msleep 4835;; esac"}'; export LANES_CONFIG
+  LANES_CONFIG='{"worktree_setup": "case $(pwd -P) in */setup-preflight-*) : > '"'$TMP/pf-dint'"'; '"'$TMP/bin/msleep'"' 4835;; esac"}'; export LANES_CONFIG
   rm -f "$TMP/pf-dint"
   lanes_fixture pfdi integration A:-
   ( cd "$P" && exec sh "$RUNNER" start --detach "$MFP" ) > "$TMP/pfdi.out" 2>&1 < /dev/null &
@@ -4319,7 +4319,7 @@ test_lanes_detach_setup_preflight_interrupt() {
   assert_missing "$P/.studio/gate.lock" "the gate lock is released"
   assert_eq "" "$(ls "$P/.studio/reports" 2>/dev/null | grep '^overnight-demo-detached-')" "no detached child log: no child was started"
   assert_eq 0 "$(calls)" "no unit ran"
-  pkill -f "$TMP/bin/msleep" 2>/dev/null
+  pkill -f "$TMP/bin/msleep 4835\$" 2>/dev/null
 }
 test_lanes_detach_setup_preflight_runs_once() {
   LANES_CONFIG='{"worktree_setup": "case $(pwd -P) in */setup-preflight-*) echo pf >> '"$TMP"'/pf-det;; esac"}'; export LANES_CONFIG
@@ -4364,7 +4364,7 @@ test_lanes_runner_argv_names_tmp() {
   # TERM is a stop request (the running unit finishes), so the unit waits on a release file.
   printf 'waitfor %s\n' "$TMP/argv.go1" > "$SCEN/A"
   lanes_bg
-  wait_for "[ -f '$CALLS/1.t0' ]" 30
+  wait_for "[ -f '$CALLS/1.t0' ]" 60
   _lane="$(cat "$(last_lanes_dir)/claims/1/pid" 2>/dev/null)"
   ps -o args= -p "$RPID" > "$TMP/argv.runner" 2>/dev/null; ps -o args= -p "${_lane:-0}" > "$TMP/argv.lane" 2>/dev/null
   assert_contains "$TMP/argv.runner" "$TMP/bin/studio-overnight start" "the runner's argv carries \$TMP"
@@ -4380,7 +4380,7 @@ test_lanes_runner_argv_names_tmp() {
   [ -z "$_dp" ] || kill -TERM "$_dp" 2>/dev/null
   echo go > "$TMP/argv.go2"
   wait_for "[ ! -f '$P/.studio/runs/demo/lock' ]" 60
-  wait_for "[ -z \"\$(pgrep -f '$TMP/bin/studio-overnight')\" ]" 20
+  wait_for "[ -z \"\$(pgrep -f '$TMP/bin/studio-overnight')\" ]" 60
 }
 # The waiting-chain wait at its production poll (5 s; before_each leaves the
 # knob unset for real-clock tests): C waits for A and B, then starts after them.
@@ -4391,7 +4391,7 @@ test_lanes_wait_deps_default_poll() {
   assert_eq 0 "$LS_STATUS" "all three land at the default poll"
   assert_contains "$(last_lanes_dir)/stories/C" "^landed " "the waiting story lands"
   g="$(dep_gap)"
-  assert_eq 1 "$([ "$g" -ge 0 ] && echo 1 || echo 0)" "C starts no earlier than its last dependency's landing (${g}s)"
+  assert_eq 1 "$([ "$g" -ge 0 ] && [ "$g" -le 15 ] && echo 1 || echo 0)" "C starts after its last dependency's landing, within one default poll plus overhead (${g}s)"
 }
 
 # The stub's waitexist action and its @RUN@ token, driven directly (no runner).
