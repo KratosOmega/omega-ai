@@ -699,6 +699,31 @@ test_overnight_kill_after_grace() {
   assert_eq "timed out" "$(awk -F'\t' 'NR == 1 { print $7 }' "$(last_run_dir)/units.tsv")" "a unit the watchdog ended with no progress is recorded timed out, not noprog"
 }
 
+test_overnight_reap_poll_keeps_budget() {
+  fixture rpk '{ "overnight": { "kill_grace_seconds": 5 } }'
+  scenario "ignoreterm; hang" "ignoreterm; hang"
+  STUDIO_OVERNIGHT_SESSION_SECONDS=1; STUDIO_OVERNIGHT_REAP_POLL_SECONDS=0.2
+  export STUDIO_OVERNIGHT_SESSION_SECONDS STUDIO_OVERNIGHT_REAP_POLL_SECONDS
+  _t0=$(date +%s)
+  run_start
+  _el=$(( $(date +%s) - _t0 ))
+  unset STUDIO_OVERNIGHT_SESSION_SECONDS STUDIO_OVERNIGHT_REAP_POLL_SECONDS
+  assert_eq 2 "$(calls)" "two sessions that ignore TERM, killed after the grace, counted"
+  assert_eq 1 "$([ "$_el" -ge 10 ] && echo 1 || echo 0)" "two graces of 5 s stay whole at a 0.2 s poll (${_el}s)"
+}
+
+test_overnight_reap_poll_rejects_bad_value() {
+  fixture rpb
+  st=0
+  out="$( cd "$P" && STUDIO_OVERNIGHT_REAP_POLL_SECONDS=0.3 sh "$RUNNER" start 2>&1 )" || st=$?
+  assert_eq 2 "$st" "a bad reap poll exits 2"
+  printf '%s\n' "$out" > "$TMP/rpb.out"
+  assert_contains "$TMP/rpb.out" "studio-overnight: STUDIO_OVERNIGHT_REAP_POLL_SECONDS must be 1, 0.5, 0.2 or 0.1, got 0.3" "the refusal names the knob and the value"
+  assert_missing "$P/.studio/overnight.lock" "no lock was taken"
+  assert_eq 0 "$(ls -d "$P"/.studio/reports/overnight-* 2>/dev/null | wc -l | tr -d ' ')" "no run dir was made"
+  assert_eq 0 "$(calls)" "no session started"
+}
+
 test_overnight_stop_file() {
   fixture stopf; scenario "stage execute; sleep 2; task 1/3" "task 2/3" "task 3/3"
   start_bg; wait_for "$CALLS/1.t0"
@@ -2211,6 +2236,7 @@ run_tests test_overnight_setup_preflight_single test_overnight_help_setup_prefli
   test_overnight_session_seconds_refused test_overnight_claim_without_run_dir \
   test_overnight_report_runner_error test_overnight_crash_resume test_overnight_status \
   test_overnight_timeout test_overnight_kill_after_grace \
+  test_overnight_reap_poll_keeps_budget test_overnight_reap_poll_rejects_bad_value \
   test_overnight_stop_file test_overnight_sigterm test_overnight_sigint test_overnight_sighup \
   test_overnight_stop_no_run test_overnight_inhibitor test_overnight_no_inhibitor \
   test_overnight_help test_events_contract_doc test_overnight_dry_run \

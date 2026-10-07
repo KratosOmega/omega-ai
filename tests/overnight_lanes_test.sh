@@ -2315,6 +2315,31 @@ test_lanes_detach_timeout_no_lock_ends_child() {
   sleep 1
   assert_eq 0 "$(pgrep -f 'sleep 301' | wc -l | tr -d ' ')" "no child survives"
 }
+test_lanes_detach_poll_keeps_budget() {
+  lanes_fixture dpk integration A:-
+  : > "$TMP/dpk.count"
+  STUDIO_OVERNIGHT_DETACH_POLL_SECONDS=0.2
+  STUDIO_OVERNIGHT_DETACH_STATUS_CMD="echo x >> '$TMP/dpk.count'; false"
+  STUDIO_OVERNIGHT_DETACH_CHILD_CMD="sleep 309"
+  export STUDIO_OVERNIGHT_DETACH_POLL_SECONDS STUDIO_OVERNIGHT_DETACH_STATUS_CMD STUDIO_OVERNIGHT_DETACH_CHILD_CMD
+  _t0=$(date +%s); st=0
+  ( cd "$P" && sh "$RUNNER" start --detach "$MFP" ) > "$TMP/dpk.out" 2>&1 || st=$?
+  _el=$(( $(date +%s) - _t0 ))
+  unset STUDIO_OVERNIGHT_DETACH_POLL_SECONDS STUDIO_OVERNIGHT_DETACH_STATUS_CMD STUDIO_OVERNIGHT_DETACH_CHILD_CMD
+  assert_eq 1 "$st" "the window times out: the child never took the lock"
+  assert_contains "$TMP/dpk.out" "never took the lock" "the no-lock message"
+  assert_eq 1 "$([ "$_el" -ge 10 ] && echo 1 || echo 0)" "the window still lasts 10 s at a 0.2 s poll (${_el}s)"
+  assert_eq 50 "$(wc -l < "$TMP/dpk.count" | tr -d ' ')" "the status check ran 10 s x 5 ticks: the knob survived --detach's STUDIO_* strip"
+}
+test_lanes_detach_poll_rejects_bad_value() {
+  lanes_fixture dpb integration A:-
+  st=0
+  ( cd "$P" && STUDIO_OVERNIGHT_DETACH_POLL_SECONDS=1.0 sh "$RUNNER" start --detach "$MFP" ) > "$TMP/dpb.out" 2>&1 || st=$?
+  assert_eq 2 "$st" "a bad detach poll exits 2"
+  assert_contains "$TMP/dpb.out" "studio-overnight: STUDIO_OVERNIGHT_DETACH_POLL_SECONDS must be 1, 0.5, 0.2 or 0.1, got 1.0" "the refusal names the knob and the value"
+  assert_missing "$P/.studio/runs/demo/lock" "no run lock was taken"
+  assert_not_contains "$TMP/dpb.out" "detached:" "nothing was detached"
+}
 test_lanes_origin_attached() {
   lanes_fixture ora integration A:-
   rm -f "$HOME/.claude-gamedev/runs/last"
@@ -4276,6 +4301,7 @@ run_tests test_lanes_setup_preflight_refuses_linked_only test_lanes_setup_prefli
   test_lanes_done_marker test_lanes_status_reaps_dead_runner test_lanes_reap_names_final_pr \
   test_lanes_detach_strips_env test_lanes_detach_refusal_in_foreground test_lanes_detach_child_refusal_surfaces \
   test_lanes_detach_timeout_lock_held_points_at_status test_lanes_detach_timeout_no_lock_ends_child \
+  test_lanes_detach_poll_keeps_budget test_lanes_detach_poll_rejects_bad_value \
   test_lanes_origin_attached test_lanes_origin_detach test_lanes_origin_detach_refused \
   test_lanes_help_modes test_lanes_left_gate_reaped test_lanes_timed_out_outcome test_lanes_heartbeat \
   test_lanes_activity_verb test_lanes_status_anywhere test_lanes_status_ended_partial test_lanes_watch \
