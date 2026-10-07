@@ -3453,7 +3453,7 @@ test_lanes_per_run_lock_paths() {
   lanes_fixture perrun integration A:-
   printf 'waitexist %s\n' "$P/.studio/runs/demo/stop" > "$SCEN/A"
   bg_lanes pr "$P" start "$MFP"
-  _i=0; while [ ! -f "$P/.studio/runs/demo/lock" ] && [ "$_i" -lt 50 ]; do sleep 0.1; _i=$((_i + 1)); done
+  _i=0; while [ ! -f "$P/.studio/runs/demo/lock" ] && [ "$_i" -lt 600 ]; do sleep 0.1; _i=$((_i + 1)); done
   assert_file "$P/.studio/runs/demo/lock" "the manifest run's lock is .studio/runs/<slug>/lock"
   assert_contains "$P/.studio/runs/demo/lock" "^start=$P\$" "it records the start dir"
   assert_missing "$P/.studio/overnight.lock" "no project-wide lock"
@@ -3478,8 +3478,8 @@ test_lanes_two_runs_each_own_lock() {
   lanes_add_run alpha integration S1:-
   printf 'waitexist %s\n' "$SCEN/release-two" > "$SCEN/A"; printf 'waitexist %s\n' "$SCEN/release-two" > "$SCEN/S1"
   bg_lanes demo "$P" start "$MFP"; bg_lanes alpha "$RW" start "$RMF"
-  # Both preflights run at once: wait for both locks (up to 10 s), not a fixed sleep.
-  _i=0; while { [ ! -f "$P/.studio/runs/demo/lock" ] || [ ! -f "$P/.studio/runs/alpha/lock" ]; } && [ "$_i" -lt 100 ]; do sleep 0.1; _i=$((_i + 1)); done
+  # Both preflights run at once: wait for both locks (a ceiling of a minute), not a fixed sleep.
+  _i=0; while { [ ! -f "$P/.studio/runs/demo/lock" ] || [ ! -f "$P/.studio/runs/alpha/lock" ]; } && [ "$_i" -lt 600 ]; do sleep 0.1; _i=$((_i + 1)); done
   assert_file "$P/.studio/runs/demo/lock" "demo holds its lock"
   assert_file "$P/.studio/runs/alpha/lock" "alpha holds its own"
   ( cd "$P" && sh "$RUNNER" status ) > "$TMP/st.out" 2>&1; _st=$?
@@ -3539,7 +3539,7 @@ test_lanes_detach_with_other_run_live() {
   lanes_fixture det integration A:-
   lanes_add_run alpha integration S1:-
   printf 'hang\n' > "$SCEN/S1"; bg_lanes alpha "$RW" start "$RMF"
-  _i=0; while [ ! -f "$P/.studio/runs/alpha/lock" ] && [ "$_i" -lt 100 ]; do sleep 0.1; _i=$((_i + 1)); done
+  _i=0; while [ ! -f "$P/.studio/runs/alpha/lock" ] && [ "$_i" -lt 600 ]; do sleep 0.1; _i=$((_i + 1)); done
   _ap="$(sed -n 's/^pid=//p' "$P/.studio/runs/alpha/lock")"
   printf 'hang\n' > "$SCEN/A"
   run_lanes start --detach "$MFP"
@@ -4524,12 +4524,52 @@ FAKEGIT
   assert_file "$TMP/fb2/docs/runs/demo.md" "and the project carries the manifest"
 }
 
-# Partitions. The exclusive seeds are the spec's lanes list (R5); rulings come with R6.
+# Partitions. The exclusive seeds are the spec's lanes list (R5); the rulings below follow R6.
+# exclusive-scan: test_lanes_overhead in (a) it bounds the runner's gap between units by a fixed elapsed ceiling; the best of two samples helps but a loaded machine can still break it
+# exclusive-scan: test_lanes_waiting_chain_starts_after_deps in (a) it bounds the gap from the last landing to the waiting story's start by a fixed elapsed ceiling; the retry takes a second sample but the bound stays
+# exclusive-scan: test_lanes_skip_on_stopped_dep out (d) the one-second value is only the runner's poll interval; nothing has to beat a clock
+# exclusive-scan: test_lanes_lane_kill9 out (d) the poll and grace values are no window: the test kills the lane itself and waits on events with ceilings of a minute
+# exclusive-scan: test_lanes_sigint in (b) a spec seed: the INT must land while both units are still inside their short stub sleeps
+# exclusive-scan: test_lanes_stop_file out (d) the stub session waits on the stop flag, an event; the one-second value is a poll interval
+# exclusive-scan: test_lanes_land_conflict_one_repair in (d) the first story must land inside the second story's short finish sleep, or the conflict flips to the other story; it is also in the real-clock list
+# exclusive-scan: test_lanes_direct_merge_timeout in (d) a spec seed: a hung merge must be cut by a session limit of a few seconds, and the run is also bounded by an elapsed ceiling
+# exclusive-scan: test_lanes_land_lock_reclaim out (d) the second story finishes on a release file set once the dead holder's lock exists, an event; the one-second value is a poll interval
+# exclusive-scan: test_lanes_direct_merge_timeout_after_merge_lands in (d) a spec seed: the hung merge must outlast a session limit of a few seconds
+# exclusive-scan: test_lanes_direct_merge_timeout_term_ignored in (d) a spec seed: the TERM-ignoring merge must be cut by a session limit of a few seconds plus a short grace
+# exclusive-scan: test_lanes_report_on_lane_crash out (d) the grace value is no window: the test kills the lane and its session itself, then waits on the runner with a ceiling of a minute
+# exclusive-scan: test_lanes_detach_poll_rejects_bad_value out (d) a false hit: the flagged value is the one the runner refuses at start, before any clock runs
+# exclusive-scan: test_lanes_timed_out_outcome out (d) the stub session hangs until killed, so any session limit ends it and a late start cannot flip the outcome; it is in the real-clock list
+# exclusive-scan: test_lanes_heartbeat in (d) a spec seed: a one-second heartbeat must show while a short session still runs
+# exclusive-scan: test_lanes_stop_waiting_story in (a) it asserts the stop took effect inside a fixed five-second ceiling, one poll, so a starved runner can miss it
+# exclusive-scan: test_lanes_setup_preflight_interrupt_cleans out (b) the TERM lands after an event wait on the setup's marker file, while its sleeper lasts far longer than the test, so there is no window
+# exclusive-scan: test_lanes_setup_preflight_timeout out (d) the setup command sleeps far longer than the one-second cap, so a late start still times out and nothing can flip
+# exclusive-scan: test_lanes_lock_race_single_vs_manifest in (b) a spec seed: the lock hook's short sleep is the window the single-plan lock must land in
+# exclusive-scan: test_lanes_recheck_race_one_wins in (b) a spec seed: the lock hook's short sleep is the window both starts race through
+# exclusive-scan: test_lanes_slot_cap_two_across_runs in (b) it asserts two short stub sessions overlap, so a staggered start under load lowers the maximum it sees
+# exclusive-scan: test_lanes_slot_cap_one_alternates in (d) the first hand-over is an event, but the other run's lane must queue again before the running story's short sleeps end
+# exclusive-scan: test_lanes_slot_kill9_lane_reclaimed out (d) the grace value is no window: the test kills the lane itself and waits on events
+# exclusive-scan: test_lanes_slot_released_every_exit out (b) the TERM lands after an event wait on the unit's start, while its stub waits for a release file, so there is no window; the grace value is no window either
+# exclusive-scan: test_lanes_slot_wait_not_in_session_minutes in (d) a spec seed: a session limit of a few seconds must be outlasted by a longer wait for the slot
+# exclusive-scan: test_lanes_detach_setup_preflight_interrupt out (b) the TERM lands after an event wait on the setup's marker file, while its sleeper lasts far longer than the test, so there is no window
+# exclusive-scan: test_lanes_runner_argv_names_tmp out (b) the TERM lands after an event wait on the unit's start, while the unit waits for a release file, so there is no window
+# exclusive-scan: test_lanes_wait_deps_default_poll in (a) it bounds the gap after the last landing by an elapsed ceiling at the production poll, while the first dependency sleeps briefly
+# exclusive-scan: test_stub_waitexist_and_run_token in (a) it bounds the stub's return on an existing file by an elapsed ceiling
+# exclusive-scan: test_lanes_runner_gone out (static) the stub session waits on a release file, an event; the lane's exit is awaited with a long ceiling
+# exclusive-scan: test_lanes_per_run_lock_paths out (static) the stub waits on the stop flag, an event; the lock wait now has a ceiling of a minute
+# exclusive-scan: test_lanes_two_runs_each_own_lock out (static) the stubs wait on a release file, an event; the lock wait now has a ceiling of a minute
+# exclusive-scan: test_lanes_gate_repair_halt out (static) the gate stub waits on the stop flag, an event
+# exclusive-scan: test_lanes_status_reaps_dead_runner out (static) the stub session waits on a release file, an event
+# exclusive-scan: test_lanes_setup_preflight_refuses_linked_only in (c) a spec seed: it failed under a loaded run and passed alone
+# exclusive-scan: test_lanes_detach_timeout_no_lock_ends_child in (c) a spec seed: it failed under load; the children must be gone inside a ceiling of one second
+# exclusive-scan: test_lanes_end_sessions_spaced_path in (a) a spec seed: the ended sessions are awaited with a one-second ceiling
 TESTS_EXCLUSIVE="test_lanes_slot_wait_not_in_session_minutes test_lanes_direct_merge_timeout \
   test_lanes_direct_merge_timeout_after_merge_lands test_lanes_direct_merge_timeout_term_ignored \
   test_lanes_sigint test_lanes_end_sessions_spaced_path test_lanes_lock_race_single_vs_manifest \
   test_lanes_recheck_race_one_wins test_lanes_heartbeat test_lanes_setup_preflight_refuses_linked_only \
-  test_lanes_detach_timeout_no_lock_ends_child"
+  test_lanes_detach_timeout_no_lock_ends_child \
+  test_lanes_overhead test_lanes_waiting_chain_starts_after_deps test_lanes_land_conflict_one_repair \
+  test_lanes_stop_waiting_story test_lanes_slot_cap_two_across_runs test_lanes_slot_cap_one_alternates \
+  test_lanes_wait_deps_default_poll test_stub_waitexist_and_run_token"
 TESTS_FINAL="test_lanes_no_orphans"
 # Real-clock: timing-behaviour tests (rule 2) and the carriers of each production-value knob (R7).
 TESTS_REAL_CLOCK="test_lanes_sync_repair_stops test_lanes_timed_out_outcome \
