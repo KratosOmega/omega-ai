@@ -180,7 +180,8 @@ test_own_group_gives_group_and_int() {
 }
 
 test_mk_msleep() {
-  mk_msleep
+  _rc=0; mk_msleep || _rc=$?
+  assert_eq 0 "$_rc" "mk_msleep succeeds"
   "$TMP/bin/msleep" 3 &
   _p=$!; _found=""; _i=0
   while [ "$_i" -lt 20 ] && [ -z "$_found" ]; do
@@ -193,7 +194,8 @@ test_mk_msleep() {
   mkdir -p "$TMP/fakebin"
   printf '#!/bin/sh\ncase "${0##*/}" in sleep) exec /bin/sleep "$@";; *) exit 1;; esac\n' > "$TMP/fakebin/sleep"
   chmod +x "$TMP/fakebin/sleep"
-  ( PATH="$TMP/fakebin:$PATH"; TMP="$TMP/m2"; mk_msleep )
+  _rc=0; ( PATH="$TMP/fakebin:$PATH"; TMP="$TMP/m2"; mk_msleep ) || _rc=$?
+  assert_eq 0 "$_rc" "the fallback mk_msleep succeeds"
   assert_eq "#!" "$(head -c 2 "$TMP/m2/bin/msleep")" "where sleep dispatches on argv[0], msleep is a script"
   assert_status 0 "the fallback msleep runs" -- "$TMP/m2/bin/msleep" 0
 }
@@ -213,33 +215,39 @@ test_harness_private_names_unused() {
     "no suite uses the harness's __rt_ prefix"
 }
 
-# gen_scan_fixture FILE — five test functions for the exclusive scan (kept out of any
-# test_ body so the scan does not flag this suite for the fixture's text).
+# gen_scan_fixture FILE — five test functions for the exclusive scan. Each heredoc line
+# carries a "|" prefix (stripped on write) so the line-based scan never sees a column-0
+# test_ header in this file.
 gen_scan_fixture() {
-  cat > "$1" <<'FIX'
-test_a() {
-  [ $(( $(date +%s) - _t )) -le 5 ]
-}
-test_b() {
-  kill -INT "$p"
-}
-test_c() {
-  printf 'sleep 2\n' > "$SCEN/A"
-}
-test_d() {
-  run --seconds 1
-}
-test_e() {
-  assert_eq 1 1 clean
-}
+  sed 's/^|//' > "$1" <<'FIX'
+|test_a() {
+|  [ $(( $(date +%s) - _t )) -le 5 ]
+|}
+|test_b() {
+|  kill -INT "$p"
+|}
+|test_c() {
+|  printf 'sleep 2\n' > "$SCEN/A"
+|}
+|test_d() {
+|  run --seconds 1
+|}
+|test_e() {
+|  assert_eq 1 1 clean
+|}
 FIX
 }
 test_exclusive_scan_flags_fixture() {
   gen_scan_fixture "$TMP/scan_test.sh"
   assert_eq "a b d d " "$(awk -f "$REPO_ROOT/tests/exclusive_scan.awk" "$TMP/scan_test.sh" | awk -F'\t' '{ printf "%s ", $3 }')" \
     "the scan flags a, b, d, d and leaves the clean test alone"
+  assert_eq "" "$(awk -f "$REPO_ROOT/tests/exclusive_scan.awk" "$REPO_ROOT/tests/harness_test.sh" | awk -F'\t' '$2 ~ /^test_[a-e]$/ { print $2 }')" \
+    "the scan reports no fixture rows (test_a..test_e) for harness_test.sh itself"
 }
 
+# exclusive-scan: test_next_second in (a) asserts elapsed < 1.5 s
+# exclusive-scan: test_own_group_gives_group_and_int out (b) the SIGINT goes to a private sh the test started in its own group, never to the harness's group, and nothing else's timing is at stake
+TESTS_EXCLUSIVE="test_next_second"
 run_tests test_shards_cover_every_test_once test_no_phase_runs_all_in_order \
   test_exclusive_phase_runs_only_tagged test_bad_shard_and_phase_fail_loudly \
   test_misspelt_tag_fails_in_every_phase test_tests_only_intersects_partition \

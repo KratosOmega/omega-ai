@@ -18,7 +18,7 @@ name == "" { next }
 {
   line = $0
   if (line ~ /date \+%s/ && line ~ /-l[te] [0-9]/) flag("a")
-  if (line ~ /(well )?under [0-9]+ ?s|< ?[0-9]+ ?s|<= ?[0-9]+ ?s/) flag("a")
+  if (line ~ /(well )?(under|within) [0-9.]+ ?s|< ?[0-9]+ ?s|<= ?[0-9]+ ?s/) flag("a")
   if (line ~ /kill -(INT|TERM|HUP|QUIT|s )/) flag("b")
   if (line ~ /(^|[^0-9.])sleep [1-6]([^0-9]|$)/ && line ~ /printf|SCEN|scenario|STUB|_CMD|sh -c/) flag("d")
   if (line ~ /--seconds [1-6]([^0-9]|$)/) flag("d")
