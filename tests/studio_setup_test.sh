@@ -7,8 +7,9 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SETUP="$REPO_ROOT/studios/game-dev/bin/studio-setup"
 GATE="$REPO_ROOT/studios/game-dev/bin/studio-gate"
 STATE_BIN="$REPO_ROOT/studios/game-dev/bin/studio-state"
-TMP="$(cd "$(mktemp -d)" && pwd -P)"
+TMP="$(cd "$(mktemp -d "${TMPDIR:-/tmp}/studio_setup_test.XXXXXX")" && pwd -P)"
 trap 'rm -rf "$TMP"' EXIT
+mk_msleep || exit 1
 HOME="$TMP/home"; export HOME; mkdir -p "$HOME"
 unset STUDIO_GATE_HELD STUDIO_SETUP_TIMEOUT_SECONDS STUDIO_SETUP_POLL_SECONDS STUDIO_UNIT_TAG
 
@@ -21,6 +22,23 @@ proj() {
 }
 # setup DIR [ARGS] — studio-setup in DIR: SU_STATUS, $TMP/su.out, $TMP/su.err.
 setup() { _d="$1"; shift; SU_STATUS=0; ( cd "$_d" && sh "$SETUP" "$@" ) > "$TMP/su.out" 2> "$TMP/su.err" || SU_STATUS=$?; }
+# nproc PATTERN - how many processes carry PATTERN (an ERE with $TMP in it) in their argv.
+nproc() { pgrep -f "$1" | wc -l | tr -d ' '; }
+# wait_absent PATTERN TICKS - poll every 0.1 s until none match, at most TICKS ticks.
+wait_absent() { _wa=0; while [ "$(nproc "$1")" != 0 ] && [ "$_wa" -lt "$2" ]; do sleep 0.1; _wa=$((_wa + 1)); done; }
+# wait_present PATTERN TICKS - poll every 0.1 s until one matches, at most TICKS ticks.
+wait_present() { _wp=0; while [ "$(nproc "$1")" = 0 ] && [ "$_wp" -lt "$2" ]; do sleep 0.1; _wp=$((_wp + 1)); done; }
+# R7: knobs unset at the top; non-real-clock tests poll at 0.2 s.
+before_each() {
+  unset STUDIO_SETUP_POLL_SECONDS STUDIO_GATE_POLL_SECONDS \
+        STUDIO_OVERNIGHT_REAP_POLL_SECONDS STUDIO_OVERNIGHT_DETACH_POLL_SECONDS STUDIO_OVERNIGHT_POLL_SECONDS
+  is_real_clock && return 0
+  STUDIO_SETUP_POLL_SECONDS=0.2; STUDIO_GATE_POLL_SECONDS=0.2
+  STUDIO_OVERNIGHT_REAP_POLL_SECONDS=0.2; STUDIO_OVERNIGHT_DETACH_POLL_SECONDS=0.2
+  STUDIO_OVERNIGHT_POLL_SECONDS=1
+  export STUDIO_SETUP_POLL_SECONDS STUDIO_GATE_POLL_SECONDS STUDIO_OVERNIGHT_REAP_POLL_SECONDS \
+         STUDIO_OVERNIGHT_DETACH_POLL_SECONDS STUDIO_OVERNIGHT_POLL_SECONDS
+}
 
 test_setup_unset_is_silent() {
   proj un '{ "engine": "godot4" }'
@@ -61,21 +79,21 @@ test_setup_nonzero_exit() {
   assert_contains "$(ls "$P"/.studio/reports/setup-*.log)" '^boom$' "the log holds the output"
 }
 test_setup_timeout_ends_group() {
-  proj to '{ "worktree_setup": "sleep 4801 & sleep 4802" }'
+  proj to '{ "worktree_setup": "'"$TMP"'/bin/msleep 4801 & '"$TMP"'/bin/msleep 4802" }'
   STUDIO_SETUP_TIMEOUT_SECONDS=2; export STUDIO_SETUP_TIMEOUT_SECONDS
   setup "$P"; unset STUDIO_SETUP_TIMEOUT_SECONDS
   assert_eq 1 "$SU_STATUS" "a timeout exits 1"
   assert_contains "$TMP/su.err" '^worktree setup failed — exit 124 — log ' "exit 124 names the timeout"
   assert_eq 1 "$(wc -l < "$TMP/su.err" | tr -d ' ')" "no job-control noise on stderr"
-  sleep 1
-  assert_eq 0 "$(ps -A -o args= | grep -c '^sleep 480[12]$')" "the grandchild sleeps are gone"
+  wait_absent "$TMP/bin/msleep 480[12]\$" 10
+  assert_eq 0 "$(nproc "$TMP/bin/msleep 480[12]\$")" "the grandchild sleeps are gone"
   assert_contains "$(ls "$P"/.studio/reports/setup-*.log)" 'timed out after 2 s' "the log says so"
   assert_missing "$P/.studio/gate.lock" "the lock is released"
 }
 test_setup_timer_starts_after_lock() {
   proj tl '{ "worktree_setup": "echo ran > ran.txt" }'
   ( cd "$P" && sh "$GATE" holder -- sleep 3 ) >/dev/null 2>&1 &
-  _h=$!; while [ ! -f "$P/.studio/gate.lock/pid" ]; do sleep 1; done
+  _h=$!; _i=0; while [ ! -f "$P/.studio/gate.lock/pid" ] && [ "$_i" -lt 100 ]; do sleep 0.2; _i=$((_i + 1)); done
   STUDIO_SETUP_TIMEOUT_SECONDS=1; export STUDIO_SETUP_TIMEOUT_SECONDS
   setup "$P"; unset STUDIO_SETUP_TIMEOUT_SECONDS; wait "$_h"
   assert_eq 0 "$SU_STATUS" "waiting 3 s for the lock is not a 1 s timeout"
@@ -102,24 +120,24 @@ test_setup_gate_green_and_red() {
   assert_contains "$TMP/su.err" '^gate_command exit 3 — log \.studio/reports/gate-[0-9-]*\.log$' "the red line"
 }
 test_setup_signal_stops_child_and_releases_lock() {
-  proj sg '{ "worktree_setup": "sleep 4811" }'
+  proj sg '{ "worktree_setup": "'"$TMP"'/bin/msleep 4811" }'
   ( cd "$P" && exec sh "$SETUP" ) > "$TMP/sg.out" 2>&1 &
   _s=$!
-  _i=0; while [ ! -f "$P/.studio/gate.lock/who" ] && [ "$_i" -lt 20 ]; do sleep 1; _i=$((_i + 1)); done
-  sleep 1
+  _i=0; while [ ! -f "$P/.studio/gate.lock/who" ] && [ "$_i" -lt 200 ]; do sleep 0.1; _i=$((_i + 1)); done
+  wait_present "$TMP/bin/msleep 4811\$" 600
   kill -TERM "$_s"; _rc=0; wait "$_s" || _rc=$?
   assert_eq 143 "$_rc" "TERM ends studio-setup with 128+15"
-  sleep 1
-  assert_eq 0 "$(ps -A -o args= | grep -c '^sleep 4811$')" "the setup command is gone"
+  wait_absent "$TMP/bin/msleep 4811\$" 10
+  assert_eq 0 "$(nproc "$TMP/bin/msleep 4811\$")" "the setup command is gone"
   assert_missing "$P/.studio/gate.lock" "the gate lock is released"
 }
 test_setup_timeout_kills_term_ignorer() {
   proj ti '{ "worktree_setup": "sh ign.sh" }'
-  printf "trap '' TERM\nsleep 4821\n" > "$P/ign.sh"
+  printf "trap '' TERM\n$TMP/bin/msleep 4821\n" > "$P/ign.sh"
   STUDIO_SETUP_TIMEOUT_SECONDS=1; export STUDIO_SETUP_TIMEOUT_SECONDS
   setup "$P"; unset STUDIO_SETUP_TIMEOUT_SECONDS
   assert_contains "$TMP/su.err" '^worktree setup failed — exit 124 — log ' "exit 124 after KILL"
-  assert_eq 0 "$(ps -A -o args= | grep -c '^sleep 4821$')" "the TERM-ignoring command is gone"
+  assert_eq 0 "$(nproc "$TMP/bin/msleep 4821\$")" "the TERM-ignoring command is gone"
   assert_missing "$P/.studio/gate.lock" "the lock is released"
 }
 test_setup_quoted_minutes_refused() {
@@ -159,7 +177,7 @@ test_setup_help() {
 
 test_setup_poll_keeps_budget() {
   proj pk '{ "worktree_setup": "sh ign.sh" }'
-  printf "trap '' TERM\nsleep 4822\n" > "$P/ign.sh"
+  printf "trap '' TERM\n$TMP/bin/msleep 4822\n" > "$P/ign.sh"
   STUDIO_SETUP_TIMEOUT_SECONDS=1; STUDIO_SETUP_POLL_SECONDS=0.2; export STUDIO_SETUP_TIMEOUT_SECONDS STUDIO_SETUP_POLL_SECONDS
   _t0=$(date +%s); setup "$P"; _el=$(( $(date +%s) - _t0 ))
   unset STUDIO_SETUP_TIMEOUT_SECONDS STUDIO_SETUP_POLL_SECONDS
@@ -177,6 +195,13 @@ test_setup_poll_rejects_bad_value() {
   assert_missing "$P/.studio/gate.lock" "no lock is left"
 }
 
+# exclusive-scan: test_setup_timeout_ends_group in (d) a 2 s setup timeout the group kill must beat, then a 1 s absence window
+# exclusive-scan: test_setup_timer_starts_after_lock in (b) a 3 s lock holder must still be running when setup starts waiting, against a 1 s timeout (d)
+# exclusive-scan: test_setup_signal_stops_child_and_releases_lock in (b) TERM is sent to the live setup run, and the child must be gone within 1 s
+# exclusive-scan: test_setup_timeout_kills_term_ignorer in (d) a 1 s timeout; the TERM-ignorer must be KILLed after the full 5 s grace (production poll)
+# exclusive-scan: test_setup_poll_keeps_budget out (d) its 1 s timeout only lengthens under load; the one assertion on elapsed time is a lower bound (>= 5 s)
+TESTS_EXCLUSIVE="test_setup_timeout_ends_group test_setup_timer_starts_after_lock test_setup_timeout_kills_term_ignorer test_setup_signal_stops_child_and_releases_lock"
+TESTS_REAL_CLOCK=""
 run_tests test_setup_unset_is_silent test_setup_runs_under_lock_and_logs test_setup_marker_skip_and_rerun \
   test_setup_nonzero_exit test_setup_timeout_ends_group test_setup_timer_starts_after_lock \
   test_setup_bad_config test_setup_gate_green_and_red test_setup_help \
