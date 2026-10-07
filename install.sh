@@ -24,8 +24,121 @@ Options:
   --dry-run             print every action, change nothing
   -h, --help            show this help
 
+A reinstall keeps every top-level settings.json key the studio's template
+does not define (agentPushNotifEnabled, say); the template's own keys take
+its values. The merge needs python3; without it the template is installed
+as is and the previous file is backed up.
+
+Environment:
+  OMEGA_INSTALL_PYTHON  the python3 for that merge (default: python3 on
+                        PATH, else /usr/bin/python3)
+
 Studios: see studios/ in this repository.
 USAGE
+}
+
+# settings_python — print a python3 that actually runs (3.7+: ordered dicts);
+# return 1 when there is none. OMEGA_INSTALL_PYTHON names one instead (tests
+# point it at a missing or broken interpreter). macOS's /usr/bin/python3 can
+# be a stub that only offers to install the developer tools, hence a probe
+# that runs it rather than a presence check.
+settings_python() {
+  if [ -n "${OMEGA_INSTALL_PYTHON:-}" ]; then
+    _py="$OMEGA_INSTALL_PYTHON"
+  else
+    _py="$(command -v python3 2>/dev/null || true)"
+    [ -n "$_py" ] || _py=/usr/bin/python3
+  fi
+  "$_py" -c 'import sys; sys.exit(sys.version_info < (3, 7))' >/dev/null 2>&1 || return 1
+  printf '%s\n' "$_py"
+}
+
+# settings_merge PY TEMPLATE EXISTING — the reinstall's settings.json (#53):
+# the template's top-level keys with the template's values, then every other
+# top-level key of EXISTING, in its order. Prints, one per line: "same"
+# (EXISTING already holds exactly that content, and no key in it is
+# duplicated) or "differs"; "merge" (keys are kept) or "template" (none: the
+# template goes in as is); the kept keys, ", "-joined; the keys EXISTING
+# holds twice or more, at any depth, ", "-joined (json keeps the last value);
+# then the merged document. Exit 3: EXISTING is not a JSON object; 4:
+# TEMPLATE is not; 6: EXISTING cannot be read; 7: anything else went wrong.
+# Python's stderr is dropped: a failure is reported by its exit status, never
+# a traceback. A top-level function, never a heredoc inside $( ): bash 3.2
+# mis-parses that.
+settings_merge() {
+  "$1" - "$2" "$3" 2>/dev/null <<'PY'
+import json, sys
+
+def main():
+    dups = []
+
+    def pairs(items):
+        obj = {}
+        for k, v in items:
+            if k in obj and k not in dups:
+                dups.append(k)
+            obj[k] = v
+        return obj
+
+    def load(path, code, read_code, hook=None):
+        try:
+            with open(path, encoding="utf-8") as f:
+                text = f.read()
+        except OSError:
+            sys.exit(read_code)
+        except ValueError:
+            sys.exit(code)
+        try:
+            doc = json.loads(text, object_pairs_hook=hook)
+        except ValueError:
+            sys.exit(code)
+        if not isinstance(doc, dict):
+            sys.exit(code)
+        return doc
+
+    names = lambda keys: ", ".join(json.dumps(k)[1:-1] for k in keys)
+    template = load(sys.argv[1], 4, 4)
+    existing = load(sys.argv[2], 3, 6, pairs)
+    merged = dict(template)
+    kept = [k for k in existing if k not in template]
+    for k in kept:
+        merged[k] = existing[k]
+    canon = lambda d: json.dumps(d, sort_keys=True)
+    out = "same" if canon(existing) == canon(merged) and not dups else "differs"
+    out += "\n" + ("merge" if kept else "template")
+    out += "\n" + names(kept) + "\n" + names(dups)
+    out += "\n" + json.dumps(merged, indent=2, ensure_ascii=False, allow_nan=False) + "\n"
+    sys.stdout.buffer.write(out.encode("utf-8"))
+
+try:
+    main()
+except Exception:
+    sys.exit(7)
+PY
+}
+
+# settings_interrupted — the EXIT trap while the user's settings.json exists
+# only as its backup: say where it is.
+settings_interrupted() {
+  rm -f "$SETTINGS_TMP" 2>/dev/null || true
+  warn "the install stopped; your previous settings.json is $SETTINGS_BAK"
+}
+
+# settings_write — the new settings.json: written to a sibling temp file,
+# read back, then renamed into place, so a failed or interrupted write never
+# leaves a truncated settings.json. A link there is replaced, never written
+# through; rm -f refuses a directory. Returns non-zero on any failure.
+settings_write() {
+  if [ -L "$SETTINGS" ] || [ -d "$SETTINGS" ]; then rm -f "$SETTINGS" || return 1; fi
+  rm -f "$SETTINGS_TMP" || return 1
+  if [ -n "$SETTINGS_DOC" ]; then
+    printf '%s\n' "$SETTINGS_DOC" > "$SETTINGS_TMP" || return 1
+    [ "$(cat "$SETTINGS_TMP")" = "$SETTINGS_DOC" ] || return 1
+  else
+    cp "$STUDIO_DIR/settings.json" "$SETTINGS_TMP" || return 1
+    cmp -s "$STUDIO_DIR/settings.json" "$SETTINGS_TMP" || return 1
+  fi
+  mv -f "$SETTINGS_TMP" "$SETTINGS"
 }
 
 STUDIO=""
@@ -119,14 +232,87 @@ run mkdir -p "$TARGET"
 # recorded before writing anything, so a reinstall never leaves stale links
 # from an older layout beside the new one.
 MANIFEST="$TARGET/.omega-ai-manifest"
-if [ "$DRY_RUN" != "1" ]; then
-  # settings.json is the one installed file Claude Code mutates in-session,
-  # and the previous manifest records it — so a differing copy is preserved
-  # before the old entries are removed, never silently discarded.
-  if [ -f "$TARGET/settings.json" ] && ! cmp -s "$STUDIO_DIR/settings.json" "$TARGET/settings.json"; then
-    backup="$TARGET/settings.json.bak-$(date +%Y%m%d%H%M%S)"
-    cp "$TARGET/settings.json" "$backup"
-    warn "existing settings.json differed; backed up to $backup"
+# settings.json is the one installed file Claude Code mutates in-session, and
+# the previous manifest records it, so what this install writes there is
+# decided now, before the old entries are removed (#53). The template's
+# top-level keys take its values; every other top-level key already in the
+# file is kept. A link there is replaced, never merged from: its keys belong
+# to whatever it points at (~/.claude, say). Bytes identical to the template
+# need no python: nothing to keep.
+#
+# Backups: whenever the bytes differ from the template, the file is copied to
+# a .bak before the old entries are removed, so it is never only in memory
+# while this install runs (an EXIT trap names the copy if the install stops).
+# Once the new file is written, that copy is dropped when nothing in it was
+# lost — the only differences were keys this install kept, or formatting —
+# and kept, with a warning, otherwise.
+SETTINGS="$TARGET/settings.json"
+SETTINGS_TMP="$SETTINGS.omega-tmp"  # the new file, before it is moved into place
+SETTINGS_DOC=""    # the merged document; empty: install the template as is
+SETTINGS_KEPT=""   # the kept keys, ", "-joined
+SETTINGS_DUPS=""   # keys the file holds twice or more, ", "-joined
+SETTINGS_WHY=""    # why no merge happened, for the fallback warning
+SETTINGS_BAK=""
+SETTINGS_DIFFERS=0 # the bytes differ from the template's: back the file up
+SETTINGS_LOSES=0   # this install discards something of the file's: keep the backup
+SETTINGS_UNREADABLE=0
+[ ! -f "$SETTINGS" ] || cmp -s "$STUDIO_DIR/settings.json" "$SETTINGS" || SETTINGS_DIFFERS=1
+SETTINGS_LOSES="$SETTINGS_DIFFERS"
+if [ "$SETTINGS_DIFFERS" = 1 ] && [ ! -L "$SETTINGS" ]; then
+  if ! _py="$(settings_python)"; then
+    SETTINGS_WHY="python3 not found or not working"
+  else
+    _rc=0
+    _out="$(settings_merge "$_py" "$STUDIO_DIR/settings.json" "$SETTINGS")" || _rc=$?
+    case "$_rc" in
+      0)
+        _nl='
+'
+        if [ "${_out%%"$_nl"*}" = same ]; then SETTINGS_LOSES=0; fi
+        _out="${_out#*"$_nl"}"
+        _use="${_out%%"$_nl"*}"; _out="${_out#*"$_nl"}"
+        SETTINGS_KEPT="${_out%%"$_nl"*}"; _out="${_out#*"$_nl"}"
+        SETTINGS_DUPS="${_out%%"$_nl"*}"; _out="${_out#*"$_nl"}"
+        if [ "$_use" = merge ]; then SETTINGS_DOC="$_out"; fi
+        ;;
+      3) SETTINGS_WHY="not a valid JSON object" ;;
+      6) SETTINGS_UNREADABLE=1 ;;
+      *) SETTINGS_WHY="could not merge (python3 exit $_rc)" ;;
+    esac
+  fi
+fi
+if [ "$SETTINGS_UNREADABLE" = 1 ]; then
+  # No backup can be made of a file that cannot be read, so nothing is removed.
+  if [ "$DRY_RUN" = "1" ]; then
+    warn "settings.json: could not read $SETTINGS — a real install would stop here"
+  else
+    die "settings.json: could not read $SETTINGS — nothing was changed; check its permissions and rerun"
+  fi
+fi
+if [ "$SETTINGS_DIFFERS" = 1 ]; then
+  if [ "$DRY_RUN" = "1" ]; then
+    [ -z "$SETTINGS_WHY" ] || warn "settings.json: $SETTINGS_WHY — the studio template would be installed as is"
+    [ -z "$SETTINGS_DUPS" ] || warn "settings.json: duplicate keys $SETTINGS_DUPS — the last value of each would be kept"
+  else
+    # A name no earlier backup holds: two installs in one second must not
+    # overwrite, or later drop, each other's backup.
+    _stamp="$(date +%Y%m%d%H%M%S)"
+    SETTINGS_BAK="$TARGET/settings.json.bak-$_stamp"
+    _n=0
+    while [ -e "$SETTINGS_BAK" ] || [ -L "$SETTINGS_BAK" ]; do
+      _n=$((_n + 1)); SETTINGS_BAK="$TARGET/settings.json.bak-$_stamp.$_n"
+    done
+    if ! cp "$SETTINGS" "$SETTINGS_BAK"; then
+      rm -f "$SETTINGS_BAK" 2>/dev/null || true
+      die "could not back up $SETTINGS to $SETTINGS_BAK — nothing was changed"
+    fi
+    trap settings_interrupted EXIT
+    trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
+    if [ "$SETTINGS_LOSES" = 1 ]; then
+      warn "existing settings.json differed; backed up to $SETTINGS_BAK"
+      [ -z "$SETTINGS_WHY" ] || warn "settings.json: $SETTINGS_WHY — installing the studio template as is; your previous file is $SETTINGS_BAK"
+      [ -z "$SETTINGS_DUPS" ] || warn "settings.json: duplicate keys $SETTINGS_DUPS — the last value of each was kept; your previous file is $SETTINGS_BAK"
+    fi
   fi
 fi
 # Remove what the previous manifest recorded before writing anything else
@@ -192,14 +378,25 @@ else
 fi
 
 # settings.json is copied, never linked: Claude Code writes to it in-session.
-# A differing existing copy was backed up above, before the old manifest's
-# entries were removed.
+# What to write, and the backup, were decided above, before the old
+# manifest's entries were removed.
 if [ "$DRY_RUN" = "1" ]; then
-  log "DRY  copy $TARGET/settings.json"
+  if [ -n "$SETTINGS_DOC" ]; then
+    log "DRY  merge $SETTINGS (keeping your keys: $SETTINGS_KEPT)"
+  else
+    log "DRY  copy $SETTINGS"
+  fi
 else
-  rm -f "$TARGET/settings.json"
-  cp "$STUDIO_DIR/settings.json" "$TARGET/settings.json"
-  manifest_add "$MANIFEST" "$TARGET/settings.json"
+  if ! settings_write; then
+    rm -f "$SETTINGS_TMP" 2>/dev/null || true
+    die "could not write $SETTINGS"
+  fi
+  # Written: the backup is no longer the only copy. Drop it when nothing in
+  # it was lost.
+  trap - EXIT HUP INT TERM
+  if [ -n "$SETTINGS_BAK" ] && [ "$SETTINGS_LOSES" = 0 ]; then rm -f "$SETTINGS_BAK"; fi
+  [ -z "$SETTINGS_DOC" ] || log "settings.json: kept your keys: $SETTINGS_KEPT"
+  manifest_add "$MANIFEST" "$SETTINGS"
 fi
 
 if [ "$MODE" = "copy" ]; then

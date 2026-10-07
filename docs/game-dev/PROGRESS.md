@@ -14,6 +14,20 @@ approval page in `artifacts/`.
 
 ## Log
 
+### 2026-10-06 — Reinstall keeps your settings.json keys (#53)
+
+- A reinstall used to back up a differing `settings.json` and replace it with
+  the studio template, so top-level keys Claude Code or the user added (such as
+  `agentPushNotifEnabled`) were lost; three reinstalls dropped it.
+- `install.sh` now merges with python3's stdlib `json`: the template's keys win
+  with the template's values, every other top-level key is kept, in its order,
+  and named in one line.
+- A backup is made only when a template-owned value changes, so a file that
+  differs only by kept keys or formatting no longer piles up `.bak` files.
+- python3 is optional: with none, or a file that is not a JSON object, the
+  template is installed as is and a warning names the backup. A symlinked
+  `settings.json` is never merged from.
+
 ### 2026-10-06 — Preflight worktree_setup before start (#49)
 
 - `studio-overnight start` runs the project's `worktree_setup` once in a scratch
