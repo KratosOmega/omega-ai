@@ -732,6 +732,22 @@ test_install_settings_merge_failure_falls_back() {
   assert_eq 1 "$(bak_count "$t")" "a lone surrogate: the old file is backed up"
 }
 
+# #53 re-review: a kept key that does not round-trip as JSON (1e400 parses to
+# inf, which json writes as the invalid Infinity) falls back and keeps the backup.
+test_install_settings_non_roundtrip_value_falls_back() {
+  t="$TMP/snr"; mkdir -p "$t"
+  printf '{"model": "opus", "bigKey": 1e400}\n' > "$t/settings.json"
+  status=0
+  sh "$REPO_ROOT/install.sh" general --target "$t" --shim-dir "$t-bin" > "$t.out" 2>&1 || status=$?
+  assert_eq 0 "$status" "a non-round-trip value: the install does not fail"
+  assert_contains "$t.out" "settings.json: could not merge (python3 exit 7) — installing the studio template as is" \
+    "a non-round-trip value: the fallback warning"
+  assert_not_contains "$t.out" "Traceback" "a non-round-trip value: no traceback"
+  assert_eq 0 "$(same_bytes "$REPO_ROOT/studios/general/settings.json" "$t/settings.json")" "a non-round-trip value: the template is installed as is"
+  assert_not_contains "$t/settings.json" "Infinity" "a non-round-trip value: no Infinity in settings.json"
+  assert_contains "$t"/settings.json.bak-* "1e400" "a non-round-trip value: the backup keeps the original bytes"
+}
+
 # #53 fix wave (F4): a settings.json the installer cannot read gets its own
 # message, and the install stops before anything is removed — it can make no
 # backup of a file it cannot read.
@@ -1546,7 +1562,7 @@ run_tests test_studio_contract test_install_unknown_studio test_install_guard \
   test_doctor_engine_and_mcp_rows test_doctor_delegations test_doctor_hook_probe_line test_settings_backup test_install_settings_keeps_user_keys test_install_settings_merged_doctor_clean test_install_settings_fresh_unchanged test_install_settings_invalid_json_falls_back test_install_settings_no_python_falls_back test_install_settings_dry_run_reports_kept test_install_settings_no_backup_for_kept_keys test_install_settings_non_ascii \
   test_install_settings_failed_install_keeps_copy test_install_settings_write_failure_keeps_copy \
   test_install_settings_backups_never_collide test_install_settings_duplicate_keys \
-  test_install_settings_merge_failure_falls_back test_install_settings_unreadable \
+  test_install_settings_merge_failure_falls_back test_install_settings_non_roundtrip_value_falls_back test_install_settings_unreadable \
   test_shim \
   test_doctor test_doctor_detects_leak test_doctor_reports_no_plugins \
   test_doctor_plugin_report test_doctor_plugin_name_mismatch \

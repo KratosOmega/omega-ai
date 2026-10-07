@@ -107,7 +107,7 @@ def main():
     out = "same" if canon(existing) == canon(merged) and not dups else "differs"
     out += "\n" + ("merge" if kept else "template")
     out += "\n" + names(kept) + "\n" + names(dups)
-    out += "\n" + json.dumps(merged, indent=2, ensure_ascii=False) + "\n"
+    out += "\n" + json.dumps(merged, indent=2, ensure_ascii=False, allow_nan=False) + "\n"
     sys.stdout.buffer.write(out.encode("utf-8"))
 
 try:
