@@ -72,7 +72,10 @@ show`.
    holds: an inherited `adopted` or `adopt-base` line also misleads the runner.
 2. **Ledger on another run's integration branch.** The same file exists on
    `refs/remotes/origin/integration/<s>` for any `<s>` other than this run's
-   slug (a done integration run whose PR to main is still open).
+   slug (a done integration run whose PR to main is still open). Integration
+   branches are cut from main and inherit its ledgers, so a ledger counts here
+   only when its blob differs from the default branch's at the same path
+   (absent there counts as differing); main's own ledgers are judged by rule 1.
 3. **Another run's record.** A run record under `<root>/.studio/runs/` other
    than this run's own (live, stopped, done or archived `<slug>.<ts>`) lists
    `<id>` in `rows.tsv`. This is local to the machine; rules 1–2 cover the

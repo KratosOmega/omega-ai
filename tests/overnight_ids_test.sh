@@ -59,8 +59,8 @@ ids_fixture() {
 push_ledger() {
   rm -rf "$TMP/pl"
   ( set -e; git clone -q "$TMP/$1.git" "$TMP/pl"; cd "$TMP/pl"; git checkout -q -B x origin/main
-    mkdir -p .studio/ledger; printf '%s\n' "$4" > ".studio/ledger/$3.md"
-    git add -A; git commit -q -m ledger; git push -q origin "HEAD:refs/heads/$2" ) >/dev/null 2>&1
+    mkdir -p .studio/ledger; printf '%s\n' "$4" > ".studio/ledger/$3.md"; printf x > .marker
+    git add -A; git commit -q -m ledger; git push -q -f origin "HEAD:refs/heads/$2" ) >/dev/null 2>&1
   git -C "$P" fetch -q origin >/dev/null 2>&1
 }
 
@@ -144,6 +144,53 @@ test_ids_integration_branches() {                    # spec test 6
   run_ids check-id S1
   assert_eq 0 "$IS_STATUS" "this run's own integration branch is not checked"
 }
+test_ids_integration_inherits_main() {               # review I1 + M4 (case)
+  _own=docs/game-dev/plans/2026-10-01-S1.md
+  mkdir -p "$TMP/pre6i/.studio/ledger" "$TMP/pre6i/docs/game-dev/plans"
+  printf -- '- 2026-10-01 plan approved %s\n- 2026-10-01 T1 complete\n' "$_own" > "$TMP/pre6i/.studio/ledger/S1.md"
+  printf '# Plan\n\nStory: S1\n' > "$TMP/pre6i/$_own"
+  ids_fixture t6i "$TMP/pre6i" "S1|S1|$_own"
+  push_ledger t6i integration/other S1 "$(printf -- '- 2026-10-01 plan approved %s\n- 2026-10-01 T1 complete' "$_own")"
+  run_ids check-id S1
+  assert_eq 0 "$IS_STATUS" "integration/other inherited main's own S1 ledger unchanged: not a second claim"
+  push_ledger t6i integration/other S1 "$(printf -- '- 2026-10-01 plan approved %s\n- 2026-10-01 T1 complete\n- 2026-10-02 T2 complete' "$_own")"
+  run_ids check-id S1
+  assert_eq 1 "$IS_STATUS" "integration/other changed the ledger: taken"
+  assert_contains "$IS_ERR" "story id 'S1' is taken: origin/integration/other:\.studio/ledger/S1\.md belongs to run other's" "integration message"
+  ids_fixture t6c - 'S1|-|-'
+  push_ledger t6c integration/other s1 '- 2026-10-01 shipped S1-b'
+  run_ids check-id S1
+  assert_eq 1 "$IS_STATUS" "s1.md on integration/other makes S1 taken (any case)"
+  assert_contains "$IS_ERR" "origin/integration/other:\.studio/ledger/s1\.md belongs" "names the file as it is"
+}
+test_ids_plan_case_and_color() {                     # review M4 (case), M1
+  mkdir -p "$TMP/pre9/docs/game-dev/plans"; printf '# Plan\n\nStory: s1\n' > "$TMP/pre9/$OLD_PLAN"
+  ids_fixture t9 "$TMP/pre9" 'S1|-|-'
+  run_ids check-id S1
+  assert_eq 1 "$IS_STATUS" "'Story: s1' in a main plan makes S1 taken (any case)"
+  git -C "$P" config color.ui always
+  run_ids check-id S1
+  assert_eq 1 "$IS_STATUS" "still taken with color.ui=always"
+  assert_contains "$IS_ERR" "origin/main:$OLD_PLAN says 'Story: S1'\$" "rule 4 line is clean of color codes"
+}
+test_ids_default_ref_missing() {                     # review M2
+  ids_fixture t10 - 'S1|-|-'
+  git -C "$P" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/nope
+  run_ids check-id S1
+  assert_eq 2 "$IS_STATUS" "origin/HEAD names a ref that does not exist"
+  assert_contains "$IS_ERR" "origin/HEAD is not set — run: git remote set-head origin --auto" "start's message"
+}
+test_ids_slug_dash_and_readonly() {                  # review M3, M4 (writes nothing)
+  pre_stale "$TMP/pre11"
+  ids_fixture t11 "$TMP/pre11" 'S1|-|-'
+  run_ids check-id S1 --slug -
+  assert_eq 1 "$IS_STATUS" "taken"
+  assert_eq "studio-overnight: pick an unused id: the ticket, or <run slug>-S<n>" "$(tail -n 1 "$IS_ERR")" "--slug - is no slug: no --S1 suggestion"
+  _before="$(cd "$P" && find .studio -type f | sort | paste -sd ' ' -)"
+  run_ids check-id S1
+  assert_eq "" "$(git -C "$P" status --porcelain)" "check-id leaves the tree clean"
+  assert_eq "$_before" "$(cd "$P" && find .studio -type f | sort | paste -sd ' ' -)" "and writes nothing under .studio"
+}
 test_ids_run_records() {                             # spec test 7 (+ legacy, linked worktree)
   ids_fixture t7 - 'S1|-|-'
   _rr="$P/.studio/runs"
@@ -205,7 +252,7 @@ test_ids_usage() {                                   # spec test 15
   ids_fixture t15 - 'S1|-|-'
   run_ids check-id 'S 1'
   assert_eq 2 "$IS_STATUS" "a bad id is a usage error"
-  assert_contains "$IS_ERR" "check-id: story id 'S 1' must match" "says why"
+  assert_contains "$IS_ERR" "^studio-overnight: check-id: story id 'S 1' must match \^\[A-Za-z0-9\._-\]" "says why"
   run_ids check-id;              assert_eq 2 "$IS_STATUS" "no id"
   run_ids check-id S1 --bogus x; assert_eq 2 "$IS_STATUS" "an unknown option"
   run_ids check-id S1 --plan;    assert_eq 2 "$IS_STATUS" "an option without its value"
@@ -226,5 +273,5 @@ test_ids_docs() {                                    # R5
 }
 
 run_tests test_ids_main_ledger_taken test_ids_main_plan_only test_ids_run_branch_plan_not_checked \
-  test_ids_own_ledger test_ids_integration_branches test_ids_run_records test_ids_case_insensitive \
+  test_ids_own_ledger test_ids_integration_branches test_ids_integration_inherits_main test_ids_plan_case_and_color test_ids_default_ref_missing test_ids_slug_dash_and_readonly test_ids_run_records test_ids_case_insensitive \
   test_ids_suggestion test_ids_defaults_need_listed_row test_ids_usage test_ids_docs

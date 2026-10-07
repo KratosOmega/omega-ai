@@ -17,6 +17,7 @@ ids_ok() { printf '%s\n' "$1" | grep -Eq "$IDS_PAT"; }
 ids_default_branch() {
   _idb="$(git -C "$START_DIR" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null)" || return 1
   _idb="${_idb#origin/}"; [ -n "$_idb" ] || return 1
+  git -C "$START_DIR" rev-parse -q --verify "refs/remotes/origin/$_idb" >/dev/null 2>&1 || return 1
   printf '%s\n' "$_idb"
 }
 # ids_has FILE ID — FILE's first tab-separated column holds ID, in any case.
@@ -59,18 +60,22 @@ ids_reasons() {
   done
   # 4. A plan on the default branch, other than this story's, with the line
   #    `Story: <id>` (git grep has no -x: each hit is re-tested whole-line).
-  git -C "$START_DIR" grep -l -i -F -e "Story: $1" "$_ir_ref" -- docs/game-dev/plans 2>/dev/null \
+  git -C "$START_DIR" -c color.ui=never grep -l -i -F -e "Story: $1" "$_ir_ref" -- docs/game-dev/plans 2>/dev/null \
     | while IFS= read -r _ir_h; do
         _ir_p="${_ir_h#"$_ir_ref":}"
         [ "$_ir_p" != "$2" ] || continue
         git -C "$START_DIR" show "$_ir_ref:$_ir_p" 2>/dev/null | grep -qixF -- "Story: $1" || continue
         printf "origin/%s:%s says 'Story: %s'\n" "$4" "$_ir_p" "$1"
       done
-  # 2. A ledger on another run's integration branch.
+  # 2. A ledger on another run's integration branch, unless it is main's own
+  #    blob (those branches are cut from main and inherit its ledgers; rule 1
+  #    judges main's). An absent path on main counts as differing.
   for _ir_r in $(git -C "$START_DIR" for-each-ref --format='%(refname)' refs/remotes/origin/integration/ 2>/dev/null); do
     _ir_s="${_ir_r#refs/remotes/origin/integration/}"
     [ "$_ir_s" != "$3" ] || continue
     for _ir_p in $(ids_ledgers "$_ir_r" "$1"); do
+      _ir_o="$(git -C "$START_DIR" rev-parse -q --verify "$_ir_r:$_ir_p" 2>/dev/null)"
+      [ -z "$_ir_o" ] || [ "$_ir_o" != "$(git -C "$START_DIR" rev-parse -q --verify "$_ir_ref:$_ir_p" 2>/dev/null)" ] || continue
       printf "origin/integration/%s:%s belongs to run %s's integration branch\n" "$_ir_s" "$_ir_p" "$_ir_s"
     done
   done
@@ -145,7 +150,7 @@ cmd_check_id() {
         case "$1" in
           --plan) _cc_p="$2"; _cc_hp=1 ;;
           --ticket) _cc_t="$2"; _cc_ht=1 ;;
-          *) _cc_s="$2"; _cc_hs=1 ;;
+          *) _cc_s="$2"; _cc_hs=1; [ "$_cc_s" != - ] || { _cc_s=""; _cc_hs=2; } ;;
         esac
         shift 2 ;;
       -*) usage >&2; return 2 ;;
@@ -154,7 +159,7 @@ cmd_check_id() {
   done
   [ -n "$_cc_id" ] || { usage >&2; return 2; }
   ids_ok "$_cc_id" || { say "check-id: story id '$_cc_id' must match $IDS_PAT"; return 2; }
-  [ "$_cc_hs" = 0 ] || ids_ok "$_cc_s" || { say "check-id: slug '$_cc_s' must match $IDS_PAT"; return 2; }
+  [ "$_cc_hs" != 1 ] || ids_ok "$_cc_s" || { say "check-id: slug '$_cc_s' must match $IDS_PAT"; return 2; }
   [ -n "$START_DIR" ] || { say "no studio state here (run from the project checkout)"; return 2; }
   _cc_d="$(ids_default_branch)" || { say "origin/HEAD is not set — run: git remote set-head origin --auto"; return 2; }
   MF_ROWS="$(mktemp "${TMPDIR:-/tmp}/check-id.XXXXXX")" || return 2
@@ -165,7 +170,7 @@ cmd_check_id() {
      && awk -F'\t' -v id="$_cc_id" '$1 == id { f = 1 } END { exit !f }' "$MF_ROWS"; then
     [ "$_cc_hp" = 1 ] || _cc_p="$(row_field "$_cc_id" plan)"
     [ "$_cc_ht" = 1 ] || _cc_t="$(row_field "$_cc_id" ticket)"
-    [ "$_cc_hs" = 1 ] || _cc_s="$MF_SLUG"
+    [ "$_cc_hs" != 0 ] || _cc_s="$MF_SLUG"
   else
     : > "$MF_ROWS"
   fi
