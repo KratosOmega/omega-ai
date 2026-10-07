@@ -1154,7 +1154,6 @@ lanes_wait() {
     kill -0 "$1" 2>/dev/null || break
   done
 }
-# Its poll is STUDIO_OVERNIGHT_REAP_POLL_SECONDS (studio-overnight's help), read at startup into REAP_POLL/REAP_TPS; sourced alone (a unit test), the 1 s default applies.
 # lanes_end_sessions [K…] — TERM the live session of lanes K… (every lane
 # when none is named): its process group, else the session's children and
 # pid. After up to GRACE s, KILL whatever of it is still alive, group or
@@ -1167,6 +1166,7 @@ lanes_wait() {
 # Used by the runner's exit path (lanes then see the stop and end) and by
 # the sweep for a lane that died with its session live. Paths are quoted
 # throughout (a project path may hold a space); lane names are numbers.
+# Its grace poll is STUDIO_OVERNIGHT_REAP_POLL_SECONDS (studio-overnight's help), read at startup into REAP_POLL/REAP_TPS; sourced alone (a unit test), the 1 s default applies.
 lanes_end_sessions() {
   if [ "$#" -eq 0 ]; then
     for _es_d in "$RUN_DIR"/lanes/*; do [ ! -d "$_es_d" ] || set -- "$@" "${_es_d##*/}"; done

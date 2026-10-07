@@ -701,15 +701,19 @@ test_overnight_kill_after_grace() {
 
 test_overnight_reap_poll_keeps_budget() {
   fixture rpk '{ "overnight": { "kill_grace_seconds": 5 } }'
-  scenario "ignoreterm; hang" "ignoreterm; hang"
-  STUDIO_OVERNIGHT_SESSION_SECONDS=1; STUDIO_OVERNIGHT_REAP_POLL_SECONDS=0.2
-  export STUDIO_OVERNIGHT_SESSION_SECONDS STUDIO_OVERNIGHT_REAP_POLL_SECONDS
+  # A closed terminal runs on_exit -> end_session: TERM, then up to GRACE s of
+  # polling, then KILL. At a 0.2 s poll the budget must still be a whole GRACE.
+  scenario "stage execute; ignoreterm; hang" "task 1/2"
+  STUDIO_OVERNIGHT_REAP_POLL_SECONDS=0.2; export STUDIO_OVERNIGHT_REAP_POLL_SECONDS
+  start_bg; unset STUDIO_OVERNIGHT_REAP_POLL_SECONDS
+  wait_for "$CALLS/1.t0"; sleep 1
+  spid="$(cat "$CALLS/1.pid")"
   _t0=$(date +%s)
-  run_start
+  kill -HUP "$RPID"; bg_status
   _el=$(( $(date +%s) - _t0 ))
-  unset STUDIO_OVERNIGHT_SESSION_SECONDS STUDIO_OVERNIGHT_REAP_POLL_SECONDS
-  assert_eq 2 "$(calls)" "two sessions that ignore TERM, killed after the grace, counted"
-  assert_eq 1 "$([ "$_el" -ge 10 ] && echo 1 || echo 0)" "two graces of 5 s stay whole at a 0.2 s poll (${_el}s)"
+  assert_eq 1 "$([ "$_el" -ge 5 ] && echo 1 || echo 0)" "a TERM-ignoring session gets its whole 5 s grace at a 0.2 s poll (${_el}s)"
+  assert_eq dead "$(kill -0 "$spid" 2>/dev/null && echo live || echo dead)" "the session was killed after the grace"
+  assert_eq 1 "$(calls)" "no further unit starts"
 }
 
 test_overnight_reap_poll_rejects_bad_value() {
