@@ -10,7 +10,7 @@ STATE_BIN="$REPO_ROOT/studios/game-dev/bin/studio-state"
 TMP="$(cd "$(mktemp -d)" && pwd -P)"
 trap 'rm -rf "$TMP"' EXIT
 HOME="$TMP/home"; export HOME; mkdir -p "$HOME"
-unset STUDIO_GATE_HELD STUDIO_SETUP_TIMEOUT_SECONDS STUDIO_UNIT_TAG
+unset STUDIO_GATE_HELD STUDIO_SETUP_TIMEOUT_SECONDS STUDIO_SETUP_POLL_SECONDS STUDIO_UNIT_TAG
 
 # proj NAME CONFIG_JSON — $P: a committed studio project with that config.
 proj() {
@@ -154,9 +154,29 @@ test_setup_help() {
   assert_contains "$TMP/help.out" 'worktree_setup' "--help prints the usage text"
 }
 
+test_setup_poll_keeps_budget() {
+  proj pk '{ "worktree_setup": "sh ign.sh" }'
+  printf "trap '' TERM\nsleep 4822\n" > "$P/ign.sh"
+  STUDIO_SETUP_TIMEOUT_SECONDS=1; STUDIO_SETUP_POLL_SECONDS=0.2; export STUDIO_SETUP_TIMEOUT_SECONDS STUDIO_SETUP_POLL_SECONDS
+  _t0=$(date +%s); setup "$P"; _el=$(( $(date +%s) - _t0 ))
+  unset STUDIO_SETUP_TIMEOUT_SECONDS STUDIO_SETUP_POLL_SECONDS
+  assert_eq 1 "$SU_STATUS" "a timed-out setup exits 1"
+  assert_contains "$TMP/su.err" 'exit 124' "with exit 124"
+  _ok=no; [ "$_el" -ge 5 ] && _ok=yes
+  assert_eq yes "$_ok" "tg_stop's 5 s grace survives 0.2 s ticks (took $_el s)"
+}
+test_setup_poll_rejects_bad_value() {
+  proj pb '{ "worktree_setup": "true" }'
+  STUDIO_SETUP_POLL_SECONDS=0.3; export STUDIO_SETUP_POLL_SECONDS
+  setup "$P"; unset STUDIO_SETUP_POLL_SECONDS
+  assert_eq 2 "$SU_STATUS" "a bad poll value exits 2"
+  assert_contains "$TMP/su.err" '^studio-setup: STUDIO_SETUP_POLL_SECONDS must be 1, 0.5, 0.2 or 0.1, got 0.3$' "naming the knob and the value"
+  assert_missing "$P/.studio/gate.lock" "no lock is left"
+}
+
 run_tests test_setup_unset_is_silent test_setup_runs_under_lock_and_logs test_setup_marker_skip_and_rerun \
   test_setup_nonzero_exit test_setup_timeout_ends_group test_setup_timer_starts_after_lock \
   test_setup_bad_config test_setup_gate_green_and_red test_setup_help \
   test_setup_signal_stops_child_and_releases_lock test_setup_timeout_kills_term_ignorer \
   test_setup_quoted_minutes_refused test_setup_logs_unique_per_run test_setup_gate_backslash_refused \
-  test_setup_no_studio_dir
+  test_setup_no_studio_dir test_setup_poll_keeps_budget test_setup_poll_rejects_bad_value

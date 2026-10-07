@@ -32,6 +32,7 @@
 #   2 usage or bad config.
 # Exit (gate): the command's status (129/130/143 pass through); 0 when unset.
 # Test hook: STUDIO_SETUP_TIMEOUT_SECONDS replaces minutes x 60.
+# Test hook: STUDIO_SETUP_POLL_SECONDS (1, 0.5, 0.2 or 0.1; default 1) — the poll of the lock wait, run loop and TERM grace; budgets stay in seconds.
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
@@ -45,6 +46,15 @@ case "${1:-}" in
   gate) [ "$#" -eq 1 ] || { usage >&2; exit 2; }; VERB=gate ;;
   --help|-h) usage; exit 0 ;;
   *) usage >&2; exit 2 ;;
+esac
+
+# STUDIO_SETUP_POLL_SECONDS (test hook): the poll of timed_gate's lock wait, run loop and
+# tg_stop; 1 (default), 0.5, 0.2 or 0.1. Budgets stay in real seconds: tg_stop waits 5 s
+# = 5 x SETUP_TPS ticks; the run loop's deadline is `date`-based.
+case "${STUDIO_SETUP_POLL_SECONDS:-1}" in
+  1) SETUP_POLL=1; SETUP_TPS=1 ;;     0.5) SETUP_POLL=0.5; SETUP_TPS=2 ;;
+  0.2) SETUP_POLL=0.2; SETUP_TPS=5 ;; 0.1) SETUP_POLL=0.1; SETUP_TPS=10 ;;
+  *) printf 'studio-setup: STUDIO_SETUP_POLL_SECONDS must be 1, 0.5, 0.2 or 0.1, got %s\n' "$STUDIO_SETUP_POLL_SECONDS" >&2; exit 2 ;;
 esac
 
 TOP="$(git rev-parse --show-toplevel 2>/dev/null)" || {
@@ -96,7 +106,7 @@ fi
 tg_stop() {
   kill -TERM "-$_tg" 2>/dev/null || kill -TERM "$_tg" 2>/dev/null
   _n=0
-  while kill -0 "$_tg" 2>/dev/null && [ "$_n" -lt 5 ]; do sleep 1; _n=$((_n + 1)); done
+  while kill -0 "$_tg" 2>/dev/null && [ "$_n" -lt $((5 * SETUP_TPS)) ]; do sleep "$SETUP_POLL"; _n=$((_n + 1)); done
   if kill -0 "$_tg" 2>/dev/null; then
     # KILL the gate's descendants (the command runs in a group of its own) but
     # not the gate, which then sees its child die and releases the lock itself.
@@ -123,14 +133,14 @@ timed_gate() {
   if [ -d "$STATE_ROOT/.studio" ] && ! { [ -n "${STUDIO_GATE_HELD:-}" ] \
        && [ "$(cat "$STATE_ROOT/.studio/gate.lock/pid" 2>/dev/null)" = "$STUDIO_GATE_HELD" ] \
        && kill -0 "$STUDIO_GATE_HELD" 2>/dev/null; }; then
-    while kill -0 "$_tg" 2>/dev/null && [ "$(cat "$STATE_ROOT/.studio/gate.lock/pid" 2>/dev/null)" != "$_tg" ]; do sleep 1; done
+    while kill -0 "$_tg" 2>/dev/null && [ "$(cat "$STATE_ROOT/.studio/gate.lock/pid" 2>/dev/null)" != "$_tg" ]; do sleep "$SETUP_POLL"; done
   fi
   _t0=$(date +%s); _to=0
   while kill -0 "$_tg" 2>/dev/null; do
     if [ $(( $(date +%s) - _t0 )) -ge "$2" ]; then
       _to=1; tg_stop; break
     fi
-    sleep 1
+    sleep "$SETUP_POLL"
   done
   _rc=0; wait "$_tg" 2>/dev/null || _rc=$?
   trap - INT TERM HUP

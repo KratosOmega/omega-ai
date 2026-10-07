@@ -757,6 +757,23 @@ test_gate_waiting_message() {
   wait
   assert_contains "$TMP/gm" "^gate: waiting for first" "a waiter names the holder"
 }
+test_gate_poll_keeps_budget() {
+  gate_proj pollb
+  ( cd "$GP" && sh "$GATE" holder -- sleep 13 ) >/dev/null 2>&1 &
+  _i=0; while [ ! -s "$GP/.studio/gate.lock/pid" ] && [ "$_i" -lt 100 ]; do sleep 0.1; _i=$((_i + 1)); done
+  _rc=0
+  ( cd "$GP" && STUDIO_GATE_POLL_SECONDS=0.2 sh "$GATE" waiter -- true ) 2> "$TMP/gw.err" || _rc=$?
+  wait
+  assert_eq 0 "$_rc" "the waiter exits 0 once the holder is done"
+  assert_eq 1 "$(grep -c '^gate: waiting for' "$TMP/gw.err")" "one waiting line in 13 s: the 60 s cadence is not scaled"
+}
+test_gate_poll_rejects_bad_value() {
+  gate_proj pollx
+  _rc=0
+  ( cd "$GP" && STUDIO_GATE_POLL_SECONDS=2 sh "$GATE" x -- true ) 2> "$TMP/gx.err" || _rc=$?
+  assert_eq 2 "$_rc" "a bad poll value exits 2"
+  assert_contains "$TMP/gx.err" '^studio-gate: STUDIO_GATE_POLL_SECONDS must be 1, 0.5, 0.2 or 0.1, got 2$' "naming the knob and the value"
+}
 test_gate_records_pid_and_who() {
   gate_proj files
   ( cd "$GP" && sh "$GATE" me -- sh -c "cp .studio/gate.lock/who '$TMP/gwho'; cp .studio/gate.lock/pid '$TMP/gpid'; echo \$STUDIO_GATE_HELD > '$TMP/ghold'" ) 2>/dev/null
@@ -870,7 +887,7 @@ test_gate_times_window_per_who() {
 }
 
 run_tests test_gate_times_window_per_who test_gate_no_overlap test_gate_status_and_held test_gate_stale_reclaim_race \
-  test_gate_waiting_message test_gate_records_pid_and_who test_gate_without_a_project_just_runs \
+  test_gate_waiting_message test_gate_poll_keeps_budget test_gate_poll_rejects_bad_value test_gate_records_pid_and_who test_gate_without_a_project_just_runs \
   test_gate_signal_waits_for_child_then_releases test_gate_three_reclaimers_never_overlap \
   test_gate_signal_reaches_the_grandchild test_gate_unit_registration_and_times test_gate_wraps_test_and_run \
   test_dispatch_rejects_unknown_engine test_dispatch_needs_a_studio_root \
