@@ -15,7 +15,7 @@ trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/bin"
 ln -s "$REPO_ROOT/studios/game-dev/bin/studio-overnight" "$TMP/bin/studio-overnight"
 RUNNER="$TMP/bin/studio-overnight"
-mk_msleep
+mk_msleep || exit 1
 # The runner's user-level registry lives under $HOME: never the real one.
 HOME="$TMP/home"; export HOME; mkdir -p "$HOME"
 FAKE="$TMP/fakebin"
@@ -803,8 +803,7 @@ test_overnight_claim_without_run_dir() {
 # make_minbin — $TMP/minbin: only what the runner needs, plus the stubs.
 make_minbin() {
   mkdir -p "$TMP/minbin"
-  for u in sh git sed awk grep sort comm date ps pkill kill sleep cat mkdir rm touch \
-           head tail tr cut ln dirname basename readlink wc uname mktemp cp mv chmod env printf; do # scan-ok: a tool name in a PATH list
+  for u in sh git sed awk grep sort comm date ps pkill kill sleep cat mkdir rm touch head tail tr cut ln dirname basename readlink wc uname mktemp cp mv chmod env printf; do # scan-ok: a tool name in a PATH list
     p="$(command -v "$u" 2>/dev/null)" && case "$p" in /*) ln -sf "$p" "$TMP/minbin/$u" ;; esac
   done
   for f in claude claude-gd gh; do ln -sf "$FAKE/$f" "$TMP/minbin/$f"; done
@@ -1672,7 +1671,7 @@ test_overnight_hold_default_poll() {
   t0="$(date +%s)"; run_start; t1="$(date +%s)"
   assert_eq 1 "$RS_STATUS" "the run ends 1"
   assert_contains "$(last_run_dir)/report.md" "^Ending: stop: need art (held 0h0m, no reply)$" "the deadline ended the hold"
-  assert_eq 1 "$([ $((t1 - t0)) -ge 5 ] && echo 1 || echo 0)" "the hold waited one full 5 s poll"
+  assert_eq 1 "$([ $((t1 - t0)) -ge 5 ] && echo 1 || echo 0)" "the run took at least 5 s (a lower bound only: the units before the hold take longer than that)"
   assert_eq 2 "$(calls)" "no unit ran while held"
   holds_off
 }
