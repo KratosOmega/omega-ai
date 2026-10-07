@@ -229,9 +229,12 @@ EOF_MC
   fi
 
   # Per story (first row of each id): state, ledger, and the plan at Docs:.
-  awk -F'\t' '!($1 in seen) { seen[$1] = 1; print $1 "\t" $5 }' "$MF_ROWS" > "$MF_TMP/stories"
-  while IFS='	' read -r _id _plan; do
+  awk -F'\t' '!($1 in seen) { seen[$1] = 1; print $1 "\t" $5 "\t" $3 }' "$MF_ROWS" > "$MF_TMP/stories"
+  while IFS='	' read -r _id _plan _tkt; do
     printf '%s\n' "$_id" | grep -Eq '^[A-Za-z0-9._-]+$' || continue
+    # #56 R3: the backstop — the id is checked against the default branch fetched above.
+    [ -z "$DEFAULT_BRANCH" ] \
+      || ids_check "$_id" "$_tkt" "$MF_SLUG" "${_plan:--}" "$DEFAULT_BRANCH" "$MF_ROWS" refuse < /dev/null || :
     if [ ! -f "$STATE_ROOT/.studio/stories/$_id.md" ]; then
       refuse "$_id: no story file (.studio/stories/$_id.md; studio-state init with STUDIO_STORY=$_id)"
     else
@@ -1999,7 +2002,8 @@ lanes_run() {
   MF_ROWS="$RUN_DIR/rows.tsv"; CHAINS="$RUN_DIR/chains"
   rm -rf "$MF_TMP"; MF_TMP=""
   RECORD="$STATE_ROOT/.studio/runs/$MF_SLUG"
-  mkdir -p "$RECORD" && touch "$RECORD/landed.tsv" || { rm -f "$LOCK"; say "cannot create $RECORD"; exit 2; }
+  # the record keeps the run's rows: check-id's rule 3 (#56 D2)
+  mkdir -p "$RECORD" && touch "$RECORD/landed.tsv" && cp "$MF_ROWS" "$RECORD/rows.tsv" || { rm -f "$LOCK"; say "cannot create $RECORD"; exit 2; }
   for _id in $(cut -f1 "$MF_ROWS" | awk '!seen[$0]++'); do story_write "$_id" queued; done
   lanes_resume
   LANES_LIVE=1; LANE_PIDS=""
@@ -2098,9 +2102,14 @@ lanes_next() {
   MF_ROWS="$(mktemp "${TMPDIR:-/tmp}/lanes-next.XXXXXX")" || exit 2
   trap 'rm -f "$MF_ROWS"' EXIT
   mf_load "$1" || exit 2
+  _ln_db="$(ids_default_branch)" || { say "origin/HEAD is not set — run: git remote set-head origin --auto"; exit 2; }
   _ln_bs=""; _ln_pl=""
   while IFS="$(printf '\t')" read -r _ln_id _ln_b _ln_t _ln_spec _ln_plan _ln_d; do
     [ -n "$_ln_id" ] || continue
+    # #56 R3: a story id used before in this project is refused before classification.
+    if ids_ok "$_ln_id"; then
+      ids_check "$_ln_id" "$_ln_t" "$MF_SLUG" "${_ln_plan:--}" "$_ln_db" "$MF_ROWS" say < /dev/null || exit 2
+    fi
     if [ "$_ln_spec" = - ] || [ -z "$_ln_spec" ]; then
       _ln_spec="$(next_match spec "$_ln_id")" || exit 2
     fi
