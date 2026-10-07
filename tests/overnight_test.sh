@@ -151,7 +151,7 @@ fixture() {
     fixture_build "$P" "$TMP/$1.git" "${2:-}" || { TESTS_RUN=$((TESTS_RUN + 1)); _fail "fixture $1: setup failed"; }
     return 0
   fi
-  _fx_t="$TMP/tpl/o-$(printf '%s' "${2:-}" | cksum | tr ' ' -)"
+  _fx_t="$TMP/tpl/o-$(printf '%s|%s' "${2:-}" "$(date +%Y-%m-%d)" | cksum | tr ' ' -)"
   if [ ! -f "$_fx_t/ok" ]; then
     if fixture_build "$_fx_t/p" "$_fx_t/p.git" "${2:-}"; then : > "$_fx_t/ok"; else rm -rf "$_fx_t"; fi
   fi
@@ -1641,7 +1641,7 @@ test_overnight_hold_on_feature_stop() {
   verb status
   assert_contains "$V_OUT" "^held — stop: need art — until [0-9][0-9]:[0-9][0-9] — say / resume / stop -$" "status shows the held line"
   verb stop -; assert_eq "stop requested: - stops within one poll" "$(cat "$V_OUT")" "stop - on the held story"
-  bg_end 60 "the run ends"
+  bg_end 20 "the run ends within a poll"
   assert_eq 1 "$BG_STATUS" "a stopped run exits 1"
   assert_contains "$R/report.md" "^Ending: stop: need art$" "stop on a held story ends it with its why (AC23)"
   assert_eq "" "$(ls -A "$R/control")" "no control file is left (R25)"
@@ -1897,7 +1897,7 @@ test_overnight_stop_held_by_operator() {
   scenario "$ISO1; holdop" "wtledger final review done"
   start_bg; wait_held 60
   assert_contains "$R/control/-.held" "^held held by operator until " "held by the operator"
-  verb stop -; bg_end 60 "the run ends"
+  verb stop -; bg_end 20 "the run ends within a poll"
   assert_contains "$R/report.md" "^Ending: stopped by operator$" "a stop on an operator-held story is stopped by operator (R5)"
   assert_eq 1 "$(calls)" "no unit ran"
   holds_off
@@ -2340,7 +2340,7 @@ FAKE
   _fb_path="$PATH"; _fb_save="$OVERNIGHT_FIXTURE_TEMPLATES"; OVERNIGHT_FIXTURE_TEMPLATES=1
   FB_COUNT="$TMP/fb.count"; FB_REAL="$_fb_real"; export FB_COUNT FB_REAL
   PATH="$TMP/fbbin:$PATH"
-  _fb_key="$(printf '%s' '{"t":1}' | cksum | tr ' ' -)"
+  _fb_key="$(printf '%s|%s' '{"t":1}' "$(date +%Y-%m-%d)" | cksum | tr ' ' -)"
   _fb_before="$TESTS_FAILED"
   fixture fb1 '{"t":1}' > "$TMP/fb1.out"
   PATH="$_fb_path"; unset FB_COUNT FB_REAL
@@ -2363,6 +2363,8 @@ FAKE
 # exclusive-scan: test_overnight_sigint in (b) the INT must land while the one live session is still inside its sleep, a short window
 # exclusive-scan: test_overnight_sighup out (b) the session sleeps for a long time and the HUP lands after an event wait, so no window; it is in the real-clock list
 # exclusive-scan: test_overnight_claim_without_run_dir in (d) the one-second watchdog and an elapsed ceiling on the whole run
+# exclusive-scan: test_overnight_hold_on_feature_stop in (c) the stop must end the held run within one hold poll, an elapsed upper bound that a loaded machine breaks
+# exclusive-scan: test_overnight_stop_held_by_operator in (c) the stop must end the operator-held run within one hold poll, an elapsed upper bound that a loaded machine breaks
 # exclusive-scan: test_overnight_hold_config_refused out (d) the values are refused at start, nothing runs against a clock
 # exclusive-scan: test_inbox_lock_failures out (d) a lock wait that only gives up; the result is the same however slowly it runs
 # exclusive-scan: test_inbox_lock_busy in (d) lock contention timed against the wait the code under test is given
@@ -2371,7 +2373,7 @@ FAKE
 # exclusive-scan: test_overnight_sighup_while_held in (b) a spec seed kept in the exclusive phase; the HUP follows an event wait, so it would also be safe in parallel
 # exclusive-scan: test_overnight_stop_file out (static) its window is now the stub's wait for the stop flag, an event
 # exclusive-scan: test_overnight_status out (static) its window is now the stub's wait for the stop flag, an event
-TESTS_EXCLUSIVE="test_overnight_overhead test_overnight_timeout test_overnight_inhibitor test_overnight_claim_without_run_dir test_inbox_lock_busy test_overnight_sighup_while_held test_overnight_sigterm test_overnight_sigint test_overnight_stop_beats_resume test_overnight_resume_wins_at_deadline"
+TESTS_EXCLUSIVE="test_overnight_hold_on_feature_stop test_overnight_stop_held_by_operator test_overnight_overhead test_overnight_timeout test_overnight_inhibitor test_overnight_claim_without_run_dir test_inbox_lock_busy test_overnight_sighup_while_held test_overnight_sigterm test_overnight_sigint test_overnight_stop_beats_resume test_overnight_resume_wins_at_deadline"
 TESTS_REAL_CLOCK="test_overnight_kill_after_grace test_overnight_sighup test_inbox_lock_released_on_signal test_overnight_hold_default_poll"
 # The knobs run at their production value in the real-clock and exclusive tests; every
 # other test polls fast. A test that sets its own POLL_SECONDS (holds_on) still wins.
