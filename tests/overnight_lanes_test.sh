@@ -2352,6 +2352,18 @@ detach_stop() {
   wait_for "[ ! -f '$P/.studio/runs/demo/lock' ]" 60
   wait_for "[ -z \"\$(pgrep -f '$TMP')\" ]" 20
 }
+# end_hung SLUG… — after the stop is written: end the runs' hung stub sessions
+# until every SLUG's run lock is gone (60 s ceiling, then asserted). A stop
+# ends a run only after its running unit, and a lane that passed its last halt
+# check just before the stop still launches its session; on a loaded machine
+# that session can start after a single pkill, then hang on past the test with
+# its runner, lane, heartbeat and watchdog (gate 1 of #59: test_lanes_no_orphans).
+# So the pkill repeats until the runs have ended.
+end_hung() {
+  _eh_c=""; for _eh_s in "$@"; do _eh_c="$_eh_c && [ ! -f '$P/.studio/runs/$_eh_s/lock' ]"; done
+  wait_for "pkill -f '$TMP/fakebin/claude' 2>/dev/null; : $_eh_c" 60
+  for _eh_s in "$@"; do assert_missing "$P/.studio/runs/$_eh_s/lock" "run $_eh_s ends once its hung session is ended"; done
+}
 test_lanes_detach_strips_env() {
   lanes_fixture det integration A:-
   st=0
@@ -2414,8 +2426,9 @@ test_lanes_detach_timeout_lock_held_points_at_status() {
   assert_contains "$TMP/dtl.out" "status --run demo, or .*/studio-overnight' stop --run demo$" "status and stop name the detached run (another run may be live)"
   assert_not_contains "$TMP/dtl.out" "run the plain command" "no plain start is offered"
   assert_eq 1 "$([ -f "$P/.studio/runs/demo/lock" ] && echo 1 || echo 0)" "the run still holds its lock"
-  # The hung stub would hold the run past stop: end it, then wait the run out.
-  ( cd "$P" && sh "$RUNNER" stop ) > /dev/null 2>&1; pkill -f "$TMP/fakebin/claude" 2>/dev/null
+  # The hung stub would hold the run past stop: end it (end_hung: one that
+  # starts after the stop too), then wait the run out.
+  ( cd "$P" && sh "$RUNNER" stop ) > /dev/null 2>&1; end_hung demo
   detach_stop
 }
 test_lanes_detach_timeout_no_lock_ends_child() {
@@ -3108,6 +3121,8 @@ test_lanes_hold_during_last_unit_lands_and_clears() {
 # Last: no process any test started is still alive.
 test_lanes_no_orphans() {
   _left="$(pgrep -f "$TMP" 2>/dev/null)"
+  # A red names the culprits: each leftover's pid, parent, age and command line.
+  for _lp in $_left; do ps -o pid=,ppid=,etime=,args= -p "$_lp" 2>/dev/null | sed 's/^/  left: /'; done
   assert_eq "" "$_left" "no stub session, lane or runner outlives its test"
 }
 
@@ -3650,7 +3665,7 @@ test_lanes_detach_with_other_run_live() {
   assert_eq "pid=$_ap" "$(grep '^pid=' "$P/.studio/runs/alpha/lock" 2>/dev/null)" "alpha still holds its lock after demo's stop"
   assert_eq 1 "$(pid_alive "$_ap" && echo 1 || echo 0)" "and alpha's runner is still live"
   # Then end both: stop alpha, end the hung stubs, wait both runs out.
-  ( cd "$P" && sh "$RUNNER" stop --run alpha ) > /dev/null 2>&1; pkill -f "$TMP/fakebin/claude" 2>/dev/null
+  ( cd "$P" && sh "$RUNNER" stop --run alpha ) > /dev/null 2>&1; end_hung demo alpha
   detach_stop; bg_wait alpha
 }
 # Two starts of one slug share its lock path: a second start while the first
