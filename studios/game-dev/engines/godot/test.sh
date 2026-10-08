@@ -6,9 +6,12 @@
 #          default the GUT config's dirs, else res://tests, subdirectories
 #          included. The project's .gutconfig.json (root or tests/) is always
 #          passed, so its hooks run.
+# test.sh --file A,B   only those test files (comma list of project-relative
+#          paths, each must exist): -gdir= -gtest=res://A,res://B.
 #
 # Exit: 0 all passed · 1 failures, no tests run, a crash, a failed import (or
-#       not a project) · 2 no Godot binary · 3 GUT not installed. Prints
+#       not a project) · 2 no Godot binary · 3 GUT not installed · 4 a missing
+#       test file (--file). Prints
 #       "studio-test: N passed, M failed", then the failing test names. JUnit
 #       XML and the engine log are written to .studio/reports/test-<stamp>.{xml,log}.
 set -u
@@ -47,7 +50,24 @@ done
 target="${1:-}"
 target="${target#./}"
 target="${target%/}"
-if [ -n "$target" ] && [ -f "$PROJECT/$target" ]; then
+if [ "$target" = --file ]; then
+  # File run (#59 R3). Probe 2026-10-07, GUT 9.6.0: GUT auto-loads
+  # res://.gutconfig.json even without -gconfig, and the config's dirs run as
+  # well unless -gdir= empties them. So with a config the file form is always
+  # -gconfig + -gdir= + -gtest (comma list); never "simplify" it by dropping
+  # -gconfig — that runs the whole suite. See the spec
+  # docs/game-dev/specs/2026-10-07-overnight-hardening.md (Probe).
+  _tf=""; _tf_ifs="$IFS"; IFS=,; set -f
+  for _tf_p in ${2:-}; do
+    IFS="$_tf_ifs"
+    [ -f "$PROJECT/$_tf_p" ] || { echo "studio-test: no such test file $_tf_p" >&2; exit 4; }
+    _tf="${_tf:+$_tf,}res://$_tf_p"
+  done
+  IFS="$_tf_ifs"; set +f
+  [ -n "$_tf" ] || { echo "studio-test: --file needs a test file" >&2; exit 4; }
+  set -- "-gtest=$_tf"
+  [ -z "$gutconfig" ] || set -- "-gdir=" "$@"
+elif [ -n "$target" ] && [ -f "$PROJECT/$target" ]; then
   set -- "-gtest=res://$target"
   [ -z "$gutconfig" ] || set -- "-gdir=" "$@"
 elif [ -n "$target" ] || [ -z "$gutconfig" ] || ! grep -q '"dirs"' "$PROJECT/$gutconfig"; then

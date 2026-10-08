@@ -238,6 +238,57 @@ test_test_targets_a_file() {
   assert_not_contains "$log" "\-gconfig" "a file target with no config passes none"
 }
 
+# #59 AC6: --file runs exactly the named scripts; -gconfig only with -gdir=.
+test_test_file_runs_named_files() {
+  P="$(fresh_project files)"; with_gut "$P"; mkdir -p "$P/tests/unit"
+  : > "$P/tests/unit/a.gd"; : > "$P/tests/unit/b.gd"
+  with_gutconfig "$P" .gutconfig.json '["res://tests/unit"]'
+  for _form in "--file tests/unit/a.gd,tests/unit/b.gd" "--file tests/unit/a.gd --file tests/unit/b.gd"; do
+    rm -f "$P"/.studio/reports/test-*.log
+    # shellcheck disable=SC2086
+    verb "$P" studio-test $_form
+    assert_eq 0 "$(cat "$TMP/status")" "$_form: passes"
+    assert_contains "$(last_log "$P")" "-s addons/gut/gut_cmdln.gd -gconfig=res://.gutconfig.json -gdir= -gtest=res://tests/unit/a.gd,res://tests/unit/b.gd -gexit" "$_form: the probe's file form"
+  done
+  rm -f "$P/.gutconfig.json" "$P"/.studio/reports/test-*.log
+  verb "$P" studio-test --file tests/unit/a.gd,tests/unit/b.gd
+  assert_contains "$(last_log "$P")" "-gtest=res://tests/unit/a.gd,res://tests/unit/b.gd" "no config: the file list alone"
+  assert_not_contains "$(last_log "$P")" "\-gconfig\|-gdir=" "no -gconfig, no -gdir="
+}
+test_test_file_missing_exits_4() {
+  P="$(fresh_project missing)"; with_gut "$P"; mkdir -p "$P/tests/unit"; : > "$P/tests/unit/a.gd"
+  verb "$P" studio-test --file tests/unit/a.gd,tests/unit/nope.gd
+  assert_eq 4 "$(cat "$TMP/status")" "a missing file exits 4"
+  assert_contains "$TMP/out" '^studio-test: no such test file tests/unit/nope.gd$' "names it"
+  assert_eq "" "$(ls "$P"/.studio/reports/test-*.log 2>/dev/null)" "before Godot starts"
+}
+# Review Focus 5.
+test_test_file_path_forms() {
+  P="$(fresh_project forms)"; with_gut "$P"; mkdir -p "$P/tests/unit"; : > "$P/tests/unit/a.gd"; : > "$P/tests/unit/b.gd"
+  verb "$P" studio-test --file "res://tests/unit/a.gd, ./tests/unit/b.gd,,$(cd "$P" && pwd -P)/tests/unit/a.gd"
+  assert_eq 0 "$(cat "$TMP/status")" "res://, ./, spaces, an empty item and an absolute path inside the project are accepted"
+  assert_contains "$(last_log "$P")" "-gtest=res://tests/unit/a.gd,res://tests/unit/b.gd -gexit" "normalized and deduped"
+  : > "$TMP/outside.gd"
+  verb "$P" studio-test --file "$TMP/outside.gd"; assert_eq 4 "$(cat "$TMP/status")" "an absolute path outside the project exits 4"
+  verb "$P" studio-test --file ../forms/tests/unit/a.gd; assert_eq 4 "$(cat "$TMP/status")" "a .. path exits 4"
+  verb "$P" studio-test --file tests/unit; assert_eq 4 "$(cat "$TMP/status")" "a directory is not a test file"
+}
+test_test_file_misuse_exits_4() {
+  P="$(fresh_project misuse)"; with_gut "$P"; mkdir -p "$P/tests/unit"; : > "$P/tests/unit/a.gd"
+  verb "$P" studio-test --file; assert_eq 4 "$(cat "$TMP/status")" "--file with no value"
+  assert_contains "$TMP/out" '^usage: studio-test ' "prints usage"
+  verb "$P" studio-test --file tests/unit/a.gd tests/unit; assert_eq 4 "$(cat "$TMP/status")" "--file mixed with a positional"
+  verb "$P" studio-test --file " , "; assert_eq 4 "$(cat "$TMP/status")" "no item left"
+}
+test_test_file_through_gate() {
+  P="$(fresh_project gated)"; with_gut "$P"; mkdir -p "$P/tests/unit" "$P/.studio"; : > "$P/tests/unit/a.gd"
+  verb "$P" studio-test tests/unit/a.gd
+  assert_contains "$P/.studio/gate.times" '^[0-9]* studio-test-file [0-9]* 0$' "a positional file is a file run, timed as studio-test-file"
+  STUB_FAILS=1 verb "$P" studio-test --file tests/unit/a.gd
+  assert_eq 1 "$(cat "$TMP/status")" "a failing test exits 1"
+  assert_not_contains "$P/.studio/gate.times" ' studio-test [0-9]' "no full-suite line"
+}
+
 test_test_targets_a_directory() {
   P="$(fresh_project dir)"
   with_gut "$P"
@@ -931,7 +982,7 @@ run_tests test_gate_run_cap_stops_a_long_run test_gate_run_cap_excludes_lock_wai
   test_resolve_finds_an_app_bundle test_resolve_finds_godot_on_path test_guide_has_an_install_line \
   test_test_needs_a_project test_test_falls_back_to_studio_json test_test_exits_3_without_gut \
   test_test_exits_2_without_engine test_test_passes_and_reports test_test_reports_failures \
-  test_test_targets_a_file test_test_targets_a_directory test_test_imports_when_dot_godot_is_absent \
+  test_test_targets_a_file test_test_file_runs_named_files test_test_file_missing_exits_4 test_test_file_path_forms test_test_file_misuse_exits_4 test_test_file_through_gate test_test_targets_a_directory test_test_imports_when_dot_godot_is_absent \
   test_test_reimports_a_partial_cache test_test_skips_import_when_the_cache_is_complete \
   test_test_reimports_a_product_without_its_md5 test_test_names_a_crash \
   test_test_passes_the_projects_gut_config test_test_gut_config_lookup \

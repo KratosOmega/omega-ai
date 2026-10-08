@@ -1,9 +1,48 @@
 #!/bin/sh
 # studio-test [PATH] — run the project's test suite through the engine adapter,
-# one run at a time per project (studio-gate).
+# one run at a time per project (studio-gate, who studio-test).
+# studio-test --file A.gd[,B.gd…] [--file C.gd…] — only those GUT scripts
+# (#59 R3), timed apart as who studio-test-file. A path is relative to the
+# project root (the current directory); a leading ./ or res:// and the
+# project's own absolute prefix are stripped; duplicates run once. A single
+# positional that is an existing file means --file.
 # studio-test --slowest [N] — the slowest files and tests of the last run's
 # report; it only reads a file, so it never waits for the gate.
+# Exit: the adapter's (0 pass · 1 fail · 2 no Godot · 3 no GUT) · 4 a missing
+# test file or a misused --file (never 2: execute reads 2 as "no Godot") ·
+# 124 the gate run cap (STUDIO_GATE_MINUTES).
 case "${1:-}" in
   --slowest) shift; exec sh "$(dirname "$0")/studio-dispatch" slowest "$@" ;;
+esac
+ft_usage() { printf 'usage: studio-test [PATH] | --file <test.gd>[,<test.gd>…] [--file …] | --slowest [N]\n' >&2; exit 4; }
+ft_missing() { printf 'studio-test: no such test file %s\n' "$1" >&2; exit 4; }
+if [ "$#" -eq 1 ] && [ -f "$1" ]; then set -- --file "$1"; fi
+case "${1:-}" in
+  --file|--file=*)
+    _ft_rp="$(pwd -P)"; _ft_rl="$PWD"; _ft_list=""
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --file) [ "$#" -ge 2 ] || ft_usage; _ft_v="$2"; shift 2 ;;
+        --file=*) _ft_v="${1#--file=}"; shift ;;
+        *) ft_usage ;;
+      esac
+      _ft_ifs="$IFS"; IFS=,; set -f
+      for _ft_p in $_ft_v; do
+        IFS="$_ft_ifs"
+        _ft_p="$(printf '%s' "$_ft_p" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+        [ -n "$_ft_p" ] || continue
+        _ft_p="${_ft_p#res://}"; _ft_p="${_ft_p#./}"
+        case "$_ft_p" in
+          "$_ft_rp"/*) _ft_p="${_ft_p#"$_ft_rp"/}" ;;
+          "$_ft_rl"/*) _ft_p="${_ft_p#"$_ft_rl"/}" ;;
+        esac
+        case "/$_ft_p/" in //*|*/../*) ft_missing "$_ft_p" ;; esac
+        [ -f "$_ft_p" ] || ft_missing "$_ft_p"
+        case ",$_ft_list," in *",$_ft_p,"*) ;; *) _ft_list="${_ft_list:+$_ft_list,}$_ft_p" ;; esac
+      done
+      IFS="$_ft_ifs"; set +f
+    done
+    [ -n "$_ft_list" ] || ft_usage
+    exec sh "$(dirname "$0")/studio-gate" studio-test-file -- sh "$(dirname "$0")/studio-dispatch" test --file "$_ft_list" ;;
 esac
 exec sh "$(dirname "$0")/studio-gate" studio-test -- sh "$(dirname "$0")/studio-dispatch" test "$@"
