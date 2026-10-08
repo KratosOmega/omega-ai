@@ -1680,7 +1680,7 @@ test_lanes_sync_repair_stops() {
                '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"studio-test"}}]}}' > "$TMP/stl2-gate.jsonl"
              printf 'emit %s; push_target A-T1.txt\n' "$TMP/stl2-gate.jsonl" > "$SCEN/A"
              printf 'emit %s; hang\n' "$TMP/stl2.jsonl" > "$SCEN/A.sync"; _want="stalled (no output for 20 min: Bash: sleep 999)"
-             STUDIO_OVERNIGHT_IDLE_SECONDS=2 STUDIO_OVERNIGHT_IDLE_POLL_SECONDS=1 STUDIO_OVERNIGHT_SESSION_SECONDS=60
+             STUDIO_OVERNIGHT_IDLE_SECONDS=3 STUDIO_OVERNIGHT_IDLE_POLL_SECONDS=1 STUDIO_OVERNIGHT_SESSION_SECONDS=60
              export STUDIO_OVERNIGHT_IDLE_SECONDS STUDIO_OVERNIGHT_IDLE_POLL_SECONDS STUDIO_OVERNIGHT_SESSION_SECONDS ;;
     esac
     run_lanes start "$MFP"; unset STUDIO_OVERNIGHT_SESSION_SECONDS STUDIO_OVERNIGHT_IDLE_SECONDS STUDIO_OVERNIGHT_IDLE_POLL_SECONDS
@@ -2418,7 +2418,7 @@ test_lanes_stalled_outcome() {
   printf '%s\n' '{"type":"system","subtype":"init"}' \
     '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"sleep 999"}}]}}' > "$TMP/stl.jsonl"
   printf 'emit %s; hang\nemit %s; hang\n' "$TMP/stl.jsonl" "$TMP/stl.jsonl" > "$SCEN/A"
-  STUDIO_OVERNIGHT_IDLE_SECONDS=2 STUDIO_OVERNIGHT_IDLE_POLL_SECONDS=1 STUDIO_OVERNIGHT_SESSION_SECONDS=60
+  STUDIO_OVERNIGHT_IDLE_SECONDS=3 STUDIO_OVERNIGHT_IDLE_POLL_SECONDS=1 STUDIO_OVERNIGHT_SESSION_SECONDS=60
   export STUDIO_OVERNIGHT_IDLE_SECONDS STUDIO_OVERNIGHT_IDLE_POLL_SECONDS STUDIO_OVERNIGHT_SESSION_SECONDS
   run_lanes start "$MFP"; unset STUDIO_OVERNIGHT_IDLE_SECONDS STUDIO_OVERNIGHT_IDLE_POLL_SECONDS STUDIO_OVERNIGHT_SESSION_SECONDS
   R="$(last_lanes_dir)"
@@ -2525,8 +2525,6 @@ test_lanes_watch() {
   assert_not_contains "$TMP/w.out" '"type"' "no raw JSON"
   assert_status 2 "a bad interval is usage" -- sh "$RUNNER" watch x
 }
-# The preflight warns when the slowest recent studio-test leaves a finish
-# unit too little room under session_minutes.
 # #59 AC1: every lane unit and the final unit get the caps.
 test_lanes_unit_caps() {
   for _uc in 180:2700000:10800000:60 90:1800000:5400000:45; do
@@ -2543,6 +2541,8 @@ test_lanes_unit_caps() {
       assert_contains "$_f" "^STUDIO_GATE_MINUTES=$_g\$" "$_m: $(basename "$_f") gate cap"
     done
     assert_eq 1 "$([ "$_n" -ge 2 ] && echo 1 || echo 0)" "$_m: a story unit and the final unit were launched"
+    _pn="$(prompt_calls '/game-dev:execute --progress' | head -n 1)"
+    assert_eq 1 "$([ -n "$_pn" ] && [ -f "$CALLS/$_pn.fullenv" ] && echo 1 || echo 0)" "$_m: the final step's unit (execute --progress) ran, its env checked above"
   done
   unset LANES_PROGRESS LANES_CONFIG
 }
@@ -2572,6 +2572,8 @@ test_lanes_gate_cap_warning() {
   run_lanes start --dry-run "$MFP"
   assert_not_contains "$LS_ERR" "warning: gate run cap" "file runs are not read; a 10-minute suite fits 45"
 }
+# The preflight warns when the slowest recent studio-test leaves a finish
+# unit too little room under session_minutes.
 test_lanes_gate_room_warning() {
   lanes_fixture room integration A:-
   printf '%s studio-test 600 0\n%s studio-test 5400 0\n%s merge 9000 0\n' 1 2 3 > "$P/.studio/gate.times"
