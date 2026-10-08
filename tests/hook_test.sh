@@ -925,6 +925,53 @@ test_godot_guard_allows() {
     assert_allowed "allowed: $c"
   done
 }
+# Fix round 1: heredoc bodies and comments are text; a real Godot call after them is not.
+test_godot_guard_skips_heredocs_and_comments() {
+  for c in \
+    'cat > notes.md <<\"EOF\"\nGodot --headless --path . -gtest=res://a.gd\nEOF' \
+    'cat > notes.md <<EOF\nGodot --headless --path .\nEOF\nls' \
+    'cat <<-EOF\n\tGodot --headless --path .\n\tEOF' \
+    'cat <<A <<B\nGodot --headless --path .\nA\nGodot --path .\nB' \
+    'ls # Godot --headless --path .' \
+    'ls\n# Godot --headless --path .\nls' \
+    'echo a#b Godot --version'; do
+    godot_guard "{\"command\":\"$c\"}"
+    assert_allowed "allowed: $c"
+  done
+  godot_guard '{"command":"cat <<EOF\nGodot --headless --path .\nEOF\nGodot --headless --path ."}'
+  assert_denied "a real Godot command after the heredoc end line"
+  godot_guard '{"command":"cat <<EOF # note\nx\nEOF\nGodot --path ."}'
+  assert_denied "a real Godot command after a heredoc with a trailing comment"
+  godot_guard '{"command":"ls # c\nGodot --path ."}'
+  assert_denied "a real Godot command on the line after a comment"
+}
+# Fix round 1: a single quote reaches the hook (POSIX awk escape, not \x27).
+test_godot_guard_single_quotes() {
+  _sq="'"
+  godot_guard "{\"command\":\"${_sq}/Applications/Godot 4.app/Contents/MacOS/Godot${_sq} --headless --path .\"}"
+  assert_denied "a single-quoted Godot path"
+  godot_guard "{\"command\":\"echo ${_sq}Godot --headless --path .${_sq}\"}"
+  assert_allowed "a single-quoted Godot text"
+}
+# Fix round 1: only the Godot binary variables count; wrappers; fast exit.
+test_godot_guard_variables_wrappers_and_speed() {
+  for c in \
+    'nohup godot --headless --path .' \
+    'gtimeout 5 godot --headless --path .' \
+    'env -u FOO godot --headless --path .' \
+    '${GODOT_PATH} --path .' \
+    '$GODOT_BIN --path .'; do
+    godot_guard "{\"command\":\"$c\"}"
+    assert_denied "denied: $c"
+  done
+  for c in '$GODOT_PROJECT/x.sh --headless' '${GODOT_HOME}/x --path .'; do
+    godot_guard "{\"command\":\"$c\"}"
+    assert_allowed "allowed: $c"
+  done
+  _long="$(awk 'BEGIN { for (i = 0; i < 12000; i++) printf "echo abc; "; print "" }')"
+  godot_guard "{\"command\":\"$_long\"}"
+  assert_allowed "a long non-Godot command"
+}
 test_godot_guard_never_blocks_on_bad_input() {
   for raw in '' 'not json' '{"tool_name":"Bash"}' '{"tool_input":{"command":"Godot \"unterminated'; do
     _gst=0; printf '%s' "$raw" | sh "$GODOT_GUARD" > "$TMP/ap.out" 2>/dev/null || _gst=$?
@@ -990,7 +1037,7 @@ test_worktree_guard_off_outside_stories() {
 }
 
 run_tests test_worktree_guard_registered test_worktree_guard_denies_bare_calls_in_story test_worktree_guard_names_the_story_worktree test_worktree_guard_off_outside_stories test_godot_guard_registered test_godot_guard_denies_headless_boot test_godot_guard_denies_hand_built_gut \
-  test_godot_guard_allows test_godot_guard_never_blocks_on_bad_input \
+  test_godot_guard_allows test_godot_guard_skips_heredocs_and_comments test_godot_guard_single_quotes test_godot_guard_variables_wrappers_and_speed test_godot_guard_never_blocks_on_bad_input \
   test_session_start_stage_per_checkout test_session_start_take_hint \
   test_session_start_never_writes test_skill_bootstrap_stage_line test_hook_files test_hook_output_shape test_hook_defaults_from_studio_json \
   test_hook_reads_project_config test_hook_partial_config_falls_back test_hook_escapes_json \

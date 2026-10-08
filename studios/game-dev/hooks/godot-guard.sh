@@ -43,15 +43,15 @@ verdict="$(printf '%s' "$input" | tr '\n' ' ' | awk '
     while (i <= nw) {
       t = w[i]
       if (t ~ /^[A-Za-z_][A-Za-z0-9_]*=/ || t == "!" || t == "{" || t == "if" || t == "then" || t == "else" || t == "elif" || t == "do" || t == "while" || t == "until") { i++; continue }
-      if (t == "env") { i++; while (i <= nw && (w[i] ~ /^-/ || w[i] ~ /^[A-Za-z_][A-Za-z0-9_]*=/)) i++; continue }
-      if (t == "exec" || t == "command" || t == "time") { i++; while (i <= nw && w[i] ~ /^-/) i++; continue }
+      if (t == "env") { i++; while (i <= nw && (w[i] ~ /^-/ || w[i] ~ /^[A-Za-z_][A-Za-z0-9_]*=/)) { if (w[i] == "-u") i++; i++ }; continue }
+      if (t == "exec" || t == "command" || t == "time" || t == "nohup") { i++; while (i <= nw && w[i] ~ /^-/) i++; continue }
       if (t == "nice") { i++; if (w[i] == "-n") i += 2; else while (i <= nw && w[i] ~ /^-/) i++; continue }
-      if (t == "timeout") { i++; while (i <= nw && w[i] ~ /^-/) { if (w[i] == "-s" || w[i] == "-k") i++; i++ }; i++; continue }
+      if (t == "timeout" || t == "gtimeout") { i++; while (i <= nw && w[i] ~ /^-/) { if (w[i] == "-s" || w[i] == "-k") i++; i++ }; i++; continue }
       break
     }
     if (i > nw) return
     b = w[i]; sub(/.*\//, "", b); b = tolower(b)
-    if (b !~ /^godot/ && w[i] !~ /^\$\{?GODOT/) return
+    if (b !~ /^godot/ && w[i] !~ /^\$\{?(GODOT|GODOT_PATH|GODOT_BIN)\}?$/) return
     hp = 0; ok = 0
     for (j = i + 1; j <= nw; j++) {
       t = w[j]
@@ -65,17 +65,45 @@ verdict="$(printf '%s' "$input" | tr '\n' ' ' | awk '
     re = "\"command\"[ \t]*:[ \t]*\"([^\"\\\\]|\\\\.)*\""
     if (!match($0, re)) exit
     raw = substr($0, RSTART, RLENGTH); sub(/^"command"[ \t]*:[ \t]*"/, "", raw); raw = substr(raw, 1, length(raw) - 1)
-    cmd = unesc(raw); n = length(cmd); q = ""; cur = ""; inw = 0; nw = 0; verdict = ""
+    cmd = unesc(raw); n = length(cmd); q = ""; cur = ""; inw = 0; nw = 0; verdict = ""; nh = 0
+    if (tolower(cmd) !~ /godot/) { print ""; exit }
     for (k = 1; k <= n; k++) {
       c = substr(cmd, k, 1)
-      if (q == "\x27") { if (c == "\x27") q = ""; else cur = cur c; continue }
+      if (q == "\047") { if (c == "\047") q = ""; else cur = cur c; continue }
       if (q == "\"") {
         if (c == "\\" && k < n) { k++; cur = cur substr(cmd, k, 1); continue }
         if (c == "\"") q = ""; else cur = cur c
         continue
       }
       if (c == "\\" && k < n) { k++; cur = cur substr(cmd, k, 1); inw = 1; continue }
-      if (c == "\x27" || c == "\"") { q = c; inw = 1; continue }
+      if (c == "\047" || c == "\"") { q = c; inw = 1; continue }
+      if (c == "#" && !inw) { e = index(substr(cmd, k), "\n"); if (e == 0) break; k += e - 2; continue }
+      if (c == "<" && substr(cmd, k + 1, 1) == "<" && substr(cmd, k + 2, 1) != "<") {
+        k += 2; hs = 0
+        if (substr(cmd, k, 1) == "-") { hs = 1; k++ }
+        while (substr(cmd, k, 1) == " " || substr(cmd, k, 1) == "\t") k++
+        d = ""
+        while (k <= n) {
+          c = substr(cmd, k, 1)
+          if (c == " " || c == "\t" || c == "\n" || c == ";" || c == "&" || c == "|" || c == "(" || c == ")" || c == "<" || c == ">") break
+          if (c != "\047" && c != "\"" && c != "\\") d = d c
+          k++
+        }
+        k--; nh++; hd[nh] = d; hstrip[nh] = hs; flush(); continue
+      }
+      if (c == "\n" && nh > 0) {
+        endcmd(); if (verdict == "b") break
+        for (h = 1; h <= nh; h++) {
+          for (;;) {
+            if (k >= n) break
+            e = index(substr(cmd, k + 1), "\n")
+            if (e == 0) { line = substr(cmd, k + 1); k = n } else { line = substr(cmd, k + 1, e - 1); k += e }
+            if (hstrip[h]) sub(/^\t+/, "", line)
+            if (line == hd[h]) break
+          }
+        }
+        nh = 0; continue
+      }
       if (c == ";" || c == "&" || c == "|" || c == "\n" || c == "(" || c == ")") { endcmd(); if (verdict == "b") break; continue }
       if (c == " " || c == "\t") { flush(); continue }
       cur = cur c; inw = 1
