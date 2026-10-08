@@ -43,6 +43,7 @@ delivered() {
   grep -c '"event":"message_delivered"' "$IR/events.jsonl" || true
 }
 AUTOPILOT_GUARD="$STUDIO_DIR/hooks/autopilot-guard.sh"
+GODOT_GUARD="$STUDIO_DIR/hooks/godot-guard.sh"
 # The shared #42 fixtures (P, wt, plan_in_p) set TMP and its cleanup trap.
 . "$REPO_ROOT/tests/state_fixtures.sh"
 
@@ -869,7 +870,71 @@ test_skill_bootstrap_stage_line() {
   assert_not_contains "$_b" 'When `.studio/STATE.md` exists' "the file-exists wording is gone"
 }
 
-run_tests test_session_start_stage_per_checkout test_session_start_take_hint \
+# godot_guard INPUT_JSON — run the Godot guard on a Bash call; asserts exit 0; stdout in $TMP/ap.out.
+godot_guard() {
+  ptu_in Bash "$1" > "$TMP/gg.in"; _gst=0
+  sh "$GODOT_GUARD" < "$TMP/gg.in" > "$TMP/ap.out" 2> "$TMP/ap.err" || _gst=$?
+  assert_eq 0 "$_gst" "the Godot guard exits 0"
+}
+test_godot_guard_registered() {
+  assert_file "$GODOT_GUARD" "godot-guard.sh exists"
+  assert_contains "$STUDIO_DIR/hooks/hooks.json" 'CLAUDE_PLUGIN_ROOT}/hooks/godot-guard.sh' "hooks.json runs it from the plugin root"
+  if command -v jq >/dev/null 2>&1; then
+    assert_eq Bash "$(jq -r '.hooks.PreToolUse[] | select(.hooks[0].command | contains("godot-guard")) | .matcher' "$STUDIO_DIR/hooks/hooks.json")" "on Bash"
+  fi
+}
+# AC7 denied (a) + Review Focus 4.
+test_godot_guard_denies_headless_boot() {
+  for c in \
+    'Godot --headless --import . ; Godot --headless --path . -gtest=res://tests/unit/test_vfx_span_player_creature.gd' \
+    'cd x && Godot --headless --path . -gtest=res://a.gd' \
+    '\"/Applications/Godot 4.app/Contents/MacOS/Godot\" --headless --path .' \
+    '$GODOT --headless --path .' \
+    '\"${GODOT_BIN}\" --path .' \
+    'A=1 godot4 --path .' \
+    'cd x\nGodot_mono --headless --path .' \
+    'timeout 5 godot --headless --path .' \
+    'env FOO=1 Godot_v4.3-stable_linux.x86_64 --path . 2>&1 | tail -5'; do
+    godot_guard "{\"command\":\"$c\"}"
+    assert_denied "denied: $c"
+    assert_contains "$TMP/ap.out" 'studio-test --file' "the reason names studio-test --file ($c)"
+  done
+}
+# AC7 denied (b).
+test_godot_guard_denies_hand_built_gut() {
+  godot_guard '{"command":"Godot --headless -s addons/gut/gut_cmdln.gd -gtest=res://a.gd -gexit"}'
+  assert_denied "a hand-built GUT run"
+  assert_contains "$TMP/ap.out" 'gut_cmdln' "the reason names the case"
+}
+# AC7 allowed + Review Focus 4.
+test_godot_guard_allows() {
+  for c in \
+    'Godot --headless --path . -s other.gd' \
+    'Godot --headless --path . --import' \
+    'Godot --version' \
+    'Godot --headless --path . --export-release Mac out.dmg' \
+    'Godot --headless --path . --quit-after 5' \
+    'Godot -e --path .' \
+    'studio-test --file tests/unit/x.gd' \
+    'echo \"Godot --headless --path .\"' \
+    'echo \"a; Godot --headless --path .\"' \
+    'grep -r godot --path' \
+    'ls -la'; do
+    godot_guard "{\"command\":\"$c\"}"
+    assert_allowed "allowed: $c"
+  done
+}
+test_godot_guard_never_blocks_on_bad_input() {
+  for raw in '' 'not json' '{"tool_name":"Bash"}' '{"tool_input":{"command":"Godot \"unterminated'; do
+    _gst=0; printf '%s' "$raw" | sh "$GODOT_GUARD" > "$TMP/ap.out" 2>/dev/null || _gst=$?
+    assert_eq 0 "$_gst" "exit 0 on bad input ($raw)"
+    assert_allowed "and no decision ($raw)"
+  done
+}
+
+run_tests test_godot_guard_registered test_godot_guard_denies_headless_boot test_godot_guard_denies_hand_built_gut \
+  test_godot_guard_allows test_godot_guard_never_blocks_on_bad_input \
+  test_session_start_stage_per_checkout test_session_start_take_hint \
   test_session_start_never_writes test_skill_bootstrap_stage_line test_hook_files test_hook_output_shape test_hook_defaults_from_studio_json \
   test_hook_reads_project_config test_hook_partial_config_falls_back test_hook_escapes_json \
   test_hook_fills_config_value_with_metacharacters test_guard_state_blocks_direct_writes \

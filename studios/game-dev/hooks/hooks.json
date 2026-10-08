@@ -47,6 +47,15 @@
             "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/autopilot-guard.sh\""
           }
         ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/godot-guard.sh\""
+          }
+        ]
       }
     ],
     "UserPromptSubmit": [
