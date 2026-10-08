@@ -4538,7 +4538,8 @@ FAKEGIT
   FB_COUNT="$TMP/fb.count"; FB_REAL="$_fb_real"; export FB_COUNT FB_REAL
   PATH="$TMP/fbbin:$PATH"
   _fb_cfg='{"fb": 1}'   # a tuple no other test builds, so its template is built here
-  _fb_key="$(printf '%s|' "$(date +%Y-%m-%d)" integration A:- "$_fb_cfg" "" "" "" "" "$FAKE" | cksum | tr ' ' -)"
+  # lanes_fixture's key: date, mode, rows, CONFIG, CELLS, PROGRESS, MAIN_MOVES, TASKS, MAIN_PRE, its sum, stub path.
+  _fb_key="$(printf '%s|' "$(date +%Y-%m-%d)" integration A:- "$_fb_cfg" "" "" "" "" "" "" "$FAKE" | cksum | tr ' ' -)"
   _fb_before="$TESTS_FAILED"
   LANES_CONFIG="$_fb_cfg"; export LANES_CONFIG
   lanes_fixture fb1 integration A:- > "$TMP/fb1.out"
