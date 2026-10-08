@@ -25,6 +25,9 @@ set -u
 # Manifest mode's per-unit words, set only by overnight-lanes.sh: never taken
 # from the user's environment, so a single-plan run evaluates and uses none.
 LAUNCH_ENV=""; UNIT_CWD=""; LDIR=""
+# #59 D2: the runner's own gates (merge, final gate) are never capped; a
+# session gets STUDIO_GATE_MINUTES only through its launch words.
+unset STUDIO_GATE_MINUTES
 # The single-plan run's spec (#42 AC38): set by take_lock in the runner, never
 # taken from the user's environment; other processes read the lock's spec=.
 RUN_SPEC=""
@@ -235,9 +238,10 @@ EOF
   "$_fn" "$@"
 }
 # print_launch ARGS — the launch line; LAUNCH_ENV (manifest mode: a story's
-# env words) replaces the default OMEGA_AUTOPILOT=1.
+# env words) replaces the default: the command caps (caps_env) then
+# OMEGA_AUTOPILOT=1.
 print_launch() {
-  printf 'cd %s && %s claude-gd -p' "$(sq "$START_DIR")" "${LAUNCH_ENV:-OMEGA_AUTOPILOT=1}"
+  printf 'cd %s && %s claude-gd -p' "$(sq "$START_DIR")" "${LAUNCH_ENV:-$(caps_env) OMEGA_AUTOPILOT=1}"
   for _a in "$@"; do printf ' %s' "$(sq "$_a")"; done
   printf '\n'
 }
@@ -261,7 +265,7 @@ take_lock() {
 
 usage() {
   cat <<EOF
-usage: $SELF_ABS start [--dry-run | --detach] [<manifest>] | status [--run <slug>] | status --follow | watch [--run <slug>] [<seconds>] | stop | stop --run <slug> | stop --all | next [<manifest>] | check-id <id> [--plan <path>|-] [--ticket <ticket>|-] [--slug <slug>] [--branch <branch>|-] | activity <unit.jsonl> | deny-rules [--dir <path>]
+usage: $SELF_ABS start [--dry-run | --detach] [<manifest>] | status [--run <slug>] | status --follow | watch [--run <slug>] [<seconds>] | stop | stop --run <slug> | stop --all | next [<manifest>] | check-id <id> [--plan <path>|-] [--ticket <ticket>|-] [--slug <slug>] [--branch <branch>|-] | activity [--open] <unit.jsonl> | deny-rules [--dir <path>]
        $SELF_ABS say|said|unsay|hold|resume|stop <story> [--run <run>] … (talking to a live run; below)
 
   start [--dry-run]  preflight, then run the approved plan one unit per fresh
@@ -337,6 +341,9 @@ usage: $SELF_ABS start [--dry-run | --detach] [<manifest>] | status [--run <slug
   stop --all         end every live run after its running unit
   activity <unit.jsonl>
                      one unit log's last activity in one line, as status shows it
+  activity --open <unit.jsonl>
+                     the log's open (unanswered) tool calls, newest first, one
+                     per line, each cut to 120 characters
 
 Talking to a live run (<story> is - in a single-plan run; every verb takes
 --run <run>, a run dir basename, and then acts only on that live run):
@@ -391,10 +398,19 @@ run at a time across all lanes and the runner; a dead holder's lock is reclaimed
 Config: .studio/config.json "overnight" (defaults, ranges):
   session_usd          25    1-200    budget cap per session (USD)
   run_usd              0     0-5000   budget cap for the whole run (USD); 0 = no run-wide cap
-  session_minutes      90    10-480   wall-clock cap per session (and per merge command);
-                                    also the Bash timeout cap a session's foreground gate
-                                    runs under. The preflight warns when the slowest recent
-                                    studio-test (.studio/gate.times) × 1.2 + 10 min exceeds it.
+  session_minutes      90    10-480   wall-clock cap per session (and per merge command).
+                                    It sets each session's command caps: a Bash call with
+                                    no timeout gets min(45, session_minutes/3) min
+                                    (BASH_DEFAULT_TIMEOUT_MS); BASH_MAX_TIMEOUT_MS is the
+                                    whole session; studio-gate stops a gate run (studio-test,
+                                    studio-run, studio-setup gate) past min(60, session_minutes/2)
+                                    min (STUDIO_GATE_MINUTES, exit 124). The preflight warns
+                                    when the slowest recent studio-test (.studio/gate.times)
+                                    × 1.2 + 10 min exceeds the session, or × 1.2 the gate cap.
+  idle_minutes         20    0-120    end a unit whose session log has not grown for this
+                                    long (outcome stalled), unless it waits on or runs a
+                                    gate (studio-test, studio-run, studio-setup, studio-gate);
+                                    0 = off
   worktree_setup       ""             command run once per new worktree under the gate lock
                                     (studio-setup); no backslash. Unset = nothing runs.
                                     Preflighted: start runs it once in a scratch linked
@@ -452,6 +468,10 @@ Test hooks (tests only; never set them for a real run; --detach strips them):
                      step's full gate commands
   STUDIO_OVERNIGHT_SESSION_SECONDS — test hook: overrides session_minutes in
                      seconds; a whole number, else start refuses
+  STUDIO_OVERNIGHT_IDLE_SECONDS — test hook: whole seconds that replace
+                     idle_minutes × 60 (idle_minutes 0 still turns the check off)
+  STUDIO_OVERNIGHT_IDLE_POLL_SECONDS — test hook: whole seconds between idle
+                     checks (default 30)
   STUDIO_OVERNIGHT_LABEL — test hook: forces every unit's label (the
                      unknown-label test); never set it for a real run
   STUDIO_OVERNIGHT_HEARTBEAT_SECONDS — test hook: seconds between the
@@ -477,6 +497,8 @@ Test hooks (tests only; never set them for a real run; --detach strips them):
                      10 s status window: 1 (default), 0.5, 0.2 or 0.1
   STUDIO_ENV_FIXTURE — test hook: a directory of canned outputs studio-env reads
                      in place of uname, sysctl, /proc, nproc, df, pmset and ps
+  activity --open-gate <unit.jsonl> — test hook verb: prints "gate" when an
+                     open Bash call runs a gate-routed verb (the idle check)
 EOF
 }
 
@@ -596,6 +618,7 @@ preflight() {
     fi
   fi
   cfg session_minutes 90 10 480 int
+  [ -z "${SESSION_MINUTES:-}" ] || SESSION_MINUTES="$(printf '%s\n' "$SESSION_MINUTES" | awk '{ print $1 + 0 }')"
   gate_room_check
   cfg retries 1 0 3 int
   cfg gate_repairs 2 0 3 int
@@ -604,6 +627,14 @@ preflight() {
   hold_overrides
   cfg kill_grace_seconds 30 5 120 int
   GRACE="${KILL_GRACE_SECONDS:-30}"
+  # #59 R2: the idle watchdog (run_unit). Its seconds seams are whole numbers >= 1.
+  cfg idle_minutes 20 0 120 int
+  [ -z "${IDLE_MINUTES:-}" ] || IDLE_MINUTES="$(printf '%s\n' "$IDLE_MINUTES" | awk '{ print $1 + 0 }')"   # D3
+  for _pf_v in STUDIO_OVERNIGHT_IDLE_SECONDS STUDIO_OVERNIGHT_IDLE_POLL_SECONDS; do
+    eval "_pf_x=\${$_pf_v:-1}"
+    case "$_pf_x" in ''|*[!0-9]*) refuse "$_pf_v must be a whole number of seconds (1 or more), got $_pf_x" ;;
+      *) [ "$_pf_x" -ge 1 ] || refuse "$_pf_v must be a whole number of seconds (1 or more), got $_pf_x" ;; esac
+  done
   if lock_live; then
     refuse "a run is live (pid $(lock_pid)) — $(sq "$SELF_ABS") status"
   elif [ -z "$_pf_mf" ] && ! lock_recheck; then
@@ -620,6 +651,23 @@ env_line() {
   sh "$SELF_DIR/studio-env" --dir "${START_DIR:-.}" ${1:+--run-pid "$1"} || true
 }
 
+# session_caps — #59 R1: the command caps of every runner-launched session,
+# from SESSION_MINUTES (default 90): CMD_MIN = min(45, S/3) and GATE_MIN =
+# min(60, S/2) (integer minutes), CMD_MS = CMD_MIN × 60000 (Bash calls with no
+# timeout), MAX_MS = S × 60000 (the ceiling gate-routed calls request).
+session_caps() {
+  _sc_s="${SESSION_MINUTES:-90}"
+  CMD_MIN=$((_sc_s / 3)); [ "$CMD_MIN" -le 45 ] || CMD_MIN=45
+  GATE_MIN=$((_sc_s / 2)); [ "$GATE_MIN" -le 60 ] || GATE_MIN=60
+  CMD_MS=$((CMD_MIN * 60000)); MAX_MS=$((_sc_s * 60000))
+}
+# caps_env — the caps as launch env words, each KEY='value' (sq).
+caps_env() {
+  session_caps
+  printf 'BASH_DEFAULT_TIMEOUT_MS=%s BASH_MAX_TIMEOUT_MS=%s STUDIO_GATE_MINUTES=%s' \
+    "$(sq "$CMD_MS")" "$(sq "$MAX_MS")" "$(sq "$GATE_MIN")"
+}
+
 # gate_room_check — a warning (never a refusal) when the slowest of the last
 # 10 studio-test runs plus the slowest of the last 10 gate_command runs
 # (studio-gate's .studio/gate.times, who `studio-test` and `gate`) × 1.2 plus
@@ -633,6 +681,16 @@ gate_room_check() {
   _gr_g="$(awk '$2 == "gate" { s[++n] = $3 }
     END { m = 0; for (i = (n > 10 ? n - 9 : 1); i <= n; i++) if (s[i] ~ /^[0-9]+$/ && s[i] + 0 > m) m = s[i] + 0; print m }' \
     "$STATE_ROOT/.studio/gate.times" 2>/dev/null)"
+  # #59 R1: studio-gate stops a run past GATE_MIN (exit 124): warn when the
+  # slowest recent studio-test or gate run × 1.2 does not fit it.
+  session_caps
+  _gr_m=$(( ${_gr_t:-0} > ${_gr_g:-0} ? ${_gr_t:-0} : ${_gr_g:-0} ))
+  if [ "$_gr_m" -gt 0 ] && [ $((_gr_m * 12)) -gt $((GATE_MIN * 600)) ]; then
+    _gr_cn=$(( (_gr_m * 12 / 10 + 59) / 60 ))
+    if [ "$_gr_cn" -le 60 ]; then _gr_fix="set overnight.session_minutes to at least $((_gr_cn * 2)) in .studio/config.json"
+    else _gr_fix="the cap tops out at 60 min (session_minutes 120 or more): speed up or split the suite"; fi
+    say "warning: gate run cap: the slowest recent studio-test or gate run took $(( (_gr_m + 59) / 60 )) min; × 1.2 is past the gate run cap of $GATE_MIN min (min(60, session_minutes/2)) — $_gr_fix (studio-gate stops a run past the cap, exit 124)"
+  fi
   _gr_s=$(( ${_gr_t:-0} + ${_gr_g:-0} ))
   [ "$_gr_s" -gt 0 ] 2>/dev/null || return 0
   _gr_need=$(( (_gr_s * 12 / 10 + 59) / 60 + 10 ))
@@ -832,7 +890,7 @@ holdable() {
   case "$ENDING" in
     "held by operator") return 0 ;;
     "stop: "*) [ "$ENDING" = "${STOP_ENDING:-}" ] && [ "${STOP_SRC:-}" = feature ] && isolated; return $? ;;
-    "no progress on "*|"timed out on "*|"directive "*" not recorded"|"gate red after "*|"gate repair made no progress"|"gate repair timed out"*)
+    "no progress on "*|"timed out on "*|"directive "*" not recorded"|"gate red after "*|"gate repair made no progress"|"gate repair timed out"*|"stalled on "*|"gate repair stalled"*)
       isolated; return $? ;;
   esac
   return 1
@@ -960,6 +1018,64 @@ unit_activity() {
       else print "starting"
     }' "$1" 2>/dev/null || echo starting
 }
+# open_calls JSONL [gate] — #59 R2: the session's open (unanswered) tool_use
+# calls, newest first, one per line, rendered as unit_activity renders a tool
+# (Agent/Task: `<type> · "<description>"`; Bash: `Bash: <command>`; a file
+# tool: its file name; Grep/Glob: the pattern; else the tool name), newlines
+# and tabs flattened, cut to 120 chars. `gate`: prints `gate` when an open
+# Bash call's FULL command runs a gate-routed verb (never the cut text).
+# A call inside a subagent (its line's parent_tool_use_id) whose Agent/Task
+# call, or any call above that, is answered is over, answered or not.
+# Always exits 0.
+open_calls() {
+  [ -s "$1" ] || return 0
+  awk -v mode="${2:-list}" '
+    function val(s, k,   re, v) {
+      re = "\"" k "\":\"([^\"\\\\]|\\\\.)*\""
+      if (!match(s, re)) return ""
+      v = substr(s, RSTART + length(k) + 4, RLENGTH - length(k) - 5)
+      gsub(/\\n/, " ", v); gsub(/\\t/, " ", v); gsub(/\\"/, "\"", v); gsub(/\\\\/, "\\", v)
+      return v
+    }
+    function cut(s, n) { return length(s) > n ? substr(s, 1, n - 1) "…" : s }
+    # gone(ID): ID or a subagent call it ran under (any depth) is answered.
+    function gone(id,   d) {
+      for (d = 0; id != "" && d < 50; d++) { if (id in closed) return 1; id = par[id] }
+      return 0
+    }
+    {
+      l = $0
+      while (match(l, /"tool_use_id":"[^"]*"/)) { closed[substr(l, RSTART + 15, RLENGTH - 16)] = 1; l = substr(l, RSTART + RLENGTH) }
+      p = ""; if (match($0, /"parent_tool_use_id":"[^"]*"/)) p = substr($0, RSTART + 22, RLENGTH - 23)
+      l = $0
+      while (match(l, /"type":"tool_use","id":"[^"]*","name":"[^"]*"/)) {
+        head = substr(l, RSTART, RLENGTH); l = substr(l, RSTART + RLENGTH)
+        id = head; sub(/^"type":"tool_use","id":"/, "", id); sub(/".*/, "", id)
+        nm = head; sub(/.*"name":"/, "", nm); sub(/"$/, "", nm)
+        inp = l; if (match(inp, /"type":"tool_use"/)) inp = substr(inp, 1, RSTART - 1)
+        full = ""
+        if (nm == "Agent" || nm == "Task") {
+          t = val(inp, "subagent_type"); sub(/^.*:/, "", t); if (t == "") t = "agent"
+          txt = t " · \"" val(inp, "description") "\""
+        } else {
+          if (nm == "Bash") { d = val(inp, "command"); full = d }
+          else if (nm ~ /^(Read|Edit|Write|NotebookEdit)$/) { d = val(inp, "file_path"); sub(/.*\//, "", d) }
+          else if (nm ~ /^(Grep|Glob)$/) d = val(inp, "pattern")
+          else d = ""
+          txt = (d == "") ? nm : nm ": " d
+        }
+        n++; cid[n] = id; ctxt[n] = txt; cfull[n] = full; par[id] = p
+      }
+    }
+    END {
+      for (i = n; i >= 1; i--) {
+        if (gone(cid[i])) continue
+        if (mode == "gate") { if (cfull[i] ~ /studio-(test|run|setup|gate)/) { print "gate"; exit } ; continue }
+        s = ctxt[i]; gsub(/[\t\r\n]/, " ", s); print cut(s, 120)
+      }
+    }' "$1" 2>/dev/null
+  return 0
+}
 # elapsed_since EPOCH — minutes (or seconds under one) since EPOCH: `12m`, `40s`.
 elapsed_since() {
   _es_s=$(( $(date +%s) - ${1:-0} ))
@@ -1013,6 +1129,21 @@ heartbeat_stop() {
 
 # ---- Gates a unit left behind ----
 
+# live_gates DIR — the pids, space-separated, of DIR's entries (a unit's
+# gate.units/<tag>/<gate pid>) that are live studio-gate processes. An entry
+# whose gate is dead (SIGKILLed before it could remove it) or whose pid was
+# since reused is skipped. Read by unit_reap and the idle watchdog alike.
+live_gates() {
+  _lg=""
+  for _lg_f in "$1"/*; do
+    [ -f "$_lg_f" ] || continue
+    _lg_p="${_lg_f##*/}"
+    case "$_lg_p" in ''|*[!0-9]*) continue ;; esac
+    kill -0 "$_lg_p" 2>/dev/null && ps -o args= -p "$_lg_p" 2>/dev/null | grep -q studio-gate \
+      && _lg="$_lg $_lg_p"
+  done
+  printf '%s\n' "${_lg# }"
+}
 # unit_reap TAG — end every studio-gate still registered under the unit tag
 # TAG (STATE_ROOT/.studio/gate.units/TAG/<gate pid>, holding its command's
 # pid once it runs): a session that started a gate in the background and
@@ -1024,13 +1155,7 @@ unit_reap() {
   UNIT_REAPED=""
   [ -n "${1:-}" ] || return 0
   _ur_d="$STATE_ROOT/.studio/gate.units/$1"
-  for _ur_f in "$_ur_d"/*; do
-    [ -f "$_ur_f" ] || continue
-    _ur_p="${_ur_f##*/}"
-    case "$_ur_p" in ''|*[!0-9]*) continue ;; esac
-    kill -0 "$_ur_p" 2>/dev/null && ps -o args= -p "$_ur_p" 2>/dev/null | grep -q studio-gate \
-      && UNIT_REAPED="$UNIT_REAPED $_ur_p"
-  done
+  UNIT_REAPED="$(live_gates "$_ur_d")"
   if [ -n "$UNIT_REAPED" ]; then
     _ur_kids=""
     for _ur_p in $UNIT_REAPED; do _ur_kids="$_ur_kids $(cat "$_ur_d/$_ur_p" 2>/dev/null)"; done
@@ -1113,7 +1238,7 @@ reg_end() {
 
 # start_session ARGS — the session in the background, its pid in CPID. Its
 # env words are LAUNCH_ENV (manifest mode: the story's, story_launch_env),
-# else OMEGA_AUTOPILOT=1; STUDIO_GATE_HELD never reaches a session (D17).
+# else the caps then OMEGA_AUTOPILOT=1; STUDIO_GATE_HELD never reaches a session (D17).
 # Under a lane (LDIR set) the pid is also written to LDIR/cpid. The session
 # starts in UNIT_CWD when set (manifest mode's final-step units), else where
 # the story's pointer is (story_dir: START_DIR until a hand-off, #42).
@@ -1122,7 +1247,7 @@ reg_end() {
 # the run's start dir, for every unit (AC30, D42).
 start_session() {
   set -m 2>/dev/null || true   # own process group: a terminal Ctrl-C reaches only the runner (D6; a lane subshell too, D1c)
-  ( cd "${UNIT_CWD:-$(story_dir)}" && unset STUDIO_GATE_HELD && eval "export ${LAUNCH_ENV:-OMEGA_AUTOPILOT=1}" \
+  ( cd "${UNIT_CWD:-$(story_dir)}" && unset STUDIO_GATE_HELD && eval "export ${LAUNCH_ENV:-$(caps_env) OMEGA_AUTOPILOT=1}" \
       && STUDIO_UNIT_TAG="$UNIT_TAG" && export STUDIO_UNIT_TAG \
       && STUDIO_RUN_DIR="$RUN_DIR" && export STUDIO_RUN_DIR \
       && STUDIO_START_DIR="$START_DIR" && export STUDIO_START_DIR && exec claude-gd -p "$@" ) \
@@ -1164,7 +1289,10 @@ run_unit() {
   session_started "$CPID"
   heartbeat_start
   _secs="${STUDIO_OVERNIGHT_SESSION_SECONDS:-$((SESSION_MINUTES * 60))}"
-  _claim="$UNIT_DIR/$UNIT_STEM.ended"; rmdir "$_claim" 2>/dev/null
+  _idle=""; [ "${IDLE_MINUTES:-0}" -eq 0 ] || _idle="${STUDIO_OVERNIGHT_IDLE_SECONDS:-$((IDLE_MINUTES * 60))}"
+  _poll="${STUDIO_OVERNIGHT_IDLE_POLL_SECONDS:-30}"
+  _log="$UNIT_DIR/$UNIT_STEM.jsonl"; _greg="$STATE_ROOT/.studio/gate.units/$UNIT_TAG"
+  _claim="$UNIT_DIR/$UNIT_STEM.ended"; rm -rf "$_claim" "$_claim.stall"
   # Watchdog: TERM the session's process group (D6), KILL after the grace;
   # pkill -P is the fallback when there is no group. Who ended the unit is
   # decided once, by an atomic mkdir of $_claim: the watchdog takes it at the
@@ -1172,11 +1300,32 @@ run_unit() {
   # so a session that ended on time is never marked or signalled. Each sleep
   # runs in the background and is waited on, so the teardown TERM interrupts
   # it at once and the trap reaps it (no orphaned sleep).
-  ( _sp=; trap 'kill $_sp 2>/dev/null; exit 0' TERM
-    sleep "$_secs" & _sp=$!; wait "$_sp"
+  # Idle (#59 R2): every _poll s the watchdog compares the log's size; once
+  # it has not grown for _idle s, and the unit has no live registered gate
+  # (live_gates) and no open gate-routed Bash call, it stages `.ended.stall`, takes the claim and
+  # moves the marker inside it (D5), then ends the session as the cap does.
+  # With the idle check off (idle_minutes 0) it naps once, to the deadline.
+  ( _sp=; _why=; trap 'kill $_sp 2>/dev/null; exit 0' TERM
+    _end=$(( $(date +%s) + _secs )); _sz=""; _quiet=$(date +%s)
+    while :; do
+      _left=$(( _end - $(date +%s) )); [ "$_left" -gt 0 ] || break
+      _nap="$_left"; [ -z "$_idle" ] || [ "$_nap" -le "$_poll" ] || _nap="$_poll"
+      sleep "$_nap" & _sp=$!; wait "$_sp"; _sp=
+      [ -n "$_idle" ] || continue
+      _s="$(wc -c < "$_log" 2>/dev/null | tr -d ' ')"; _now=$(date +%s)
+      if [ "${_s:-0}" != "$_sz" ]; then _sz="${_s:-0}"; _quiet="$_now"; continue; fi
+      [ $((_now - _quiet)) -ge "$_idle" ] || continue
+      [ -z "$(live_gates "$_greg")" ] || continue
+      [ -z "$(open_calls "$_log" gate)" ] || continue
+      _oc="$(open_calls "$_log" | head -n 1)"
+      printf 'idle_min=%s\ncommand=%s\n' "$IDLE_MINUTES" "${_oc:--}" > "$_claim.stall"
+      if mkdir "$_claim" 2>/dev/null; then mv -f "$_claim.stall" "$_claim/stalled"
+      else rm -f "$_claim.stall"; [ ! -d "$_claim" ] || exit 0; fi
+      _why=stall; break
+    done
     # Lost only to the runner's claim (the dir exists); a mkdir failing for
     # any other reason (run dir gone, disk full) still ends a hung session.
-    mkdir "$_claim" 2>/dev/null || [ ! -d "$_claim" ] || exit 0
+    [ "$_why" = stall ] || mkdir "$_claim" 2>/dev/null || [ ! -d "$_claim" ] || exit 0
     kill -TERM -"$CPID" 2>/dev/null || { pkill -TERM -P "$CPID"; kill -TERM "$CPID"; }
     sleep "$GRACE" & _sp=$!; wait "$_sp"
     kill -KILL -"$CPID" 2>/dev/null || { pkill -KILL -P "$CPID"; kill -KILL "$CPID"; }
@@ -1192,11 +1341,21 @@ run_unit() {
   CPID=""; [ -z "${LDIR:-}" ] || rm -f "$LDIR/cpid"   # reaped: never signal a reused pid
   session_release
   heartbeat_stop; rm -f "$UNIT_DIR/unit.now"
-  UNIT_EXIT="$_st"; UNIT_TIMED_OUT=0
-  mkdir "$_claim" 2>/dev/null || UNIT_TIMED_OUT=1
+  UNIT_EXIT="$_st"; UNIT_TIMED_OUT=0; UNIT_STALLED=0; UNIT_STALL_MIN=""; UNIT_STALL_CMD=""
+  _won=1; mkdir "$_claim" 2>/dev/null || _won=0
   kill "$WPID" 2>/dev/null; wait "$WPID" 2>/dev/null
   WPID=""; [ -z "${LDIR:-}" ] || rm -f "$LDIR/wpid"   # reaped: never signal a pid number since reused
-  rmdir "$_claim" 2>/dev/null
+  if [ "$_won" = 0 ]; then
+    # The watchdog won: a stall when its marker is in (or staged beside) the claim, else the cap.
+    _sf="$_claim/stalled"; [ -f "$_sf" ] || _sf="$_claim.stall"
+    if [ -f "$_sf" ]; then
+      UNIT_STALLED=1
+      UNIT_STALL_MIN="$(sed -n 's/^idle_min=//p' "$_sf" | head -n 1)"
+      UNIT_STALL_CMD="$(sed -n 's/^command=//p' "$_sf" | head -n 1)"
+    else UNIT_TIMED_OUT=1; fi
+  fi
+  rm -rf "$_claim" "$_claim.stall"
+  [ "$UNIT_STALLED" = 0 ] || run_event unit_stalled "story=${CUR_ID:--}" "unit=$UNIT_TAG" "label=$2" "idle_min:=${UNIT_STALL_MIN:-0}" "command=${UNIT_STALL_CMD:--}"
   unit_reap "$UNIT_TAG"; [ -z "${LDIR:-}" ] || rm -f "$LDIR/utag"
   UNIT_MIN="$(awk -v s="$(( $(date +%s) - _t0 ))" 'BEGIN { printf "%.1f", s / 60 }')"
   UNIT_COST="$(cost_of "$UNIT_DIR/$UNIT_STEM.jsonl")"; [ -n "$UNIT_COST" ] || UNIT_COST=unknown
@@ -1209,12 +1368,14 @@ row() {  # row N LABEL OUTCOME — the label column is ID-LABEL when CUR_ID is s
   run_event unit_ended "story=${CUR_ID:--}" "unit=$UNIT_TAG" "label=$2" "outcome=$3" "usd:=$UNIT_COST"
 }
 # unit_outcome — a unit that changed nothing: `timed out` when the session
-# cap ended it (UNIT_TIMED_OUT); `orphaned` when the session ended its turn
+# cap ended it (UNIT_TIMED_OUT); `stalled` when the idle watchdog ended it
+# (UNIT_STALLED, #59 R2); `orphaned` when the session ended its turn
 # with background work running, so print mode killed that work 600 s later
 # and said so on stderr (phoenix mob-composer-parity, 2026-10-03); else
 # `noprog`. An orphaned unit counts as no progress everywhere else.
 unit_outcome() {
   if [ "${UNIT_TIMED_OUT:-0}" = 1 ]; then echo "timed out"
+  elif [ "${UNIT_STALLED:-0}" = 1 ]; then echo stalled
   elif grep -q 'Background tasks still running after' "$UNIT_DIR/$UNIT_STEM.err" 2>/dev/null; then echo orphaned
   else echo noprog; fi
 }
@@ -1224,6 +1385,9 @@ orphan_note() {
   [ "$1" = orphaned ] && printf ' (orphaned: the session ended its turn with background work running)'
   return 0
 }
+# stall_note — #59 R2: the cause appended to a stalled ending, from the last
+# run_unit: ` (no output for <N> min: <newest open call, or ->)`.
+stall_note() { printf ' (no output for %s min: %s)' "${UNIT_STALL_MIN:-${IDLE_MINUTES:-}}" "${UNIT_STALL_CMD:--}"; }
 # write_report REASON — the morning report: how it ended, what it cost, the
 # rulings to check, what to play, the PR, and how to resume.
 write_report() {
@@ -1325,6 +1489,7 @@ on_exit() {
 # ENDING set: done · stopped by user · stopped by operator · held by
 # operator · directive <id> not recorded · stop: <reason> · stop: run budget ·
 # no progress on <label> [(orphaned: …)] · timed out on <label> (…) ·
+# stalled on <label> (no output for <N> min: <command>) ·
 # stop: unexpected stage <s> · unit_pre's (lanes: sync repair: <reason>, or
 # the halt reason). Its scratch files
 # live in UNIT_DIR (the run dir; a lane's own dir in manifest mode). Unit
@@ -1360,6 +1525,7 @@ story_units() {
     _out="$(unit_outcome)"; row "$n" "$_base$suffix" "$_out"; noprog=$((noprog + 1))
     if [ "$noprog" -le "$RETRIES" ]; then suffix="-retry"; continue; fi
     if [ "$_out" = "timed out" ]; then ENDING="timed out on $_base (session_minutes $SESSION_MINUTES)"
+    elif [ "$_out" = stalled ]; then ENDING="stalled on $_base$(stall_note)"
     else ENDING="no progress on $_base$(orphan_note "$_out")"; fi
     return 0
   done
@@ -2012,6 +2178,9 @@ case "$1" in
           fi
           [ "$#" -le 1 ] || { usage >&2; exit 2; }; cmd_watch "$@" ;;
   activity)
+    # --open: the open calls (#59 R2); --open-gate: open_calls' gate mode (a test hook).
+    if [ "${2:-}" = --open ]; then [ "$#" -eq 3 ] && [ -f "$3" ] || { usage >&2; exit 2; }; open_calls "$3"; exit 0; fi
+    if [ "${2:-}" = --open-gate ]; then [ "$#" -eq 3 ] && [ -f "$3" ] || { usage >&2; exit 2; }; open_calls "$3" gate; exit 0; fi
     [ "$#" -eq 2 ] && [ -f "$2" ] || { usage >&2; exit 2; }
     unit_activity "$2"; exit 0 ;;
   deny-rules) shift; cmd_deny_rules "$@" ;;

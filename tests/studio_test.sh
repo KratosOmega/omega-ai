@@ -480,7 +480,8 @@ test_execute_sync_repair_form() {
   assert_contains "$E" 'fix(sync): <summary>' "the sync repair commit subject"
   assert_contains "$E" 'Synced: <summary>' "the sync repair ledger line"
   assert_contains "$E" 'Stop: sync repair red — <failing line>' "a red sync repair stops"
-  assert_contains "$E" 'studio-test <paths>' "the sync gate is scoped to the touched paths"
+  assert_contains "$E" 'Gate with `studio-test --file <path>\[,<path>…\]`' "the sync gate is one file run of the touched paths"
+  assert_not_contains "$E" 'studio-test <paths\?>' "no positional file runs (several run only the first)"
 }
 
 test_execute_peers_brief_rule() {
@@ -594,6 +595,38 @@ test_execute_lane_gate_foreground() {
   assert_eq 1 "$(tr '\n' ' ' < "$E" | grep -c 'never in the background (no `run_in_background`, no `&`), and never end a turn to wait for one')" "§2's verbatim brief line"
 }
 
+# #59 R7: one bounded command per hang; file runs and gate timeouts by rule.
+# #59 final review m1, m3, m6 and the API-outage note: the docs match the code.
+test_docs_59_wording() {
+  RM="$REPO_ROOT/README.md"
+  assert_contains "$RM" '^| `studio-test \[PATH\] \\| <test.gd>… \\| --file A.gd\[,B.gd…\]` | .* 4 missing test file · 124 gate run cap |$' "m1: the studio-test row names --file, 4 and 124"
+  assert_contains "$RM" '^| `studio-run .* 2 no Godot · 124 gate run cap |$' "m1: the studio-run row names 124"
+  assert_contains "$RM" 'A unit the session-cap watchdog ends with no progress' "m3: README names which watchdog records timed out"
+  assert_contains "$RM" 'API outage or retry storm longer than' "README warns that an API outage reads as a stall"
+  assert_contains "$REPO_ROOT/studios/game-dev/bin/studio-overnight" 'studio-run, studio-setup gate) past min(60' "m3: help says only studio-setup gate is capped"
+  EV="$REPO_ROOT/docs/game-dev/overnight-events.md"
+  assert_not_contains "$EV" 'just before that unit' "m6: unit_stalled is not always just before unit_ended"
+  assert_contains "$EV" '`unit_stalled` .* written before that unit.s `unit_ended`, whose outcome is `stalled` unless the unit moved the state or recorded a stop' "m6: the outcome rule"
+}
+test_execute_command_caps_text() {
+  E="$REPO_ROOT/studios/game-dev/skills/execute/SKILL.md"
+  assert_not_contains "$E" "whole session's minutes" "the old sentence is gone"
+  for lit in 'studio-test --file <test file>' 'Never build a Godot or GUT command by hand' \
+    'only on gate-routed commands' 'every other command keeps the default cap' \
+    'the tool that stops background tasks' 'exits 124' 'min(45, `session_minutes`/3)' \
+    'min(60, `session_minutes`/2)' '`stalled`' 'godot-guard.sh' 'worktree-guard.sh'; do
+    assert_contains "$E" "$lit" "execute says: $lit"
+  done
+  assert_eq 2 "$(grep -c 'worktree-guard.sh' "$E")" "both EnterWorktree path: places name the hook"
+}
+test_agent_gameplay_programmer_file_runs() {
+  A="$REPO_ROOT/studios/game-dev/agents/gameplay-programmer.md"
+  for lit in 'studio-test --file <test file>' 'Never build a Godot or GUT command by hand' \
+    'only on gate-routed commands' 'the tool that stops background tasks' 'exits 124'; do
+    assert_contains "$A" "$lit" "gameplay-programmer says: $lit"
+  done
+}
+
 test_execute_land_and_progress() {
   E="$REPO_ROOT/studios/game-dev/skills/execute/SKILL.md"
   assert_contains "$E" '^## 9. Landing repair (--land)' "§9 exists"
@@ -624,7 +657,9 @@ test_execute_gate_repair() {
   assert_contains "$E" 'STUDIO_REPAIR=gate:<log>' "the repair reads the red gate's log"
   assert_contains "$E" 'its latest `Stop:` line is a `gate red` one' "§11's preconditions name the gate red stop"
   assert_contains "$E" 'fix(gate): <summary>' "the repair commit"
-  assert_contains "$E" '`studio-test <path>` for each' "the repair re-runs only the failing test files"
+  assert_contains "$E" '`studio-test --file <path>\[,<path>…\]` with every' "the repair re-runs only the failing test files, in one file run"
+  assert_contains "$E" '`STUDIO_GATE_MINUTES`) and' "§11's env list names the gate cap"
+  assert_not_contains "$E" '`studio-lint` or `studio-run --seconds 10` when that was' "studio-lint is not given the gate timeout"
   assert_contains "$E" 'Repair: gate — <summary>' "the ledger line the runner reads"
   assert_contains "$E" 'Stop: gate repair red — <failing line>' "a repair red after three runs is a hard stop"
   assert_contains "$E" 'Never ships, never lands' "the repair never ships"
@@ -632,7 +667,7 @@ test_execute_gate_repair() {
   assert_not_contains "$E" 'only its repair unit repairs it' "§7 no longer names a unit that does not exist"
   assert_contains "$E" 'Gate-enforced findings are must-fix' "§5's brief makes gate-enforced findings must-fix"
   assert_contains "$E" 'is never ruled `leave`, deferred or parked' "they are never left or deferred"
-  assert_contains "$E" 'running that test file: `studio-test <path>`' "§5 runs the test before accepting an out-of-scope claim"
+  assert_contains "$E" 'running that test file: `studio-test --file <path>`' "§5 runs the test before accepting an out-of-scope claim"
   assert_contains "$E" 'Up to three rounds, a round' "§11 counts rounds, not single runs"
   # The runner starts both repair units in the start checkout, and the Stop
   # and shipped lines they check are in the feature ledger: enter, then check.
@@ -685,7 +720,13 @@ test_plan_brainstorm_lanes() {
   assert_contains "$PL" '§<heading>' "a Spec: item may cite a heading as written, with its #s"
   assert_contains "$PL" 'Review: task|final' "every task carries a Review: tag"
   assert_contains "$PL" 'new seam, cross-system, gameplay feel, data or schema, or importer' "the risk rule for Review: task"
-  assert_contains "$PL" 'a `Spec:` line whose ranges exist, and a `Review:` line' "self-review checks Spec: and Review:"
+  assert_contains "$PL" '`<spec>:L<a>` — one line' "one-line items"
+  assert_contains "$PL" 'run `studio-brief validate <plan path>`' "self-review validates the Spec: items"
+  _v="$(grep -n -F -m1 -- 'studio-brief validate <plan path>' "$PL" | cut -d: -f1)"
+  _s="$(grep -n -F -m1 -- 'studio-state set plan <plan path>' "$PL" | cut -d: -f1)"
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if [ -n "$_v" ] && [ -n "$_s" ] && [ "$_v" -lt "$_s" ]; then _pass "validate runs before studio-state set plan"
+  else _fail "validate runs before studio-state set plan ($_v, $_s)"; fi
   assert_contains "$PL" 'Decisions swept <id>' "the sweep is ledgered per story"
   assert_contains "$PL" 'Always add the section after Global Constraints when absent, writing `none` when it is empty.' "the plan always carries ## Decisions, none when empty"
   assert_contains "$PL" 'dash.md§## Feel targets' "the section example cites a real spec heading"
@@ -776,6 +817,6 @@ run_tests test_plugin_manifests test_skill_frontmatter test_agent_frontmatter \
   test_review_contract test_on_demand_skills_keep_stage test_playtest_contract test_retro_contract \
   test_skill_review_playtest_ask_candidates test_skill_retro_resolves_story \
   test_no_ship_references test_superpowers_requires_referenced test_no_last_playtest_callers \
-  test_execute_one_contract test_router_overnight_lock test_execute_lanes test_execute_lane_gate_foreground test_execute_land_and_progress test_execute_gate_repair test_execute_operator_messages test_execute_adopt test_final_wave_contracts \
+  test_execute_one_contract test_router_overnight_lock test_execute_lanes test_execute_lane_gate_foreground test_execute_command_caps_text test_docs_59_wording test_agent_gameplay_programmer_file_runs test_execute_land_and_progress test_execute_gate_repair test_execute_operator_messages test_execute_adopt test_final_wave_contracts \
   test_plan_brainstorm_lanes test_execute_sync_repair_form test_execute_peers_brief_rule test_plan_brainstorm_slug_form test_plan_brainstorm_check_id \
   test_sdd_script_references

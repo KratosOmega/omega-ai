@@ -1747,7 +1747,7 @@ test_lanes_sync_conflict_launches_repair() {
   assert_eq "" "$(sync_merges A)" "a conflict is never merged by the runner"
 }
 test_lanes_sync_repair_stops() {
-  for _sr in stop noop hang; do
+  for _sr in stop noop hang stall; do
     LANES_TASKS=2; export LANES_TASKS
     LANES_CONFIG='{"overnight": {"kill_grace_seconds": 5}}'; export LANES_CONFIG
     lanes_fixture "syncstop-$_sr" integration A:-
@@ -1757,8 +1757,18 @@ test_lanes_sync_repair_stops() {
       noop) printf 'noop\n' > "$SCEN/A.sync"; _want="no progress" ;;
       hang) printf 'hang\n' > "$SCEN/A.sync"; _want="timed out (session_minutes 90)"
             STUDIO_OVERNIGHT_SESSION_SECONDS=10; export STUDIO_OVERNIGHT_SESSION_SECONDS ;;
+      # #59: a silent sync repair. The task unit before it first emits an
+      # open studio-test call, so a slow unit under load is never stalled.
+      stall) printf '%s\n' '{"type":"system","subtype":"init"}' \
+               '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"sleep 999"}}]}}' > "$TMP/stl2.jsonl"
+             printf '%s\n' '{"type":"system","subtype":"init"}' \
+               '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"studio-test"}}]}}' > "$TMP/stl2-gate.jsonl"
+             printf 'emit %s; push_target A-T1.txt\n' "$TMP/stl2-gate.jsonl" > "$SCEN/A"
+             printf 'emit %s; hang\n' "$TMP/stl2.jsonl" > "$SCEN/A.sync"; _want="stalled (no output for 20 min: Bash: sleep 999)"
+             STUDIO_OVERNIGHT_IDLE_SECONDS=3 STUDIO_OVERNIGHT_IDLE_POLL_SECONDS=1 STUDIO_OVERNIGHT_SESSION_SECONDS=60
+             export STUDIO_OVERNIGHT_IDLE_SECONDS STUDIO_OVERNIGHT_IDLE_POLL_SECONDS STUDIO_OVERNIGHT_SESSION_SECONDS ;;
     esac
-    run_lanes start "$MFP"; unset STUDIO_OVERNIGHT_SESSION_SECONDS
+    run_lanes start "$MFP"; unset STUDIO_OVERNIGHT_SESSION_SECONDS STUDIO_OVERNIGHT_IDLE_SECONDS STUDIO_OVERNIGHT_IDLE_POLL_SECONDS
     assert_contains "$(last_lanes_dir)/stories/A" "^stopped sync repair: $_want$" "$_sr: the story ends stopped sync repair: $_want"
     assert_eq 1 "$(cat "$CALLS/m-A.sync" 2>/dev/null)" "$_sr: no retry"
     assert_eq 1 "$(cat "$CALLS/m-A" 2>/dev/null)" "$_sr: no unit after it"
@@ -2526,6 +2536,23 @@ test_lanes_timed_out_outcome() {
   assert_contains "$R/stories/A" "^stopped timed out on T1 (session_minutes 90)$" "the ending names the timeout"
   assert_contains "$R/report.md" "^Not landed: stopped — timed out on T1 " "and so does the report"
 }
+# #59 R2 (AC3): a lanes unit silent past idle_minutes with an open plain
+# command ends as stalled, not timed out, and names the command.
+test_lanes_stalled_outcome() {
+  LANES_CONFIG='{"overnight": {"kill_grace_seconds": 5}}'; export LANES_CONFIG
+  lanes_fixture stl integration A:-
+  printf '%s\n' '{"type":"system","subtype":"init"}' \
+    '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"sleep 999"}}]}}' > "$TMP/stl.jsonl"
+  printf 'emit %s; hang\nemit %s; hang\n' "$TMP/stl.jsonl" "$TMP/stl.jsonl" > "$SCEN/A"
+  STUDIO_OVERNIGHT_IDLE_SECONDS=3 STUDIO_OVERNIGHT_IDLE_POLL_SECONDS=1 STUDIO_OVERNIGHT_SESSION_SECONDS=60
+  export STUDIO_OVERNIGHT_IDLE_SECONDS STUDIO_OVERNIGHT_IDLE_POLL_SECONDS STUDIO_OVERNIGHT_SESSION_SECONDS
+  run_lanes start "$MFP"; unset STUDIO_OVERNIGHT_IDLE_SECONDS STUDIO_OVERNIGHT_IDLE_POLL_SECONDS STUDIO_OVERNIGHT_SESSION_SECONDS
+  R="$(last_lanes_dir)"
+  assert_eq "stalled|stalled" "$(cut -f7 "$R/lanes/1/units.tsv" | paste -sd'|' -)" "both units stalled"
+  assert_eq "0|0" "$(cut -f6 "$R/lanes/1/units.tsv" | paste -sd'|' -)" "not session-capped"
+  assert_contains "$R/stories/A" '^stopped stalled on T1 (no output for 20 min: Bash: sleep 999)$' "the ending"
+  assert_eq 2 "$(grep -c '"event":"unit_stalled"' "$R/events.jsonl")" "one unit_stalled per unit"
+}
 # The runner's terminal: a line per unit start and end, and a heartbeat with
 # the unit's last activity while it runs.
 test_lanes_heartbeat() {
@@ -2628,6 +2655,53 @@ test_lanes_watch() {
   assert_eq 2 "$(grep -c '^studio-overnight watch · ' "$TMP/w2.out")" "status --follow is watch"
   assert_not_contains "$TMP/w.out" '"type"' "no raw JSON"
   assert_status 2 "a bad interval is usage" -- sh "$RUNNER" watch x
+}
+# #59 AC1: every lane unit and the final unit get the caps.
+test_lanes_unit_caps() {
+  for _uc in 180:2700000:10800000:60 90:1800000:5400000:45; do
+    _m="${_uc%%:*}"; _r="${_uc#*:}"; _d="${_r%%:*}"; _r="${_r#*:}"; _x="${_r%%:*}"; _g="${_r#*:}"
+    LANES_PROGRESS=1; LANES_CONFIG="{\"overnight\": {\"session_minutes\": $_m}}"; export LANES_PROGRESS LANES_CONFIG
+    lanes_fixture "caps$_m" integration A:-
+    printf 'progress\n' > "$SCEN/progress"
+    run_lanes start "$MFP"
+    _n=0
+    for _f in "$CALLS"/*.fullenv; do
+      _n=$((_n + 1))
+      assert_contains "$_f" "^BASH_DEFAULT_TIMEOUT_MS=$_d\$" "$_m: $(basename "$_f") command cap"
+      assert_contains "$_f" "^BASH_MAX_TIMEOUT_MS=$_x\$" "$_m: $(basename "$_f") ceiling"
+      assert_contains "$_f" "^STUDIO_GATE_MINUTES=$_g\$" "$_m: $(basename "$_f") gate cap"
+    done
+    assert_eq 1 "$([ "$_n" -ge 2 ] && echo 1 || echo 0)" "$_m: a story unit and the final unit were launched"
+    _pn="$(prompt_calls '/game-dev:execute --progress' | head -n 1)"
+    assert_eq 1 "$([ -n "$_pn" ] && [ -f "$CALLS/$_pn.fullenv" ] && echo 1 || echo 0)" "$_m: the final step's unit (execute --progress) ran, its env checked above"
+  done
+  unset LANES_PROGRESS LANES_CONFIG
+}
+# #59 D2: the runner's own merge and final gate never run under a gate cap,
+# even when the operator's shell exports one.
+test_lanes_runner_gates_uncapped() {
+  LANES_PROGRESS=1; export LANES_PROGRESS
+  lanes_fixture uncap integration A:-
+  printf 'progress\n' > "$SCEN/progress"
+  use_gate "env | grep '^STUDIO_GATE_MINUTES=' >> '$CALLS/gate-env'; echo gate >> '$CALLS/final-gates'"
+  STUDIO_GATE_MINUTES=1; export STUDIO_GATE_MINUTES
+  run_lanes start "$MFP"; unset STUDIO_GATE_MINUTES LANES_PROGRESS; use_gate true
+  assert_eq 1 "$(final_gates)" "the final gate ran"
+  assert_eq "" "$(cat "$CALLS/gate-env" 2>/dev/null)" "with no STUDIO_GATE_MINUTES"
+}
+# #59 D9: the gate run cap warning (max x 1.2 against GATE_MIN).
+test_lanes_gate_cap_warning() {
+  lanes_fixture gcw integration A:-
+  printf '1 studio-test 3000 0\n' > "$P/.studio/gate.times"
+  run_lanes start --dry-run "$MFP"
+  assert_eq 0 "$LS_STATUS" "a warning, not a refusal"
+  assert_contains "$LS_ERR" "warning: gate run cap: .*took 50 min.*gate run cap of 45 min.*set overnight.session_minutes to at least 120" "50 min x 1.2 = 60 > 45: raise session_minutes to 2 x 60"
+  printf '1 gate 4000 0\n' > "$P/.studio/gate.times"
+  run_lanes start --dry-run "$MFP"
+  assert_contains "$LS_ERR" "warning: gate run cap: .*tops out at 60 min" "a run that needs more than 60 min names the ceiling"
+  printf '1 studio-test-file 9000 0\n2 studio-test 600 0\n' > "$P/.studio/gate.times"
+  run_lanes start --dry-run "$MFP"
+  assert_not_contains "$LS_ERR" "warning: gate run cap" "file runs are not read; a 10-minute suite fits 45"
 }
 # The preflight warns when the slowest recent studio-test leaves a finish
 # unit too little room under session_minutes.
@@ -4644,6 +4718,7 @@ run_tests test_stub_waitexist_and_run_token test_lanes_setup_preflight_refuses_l
   test_lanes_gate_repair_no_progress test_lanes_gate_repair_model_and_no_log test_lanes_gate_repair_budget test_lanes_gate_repair_halt \
   test_lanes_sync_clean_merge_no_session test_lanes_sync_skips test_lanes_sync_integration_two_refs \
   test_lanes_sync_failed_merge_aborts test_lanes_sync_conflict_launches_repair test_lanes_sync_repair_stops test_lanes_sync_repair_budget \
+  test_lanes_stalled_outcome \
   test_lanes_no_sync_before_repairs \
   test_lanes_final_step_once test_lanes_final_red_after_repair \
   test_lanes_final_repair_turns_green test_lanes_final_conflict test_lanes_final_resume_edits_pr \
@@ -4658,6 +4733,7 @@ run_tests test_stub_waitexist_and_run_token test_lanes_setup_preflight_refuses_l
   test_lanes_origin_attached test_lanes_origin_detach test_lanes_origin_detach_refused \
   test_lanes_help_modes test_lanes_left_gate_reaped test_lanes_timed_out_outcome test_lanes_heartbeat \
   test_lanes_activity_verb test_lanes_status_anywhere test_lanes_status_ended_partial test_lanes_watch \
+  test_lanes_unit_caps test_lanes_runner_gates_uncapped test_lanes_gate_cap_warning \
   test_lanes_gate_room_warning test_lanes_gate_times_non_integer test_lanes_check_truth_region test_lanes_gate_log_from_stop test_lanes_story_listed_events test_lanes_unit_env_run_dir \
   test_lanes_held_dependents_wait test_lanes_resume_after_gate_red_runs_gate_repair test_lanes_resume_gate_repairs_counted \
   test_lanes_resume_not_gate_red_no_repair_unit test_lanes_gate_repair_noprog_holds test_lanes_landing_never_holds \

@@ -38,6 +38,7 @@ for a in "$@"; do printf '%s\n' "$a"; done > "$CALLS/$n.argv"
 pwd -P > "$CALLS/$n.pwd"
 printf '%s %s\n' "${STUDIO_UNIT_TAG:-unset}" "${STUDIO_RUN_DIR:-unset}" > "$CALLS/$n.chan"
 printf '%s\n' "${OMEGA_AUTOPILOT:-unset}" > "$CALLS/$n.env"
+printf '%s %s %s\n' "${BASH_DEFAULT_TIMEOUT_MS:-unset}" "${BASH_MAX_TIMEOUT_MS:-unset}" "${STUDIO_GATE_MINUTES:-unset}" > "$CALLS/$n.caps"
 root="$(sh "$STUB_STATE_BIN" root)"
 cp "$root/.studio/overnight.lock" "$CALLS/$n.lock" 2>/dev/null
 [ -f "$CALLS/caffeinate.pid" ] && kill -0 "$(cat "$CALLS/caffeinate.pid")" 2>/dev/null && echo alive > "$CALLS/$n.caf"
@@ -80,6 +81,15 @@ for act in "$@"; do
                   _wi=0; while [ ! -e "$_wp" ] && [ "$_wi" -lt 600 ]; do sleep 0.1; _wi=$((_wi + 1)); done
                   [ -e "$_wp" ] || printf '%s\n' "$_wp" >> "$CALLS/wait.timeout" ;;
     "sleep "*)    sleep "${act#sleep }" ;;
+    # emit FILE: stream-json lines on stdout, i.e. into the unit's log (#59).
+    "emit "*)     cat "${act#emit }" ;;
+    # gatereg: a live (fake) studio-gate registered under this unit's tag,
+    # as studio-gate registers itself; unit_reap ends it with the unit.
+    # stalegate: an entry whose gate is dead (SIGKILLed before its cleanup).
+    gatereg)      sh "$(dirname "$0")/fake-studio-gate" > /dev/null 2>&1 &
+                  mkdir -p "$root/.studio/gate.units/$STUDIO_UNIT_TAG" && : > "$root/.studio/gate.units/$STUDIO_UNIT_TAG/$!" ;;
+    stalegate)    ( : ) & _sg=$!; wait "$_sg"
+                  mkdir -p "$root/.studio/gate.units/$STUDIO_UNIT_TAG" && : > "$root/.studio/gate.units/$STUDIO_UNIT_TAG/$_sg" ;;
     ignoreterm)   trap '' TERM ;;
     hang)         while :; do sleep 1; done ;;
     orphan)       printf '%s\n' 'Background tasks still running after 600s; terminating. Set CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 to wait indefinitely.' >&2 ;;
@@ -106,6 +116,9 @@ exit "$code"
 STUB
 printf '#!/bin/sh\nexec claude "$@"\n' > "$FAKE/claude-gd"
 printf '#!/bin/sh\nexit "${GH_STATUS:-0}"\n' > "$FAKE/gh"
+# What gatereg runs: a process whose argv names studio-gate, as unit_reap and
+# the idle watchdog require of a registered gate.
+printf '#!/bin/sh\nwhile :; do sleep 1; done\n' > "$FAKE/fake-studio-gate"
 # A fake caffeinate: records its argv and pid, then lives until the -w pid dies.
 printf '#!/bin/sh\nprintf "%%s\\n" "$*" > "$CALLS/caffeinate.args"\necho "$$" > "$CALLS/caffeinate.pid"\nwhile kill -0 "$3" 2>/dev/null; do sleep 1; done\n' > "$FAKE/caffeinate"
 chmod +x "$FAKE"/*
@@ -272,7 +285,9 @@ test_overnight_help() {
            "say <story>" "said <story>" "unsay <story> <id>" "hold <story>" "resume <story>" "stop <story>" "--run <run>" "hold_minutes .*0-1440" \
            "directive_chars .*500-16000" "STUDIO_OVERNIGHT_HOLD_MINUTES — test hook" "STUDIO_OVERNIGHT_HOLD_SECONDS — test hook" \
            "STUDIO_OVERNIGHT_INBOX_WAIT — test hook" "events.jsonl" "next tool call" \
-           "deny-rules \[--dir" "STUDIO_RUN_ORIGIN"; do
+           "deny-rules \[--dir" "STUDIO_RUN_ORIGIN" \
+           "STUDIO_GATE_MINUTES" "min(45, session_minutes/3)" "min(60, session_minutes/2)" \
+           "idle_minutes .*0-120" "STUDIO_OVERNIGHT_IDLE_SECONDS — test hook" "STUDIO_OVERNIGHT_IDLE_POLL_SECONDS — test hook"; do
     assert_contains "$TMP/help.txt" "$w" "help names $w"
   done
   assert_contains "$REPO_ROOT/docs/game-dev/overnight-events.md" "deny-rules" "the contract doc lists deny-rules"
@@ -297,7 +312,7 @@ test_events_contract_doc() {
     | grep -oE '(run_event|chan_event|"\$RD") [a-z_]+ ("|[a-z_]+(=|:=|\[\]=)|'"'"')' > "$TMP/ev-calls.txt"
   cat "$B/studio-overnight" "$B/overnight-lanes.sh" "$B/overnight-channel.sh" "$H" | grep -v '^[[:space:]]*#' \
     | grep -oE '(run_event|chan_event|"\$RD") [a-z_]+ .*' > "$TMP/ev-lines.txt"
-  for e in run_started story_listed story_state story_synced unit_started unit_ended session_wait message_queued message_delivered message_requeued control run_ended; do
+  for e in run_started story_listed story_state story_synced unit_started unit_ended unit_stalled session_wait message_queued message_delivered message_requeued control run_ended; do
     assert_contains "$DOC" "^| \`$e\` |" "the doc's table lists $e"
     assert_eq 1 "$(awk -v e="$e" '$2 == e { f = 1 } END { print f ? 1 : 0 }' "$TMP/ev-calls.txt")" "the code writes $e"
     # fields: those at the event's call sites equal those in the doc's fields column
@@ -335,6 +350,20 @@ test_overnight_session_seconds_refused() {
   done
 }
 
+# #59 AC1: single-plan units get the command caps; the default is 90.
+test_overnight_unit_caps() {
+  fixture caps180 '{ "overnight": { "session_minutes": 180 } }'
+  scenario "cost 1" "cost 1"
+  run_start
+  assert_eq "2700000 10800000 60" "$(cat "$CALLS/1.caps")" "180: command cap 45 min, ceiling 180 min, gate cap 60"
+  assert_eq "2700000 10800000 60" "$(cat "$CALLS/2.caps")" "the retry too"
+  fixture caps90
+  scenario "cost 1" "cost 1"
+  run_start
+  assert_eq "1800000 5400000 45" "$(cat "$CALLS/1.caps")" "90 (default): 30 / 90 / 45"
+  run_start --dry-run
+  assert_contains "$RS_OUT" "BASH_DEFAULT_TIMEOUT_MS='1800000' BASH_MAX_TIMEOUT_MS='5400000' STUDIO_GATE_MINUTES='45' OMEGA_AUTOPILOT=1 claude-gd -p '/game-dev:execute --one'" "the dry-run line carries the caps before OMEGA_AUTOPILOT"
+}
 test_overnight_dry_run() {
   fixture dry
   run_start --dry-run
@@ -2297,6 +2326,118 @@ test_overnight_help_setup_preflight() {
   sh "$RUNNER" --help > "$TMP/help-pf.txt" 2>&1
   assert_contains "$TMP/help-pf.txt" "Preflighted: start runs it once in a scratch linked" "help: worktree_setup says it is preflighted"
 }
+# #59 R2: open (unanswered) calls, newest first; gate mode reads the full command.
+test_overnight_open_calls() {
+  F="$REPO_ROOT/tests/fixtures/overnight-open-calls.jsonl"
+  assert_eq 1 "$(awk '/toolu_B2/ { print (index($0, "studio-test") > 160) }' "$F")" "fixture: studio-test sits past the 120-char cut"
+  sh "$RUNNER" activity --open "$F" > "$TMP/oc.out"
+  assert_eq 2 "$(grep -c . "$TMP/oc.out")" "two open calls: B1 was answered"
+  assert_contains "$TMP/oc.out" '^Bash: cd /Users/dev/GameDev/proj/phoenix/' "newest first: the subagent's hung Bash"
+  assert_eq 120 "$(head -n 1 "$TMP/oc.out" | awk '{ print (length($0) >= 120 && length($0) <= 122 ? 120 : length($0)) }')" "cut to 120 characters (… counted as one)"
+  assert_contains "$TMP/oc.out" '…$' "the cut ends in …"
+  assert_not_contains "$TMP/oc.out" 'studio-test' "the cut text does not reach studio-test"
+  assert_eq 'gameplay-programmer · "T7 implement"' "$(sed -n 2p "$TMP/oc.out")" "then the Agent call, rendered as unit_activity does"
+  assert_eq gate "$(sh "$RUNNER" activity --open-gate "$F")" "gate mode: the FULL command of the open Bash call runs studio-test"
+  stall_log "$TMP/ocplain.jsonl" "sleep 999"
+  assert_eq "" "$(sh "$RUNNER" activity --open-gate "$TMP/ocplain.jsonl")" "gate mode: a plain open command is not a gate"
+  { cat "$F"; printf '%s\n' '{"type":"user","message":{"content":[{"tool_use_id":"toolu_B2","type":"tool_result","content":"ok"}]}}'; } > "$TMP/occlosed.jsonl"
+  assert_eq "" "$(sh "$RUNNER" activity --open-gate "$TMP/occlosed.jsonl")" "gate mode: an answered gate call is not open"
+  printf '%s\n' '{"type":"system","subtype":"init"}' > "$TMP/oc0.jsonl"
+  assert_eq "" "$(sh "$RUNNER" activity --open "$TMP/oc0.jsonl")" "no tool call: nothing"
+  # A2 minor 1: once the subagent's Agent call is answered, its unanswered
+  # inner calls (a nested subagent's included) are over too, so a later
+  # hung main-thread command is the only open call.
+  { cat "$F"
+    printf '%s\n' '{"type":"assistant","parent_tool_use_id":"toolu_A","message":{"content":[{"type":"tool_use","id":"toolu_N","name":"Agent","input":{"subagent_type":"x:helper","description":"inner"}}]}}' \
+      '{"type":"assistant","parent_tool_use_id":"toolu_N","message":{"content":[{"type":"tool_use","id":"toolu_N1","name":"Bash","input":{"command":"studio-run --seconds 5"}}]}}' \
+      '{"type":"user","message":{"content":[{"tool_use_id":"toolu_A","type":"tool_result","content":"done"}]}}' \
+      '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_Z","name":"Bash","input":{"command":"sleep 999"}}]}}'
+  } > "$TMP/ocphantom.jsonl"
+  assert_eq "Bash: sleep 999" "$(sh "$RUNNER" activity --open "$TMP/ocphantom.jsonl")" "an answered subagent's inner calls are not open"
+  assert_eq "" "$(sh "$RUNNER" activity --open-gate "$TMP/ocphantom.jsonl")" "nor gate calls: the hung sleep can stall"
+}
+# stall_log FILE CMD — a session log: init, then one open Bash call running CMD.
+stall_log() {
+  printf '%s\n' '{"type":"system","subtype":"init"}' \
+    "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"Bash\",\"input\":{\"command\":\"$2\"}}]}}" > "$1"
+}
+idle_on() {   # idle_on IDLE POLL [SESSION] — seconds seams for the next run
+  STUDIO_OVERNIGHT_IDLE_SECONDS="$1"; STUDIO_OVERNIGHT_IDLE_POLL_SECONDS="$2"; STUDIO_OVERNIGHT_SESSION_SECONDS="${3:-30}"
+  export STUDIO_OVERNIGHT_IDLE_SECONDS STUDIO_OVERNIGHT_IDLE_POLL_SECONDS STUDIO_OVERNIGHT_SESSION_SECONDS
+}
+idle_off() { unset STUDIO_OVERNIGHT_IDLE_SECONDS STUDIO_OVERNIGHT_IDLE_POLL_SECONDS STUDIO_OVERNIGHT_SESSION_SECONDS; }
+
+# AC3: a silent session with an open plain command ends as stalled, long before the cap.
+test_overnight_idle_stall() {
+  fixture stall '{ "overnight": { "retries": 0 } }'
+  stall_log "$TMP/stall.jsonl" "sleep 999"
+  scenario "emit $TMP/stall.jsonl; hang"
+  # Idle 3 s: the stub's preamble (before emit) may take ~2 s under load.
+  idle_on 3 1 30; run_start; idle_off
+  R="$(last_run_dir)"
+  # The unit's own minutes (session start to reap), not the run's: preflight
+  # and the report are slow under load. 0.4 min = 24 s, under the 30 s cap.
+  assert_eq short "$(awk -F'\t' 'NR == 1 { print ($5 < 0.4 ? "short" : $5) }' "$R/units.tsv")" "ended by the idle watchdog, well before the 30 s cap"
+  assert_eq "stalled" "$(awk -F'\t' 'NR == 1 { print $7 }' "$R/units.tsv")" "outcome stalled"
+  assert_eq 0 "$(awk -F'\t' 'NR == 1 { print $6 }' "$R/units.tsv")" "timed_out stays the session-cap flag"
+  assert_contains "$R/events.jsonl" '"event":"unit_stalled",.*"idle_min":20,"command":"Bash: sleep 999"' "unit_stalled names the open command"
+  assert_contains "$R/report.md" '^Ending: stalled on T1 (no output for 20 min: Bash: sleep 999)$' "the ending"
+}
+# AC4 + Review Focus 1: an open gate-routed call (past the cut) or a registered gate is never stalled.
+test_overnight_idle_spares_gate_call() {
+  _long="cd /Users/dev/GameDev/proj/phoenix/.claude/worktrees/kan-1540-greater-slime-av-integration-lane-1-story-s1-retry-two && studio-test --file tests/unit/test_x.gd"
+  assert_eq 1 "$([ "$(printf 'Bash: %s' "$_long" | awk '{ print index($0, "studio-test") }')" -gt 120 ] && echo 1 || echo 0)" "fixture: studio-test sits past the 120-char cut"
+  fixture spare '{ "overnight": { "retries": 0 } }'
+  stall_log "$TMP/gate.jsonl" "$_long"
+  scenario "emit $TMP/gate.jsonl; hang"
+  # Idle 3 s (not 1): a stub slow to emit under load must not stall first.
+  idle_on 3 1 10; run_start; idle_off
+  R="$(last_run_dir)"
+  assert_eq "timed out" "$(awk -F'\t' 'NR == 1 { print $7 }' "$R/units.tsv")" "the session cap ends it, not the idle watchdog"
+  assert_not_contains "$R/events.jsonl" '"unit_stalled"' "no stall"
+  fixture spare2 '{ "overnight": { "retries": 0 } }'
+  stall_log "$TMP/plain.jsonl" "sleep 999"
+  scenario "emit $TMP/plain.jsonl; gatereg; hang"
+  idle_on 3 1 10; run_start; idle_off
+  assert_eq "timed out" "$(awk -F'\t' 'NR == 1 { print $7 }' "$(last_run_dir)/units.tsv")" "a gate registered under the unit's tag exempts it"
+  # A2 minor 2: an entry whose gate is dead exempts nothing.
+  fixture spare3 '{ "overnight": { "retries": 0 } }'
+  scenario "emit $TMP/plain.jsonl; stalegate; hang"
+  idle_on 3 1 12; run_start; idle_off
+  assert_eq "stalled" "$(awk -F'\t' 'NR == 1 { print $7 }' "$(last_run_dir)/units.tsv")" "a stale registration (dead gate) does not exempt it"
+}
+# AC5: 0 turns it off; bad values are refused.
+test_overnight_idle_off_and_refusals() {
+  fixture idleoff '{ "overnight": { "retries": 0, "idle_minutes": 0 } }'
+  stall_log "$TMP/off.jsonl" "sleep 999"
+  scenario "emit $TMP/off.jsonl; hang"
+  idle_on 1 1 5; run_start; idle_off
+  assert_eq "timed out" "$(awk -F'\t' 'NR == 1 { print $7 }' "$(last_run_dir)/units.tsv")" "idle_minutes 0: the watchdog is off even with the seconds seam set"
+  fixture idlebad '{ "overnight": { "idle_minutes": 121 } }'
+  refuse_case "idle_minutes 121" "config overnight.idle_minutes must be from 0 to 120, got 121"
+  fixture idleseam; STUDIO_OVERNIGHT_IDLE_SECONDS=abc; export STUDIO_OVERNIGHT_IDLE_SECONDS
+  refuse_case "bad idle seam" "STUDIO_OVERNIGHT_IDLE_SECONDS must be a whole number"; unset STUDIO_OVERNIGHT_IDLE_SECONDS
+  fixture pollseam; STUDIO_OVERNIGHT_IDLE_POLL_SECONDS=0; export STUDIO_OVERNIGHT_IDLE_POLL_SECONDS
+  refuse_case "zero poll seam" "STUDIO_OVERNIGHT_IDLE_POLL_SECONDS must be a whole number"; unset STUDIO_OVERNIGHT_IDLE_POLL_SECONDS
+}
+# Review Focus 2: a stalled command containing " until " holds, shows and ends intact.
+# The first (isolating) unit emits an open studio-test call first, so a slow
+# git worktree add under load can never stall it (the gate exemption).
+test_overnight_stall_holds_with_until_command() {
+  # A 15 s hold: status must still see it held under load; the deadline then ends the run.
+  fixture sthold; holds_on 15
+  stall_log "$TMP/until.jsonl" "until false; do sleep 1; done"
+  stall_log "$TMP/until-gate.jsonl" "studio-test"
+  scenario "emit $TMP/until-gate.jsonl; $ISO1" "emit $TMP/until.jsonl; hang" "emit $TMP/until.jsonl; hang"
+  idle_on 3 1 30; start_bg; wait_held 30; idle_off
+  assert_contains "$R/control/-.held" '^held stalled on T2 (no output for 20 min: Bash: until false; do sleep 1; done) until 20[0-9-]*T[0-9:]*Z$' "the held record keeps the command"
+  verb status
+  assert_contains "$V_OUT" '^held — stalled on T2 (no output for 20 min: Bash: until false; do sleep 1; done) — until [0-9][0-9]:[0-9][0-9] — say / resume / stop -$' "held_line splits on the last ' until '"
+  assert_contains "$R/events.jsonl" '"state":"held","why":"stalled on T2 (no output for 20 min: Bash: until false; do sleep 1; done)","until":"20' "story_state too"
+  bg_end 45 "the hold deadline ends the run"
+  assert_contains "$R/report.md" '^Ending: stalled on T2 (no output for 20 min: Bash: until false; do sleep 1; done) (held 0h0m, no reply)$' "the report keeps it"
+  holds_off
+}
 # fx_norm SRC DEST NAME — a copy of the work tree SRC at DEST (.git left out), with the
 # tree's own path ($TMP/NAME) turned into @N@ in every file that holds it.
 fx_norm() {
@@ -2389,6 +2530,8 @@ before_each() {
 }
 run_tests test_overnight_setup_preflight_single test_overnight_help_setup_preflight \
   test_overnight_fixture_copy_equals_build test_overnight_fixture_failed_build_not_reused \
+  test_overnight_open_calls test_overnight_idle_stall test_overnight_idle_spares_gate_call \
+  test_overnight_idle_off_and_refusals test_overnight_stall_holds_with_until_command \
   test_overnight_report_done test_overnight_report_not_done test_overnight_preflight_env_warns_not_blocks \
   test_overnight_report_anchors test_overnight_resume_quote test_overnight_label_t1 \
   test_overnight_session_seconds_refused test_overnight_claim_without_run_dir \
@@ -2397,7 +2540,7 @@ run_tests test_overnight_setup_preflight_single test_overnight_help_setup_prefli
   test_overnight_reap_poll_keeps_budget test_overnight_reap_poll_rejects_bad_value \
   test_overnight_stop_file test_overnight_sigterm test_overnight_sigint test_overnight_sighup \
   test_overnight_stop_no_run test_overnight_inhibitor test_overnight_no_inhibitor \
-  test_overnight_help test_events_contract_doc test_overnight_dry_run \
+  test_overnight_help test_overnight_unit_caps test_events_contract_doc test_overnight_dry_run \
   test_overnight_preflight_refusals test_overnight_preflight_all_failures \
   test_overnight_config_refusals test_overnight_deny_file_required \
   test_overnight_lock test_overnight_first_use_ignores \

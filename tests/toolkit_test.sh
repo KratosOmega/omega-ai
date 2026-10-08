@@ -239,6 +239,77 @@ test_test_targets_a_file() {
   assert_not_contains "$log" "\-gconfig" "a file target with no config passes none"
 }
 
+# #59 AC6: --file runs exactly the named scripts; -gconfig only with -gdir=.
+test_test_file_runs_named_files() {
+  P="$(fresh_project files)"; with_gut "$P"; mkdir -p "$P/tests/unit"
+  : > "$P/tests/unit/a.gd"; : > "$P/tests/unit/b.gd"
+  with_gutconfig "$P" .gutconfig.json '["res://tests/unit"]'
+  for _form in "--file tests/unit/a.gd,tests/unit/b.gd" "--file tests/unit/a.gd --file tests/unit/b.gd"; do
+    rm -f "$P"/.studio/reports/test-*.log
+    # shellcheck disable=SC2086
+    verb "$P" studio-test $_form
+    assert_eq 0 "$(cat "$TMP/status")" "$_form: passes"
+    assert_contains "$(last_log "$P")" "-s addons/gut/gut_cmdln.gd -gconfig=res://.gutconfig.json -gdir= -gtest=res://tests/unit/a.gd,res://tests/unit/b.gd -gexit" "$_form: the probe's file form"
+  done
+  rm -f "$P/.gutconfig.json" "$P"/.studio/reports/test-*.log
+  verb "$P" studio-test --file tests/unit/a.gd,tests/unit/b.gd
+  assert_contains "$(last_log "$P")" "-gtest=res://tests/unit/a.gd,res://tests/unit/b.gd" "no config: the file list alone"
+  assert_not_contains "$(last_log "$P")" "\-gconfig\|-gdir=" "no -gconfig, no -gdir="
+}
+test_test_file_missing_exits_4() {
+  P="$(fresh_project missing)"; with_gut "$P"; mkdir -p "$P/tests/unit"; : > "$P/tests/unit/a.gd"
+  verb "$P" studio-test --file tests/unit/a.gd,tests/unit/nope.gd
+  assert_eq 4 "$(cat "$TMP/status")" "a missing file exits 4"
+  assert_contains "$TMP/out" '^studio-test: no such test file tests/unit/nope.gd$' "names it"
+  assert_eq "" "$(ls "$P"/.studio/reports/test-*.log 2>/dev/null)" "before Godot starts"
+}
+# Review Focus 5.
+test_test_file_path_forms() {
+  P="$(fresh_project forms)"; with_gut "$P"; mkdir -p "$P/tests/unit"; : > "$P/tests/unit/a.gd"; : > "$P/tests/unit/b.gd"
+  verb "$P" studio-test --file "res://tests/unit/a.gd, ./tests/unit/b.gd,,$(cd "$P" && pwd -P)/tests/unit/a.gd"
+  assert_eq 0 "$(cat "$TMP/status")" "res://, ./, spaces, an empty item and an absolute path inside the project are accepted"
+  assert_contains "$(last_log "$P")" "-gtest=res://tests/unit/a.gd,res://tests/unit/b.gd -gexit" "normalized and deduped"
+  : > "$TMP/outside.gd"
+  verb "$P" studio-test --file "$TMP/outside.gd"; assert_eq 4 "$(cat "$TMP/status")" "an absolute path outside the project exits 4"
+  verb "$P" studio-test --file ../forms/tests/unit/a.gd; assert_eq 4 "$(cat "$TMP/status")" "a .. path exits 4"
+  verb "$P" studio-test --file tests/unit; assert_eq 4 "$(cat "$TMP/status")" "a directory is not a test file"
+}
+test_test_file_misuse_exits_4() {
+  P="$(fresh_project misuse)"; with_gut "$P"; mkdir -p "$P/tests/unit"; : > "$P/tests/unit/a.gd"
+  verb "$P" studio-test --file; assert_eq 4 "$(cat "$TMP/status")" "--file with no value"
+  assert_contains "$TMP/out" '^usage: studio-test ' "prints usage"
+  verb "$P" studio-test --file tests/unit/a.gd tests/unit; assert_eq 4 "$(cat "$TMP/status")" "--file mixed with a positional"
+  verb "$P" studio-test --file " , "; assert_eq 4 "$(cat "$TMP/status")" "no item left"
+}
+test_test_file_through_gate() {
+  P="$(fresh_project gated)"; with_gut "$P"; mkdir -p "$P/tests/unit" "$P/.studio"; : > "$P/tests/unit/a.gd"
+  verb "$P" studio-test tests/unit/a.gd
+  assert_contains "$P/.studio/gate.times" '^[0-9]* studio-test-file [0-9]* 0$' "a positional file is a file run, timed as studio-test-file"
+  STUB_FAILS=1 verb "$P" studio-test --file tests/unit/a.gd
+  assert_eq 1 "$(cat "$TMP/status")" "a failing test exits 1"
+  assert_not_contains "$P/.studio/gate.times" ' studio-test [0-9]' "no full-suite line"
+}
+
+# Final review I2: several positionals that are all existing files are one
+# file run; any other mix of several positionals is misuse (exit 4), never
+# a full-suite run of the first.
+test_test_file_several_positionals() {
+  P="$(fresh_project multi)"; with_gut "$P"; mkdir -p "$P/tests/unit" "$P/.studio"
+  : > "$P/tests/unit/a.gd"; : > "$P/tests/unit/b.gd"
+  verb "$P" studio-test tests/unit/a.gd ./tests/unit/b.gd
+  assert_eq 0 "$(cat "$TMP/status")" "two existing files pass"
+  assert_contains "$(last_log "$P")" "-gtest=res://tests/unit/a.gd,res://tests/unit/b.gd -gexit" "both run, in one -gtest="
+  assert_contains "$P/.studio/gate.times" '^[0-9]* studio-test-file [0-9]* 0$' "timed as studio-test-file"
+  assert_not_contains "$P/.studio/gate.times" ' studio-test [0-9]' "no full-suite line"
+  rm -f "$P"/.studio/reports/test-*.log
+  verb "$P" studio-test tests/unit/a.gd tests/unit/nope.gd
+  assert_eq 4 "$(cat "$TMP/status")" "a file and a missing path exit 4"
+  assert_contains "$TMP/out" '^usage: studio-test ' "with the usage line"
+  verb "$P" studio-test tests/unit/a.gd tests/unit; assert_eq 4 "$(cat "$TMP/status")" "a file and a directory exit 4"
+  verb "$P" studio-test tests tests/unit; assert_eq 4 "$(cat "$TMP/status")" "two directories exit 4"
+  assert_eq "" "$(ls "$P"/.studio/reports/test-*.log 2>/dev/null)" "no misuse starts Godot"
+}
+
 test_test_targets_a_directory() {
   P="$(fresh_project dir)"
   with_gut "$P"
@@ -544,7 +615,7 @@ test_slowest_does_not_wait_for_the_gate() {
   sleep 30 & holder=$!
   echo "$holder" > "$GP/.studio/gate.lock/pid"; echo studio-test > "$GP/.studio/gate.lock/who"
   verb "$GP" studio-test --slowest
-  kill "$holder" 2>/dev/null; rm -rf "$GP/.studio/gate.lock"
+  kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null; rm -rf "$GP/.studio/gate.lock"
   assert_eq "0" "$(cat "$TMP/status")" "--slowest reads the report while a run holds the gate"
   assert_not_contains "$TMP/out" "gate: waiting" "and never waits for the lock"
 }
@@ -888,6 +959,118 @@ test_gate_times_window_per_who() {
   assert_not_contains "$GP/.studio/gate.times" '^11 setup ' "the oldest setup lines went"
 }
 
+# #59 AC2: STUDIO_GATE_MINUTES caps the run once the lock is held.
+gate_capped() {   # gate_capped MIN SECS WHO CMD… — run the gate capped; GC_ST, GC_SECS, $TMP/gc.err
+  _gc_m="$1"; _gc_s="$2"; _gc_w="$3"; shift 3
+  _gc_t0=$(date +%s); GC_ST=0
+  ( cd "$GP" && STUDIO_GATE_MINUTES="$_gc_m" STUDIO_GATE_SECONDS="$_gc_s" sh "$GATE" "$_gc_w" -- "$@" ) > "$TMP/gc.out" 2> "$TMP/gc.err" || GC_ST=$?
+  GC_SECS=$(( $(date +%s) - _gc_t0 ))
+}
+test_gate_run_cap_stops_a_long_run() {
+  gate_proj cap1
+  gate_capped 1 1 t sleep 30
+  assert_eq 124 "$GC_ST" "a run past the cap exits 124"
+  assert_eq 1 "$([ "$GC_SECS" -lt 8 ] && echo 1 || echo 0)" "stopped at the cap, not after 30 s"
+  assert_contains "$TMP/gc.err" '^gate: t ran past 1 min — stopped$' "names who and the minutes"
+  assert_contains "$GP/.studio/gate.times" '^[0-9]* t [0-9]* 124$' "gate.times records 124"
+  assert_missing "$GP/.studio/gate.lock" "the lock is released"
+}
+test_gate_run_cap_excludes_lock_wait() {
+  gate_proj cap2
+  ( cd "$GP" && sh "$GATE" holder -- sleep 4 ) 2>/dev/null &
+  _h=$!; sleep 1
+  gate_capped 1 3 waiter sleep 1
+  wait "$_h"
+  assert_eq 0 "$GC_ST" "3 s of lock wait plus a 1 s run is not past a 3 s cap"
+}
+test_gate_run_cap_off_unset_zero_and_setup() {
+  gate_proj cap3
+  ( cd "$GP" && STUDIO_GATE_SECONDS=1 sh "$GATE" t -- sleep 2 ) 2>/dev/null; assert_eq 0 "$?" "unset: no cap (the seam alone does nothing)"
+  gate_capped "" 1 t sleep 2; assert_eq 0 "$GC_ST" "empty: no cap"
+  gate_capped 0 1 t sleep 2; assert_eq 0 "$GC_ST" "0: no cap"
+  gate_capped 1 1 setup sleep 2; assert_eq 0 "$GC_ST" "who setup is exempt"
+}
+# Review Focus 3: TERM ignored → KILL ~10 s after the cap; still 124.
+test_gate_run_cap_kills_a_term_ignorer() {
+  gate_proj cap4
+  gate_capped 1 1 t sh -c 'trap "" TERM; while :; do sleep 1; done'
+  assert_eq 124 "$GC_ST" "killed, still reported as the cap"
+  assert_eq 1 "$([ "$GC_SECS" -ge 9 ] && [ "$GC_SECS" -lt 20 ] && echo 1 || echo 0)" "KILL after the 10 s grace ($GC_SECS s)"
+  assert_missing "$GP/.studio/gate.lock" "the lock is released"
+}
+# Review Focus 3: a run that ends first keeps its status and returns at once.
+test_gate_run_cap_no_false_stop() {
+  gate_proj cap5
+  _o="$(cd "$GP" && STUDIO_GATE_MINUTES=1 STUDIO_GATE_SECONDS=5 sh "$GATE" t -- sh -c 'echo hi; exit 3' 2>/dev/null)"; _st=$?
+  assert_eq 3 "$_st" "the command's own status"
+  assert_eq hi "$_o" "its output"
+  gate_capped 1 5 t true
+  assert_eq 1 "$([ "$GC_SECS" -lt 3 ] && echo 1 || echo 0)" "the timer does not hold the caller ($GC_SECS s)"
+  assert_not_contains "$GP/.studio/gate.times" ' 124$' "no 124 recorded"
+  assert_not_contains "$TMP/gc.err" 'ran past' "no stop message"
+}
+# Final review m2: leading zeros are decimal, not an octal arithmetic error
+# (which killed the gate with rc 1 before the command ran).
+test_gate_run_cap_leading_zeros() {
+  gate_proj cap7
+  gate_capped 090 "" t sh -c 'echo ran; exit 5'
+  assert_eq 5 "$GC_ST" "090 minutes: the command's own status"
+  assert_contains "$TMP/gc.out" '^ran$' "090 minutes: the command ran"
+  gate_capped 090 01 t sleep 30
+  assert_eq 124 "$GC_ST" "seconds 01 still caps the run"
+}
+# Final review I1: the timer cannot outlive its gate or hold it. Ten instant
+# capped runs per shell, each through `$( )`: none takes ≥ 3 s (under dash
+# a blocking `wait` on the timer held the gate for the whole cap), the lock
+# is gone after each, and no `sleep <cap>` or gate process outlives them
+# (under bash a TERM before the timer's `_sp=$!` orphaned its sleep).
+# The nested gate (B1): re-entry adds no timer and logs one run.
+test_gate_run_cap_fast_runs_leave_nothing() {
+  gate_proj cap6
+  for _fsh in sh dash; do
+    command -v "$_fsh" >/dev/null 2>&1 || continue
+    _slow=0; _held=0; _outs=""; _i=0
+    while [ "$_i" -lt 10 ]; do
+      _t0=$(date +%s)
+      _o="$(cd "$GP" && STUDIO_GATE_MINUTES=1 STUDIO_GATE_SECONDS=87 "$_fsh" "$GATE" fastcap -- echo ok 2>/dev/null)"
+      [ $(( $(date +%s) - _t0 )) -lt 3 ] || _slow=$((_slow + 1))
+      [ ! -e "$GP/.studio/gate.lock" ] || _held=$((_held + 1))
+      _outs="$_outs$_o"
+      _i=$((_i + 1))
+    done
+    assert_eq 0 "$_slow" "$_fsh: no instant capped run takes 3 s or more"
+    assert_eq 0 "$_held" "$_fsh: the lock is released after every run"
+    assert_eq okokokokokokokokokok "$_outs" "$_fsh: each run's output, through \$( )"
+    sleep 2
+    assert_eq 0 "$(ps -A -o args= | grep -c '^sleep 87$')" "$_fsh: no orphaned sleep of the cap"
+    assert_eq 0 "$(ps -A -o args= | grep -F "$GATE fastcap" | grep -vc grep)" "$_fsh: no timer outlives its gate"
+  done
+  # A SIGKILLed gate whose parent never reaps it stays a zombie, so
+  # `kill -0` still succeeds: the timer must notice it was reparented and
+  # exit, or at the cap it could KILL a reused pgid. The parent here execs
+  # a sleep that never waits.
+  for _fsh in sh dash; do
+    command -v "$_fsh" >/dev/null 2>&1 || continue
+    ( cd "$GP" && STUDIO_GATE_MINUTES=1 STUDIO_GATE_SECONDS=89 exec sh -c "\"$_fsh\" \"$GATE\" zombiecap -- sh -c 'while :; do sleep 1; done' zombiecap-cmd & echo \$! > '$TMP/zg'; exec sleep 15" ) >/dev/null 2>&1 &
+    _zp=$!
+    sleep 2
+    _zg="$(cat "$TMP/zg")"
+    kill -KILL "$_zg" 2>/dev/null
+    sleep 3
+    assert_eq Z "$(ps -o stat= -p "$_zg" 2>/dev/null | cut -c1)" "$_fsh: the killed gate is an unreaped zombie"
+    assert_eq 0 "$(ps -A -o stat=,args= | grep -F "$GATE zombiecap" | grep -v '^Z' | grep -vc grep)" "$_fsh: its timer exited once reparented"
+    pkill -KILL -f "$GATE zombiecap" 2>/dev/null; pkill -KILL -f zombiecap-cmd 2>/dev/null
+    kill "$_zp" 2>/dev/null; wait "$_zp" 2>/dev/null
+    rm -rf "$GP/.studio/gate.lock"
+  done
+  : > "$GP/.studio/gate.times"
+  _t0=$(date +%s)
+  _o="$(cd "$GP" && STUDIO_GATE_MINUTES=1 STUDIO_GATE_SECONDS=87 sh "$GATE" fastcap -- sh "$GATE" fastcap -- echo nested 2>/dev/null)"
+  assert_eq 1 "$([ $(( $(date +%s) - _t0 )) -lt 3 ] && echo 1 || echo 0)" "a nested capped gate returns at once"
+  assert_eq nested "$_o" "the nested command ran"
+  assert_eq 1 "$(wc -l < "$GP/.studio/gate.times" | tr -d ' ')" "re-entry logs one run, not two"
+}
+
 TESTS_REAL_CLOCK="test_gate_no_overlap test_gate_waiting_message test_gate_poll_keeps_budget test_gate_signal_waits_for_child_then_releases test_gate_signal_reaches_the_grandchild"
 # exclusive-scan: test_run_clean in (d) shares the run window the stub must beat: it must start and print inside the one second --seconds cap
 # exclusive-scan: test_run_detects_script_errors in (c, d) failed under load, passed alone (I-4): the stub must print inside a one second --seconds cap
@@ -903,7 +1086,10 @@ TESTS_REAL_CLOCK="test_gate_no_overlap test_gate_waiting_message test_gate_poll_
 # exclusive-scan: test_gate_three_reclaimers_never_overlap in (d) staggered starts 0.6 s and 1.3 s must land inside a 1 s slow mv and 2 s holds
 # exclusive-scan: test_gate_signal_reaches_the_grandchild out (b) TERM is sent after an event wait on the grandchild's pid; real clock
 TESTS_EXCLUSIVE="test_run_clean test_run_imports_when_dot_godot_is_absent test_run_terminates_a_long_process test_gate_three_reclaimers_never_overlap test_gate_stale_reclaim_race test_run_detects_script_errors test_run_passes_scene_and_windowed"
-run_tests test_gate_times_window_per_who test_gate_no_overlap test_gate_status_and_held test_gate_stale_reclaim_race \
+run_tests test_gate_run_cap_stops_a_long_run test_gate_run_cap_excludes_lock_wait \
+  test_gate_run_cap_off_unset_zero_and_setup test_gate_run_cap_kills_a_term_ignorer test_gate_run_cap_no_false_stop \
+  test_gate_run_cap_fast_runs_leave_nothing test_gate_run_cap_leading_zeros \
+  test_gate_times_window_per_who test_gate_no_overlap test_gate_status_and_held test_gate_stale_reclaim_race \
   test_gate_waiting_message test_gate_poll_keeps_budget test_gate_poll_rejects_bad_value test_gate_records_pid_and_who test_gate_without_a_project_just_runs \
   test_gate_signal_waits_for_child_then_releases test_gate_three_reclaimers_never_overlap \
   test_gate_signal_reaches_the_grandchild test_gate_unit_registration_and_times test_gate_wraps_test_and_run \
@@ -912,7 +1098,7 @@ run_tests test_gate_times_window_per_who test_gate_no_overlap test_gate_status_a
   test_resolve_finds_an_app_bundle test_resolve_finds_godot_on_path test_guide_has_an_install_line \
   test_test_needs_a_project test_test_falls_back_to_studio_json test_test_exits_3_without_gut \
   test_test_exits_2_without_engine test_test_passes_and_reports test_test_reports_failures \
-  test_test_targets_a_file test_test_targets_a_directory test_test_imports_when_dot_godot_is_absent \
+  test_test_targets_a_file test_test_file_runs_named_files test_test_file_missing_exits_4 test_test_file_path_forms test_test_file_misuse_exits_4 test_test_file_through_gate test_test_file_several_positionals test_test_targets_a_directory test_test_imports_when_dot_godot_is_absent \
   test_test_reimports_a_partial_cache test_test_skips_import_when_the_cache_is_complete \
   test_test_reimports_a_product_without_its_md5 test_test_names_a_crash \
   test_test_passes_the_projects_gut_config test_test_gut_config_lookup \

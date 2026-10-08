@@ -43,6 +43,7 @@ delivered() {
   grep -c '"event":"message_delivered"' "$IR/events.jsonl" || true
 }
 AUTOPILOT_GUARD="$STUDIO_DIR/hooks/autopilot-guard.sh"
+GODOT_GUARD="$STUDIO_DIR/hooks/godot-guard.sh"
 # The shared #42 fixtures (P, wt, plan_in_p) set TMP and its cleanup trap.
 . "$REPO_ROOT/tests/state_fixtures.sh"
 
@@ -524,6 +525,7 @@ test_autopilot_guard_bash_and_monitor() {
   autopilot 1 Bash '{"command":"studio-test","timeout":5400000,"run_in_background":true}'
   assert_denied "a background Bash call is denied"
   assert_contains "$TMP/ap.out" 'foreground' "the Bash reason says to run it in the foreground"
+  assert_contains "$TMP/ap.out" 'only on gate-routed commands' "timeout goes only on gate-routed commands (#59 R7)"
   autopilot 1 Bash '{"command":"studio-test","timeout":5400000}'
   assert_allowed "a foreground Bash call is allowed"
   autopilot 1 Bash '{"command":"ls","run_in_background":false}'
@@ -869,9 +871,177 @@ test_skill_bootstrap_stage_line() {
   assert_not_contains "$_b" 'When `.studio/STATE.md` exists' "the file-exists wording is gone"
 }
 
+# godot_guard INPUT_JSON — run the Godot guard on a Bash call; asserts exit 0; stdout in $TMP/ap.out.
+godot_guard() {
+  ptu_in Bash "$1" > "$TMP/gg.in"; _gst=0
+  sh "$GODOT_GUARD" < "$TMP/gg.in" > "$TMP/ap.out" 2> "$TMP/ap.err" || _gst=$?
+  assert_eq 0 "$_gst" "the Godot guard exits 0"
+}
+test_godot_guard_registered() {
+  assert_file "$GODOT_GUARD" "godot-guard.sh exists"
+  assert_contains "$STUDIO_DIR/hooks/hooks.json" 'CLAUDE_PLUGIN_ROOT}/hooks/godot-guard.sh' "hooks.json runs it from the plugin root"
+  if command -v jq >/dev/null 2>&1; then
+    assert_eq Bash "$(jq -r '.hooks.PreToolUse[] | select(.hooks[0].command | contains("godot-guard")) | .matcher' "$STUDIO_DIR/hooks/hooks.json")" "on Bash"
+  fi
+}
+# AC7 denied (a) + Review Focus 4.
+test_godot_guard_denies_headless_boot() {
+  for c in \
+    'Godot --headless --import . ; Godot --headless --path . -gtest=res://tests/unit/test_vfx_span_player_creature.gd' \
+    'cd x && Godot --headless --path . -gtest=res://a.gd' \
+    '\"/Applications/Godot 4.app/Contents/MacOS/Godot\" --headless --path .' \
+    '$GODOT --headless --path .' \
+    '\"${GODOT_BIN}\" --path .' \
+    'A=1 godot4 --path .' \
+    'cd x\nGodot_mono --headless --path .' \
+    'timeout 5 godot --headless --path .' \
+    'env FOO=1 Godot_v4.3-stable_linux.x86_64 --path . 2>&1 | tail -5'; do
+    godot_guard "{\"command\":\"$c\"}"
+    assert_denied "denied: $c"
+    assert_contains "$TMP/ap.out" 'studio-test --file' "the reason names studio-test --file ($c)"
+    assert_contains "$TMP/ap.out" 'raw headless Godot' "the reason names the case ($c)"
+  done
+}
+# AC7 denied (b).
+test_godot_guard_denies_hand_built_gut() {
+  godot_guard '{"command":"Godot --headless -s addons/gut/gut_cmdln.gd -gtest=res://a.gd -gexit"}'
+  assert_denied "a hand-built GUT run"
+  assert_contains "$TMP/ap.out" 'gut_cmdln' "the reason names the case"
+}
+# AC7 allowed + Review Focus 4.
+test_godot_guard_allows() {
+  for c in \
+    'Godot --headless --path . -s other.gd' \
+    'Godot --headless --path . --import' \
+    'Godot --version' \
+    'Godot --headless --path . --export-release Mac out.dmg' \
+    'Godot --headless --path . --quit-after 5' \
+    'Godot -e --path .' \
+    'studio-test --file tests/unit/x.gd' \
+    'echo \"Godot --headless --path .\"' \
+    'echo \"a; Godot --headless --path .\"' \
+    'grep -r godot --path' \
+    'ls -la'; do
+    godot_guard "{\"command\":\"$c\"}"
+    assert_allowed "allowed: $c"
+  done
+}
+# Fix round 1: heredoc bodies and comments are text; a real Godot call after them is not.
+test_godot_guard_skips_heredocs_and_comments() {
+  for c in \
+    'cat > notes.md <<\"EOF\"\nGodot --headless --path . -gtest=res://a.gd\nEOF' \
+    'cat > notes.md <<EOF\nGodot --headless --path .\nEOF\nls' \
+    'cat <<-EOF\n\tGodot --headless --path .\n\tEOF' \
+    'cat <<A <<B\nGodot --headless --path .\nA\nGodot --path .\nB' \
+    'ls # Godot --headless --path .' \
+    'ls\n# Godot --headless --path .\nls' \
+    'echo a#b Godot --version'; do
+    godot_guard "{\"command\":\"$c\"}"
+    assert_allowed "allowed: $c"
+  done
+  godot_guard '{"command":"cat <<EOF\nGodot --headless --path .\nEOF\nGodot --headless --path ."}'
+  assert_denied "a real Godot command after the heredoc end line"
+  godot_guard '{"command":"cat <<EOF # note\nx\nEOF\nGodot --path ."}'
+  assert_denied "a real Godot command after a heredoc with a trailing comment"
+  godot_guard '{"command":"ls # c\nGodot --path ."}'
+  assert_denied "a real Godot command on the line after a comment"
+}
+# Fix round 1: a single quote reaches the hook (POSIX awk escape, not \x27).
+test_godot_guard_single_quotes() {
+  _sq="'"
+  godot_guard "{\"command\":\"${_sq}/Applications/Godot 4.app/Contents/MacOS/Godot${_sq} --headless --path .\"}"
+  assert_denied "a single-quoted Godot path"
+  godot_guard "{\"command\":\"echo ${_sq}Godot --headless --path .${_sq}\"}"
+  assert_allowed "a single-quoted Godot text"
+}
+# Fix round 1: only the Godot binary variables count; wrappers; fast exit.
+test_godot_guard_variables_wrappers_and_speed() {
+  for c in \
+    'nohup godot --headless --path .' \
+    'gtimeout 5 godot --headless --path .' \
+    'env -u FOO godot --headless --path .' \
+    '${GODOT_PATH} --path .' \
+    '$GODOT_BIN --path .'; do
+    godot_guard "{\"command\":\"$c\"}"
+    assert_denied "denied: $c"
+  done
+  for c in '$GODOT_PROJECT/x.sh --headless' '${GODOT_HOME}/x --path .'; do
+    godot_guard "{\"command\":\"$c\"}"
+    assert_allowed "allowed: $c"
+  done
+  _long="$(awk 'BEGIN { for (i = 0; i < 12000; i++) printf "echo abc; "; print "" }')"
+  godot_guard "{\"command\":\"$_long\"}"
+  assert_allowed "a long non-Godot command"
+}
+test_godot_guard_never_blocks_on_bad_input() {
+  for raw in '' 'not json' '{"tool_name":"Bash"}' '{"tool_input":{"command":"Godot \"unterminated'; do
+    _gst=0; printf '%s' "$raw" | sh "$GODOT_GUARD" > "$TMP/ap.out" 2>/dev/null || _gst=$?
+    assert_eq 0 "$_gst" "exit 0 on bad input ($raw)"
+    assert_allowed "and no decision ($raw)"
+  done
+}
+
+WT_GUARD="$STUDIO_DIR/hooks/worktree-guard.sh"
+STATE_BIN_H="$STUDIO_DIR/bin/studio-state"
+# wt_proj NAME — a git repo with studio state; story S1's branch feat/x recorded. Sets Q.
+wt_proj() {
+  Q="$TMP/wt-$1"; mkdir -p "$Q"
+  ( cd "$Q" && git init -q -b main && git -c user.name=t -c user.email=t@t commit -q --allow-empty -m i \
+    && sh "$STATE_BIN_H" init && STUDIO_STORY=S1 sh "$STATE_BIN_H" init && STUDIO_STORY=S1 sh "$STATE_BIN_H" set branch feat/x ) >/dev/null 2>&1
+  Q="$(cd "$Q" && pwd -P)"
+}
+# wt_guard STORY|- AUTOPILOT|- INPUT_JSON — run the guard in $Q; stdout in $TMP/ap.out; asserts exit 0.
+wt_guard() {
+  ptu_in EnterWorktree "$3" > "$TMP/wg.in"; _wst=0
+  ( cd "$Q" && unset STUDIO_STORY OMEGA_AUTOPILOT
+    [ "$1" = - ] || { STUDIO_STORY="$1"; export STUDIO_STORY; }
+    [ "$2" = - ] || { OMEGA_AUTOPILOT="$2"; export OMEGA_AUTOPILOT; }
+    sh "$WT_GUARD" < "$TMP/wg.in" ) > "$TMP/ap.out" 2> "$TMP/ap.err" || _wst=$?
+  assert_eq 0 "$_wst" "the worktree guard exits 0"
+}
+test_worktree_guard_registered() {
+  assert_file "$WT_GUARD" "worktree-guard.sh exists"
+  assert_contains "$STUDIO_DIR/hooks/hooks.json" 'CLAUDE_PLUGIN_ROOT}/hooks/worktree-guard.sh' "registered from the plugin root"
+  if command -v jq >/dev/null 2>&1; then
+    assert_eq EnterWorktree "$(jq -r '.hooks.PreToolUse[] | select(.hooks[0].command | contains("worktree-guard")) | .matcher' "$STUDIO_DIR/hooks/hooks.json")" "on EnterWorktree"
+  fi
+}
+# AC8 denied / allowed in a story session.
+test_worktree_guard_denies_bare_calls_in_story() {
+  wt_proj story
+  for j in '{}' '{"name":"x"}' '{"path":""}'; do
+    wt_guard S1 - "$j"; assert_denied "STUDIO_STORY=S1: $j is denied"
+    assert_contains "$TMP/ap.out" 'path:' "the reason says path: ($j)"
+  done
+  wt_guard S1 1 '{"path":"/x"}'; assert_allowed "a path is allowed"
+}
+# R5's three sources for the named path.
+test_worktree_guard_names_the_story_worktree() {
+  wt_proj names
+  ( cd "$Q" && git branch feat/x ) >/dev/null 2>&1
+  wt_guard S1 - '{}'
+  assert_contains "$TMP/ap.out" "path: $Q/.claude/worktrees/feat-x" "exit 3: the path studio-state suggests"
+  ( cd "$Q" && git worktree add -q "$TMP/wt-names-live" feat/x ) >/dev/null 2>&1
+  wt_guard S1 - '{}'
+  assert_contains "$TMP/ap.out" "path: $(cd "$TMP/wt-names-live" && pwd -P)" "exit 0: the live worktree"
+  wt_proj gone
+  wt_guard S1 - '{}'
+  assert_contains "$TMP/ap.out" "path: $Q/.claude/worktrees/feat-x" "no branch yet (exit 1): the execute §0 rule"
+}
+# AC8: off outside story sessions.
+test_worktree_guard_off_outside_stories() {
+  wt_proj off
+  for j in '{}' '{"name":"x"}'; do
+    wt_guard - 1 "$j"; assert_allowed "OMEGA_AUTOPILOT=1 only: $j is allowed"
+    wt_guard - - "$j"; assert_allowed "neither variable: $j is allowed"
+  done
+}
+
 # exclusive-scan: test_inbox_hook_silent_outside_units in (a, c) asserts the hook returns inside a 1 s ceiling with a writer holding the fifo open
 TESTS_EXCLUSIVE="test_inbox_hook_silent_outside_units"
-run_tests test_session_start_stage_per_checkout test_session_start_take_hint \
+run_tests test_worktree_guard_registered test_worktree_guard_denies_bare_calls_in_story test_worktree_guard_names_the_story_worktree test_worktree_guard_off_outside_stories test_godot_guard_registered test_godot_guard_denies_headless_boot test_godot_guard_denies_hand_built_gut \
+  test_godot_guard_allows test_godot_guard_skips_heredocs_and_comments test_godot_guard_single_quotes test_godot_guard_variables_wrappers_and_speed test_godot_guard_never_blocks_on_bad_input \
+  test_session_start_stage_per_checkout test_session_start_take_hint \
   test_session_start_never_writes test_skill_bootstrap_stage_line test_hook_files test_hook_output_shape test_hook_defaults_from_studio_json \
   test_hook_reads_project_config test_hook_partial_config_falls_back test_hook_escapes_json \
   test_hook_fills_config_value_with_metacharacters test_guard_state_blocks_direct_writes \

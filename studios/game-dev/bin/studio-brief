@@ -3,12 +3,12 @@
 # reads the plan or spec whole. Read-only. `plan` and `spec` come from the
 # sibling studio-state (so STUDIO_STORY selects the story's file). Each part
 # is headed by one line `==> <file>:L<a>-<b>` followed by those lines verbatim.
+# Spec: items — the format is the plan skill's Spec-line rule
+# (`skills/plan/SKILL.md`).
 #
 #   studio-brief task <n>   the plan's ## Global Constraints and ## Decisions,
 #                           the `### Task <n>:` block, and every range on that
-#                           block's `Spec:` line (`<path>:L<a>-<b>` or
-#                           `<path>§<heading line as written>`, separated by
-#                           ", "), then the story ledger's active directives
+#                           block's `Spec:` line, then the story ledger's active directives
 #                           (`Directive <id>:` lines not later retired) as a
 #                           part `==> <ledger>`
 #   studio-brief final      the spec's ## Acceptance criteria (only the story's
@@ -29,6 +29,14 @@
 #                           reset`), directives, Context files, and the line
 #                           `diff:` for that range. k=0: `range: none`.
 #
+#   studio-brief validate <plan>
+#                           resolve every task's Spec: items without printing
+#                           them: exit 0 and `<T> tasks, <I> Spec items ok`, or
+#                           every problem on stderr as `task <n>: <error>`
+#                           (a repeated `### Task <n>:` heading is one).
+#                           The plan path is the caller's; Spec: paths are the
+#                           work root's. Needs no studio state.
+#
 # `Context:` (a comma-separated file list before the plan's first `## `) adds a
 # `## Context files` part to all three verbs: whole files while the byte total
 # stays <= 12000, the rest listed under `Read these as well:`.
@@ -36,14 +44,15 @@
 # A plan without ## Global Constraints or ## Decisions, or a task without a
 # Spec: line, prints a one-line note in its place and still exits 0.
 # Exit: 0 ok · 1 a task, cited range, heading or story that cannot be
-# resolved, or a range past the end of its file · 2 bad usage
+# resolved, or a range past the end of its file (validate: any bad item, a
+# task without Spec:, or no tasks) · 2 bad usage or (validate) a missing plan
 set -u
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 STATE_BIN="$HERE/studio-state"
 
 usage() {
-  printf 'usage: studio-brief task <n> | final | check <k>\n' >&2
+  printf 'usage: studio-brief task <n> | final | check <k> | validate <plan>\n' >&2
   exit 2
 }
 fail() { printf 'studio-brief: %s\n' "$*" >&2; exit 1; }
@@ -65,6 +74,37 @@ section() {
 
 # emit FILE A B — the part header, then the lines.
 emit() { printf '==> %s:L%s-%s\n' "$1" "$2" "$3"; sed -n "$2,$3p" "$1"; }
+
+# spec_item ITEM — one Spec: item (the format: skills/plan/SKILL.md, the
+# Spec-line rule). Paths resolve from the current directory. Sets SI_FILE,
+# SI_A, SI_B (a line range; a heading gives its block) and returns 0, or sets
+# SI_ERR and returns 1 — never exits, so validate can collect every error.
+spec_item() {
+  SI_FILE=""; SI_A=""; SI_B=""; SI_ERR=""
+  case "$1" in
+    *§*)
+      SI_FILE="${1%%§*}"; _si_h="${1#*§}"
+      [ -f "$SI_FILE" ] || { SI_ERR="spec $SI_FILE not found (Spec: item '$1')"; return 1; }
+      _si_r="$(section "$SI_FILE" "$_si_h" 1)"
+      [ -n "$_si_r" ] || { SI_ERR="heading '$_si_h' not found in $SI_FILE"; return 1; }
+      SI_A="${_si_r% *}"; SI_B="${_si_r#* }" ;;
+    *:L*)
+      SI_FILE="${1%:L*}"; _si_g="${1##*:L}"
+      case "$_si_g" in *-*) SI_A="${_si_g%%-*}"; SI_B="${_si_g#*-}" ;; *) SI_A="$_si_g"; SI_B="$_si_g" ;; esac
+      case "$SI_A/$SI_B" in */|/*|*[!0-9/]*) SI_ERR="bad range in Spec: item '$1'"; return 1 ;; esac
+      { [ "$SI_A" -ge 1 ] && [ "$SI_A" -le "$SI_B" ]; } || { SI_ERR="bad range in Spec: item '$1'"; return 1; }
+      [ -f "$SI_FILE" ] || { SI_ERR="spec $SI_FILE not found (Spec: item '$1')"; return 1; }
+      _si_t="$(wc -l < "$SI_FILE" | tr -d ' ')"
+      [ -n "$(tail -c1 "$SI_FILE")" ] && _si_t=$((_si_t + 1))   # a final line without a newline counts
+      [ "$SI_B" -le "$_si_t" ] || { SI_ERR="range $1 is past the end of $SI_FILE ($_si_t lines)"; return 1; } ;;
+    *) SI_ERR="cannot parse Spec: item '$1'"; return 1 ;;
+  esac
+  return 0
+}
+# plan_tasks PLAN — the numbers of its `### Task <n>:` headings, outside fences, in order.
+plan_tasks() {
+  awk '/^```/ { f = !f; next } !f && /^### Task [0-9]+:/ { s = $3; sub(/:.*/, "", s); print s }' "$1"
+}
 
 # state_get KEY — one studio-state field, with '-' (unset) read as empty.
 state_get() {
@@ -96,6 +136,7 @@ directives_part() {
   [ -z "$_dp" ] || printf '==> %s\n%s\n' "$_dp_l" "$_dp"
 }
 
+CALLER_PWD="$(pwd -P)"
 WORK="$(sh "$STATE_BIN" root --work 2>/dev/null)" && cd "$WORK" 2>/dev/null
 
 [ $# -ge 1 ] || usage
@@ -120,42 +161,37 @@ emit_task() {
   _et_a="$1"; _et_b="$2"
   emit "$plan" "$_et_a" "$_et_b"
   if [ "$_et_wd" = 1 ]; then directives_part; fi
-  specline="$(sed -n "${_et_a},${_et_b}p" "$plan" | sed -n 's/^Spec: //p' | head -n 1)"
-  if [ -z "$specline" ]; then
+  each_spec_item "$plan" "$_et_a" "$_et_b" emit_task_item || {
     printf '(task %s has no Spec: line)\n' "$_et_n"
     return 0
-  fi
-  # Items are separated by ", " (a heading containing ", " cannot be cited).
-  items="$(printf '%s\n' "$specline" | sed 's/, /\
+  }
+}
+
+# emit_task_item ITEM — emit_task's per-item step: resolve and print the range.
+emit_task_item() {
+  spec_item "$1" || fail "$SI_ERR"
+  emit "$SI_FILE" "$SI_A" "$SI_B"
+}
+
+# each_spec_item FILE A B CALLBACK — the one reader of a task block's first
+# `Spec:` line (lines A-B of FILE), shared by `task`/`check` and `validate`.
+# Items are separated by ", " (a heading containing ", " cannot be cited).
+# Runs CALLBACK ITEM per item with IFS restored; returns 3 when there is no
+# Spec: line.
+each_spec_item() {
+  _es_line="$(sed -n "${2},${3}p" "$1" | sed -n 's/^Spec: //p' | head -n 1)"
+  [ -n "$_es_line" ] || return 3
+  _es_items="$(printf '%s\n' "$_es_line" | sed 's/, /\
 /g')"
-  oldifs="$IFS"; IFS='
+  _es_ifs="$IFS"; IFS='
 '
-  for item in $items; do
-    IFS="$oldifs"
-    case "$item" in
-      *§*)
-        f="${item%%§*}"; h="${item#*§}"
-        [ -f "$f" ] || fail "spec $f not found (Spec: item '$item')"
-        emit_section "$f" "$h" 1 "heading '$h'"
-        ;;
-      *:L[0-9]*-[0-9]*)
-        f="${item%:L*}"; rng="${item##*:L}"
-        a="${rng%-*}"; b="${rng#*-}"
-        case "$a$b" in *[!0-9]*) fail "bad range in Spec: item '$item'" ;; esac
-        [ -f "$f" ] || fail "spec $f not found (Spec: item '$item')"
-        total="$(wc -l < "$f" | tr -d ' ')"
-        # a final line without a newline still counts
-        [ -n "$(tail -c1 "$f")" ] && total=$((total + 1))
-        { [ "$a" -ge 1 ] && [ "$a" -le "$b" ] && [ "$b" -le "$total" ]; } \
-          || fail "range $item is past the end of $f ($total lines)"
-        emit "$f" "$a" "$b"
-        ;;
-      *) fail "cannot parse Spec: item '$item'" ;;
-    esac
+  for _es_it in $_es_items; do
+    IFS="$_es_ifs"
+    "$4" "$_es_it"
     IFS='
 '
   done
-  IFS="$oldifs"
+  IFS="$_es_ifs"
 }
 
 # context_part — D18: the plan's Context: files under `## Context files`,
@@ -203,6 +239,36 @@ need_plan() {
 }
 
 case "$verb" in
+validate)
+  validate_item() {
+    _vi=$((_vi + 1))
+    spec_item "$1" || { printf 'studio-brief: task %s: %s\n' "$_vn" "$SI_ERR" >&2; _vbad=1; }
+  }
+  [ $# -eq 2 ] || usage
+  case "$2" in /*) vplan="$2" ;; *) vplan="$CALLER_PWD/$2" ;; esac
+  [ -f "$vplan" ] || { printf 'studio-brief: plan %s not found\n' "$2" >&2; exit 2; }
+  _vt=0; _vi=0; _vbad=0; _vseen=" "; _vdup=" "
+  for _vn in $(plan_tasks "$vplan"); do
+    # A repeated number: `task <n>` only ever reaches the first block, so the
+    # later one is never briefed or checked. Named once, not re-validated.
+    case "$_vseen" in
+      *" $_vn "*)
+        case "$_vdup" in *" $_vn "*) ;; *)
+          printf 'studio-brief: task %s: duplicate ### Task heading\n' "$_vn" >&2
+          _vdup="$_vdup$_vn "; _vbad=1 ;;
+        esac
+        continue ;;
+    esac
+    _vseen="$_vseen$_vn "
+    _vt=$((_vt + 1))
+    _vr="$(section "$vplan" "### Task $_vn:" 0)"
+    each_spec_item "$vplan" "${_vr% *}" "${_vr#* }" validate_item
+    if [ $? -eq 3 ]; then printf 'studio-brief: task %s: no Spec: line\n' "$_vn" >&2; _vbad=1; fi
+  done
+  [ "$_vt" -gt 0 ] || { printf 'studio-brief: no ### Task blocks in %s\n' "$2" >&2; exit 1; }
+  [ "$_vbad" = 0 ] || exit 1
+  printf 'studio-brief: %s tasks, %s Spec items ok\n' "$_vt" "$_vi"
+  ;;
 task)
   [ $# -eq 2 ] || usage
   case "$2" in ''|*[!0-9]*) usage ;; esac

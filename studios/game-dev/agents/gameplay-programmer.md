@@ -31,11 +31,20 @@ Method, for `Verify: unit` tasks (mandatory):
 1. Follow `superpowers:test-driven-development`: write the GUT test named in
    `Files:` first — one behaviour per test function, `test_` prefix,
    `assert_eq` / `assert_almost_eq` with the spec's numbers.
-2. Run `studio-test <test file>` and paste the failing summary line.
+2. Run `studio-test --file <test file>` and paste the failing summary line.
 3. Implement the minimum that passes. Run `studio-test` for the whole suite;
    paste the passing summary line. Exit 2 (no engine) or 3 (GUT missing) is
    reported verbatim, not worked around.
 4. Commit with a message that names the task (`feat(T3): …`).
+
+Never build a Godot or GUT command by hand (the studio's hook refuses one).
+Pass `timeout: $BASH_MAX_TIMEOUT_MS` only on gate-routed commands
+(`studio-test`, `studio-run`, `studio-setup`, `studio-gate`); every other
+command keeps the default cap. A command that its timeout moved to the
+background is hung: stop it with the tool that stops background tasks, and
+do not wait for it. A `studio-test` that exits 124 ran past the gate run
+cap: report it verbatim as `gate timed out — <command> ran past <n> min`;
+it exits 124.
 
 For `Verify: playtest` and `Verify: visual` tasks: implement, run
 `studio-test` to prove nothing regressed, commit, and end the report with the
