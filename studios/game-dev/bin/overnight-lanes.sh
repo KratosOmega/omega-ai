@@ -383,12 +383,10 @@ chain_waits() { awk -F'\t' -v k="$1" '$1 == k { print $2; exit }' "$CHAINS"; }
 # story_launch_env ID — the env words of a unit launch for story ID (spec
 # 686-687), each KEY='value' with the value single-quoted (sq):
 # OMEGA_AUTOPILOT STUDIO_RUN (abs RUN_DIR/manifest.md) STUDIO_STORY
-# STUDIO_DOCS_REV BASH_DEFAULT_TIMEOUT_MS BASH_MAX_TIMEOUT_MS (both
-# session_minutes × 60000).
+# STUDIO_DOCS_REV, then the command caps from caps_env (see studio-overnight).
 story_launch_env() {
-  _ms=$((SESSION_MINUTES * 60000))
-  printf 'OMEGA_AUTOPILOT=%s STUDIO_RUN=%s STUDIO_STORY=%s STUDIO_DOCS_REV=%s BASH_DEFAULT_TIMEOUT_MS=%s BASH_MAX_TIMEOUT_MS=%s' \
-    "$(sq 1)" "$(sq "$RUN_DIR/manifest.md")" "$(sq "$1")" "$(sq "$MF_DOCS")" "$(sq "$_ms")" "$(sq "$_ms")"
+  printf 'OMEGA_AUTOPILOT=%s STUDIO_RUN=%s STUDIO_STORY=%s STUDIO_DOCS_REV=%s %s' \
+    "$(sq 1)" "$(sq "$RUN_DIR/manifest.md")" "$(sq "$1")" "$(sq "$MF_DOCS")" "$(caps_env)"
 }
 
 # story_first_label ID — the label of ID's next unit from its studio state
@@ -657,7 +655,8 @@ land_once_direct() {
 # the story ledger (feature checkout) gained a `Repair:` line — retry; else
 # writes the ending (`stopped stop: <reason>` for a new Stop: line, `stopped
 # repair made no progress [(orphaned: …)]` for neither — `stopped repair timed out (…)` when
-# the session cap ended it — the halt reason when the lane must stop) and
+# the session cap ended it, `stopped repair stalled (no output for N min: …)`
+# when the idle watchdog did (#59) — the halt reason when the lane must stop) and
 # returns 1. Called after studio-gate has exited, so the repair's
 # own gate takes the gate lock itself (D17).
 land_repair() {
@@ -682,8 +681,11 @@ land_repair() {
     story_write "$1" landing; return 0
   fi
   _lr_o="$(unit_outcome)"
-  if [ "$_lr_o" != "timed out" ]; then row "$n" repair "$_lr_o"; story_write "$1" "stopped repair made no progress$(orphan_note "$_lr_o")"
-  else row "$n" repair "timed out"; story_write "$1" "stopped repair timed out (session_minutes $SESSION_MINUTES)"; fi
+  case "$_lr_o" in
+    "timed out") row "$n" repair "timed out"; story_write "$1" "stopped repair timed out (session_minutes $SESSION_MINUTES)" ;;
+    stalled) row "$n" repair stalled; story_write "$1" "stopped repair stalled$(stall_note)" ;;
+    *) row "$n" repair "$_lr_o"; story_write "$1" "stopped repair made no progress$(orphan_note "$_lr_o")" ;;
+  esac
   return 1
 }
 
@@ -709,7 +711,8 @@ gate_log_of() {
 # ENDING set: the halt reason; `stop: run budget` (story_units' rule, before
 # any launch); `stop: <reason>` for a new Stop: line (the unit's own `gate
 # repair red` is a hard stop); `gate repair made no progress [(orphaned: …)]`; or `gate
-# repair timed out (session_minutes N)` — the halt reason instead when the
+# repair timed out (session_minutes N)`; `gate repair stalled (no output for
+# N min: <command>)` (#59) — the halt reason instead when the
 # lane must stop.
 gate_repair() {
   if lane_halt; then ENDING="$(lane_halt_reason)"; return 1; fi
@@ -729,8 +732,11 @@ gate_repair() {
   if [ -n "$NEW_STOP" ]; then row "$n" gate-repair stop; ENDING="$STOP_ENDING"; return 1; fi
   if [ "$_gr_a" -gt "$_gr_b" ]; then row "$n" gate-repair progress; story_write "$1" running; return 0; fi
   _gr_o="$(unit_outcome)"
-  if [ "$_gr_o" != "timed out" ]; then row "$n" gate-repair "$_gr_o"; ENDING="gate repair made no progress$(orphan_note "$_gr_o")"
-  else row "$n" gate-repair "timed out"; ENDING="gate repair timed out (session_minutes $SESSION_MINUTES)"; fi
+  case "$_gr_o" in
+    "timed out") row "$n" gate-repair "timed out"; ENDING="gate repair timed out (session_minutes $SESSION_MINUTES)" ;;
+    stalled) row "$n" gate-repair stalled; ENDING="gate repair stalled$(stall_note)" ;;
+    *) row "$n" gate-repair "$_gr_o"; ENDING="gate repair made no progress$(orphan_note "$_gr_o")" ;;
+  esac
   # A halt that ended the unit (or arrived while it ran) names the story's end.
   ! lane_halt || ENDING="$(lane_halt_reason)"
   return 1
@@ -804,7 +810,8 @@ sync_check() {
 # their endings are story_units'). Else returns 1 with ENDING set, and the
 # story stops at once (no retry, no hold): the halt reason; `stop: run budget`; `sync repair:
 # stop: <reason>` for a new Stop: line; `sync repair: no progress [(orphaned:
-# …)]`; `sync repair: timed out (session_minutes N)` (D32).
+# …)]`; `sync repair: timed out (session_minutes N)` (D32); `sync repair:
+# stalled (no output for N min: <command>)` (#59).
 sync_repair() {
   if lane_halt; then ENDING="$(lane_halt_reason)"; return 1; fi
   if run_budget_out; then ENDING="stop: run budget"; return 1; fi
@@ -830,8 +837,11 @@ sync_repair() {
     return 0
   fi
   _sr_o="$(unit_outcome)"
-  if [ "$_sr_o" != "timed out" ]; then row "$n" sync-repair "$_sr_o"; ENDING="sync repair: no progress$(orphan_note "$_sr_o")"
-  else row "$n" sync-repair "timed out"; ENDING="sync repair: timed out (session_minutes $SESSION_MINUTES)"; fi
+  case "$_sr_o" in
+    "timed out") row "$n" sync-repair "timed out"; ENDING="sync repair: timed out (session_minutes $SESSION_MINUTES)" ;;
+    stalled) row "$n" sync-repair stalled; ENDING="sync repair: stalled$(stall_note)" ;;
+    *) row "$n" sync-repair "$_sr_o"; ENDING="sync repair: no progress$(orphan_note "$_sr_o")" ;;
+  esac
   # A halt that ended the unit (or arrived while it ran) names the story's end.
   ! lane_halt || ENDING="$(lane_halt_reason)"
   return 1
@@ -1101,7 +1111,7 @@ story_gate_loop() {
 run_story() {
   CUR_ID="$1"
   STUDIO_STORY="$1"; STUDIO_RUN="$RUN_DIR/manifest.md"; STUDIO_DOCS_REV="$MF_DOCS"
-  BASH_DEFAULT_TIMEOUT_MS=$((SESSION_MINUTES * 60000)); BASH_MAX_TIMEOUT_MS="$BASH_DEFAULT_TIMEOUT_MS"
+  session_caps; BASH_DEFAULT_TIMEOUT_MS="$CMD_MS"; BASH_MAX_TIMEOUT_MS="$MAX_MS"
   export STUDIO_STORY STUDIO_RUN STUDIO_DOCS_REV BASH_DEFAULT_TIMEOUT_MS BASH_MAX_TIMEOUT_MS
   LAUNCH_ENV="$(story_launch_env "$1")"
   UNIT_PREFIX=""   # run_unit names files <n>-<id>-<label> from CUR_ID (T5)
@@ -1166,6 +1176,7 @@ lanes_wait() {
 # Used by the runner's exit path (lanes then see the stop and end) and by
 # the sweep for a lane that died with its session live. Paths are quoted
 # throughout (a project path may hold a space); lane names are numbers.
+# Its grace poll is STUDIO_OVERNIGHT_REAP_POLL_SECONDS (studio-overnight's help), read at startup into REAP_POLL/REAP_TPS; sourced alone (a unit test), the 1 s default applies.
 lanes_end_sessions() {
   if [ "$#" -eq 0 ]; then
     for _es_d in "$RUN_DIR"/lanes/*; do [ ! -d "$_es_d" ] || set -- "$@" "${_es_d##*/}"; done
@@ -1189,13 +1200,13 @@ lanes_end_sessions() {
     kill -TERM -"$_es_p" 2>/dev/null || { pkill -TERM -P "$_es_p"; kill -TERM "$_es_p"; } 2>/dev/null
   done
   _es_g=0
-  while [ -n "$_es_pids" ] && [ "$_es_g" -lt "${GRACE:-30}" ]; do
+  while [ -n "$_es_pids" ] && [ "$_es_g" -lt $(( ${GRACE:-30} * ${REAP_TPS:-1} )) ]; do
     _es_alive=0
     for _es_p in $_es_pids; do
       { kill -0 -"$_es_p" 2>/dev/null || pid_live "$_es_p"; } && _es_alive=1
     done
     [ "$_es_alive" = 1 ] || break
-    sleep 1; _es_g=$((_es_g + 1))
+    sleep "${REAP_POLL:-1}"; _es_g=$((_es_g + 1))
   done
   for _es_p in $_es_pids; do
     kill -KILL -"$_es_p" 2>/dev/null || { pkill -KILL -P "$_es_p"; kill -KILL "$_es_p"; } 2>/dev/null
@@ -1654,8 +1665,8 @@ final_stopped() {
 # OMEGA_AUTOPILOT, STUDIO_RUN, STUDIO_DOCS_REV and the Bash timeouts, plus
 # ENV_WORDS (KEY='value', sq-quoted); never STUDIO_STORY. Its row in
 # final/units.tsv is `progress` when FINAL_W's HEAD moved, else `noprog`
-# (`timed out` when the session cap ended it, `orphaned` when print mode
-# killed its background work).
+# (`timed out` when the session cap ended it, `stalled` when the idle
+# watchdog did, `orphaned` when print mode killed its background work).
 # Returns 1, launching nothing, when a stop was requested (before the unit or
 # while it waited for a session slot, `stopped before <label>`) or the run budget
 # (story_units' rule: spent_all + SESSION_USD > RUN_USD) refuses it, with a
@@ -1670,8 +1681,7 @@ final_unit() {
   fi
   UNIT_DIR="$RUN_DIR/final"; UNIT_PREFIX=""; CUR_ID=""
   mkdir -p "$UNIT_DIR" || return 1
-  _fu_ms=$((SESSION_MINUTES * 60000))
-  LAUNCH_ENV="OMEGA_AUTOPILOT=$(sq 1) STUDIO_RUN=$(sq "$RUN_DIR/manifest.md") STUDIO_DOCS_REV=$(sq "$MF_DOCS") BASH_DEFAULT_TIMEOUT_MS=$(sq "$_fu_ms") BASH_MAX_TIMEOUT_MS=$(sq "$_fu_ms")${3:+ $3}"
+  LAUNCH_ENV="OMEGA_AUTOPILOT=$(sq 1) STUDIO_RUN=$(sq "$RUN_DIR/manifest.md") STUDIO_DOCS_REV=$(sq "$MF_DOCS") $(caps_env)${3:+ $3}"
   _fu_p="$PROMPT"; PROMPT="$2"; UNIT_CWD="$FINAL_W"
   _fu_h0="$(git -C "$FINAL_W" rev-parse HEAD 2>/dev/null)"
   FINAL_N=$((${FINAL_N:-0} + 1)); run_unit "$FINAL_N" "$1"

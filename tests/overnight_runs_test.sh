@@ -5,7 +5,7 @@ set -u
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 . "$REPO_ROOT/tests/assert.sh"
 LIB="$REPO_ROOT/studios/game-dev/bin/overnight-runs.sh"
-TMP="$(cd "$(mktemp -d)" && pwd -P)"; trap '{ for _d in $DUMMIES; do kill "$_d"; done; wait; } 2>/dev/null; rm -rf "$TMP"' EXIT
+TMP="$(cd "$(mktemp -d "${TMPDIR:-/tmp}/overnight_runs.XXXXXX")" && pwd -P)"; trap '{ for _d in $DUMMIES; do kill "$_d"; done; wait; } 2>/dev/null; rm -rf "$TMP"' EXIT
 HOME="$TMP/home"; export HOME; mkdir -p "$HOME"
 DUMMIES=""
 TAB="$(printf '\t')"
@@ -154,6 +154,9 @@ test_mutex_stale_reap_lock_broken() {
   TESTS_RUN=$((TESTS_RUN + 1)); mx_drop "$M" $$
 }
 
+TESTS_REAL_CLOCK="test_mutex_reap_race"
+# exclusive-scan: test_mutex_stale_reap_lock_broken in (a) asserts the take finishes inside a 5 s ceiling
+TESTS_EXCLUSIVE="test_mutex_stale_reap_lock_broken"
 run_tests test_runs_live_per_run_and_old_lock test_runs_live_skips_dead_and_single test_runs_match_slug_or_basename \
   test_runs_stop_of test_runs_start_dir_lock_then_registry test_runs_records test_runs_rows_newest_report \
   test_runs_worktree_of test_runs_plan_files_studio_form test_runs_plan_files_superpowers_form test_runs_plan_files_comma_line_list test_mx_take_drop_and_dead_owner \

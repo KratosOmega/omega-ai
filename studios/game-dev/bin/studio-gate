@@ -2,6 +2,12 @@
 # studio-gate <who> -- <cmd> [args...] — run <cmd> holding the project's one
 # gate lock, so at most one test or gate run happens at a time.
 #
+# Test hooks (tests only; never set them for a real run):
+#   STUDIO_GATE_POLL_SECONDS (1, 0.5, 0.2 or 0.1; default 1) — the lock
+#     wait's poll; the waiting message stays every 60 s.
+#   STUDIO_GATE_SECONDS (default: STUDIO_GATE_MINUTES x 60) — the run cap in
+#     seconds; it applies only while STUDIO_GATE_MINUTES caps the run.
+#
 # Lock: STATE_ROOT/.studio/gate.lock/ (mkdir), holding `pid` (this script's
 # $$) and `who`. The command runs as a child, leading its own process group,
 # with STUDIO_GATE_HELD=<this pid> in its environment only; a nested
@@ -22,7 +28,15 @@
 # (rc 128+n when a signal ended it) to STATE_ROOT/.studio/gate.times (the
 # newest 50 lines per `who` are kept); studio-overnight's preflight checks the slowest
 # recent studio-test against session_minutes.
-# Exit: the command's status · 2 usage · 128+n when TERM/INT/HUP ended it.
+#
+# Run cap (#59 R1): STUDIO_GATE_MINUTES (a whole number; unset, empty or 0 =
+# no cap) stops a run that goes past it: TERM to the process group, KILL after
+# the 10 s grace, `gate: <who> ran past <n> min — stopped` on stderr, rc 124
+# in gate.times. The timer starts once the lock is held (waiting does not
+# count). Who `setup` is exempt (worktree_setup has its own timer). A nested
+# gate execs before any timer, so re-entry adds no second one.
+# Exit: the command's status · 2 usage · 128+n when TERM/INT/HUP ended it ·
+# 124 when STUDIO_GATE_MINUTES stopped the run.
 # With no .studio/ project there is nothing to protect: the command just runs.
 
 SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -33,6 +47,12 @@ if [ "$#" -lt 3 ] || [ "$2" != "--" ]; then
 fi
 WHO="$1"
 shift 2
+
+case "${STUDIO_GATE_POLL_SECONDS:-1}" in
+  1) GATE_POLL=1; GATE_TPS=1 ;;     0.5) GATE_POLL=0.5; GATE_TPS=2 ;;
+  0.2) GATE_POLL=0.2; GATE_TPS=5 ;; 0.1) GATE_POLL=0.1; GATE_TPS=10 ;;
+  *) printf 'studio-gate: STUDIO_GATE_POLL_SECONDS must be 1, 0.5, 0.2 or 0.1, got %s\n' "$STUDIO_GATE_POLL_SECONDS" >&2; exit 2 ;;
+esac
 
 ROOT="$(sh "$SELF_DIR/studio-state" root 2>/dev/null)" || ROOT=""
 if [ -z "$ROOT" ] || [ ! -d "$ROOT/.studio" ]; then
@@ -117,6 +137,7 @@ try_take() {
 }
 
 release() {
+  [ -z "${TIMER:-}" ] || kill "$TIMER" 2>/dev/null
   mutex_drop
   if [ "$OWNED" = 1 ] && [ "$(lock_pid)" = "$$" ]; then
     mv "$LOCK" "$LOCK.gone.$$" 2>/dev/null && rm -rf "$LOCK.gone.$$"
@@ -172,6 +193,24 @@ on_signal() {
     exit "$1"
   fi
 }
+# Run cap (#59 R1): the timer starts once the lock is held. At the cap it
+# sends us ALRM: TERM to the targets (on_signal 124); 10 s later it KILLs
+# them itself, since the wait loop below never ends while a TERM-ignoring
+# child lives.
+# Leading zeros are stripped (decimal() below): `090` would otherwise be an
+# octal arithmetic error that ends the gate before the command runs.
+decimal() { _d="${1#"${1%%[!0]*}"}"; printf '%s\n' "${_d:-0}"; }
+CAP_SECS=""; CAPPED=0; TIMER=""; CAP_MIN=""
+case "${STUDIO_GATE_MINUTES:-}" in
+  ''|*[!0-9]*) ;;
+  *) CAP_MIN="$(decimal "$STUDIO_GATE_MINUTES")"
+     if [ "$CAP_MIN" -gt 0 ] && [ "$WHO" != setup ]; then
+       CAP_SECS="${STUDIO_GATE_SECONDS:-$((CAP_MIN * 60))}"
+       case "$CAP_SECS" in ''|*[!0-9]*) CAP_SECS="" ;; *) CAP_SECS="$(decimal "$CAP_SECS")" ;; esac
+     fi ;;
+esac
+on_cap() { if [ "$RUNNING" = 1 ] && alive "$CHILD"; then CAPPED=1; on_signal 124; fi; }
+[ -z "$CAP_SECS" ] || trap on_cap ALRM
 trap release EXIT
 trap 'on_signal 130' INT
 trap 'on_signal 143' TERM
@@ -179,11 +218,11 @@ trap 'on_signal 129' HUP
 
 waited=0
 until try_take; do
-  if [ $((waited % 60)) -eq 0 ]; then
+  if [ $((waited % (60 * GATE_TPS))) -eq 0 ]; then
     printf 'gate: waiting for %s (pid %s)\n' "$(cat "$LOCK/who" 2>/dev/null)" "$(lock_pid)" >&2
   fi
   waited=$((waited + 1))
-  sleep 1
+  sleep "$GATE_POLL"
 done
 
 # `set -m` makes the child lead its own process group (pgid == its pid), so
@@ -195,6 +234,34 @@ T0="$(date +%s)"
 STUDIO_GATE_HELD="$$" "$@" &
 CHILD=$!
 set +m
+# The timer polls once a second and exits as soon as the gate is gone, so it
+# can neither outlive the gate (signalling a reused pid) nor hold it: the
+# gate never waits for it. Deadlines are wall-clock, so the polls' own cost
+# does not stretch the cap.
+# A gate SIGKILLed by a parent that never reaps it stays a zombie, so
+# `kill -0 $$` still succeeds; the timer is reparented then, so it also
+# exits once its parent is no longer the gate. Its own pid (`$$` in a
+# subshell is the gate's; bash 3.2 has no BASHPID) is the parent of its
+# first background sleep.
+if [ -n "$CAP_SECS" ]; then
+  ( # A failed ps read (empty) never ends the timer: the cap must not fail open.
+    gate_here() {
+      kill -0 $$ 2>/dev/null || return 1
+      [ -n "$_me" ] || return 0
+      _pp="$(ps -o ppid= -p "$_me" 2>/dev/null | tr -d ' ')"
+      [ -z "$_pp" ] || [ "$_pp" = "$$" ]
+    }
+    _end=$(( $(date +%s) + CAP_SECS ))
+    sleep 1 & _k=$!; _me="$(ps -o ppid= -p "$_k" 2>/dev/null | tr -d ' ')"; wait "$_k"
+    gate_here || exit 0
+    while [ "$(date +%s)" -lt "$_end" ]; do sleep 1; gate_here || exit 0; done
+    kill -ALRM $$ 2>/dev/null || exit 0
+    _end=$(( $(date +%s) + 10 ))
+    while [ "$(date +%s)" -lt "$_end" ]; do sleep 1; gate_here || exit 0; done
+    kill -KILL $(targets "$CHILD") 2>/dev/null
+  ) > /dev/null 2>&1 &
+  TIMER=$!
+fi
 [ -z "$REG" ] || printf '%s\n' "$CHILD" > "$REG/$$"
 rc=0
 while :; do
@@ -202,6 +269,7 @@ while :; do
   rc=$?
   alive "$CHILD" || break
 done
+if [ -n "$TIMER" ]; then kill "$TIMER" 2>/dev/null; TIMER=""; fi
 if [ -n "$TARGETS" ]; then
   # Hold the lock until the targets are gone: KILL stragglers after ~10 s
   # and stop waiting after ~15 s so a stuck process cannot wedge the gate.
@@ -212,6 +280,7 @@ if [ -n "$TARGETS" ]; then
     sleep 1
   done
 fi
+[ "$CAPPED" = 0 ] || printf 'gate: %s ran past %s min — stopped\n' "$WHO" "$CAP_MIN" >&2
 RUNNING=0
 CHILD=""
 # A signalled run (a reaper, a session cap) is logged too, with 128+n: its

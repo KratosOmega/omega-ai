@@ -1,6 +1,6 @@
 # tests/state_fixtures.sh — sourced by tests/state_*_test.sh (#42); not a test file.
 STATE_BIN="$REPO_ROOT/studios/game-dev/bin/studio-state"
-TMP="$(cd "$(mktemp -d)" && pwd -P)"; trap 'rm -rf "$TMP"' EXIT
+TMP="$(cd "$(mktemp -d "${TMPDIR:-/tmp}/state_fixtures.XXXXXX")" && pwd -P)"; trap 'rm -rf "$TMP"' EXIT
 g() { git -c user.name=t -c user.email=t@t "$@"; }
 st() { _std="$1"; shift; ( cd "$_std" && sh "$STATE_BIN" "$@" ); }
 st_rc() { _std="$1"; shift; ST_RC=0; ( cd "$_std" && sh "$STATE_BIN" "$@" ) > "$TMP/st.out" 2> "$TMP/st.err" || ST_RC=$?; }

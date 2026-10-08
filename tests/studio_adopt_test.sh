@@ -6,7 +6,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 . "$REPO_ROOT/tests/assert.sh"
 ADOPT="$REPO_ROOT/studios/game-dev/bin/studio-adopt"
 STATE_BIN="$REPO_ROOT/studios/game-dev/bin/studio-state"
-TMP="$(cd "$(mktemp -d)" && pwd -P)"
+TMP="$(cd "$(mktemp -d "${TMPDIR:-/tmp}/studio_adopt_test.XXXXXX")" && pwd -P)"
 trap 'rm -rf "$TMP"' EXIT
 HOME="$TMP/home"; export HOME; mkdir -p "$HOME"
 GIT_AUTHOR_NAME=t; GIT_AUTHOR_EMAIL=t@t; GIT_COMMITTER_NAME=t; GIT_COMMITTER_EMAIL=t@t

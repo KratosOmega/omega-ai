@@ -99,7 +99,8 @@ envelope, in this order:
 | `story_state` | `story`, `state`, `why`, `until` | `state`: `queued`, `waiting`, `running`, `repair`, `gate-repair`, `sync-repair`, `held`, `landing`, `landed`, `stopped`, `skipped`; `why` only for held, stopped, skipped; `until` only for held (ISO-8601 UTC) |
 | `story_synced` | `story`, `refs`, `sha`, `skipped`, `failed` | merged: `refs` (array, in merge order) and `sha` (the new head); `skipped`: `no-worktree`, `dirty`, `ahead`; `failed`: `fetch`, `merge-tree`, `merge`, `push`; no event when every ref is already merged; a merged line comes before a later `failed` one |
 | `unit_started` | `story`, `unit`, `label`, `model` | `unit` is the unit tag; `label` is for example `repair`, without the story id |
-| `unit_ended` | `story`, `unit`, `label`, `outcome`, `usd` | `outcome`: `progress`, `done`, `stop`, `noprog`, `timed out`, `orphaned`; `usd` is a number or `null` |
+| `unit_ended` | `story`, `unit`, `label`, `outcome`, `usd` | `outcome`: `progress`, `done`, `stop`, `noprog`, `timed out`, `stalled`, `orphaned`; `usd` is a number or `null` |
+| `unit_stalled` | `story`, `unit`, `label`, `idle_min`, `command` | `idle_min` is a number (overnight.idle_minutes); `command` is the newest open tool call, rendered as the status activity is and cut to 120 chars, or `-`; written before that unit's `unit_ended`, whose outcome is `stalled` unless the unit moved the state or recorded a stop |
 | `session_wait` | `lane`, `story`, `since` | `lane` is the lane number or `final`; `story` is `-` for a final-step unit; `since` is ISO-8601 UTC; once per wait, when the first slot request fails; the unit's own `unit_started` follows when it gets a slot |
 | `message_queued` | `story`, `id`, `scope` | `id` is a number; `scope`: `story`, `unit`, `retire` |
 | `message_delivered` | `story`, `id`, `scope`, `unit`, `via` | `via`: `session_start`, `tool_call`; a compact re-show of a delivered message is not logged |

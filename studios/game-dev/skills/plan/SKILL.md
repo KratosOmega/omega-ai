@@ -71,10 +71,13 @@ the self-review. Two studio rules override its defaults:
   Review: task
   ```
 
-  - `Spec: <spec>:L<a>-<b>[, <spec>:L<c>-<d>][, <spec>§<heading>]` cites the
-    spec lines the task implements; items are separated by `, `. `§<heading>`
-    names a heading line exactly as written in the spec, including its `#`s.
-    The lines must exist.
+  - `Spec: <item>[, <item>…]` cites the spec lines the task implements; items
+    are separated by `, `. An item is one of:
+    - `<spec>:L<a>-<b>` — lines a to b (`Spec: <spec>:L<a>-<b>`, the usual form);
+    - `<spec>:L<a>` — one line, the same as `L<a>-<a>`;
+    - `<spec>§<heading>` — a heading line exactly as written in the spec,
+      including its `#`s.
+    The lines must exist: `studio-brief validate` checks them (§6).
   - `Review: task|final` says whether execute reviews the task by itself.
     `task` is for new seam, cross-system, gameplay feel, data or schema, or importer work; `final` is for the rest, which
     folds into the final review.
@@ -153,7 +156,9 @@ Run the writing-plans self-review (spec coverage, placeholder scan, name
 consistency). Additionally check: every acceptance criterion in the spec maps
 to a task; every `Verify: unit` task names a test file; every
 `Verify: playtest` task states its playtest item; every task has
-a `Spec:` line whose ranges exist, and a `Review:` line.
+a `Spec:` line and a `Review:` line. Then run `studio-brief validate <plan path>`
+and fix the plan until it exits 0: it checks every task's `Spec:` items (the
+file, the range, the heading) the way execute's brief will read them.
 
 Then run `studio-state set stage plan`, `studio-state set plan <plan path>`,
 `studio-state set task 0/N` (N = number of tasks outside the backlog), and

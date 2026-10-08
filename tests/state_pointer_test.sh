@@ -399,6 +399,12 @@ test_state_legacy_pointer_resolves() {
   assert_contains "$WB/.studio/STATE.md" '^stage: brainstorm$' "into its own file"
 }
 
+# exclusive-scan: test_state_story_writes_unchanged in (a, c) asserts STUDIO_STORY calls take at most 2 s while the mutex is held; failed under load (audit)
+# exclusive-scan: test_state_milestone_without_main in (a) asserts local writes take at most 3 s
+# exclusive-scan: test_state_every_write_holds_mutex in (a) asserts STUDIO_STORY writes take at most 3 s while the mutex is held
+# exclusive-scan: test_state_dead_holder_reaped_fast in (a) asserts a dead holder is reaped inside a 2 s ceiling
+# exclusive-scan: test_state_init_local_is_auto_create in (b) two init --local calls must both be waiting on the mutex when the 1 s sleep ends
+TESTS_EXCLUSIVE="test_state_story_writes_unchanged test_state_milestone_without_main test_state_every_write_holds_mutex test_state_dead_holder_reaped_fast test_state_init_local_is_auto_create"
 run_tests test_state_main_checkout_unchanged test_state_two_worktrees_independent \
   test_state_pointerless_reads_idle test_state_no_main_pointer_exits_1 \
   test_state_worktree_write_leaves_main_untouched test_state_new_story_seeds_idle \

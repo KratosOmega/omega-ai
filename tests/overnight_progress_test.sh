@@ -9,7 +9,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 . "$REPO_ROOT/tests/assert.sh"
 BIN="$REPO_ROOT/studios/game-dev/bin"
 RUNNER="$BIN/studio-overnight"
-TMP="$(cd "$(mktemp -d)" && pwd -P)"
+TMP="$(cd "$(mktemp -d "${TMPDIR:-/tmp}/overnight_progress.XXXXXX")" && pwd -P)"
 DUMMIES=""
 trap '{ for _d in $DUMMIES; do kill "$_d"; done; wait; } 2>/dev/null; rm -rf "$TMP"' EXIT
 HOME="$TMP/home"; export HOME; mkdir -p "$HOME"
@@ -233,6 +233,8 @@ test_progress_task_follows_story() {
   assert_contains "$TMP/st.out" "^task: 1/4$" "and so does the task line"
 }
 
+# exclusive-scan: test_progress_scale_with_past_rows in (a) asserts 3000 past rows add at most a 3 s ceiling to status
+TESTS_EXCLUSIVE="test_progress_scale_with_past_rows"
 run_tests test_progress_fresh_no_data test_progress_mid_run_eta test_progress_past_run_median \
   test_progress_repair_adds_a_unit test_progress_chains_waits_and_held test_progress_ended_run_no_eta \
   test_progress_single_plan test_progress_retry_and_unit_kinds \

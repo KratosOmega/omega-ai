@@ -6,7 +6,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 # Physical path: the installer canonicalizes the target, so assertions that
 # quote $TMP must use the same spelling (/var -> /private/var on macOS).
-TMP="$(cd "$(mktemp -d)" && pwd -P)"
+TMP="$(cd "$(mktemp -d "${TMPDIR:-/tmp}/install_test.XXXXXX")" && pwd -P)"
 trap 'rm -rf "$TMP"' EXIT
 
 # Every install in this file runs against stubs for claude, node and Godot,

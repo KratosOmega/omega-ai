@@ -508,7 +508,7 @@ test_state_mutex_single_acquisition() {
   dead_mutex; assert_eq "" "$(git -C "$P" status --porcelain)" "a dangling link never shows in git status"
   # INT during a paused move: exit 130, no link, no target pointer.
   proj si; plan_in_p; st "$P" set stage execute >/dev/null; wt e feat/e; WE="$W"
-  set -m; ( cd "$P" && exec env STUDIO_STATE_TEST_SEAM=pause3 sh "$STATE_BIN" handoff "$WE" ) >/dev/null 2>&1 & _hp=$!; set +m
+  ( cd "$P" && own_group env STUDIO_STATE_TEST_SEAM=pause3 sh "$STATE_BIN" handoff "$WE" ) >/dev/null 2>&1 & _hp=$!
   # Wait for the pause itself (the intent line): bash drops an INT that lands while it
   # waits on a foreground child that does not die of it, so an early INT can be lost.
   _i=0; while ! grep -q "^- [0-9-]* handing$T" "$P/.studio/STATE.md" && [ "$_i" -lt 100 ]; do sleep 0.1; _i=$((_i + 1)); done
@@ -560,6 +560,9 @@ test_state_rewriters_skip_tab_notes() {
   assert_eq "0 1" "$(grep -c "^- [0-9-]* handing${T}spec=" "$P/.studio/STATE.md") $(grep -c "^- [0-9-]* void${T}spec=.*${T}reason=worktree gone${T}path=" "$P/.studio/STATE.md")" "and voids the record"
 }
 
+# exclusive-scan: test_state_mutex_single_acquisition in (a, b) asserts 5 s bounds and sends INT inside the paused move
+# exclusive-scan: test_state_handoff_rechecks_target_under_mutex in (b) the one second pause must see the handoff blocked on the mutex before the target is removed
+TESTS_EXCLUSIVE="test_state_mutex_single_acquisition test_state_handoff_rechecks_target_under_mutex"
 run_tests test_state_handoff_moves_story test_state_handoff_order_and_self_heal \
   test_state_self_heal_ignores_completed_handoff test_state_self_heal_scope test_state_move_record_parse \
   test_state_handoff_refusals test_state_take_after_stop_before_handoff test_state_take_main_planned_story \

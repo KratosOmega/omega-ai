@@ -6,10 +6,13 @@ set -u
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 . "$REPO_ROOT/tests/assert.sh"
 BIN="$REPO_ROOT/studios/game-dev/bin"
-RUNNER="$BIN/studio-overnight"
 STATE_BIN="$BIN/studio-state"
-TMP="$(cd "$(mktemp -d)" && pwd -P)"
+TMP="$(cd "$(mktemp -d "${TMPDIR:-/tmp}/overnight_ids_test.XXXXXX")" && pwd -P)"
 trap 'rm -rf "$TMP"' EXIT
+# The runner is reached through a link under $TMP, so its argv names $TMP: pgrep -f "$TMP" finds only this suite's.
+mkdir -p "$TMP/bin" && ln -s "$BIN/studio-overnight" "$TMP/bin/studio-overnight" \
+  || { echo "overnight_ids: setup failed" >&2; exit 1; }
+RUNNER="$TMP/bin/studio-overnight"
 HOME="$TMP/home"; export HOME; mkdir -p "$HOME"
 GIT_AUTHOR_NAME=t; GIT_AUTHOR_EMAIL=t@t; GIT_COMMITTER_NAME=t; GIT_COMMITTER_EMAIL=t@t
 export GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
@@ -314,6 +317,7 @@ test_ids_docs() {                                    # R5
   assert_contains "$REPO_ROOT/README.md" "check-id: 0 free · 1 taken · 2 usage" "README's table gives its exit codes"
 }
 
+# exclusive-scan: test_ids_slug_dash_and_readonly out (a) "under .studio" is a path in an assertion message, not a time bound; check-id reads refs and files only
 run_tests test_ids_main_ledger_taken test_ids_main_plan_only test_ids_run_branch_plan_not_checked \
   test_ids_own_ledger test_ids_integration_branches test_ids_integration_inherits_main test_ids_plan_case_and_color test_ids_default_ref_missing test_ids_slug_dash_and_readonly test_ids_run_records test_ids_carried_over_branch test_ids_defaults_any_case test_ids_case_insensitive \
   test_ids_suggestion test_ids_defaults_need_listed_row test_ids_usage test_ids_docs
