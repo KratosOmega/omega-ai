@@ -970,9 +970,43 @@ test_gate_run_cap_no_false_stop() {
   assert_not_contains "$GP/.studio/gate.times" ' 124$' "no 124 recorded"
   assert_not_contains "$TMP/gc.err" 'ran past' "no stop message"
 }
+# Final review I1: the timer cannot outlive its gate or hold it. Ten instant
+# capped runs per shell, each through `$( )`: none takes ≥ 3 s (under dash
+# a blocking `wait` on the timer held the gate for the whole cap), the lock
+# is gone after each, and no `sleep <cap>` or gate process outlives them
+# (under bash a TERM before the timer's `_sp=$!` orphaned its sleep).
+# The nested gate (B1): re-entry adds no timer and logs one run.
+test_gate_run_cap_fast_runs_leave_nothing() {
+  gate_proj cap6
+  for _fsh in sh dash; do
+    command -v "$_fsh" >/dev/null 2>&1 || continue
+    _slow=0; _held=0; _outs=""; _i=0
+    while [ "$_i" -lt 10 ]; do
+      _t0=$(date +%s)
+      _o="$(cd "$GP" && STUDIO_GATE_MINUTES=1 STUDIO_GATE_SECONDS=87 "$_fsh" "$GATE" fastcap -- echo ok 2>/dev/null)"
+      [ $(( $(date +%s) - _t0 )) -lt 3 ] || _slow=$((_slow + 1))
+      [ ! -e "$GP/.studio/gate.lock" ] || _held=$((_held + 1))
+      _outs="$_outs$_o"
+      _i=$((_i + 1))
+    done
+    assert_eq 0 "$_slow" "$_fsh: no instant capped run takes 3 s or more"
+    assert_eq 0 "$_held" "$_fsh: the lock is released after every run"
+    assert_eq okokokokokokokokokok "$_outs" "$_fsh: each run's output, through \$( )"
+    sleep 2
+    assert_eq 0 "$(ps -A -o args= | grep -c '^sleep 87$')" "$_fsh: no orphaned sleep of the cap"
+    assert_eq 0 "$(ps -A -o args= | grep -F "$GATE fastcap" | grep -vc grep)" "$_fsh: no timer outlives its gate"
+  done
+  : > "$GP/.studio/gate.times"
+  _t0=$(date +%s)
+  _o="$(cd "$GP" && STUDIO_GATE_MINUTES=1 STUDIO_GATE_SECONDS=87 sh "$GATE" fastcap -- sh "$GATE" fastcap -- echo nested 2>/dev/null)"
+  assert_eq 1 "$([ $(( $(date +%s) - _t0 )) -lt 3 ] && echo 1 || echo 0)" "a nested capped gate returns at once"
+  assert_eq nested "$_o" "the nested command ran"
+  assert_eq 1 "$(wc -l < "$GP/.studio/gate.times" | tr -d ' ')" "re-entry logs one run, not two"
+}
 
 run_tests test_gate_run_cap_stops_a_long_run test_gate_run_cap_excludes_lock_wait \
   test_gate_run_cap_off_unset_zero_and_setup test_gate_run_cap_kills_a_term_ignorer test_gate_run_cap_no_false_stop \
+  test_gate_run_cap_fast_runs_leave_nothing \
   test_gate_times_window_per_who test_gate_no_overlap test_gate_status_and_held test_gate_stale_reclaim_race \
   test_gate_waiting_message test_gate_records_pid_and_who test_gate_without_a_project_just_runs \
   test_gate_signal_waits_for_child_then_releases test_gate_three_reclaimers_never_overlap \

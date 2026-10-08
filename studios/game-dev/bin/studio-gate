@@ -219,11 +219,16 @@ T0="$(date +%s)"
 STUDIO_GATE_HELD="$$" "$@" &
 CHILD=$!
 set +m
+# The timer polls once a second and exits as soon as the gate is gone, so it
+# can neither outlive the gate (signalling a reused pid) nor hold it: the
+# gate never waits for it. Deadlines are wall-clock, so the polls' own cost
+# does not stretch the cap.
 if [ -n "$CAP_SECS" ]; then
-  ( _sp=; trap 'kill $_sp 2>/dev/null; exit 0' TERM
-    sleep "$CAP_SECS" & _sp=$!; wait "$_sp"
+  ( _end=$(( $(date +%s) + CAP_SECS ))
+    while [ "$(date +%s)" -lt "$_end" ]; do sleep 1; kill -0 $$ 2>/dev/null || exit 0; done
     kill -ALRM $$ 2>/dev/null || exit 0
-    sleep 10 & _sp=$!; wait "$_sp"
+    _end=$(( $(date +%s) + 10 ))
+    while [ "$(date +%s)" -lt "$_end" ]; do sleep 1; kill -0 $$ 2>/dev/null || exit 0; done
     kill -KILL $(targets "$CHILD") 2>/dev/null
   ) > /dev/null 2>&1 &
   TIMER=$!
@@ -235,7 +240,7 @@ while :; do
   rc=$?
   alive "$CHILD" || break
 done
-if [ -n "$TIMER" ]; then kill "$TIMER" 2>/dev/null; wait "$TIMER" 2>/dev/null; TIMER=""; fi
+if [ -n "$TIMER" ]; then kill "$TIMER" 2>/dev/null; TIMER=""; fi
 if [ -n "$TARGETS" ]; then
   # Hold the lock until the targets are gone: KILL stragglers after ~10 s
   # and stop waiting after ~15 s so a stuck process cannot wedge the gate.
