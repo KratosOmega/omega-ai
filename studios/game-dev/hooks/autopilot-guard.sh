@@ -54,7 +54,7 @@ case "${tool:-}" in
     deny "game-dev autopilot: this headless -p unit ends when its turn ends, and a background subagent is killed with it. Re-dispatch with run_in_background: false and wait for the report in this turn (several foreground dispatches in one message still run in parallel)." ;;
   Bash)
     [ "${bg:-}" = true ] || exit 0
-    deny "game-dev autopilot: this headless -p unit ends when its turn ends, and a background command is killed with it. Run it in the foreground (no run_in_background, no &) with timeout set to \$BASH_MAX_TIMEOUT_MS." ;;
+    deny "game-dev autopilot: this headless -p unit ends when its turn ends, and a background command is killed with it. Run it in the foreground (no run_in_background, no &); pass timeout: \$BASH_MAX_TIMEOUT_MS only on gate-routed commands (studio-test, studio-run, studio-setup, studio-gate), and let every other command keep the default cap." ;;
   Monitor)
     deny "game-dev autopilot: this headless -p unit ends when its turn ends, so a Monitor event never arrives. Run the command in the foreground with Bash and read its output." ;;
 esac

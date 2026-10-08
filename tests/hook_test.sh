@@ -525,6 +525,7 @@ test_autopilot_guard_bash_and_monitor() {
   autopilot 1 Bash '{"command":"studio-test","timeout":5400000,"run_in_background":true}'
   assert_denied "a background Bash call is denied"
   assert_contains "$TMP/ap.out" 'foreground' "the Bash reason says to run it in the foreground"
+  assert_contains "$TMP/ap.out" 'only on gate-routed commands' "timeout goes only on gate-routed commands (#59 R7)"
   autopilot 1 Bash '{"command":"studio-test","timeout":5400000}'
   assert_allowed "a foreground Bash call is allowed"
   autopilot 1 Bash '{"command":"ls","run_in_background":false}'
@@ -932,7 +933,63 @@ test_godot_guard_never_blocks_on_bad_input() {
   done
 }
 
-run_tests test_godot_guard_registered test_godot_guard_denies_headless_boot test_godot_guard_denies_hand_built_gut \
+WT_GUARD="$STUDIO_DIR/hooks/worktree-guard.sh"
+STATE_BIN_H="$STUDIO_DIR/bin/studio-state"
+# wt_proj NAME — a git repo with studio state; story S1's branch feat/x recorded. Sets Q.
+wt_proj() {
+  Q="$TMP/wt-$1"; mkdir -p "$Q"
+  ( cd "$Q" && git init -q -b main && git -c user.name=t -c user.email=t@t commit -q --allow-empty -m i \
+    && sh "$STATE_BIN_H" init && STUDIO_STORY=S1 sh "$STATE_BIN_H" init && STUDIO_STORY=S1 sh "$STATE_BIN_H" set branch feat/x ) >/dev/null 2>&1
+  Q="$(cd "$Q" && pwd -P)"
+}
+# wt_guard STORY|- AUTOPILOT|- INPUT_JSON — run the guard in $Q; stdout in $TMP/ap.out; asserts exit 0.
+wt_guard() {
+  ptu_in EnterWorktree "$3" > "$TMP/wg.in"; _wst=0
+  ( cd "$Q" && unset STUDIO_STORY OMEGA_AUTOPILOT
+    [ "$1" = - ] || { STUDIO_STORY="$1"; export STUDIO_STORY; }
+    [ "$2" = - ] || { OMEGA_AUTOPILOT="$2"; export OMEGA_AUTOPILOT; }
+    sh "$WT_GUARD" < "$TMP/wg.in" ) > "$TMP/ap.out" 2> "$TMP/ap.err" || _wst=$?
+  assert_eq 0 "$_wst" "the worktree guard exits 0"
+}
+test_worktree_guard_registered() {
+  assert_file "$WT_GUARD" "worktree-guard.sh exists"
+  assert_contains "$STUDIO_DIR/hooks/hooks.json" 'CLAUDE_PLUGIN_ROOT}/hooks/worktree-guard.sh' "registered from the plugin root"
+  if command -v jq >/dev/null 2>&1; then
+    assert_eq EnterWorktree "$(jq -r '.hooks.PreToolUse[] | select(.hooks[0].command | contains("worktree-guard")) | .matcher' "$STUDIO_DIR/hooks/hooks.json")" "on EnterWorktree"
+  fi
+}
+# AC8 denied / allowed in a story session.
+test_worktree_guard_denies_bare_calls_in_story() {
+  wt_proj story
+  for j in '{}' '{"name":"x"}' '{"path":""}'; do
+    wt_guard S1 - "$j"; assert_denied "STUDIO_STORY=S1: $j is denied"
+    assert_contains "$TMP/ap.out" 'path:' "the reason says path: ($j)"
+  done
+  wt_guard S1 1 '{"path":"/x"}'; assert_allowed "a path is allowed"
+}
+# R5's three sources for the named path.
+test_worktree_guard_names_the_story_worktree() {
+  wt_proj names
+  ( cd "$Q" && git branch feat/x ) >/dev/null 2>&1
+  wt_guard S1 - '{}'
+  assert_contains "$TMP/ap.out" "path: $Q/.claude/worktrees/feat-x" "exit 3: the path studio-state suggests"
+  ( cd "$Q" && git worktree add -q "$TMP/wt-names-live" feat/x ) >/dev/null 2>&1
+  wt_guard S1 - '{}'
+  assert_contains "$TMP/ap.out" "path: $(cd "$TMP/wt-names-live" && pwd -P)" "exit 0: the live worktree"
+  wt_proj gone
+  wt_guard S1 - '{}'
+  assert_contains "$TMP/ap.out" "path: $Q/.claude/worktrees/feat-x" "no branch yet (exit 1): the execute §0 rule"
+}
+# AC8: off outside story sessions.
+test_worktree_guard_off_outside_stories() {
+  wt_proj off
+  for j in '{}' '{"name":"x"}'; do
+    wt_guard - 1 "$j"; assert_allowed "OMEGA_AUTOPILOT=1 only: $j is allowed"
+    wt_guard - - "$j"; assert_allowed "neither variable: $j is allowed"
+  done
+}
+
+run_tests test_worktree_guard_registered test_worktree_guard_denies_bare_calls_in_story test_worktree_guard_names_the_story_worktree test_worktree_guard_off_outside_stories test_godot_guard_registered test_godot_guard_denies_headless_boot test_godot_guard_denies_hand_built_gut \
   test_godot_guard_allows test_godot_guard_never_blocks_on_bad_input \
   test_session_start_stage_per_checkout test_session_start_take_hint \
   test_session_start_never_writes test_skill_bootstrap_stage_line test_hook_files test_hook_output_shape test_hook_defaults_from_studio_json \
