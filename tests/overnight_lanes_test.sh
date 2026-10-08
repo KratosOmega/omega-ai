@@ -1662,7 +1662,7 @@ test_lanes_sync_conflict_launches_repair() {
   assert_eq "" "$(sync_merges A)" "a conflict is never merged by the runner"
 }
 test_lanes_sync_repair_stops() {
-  for _sr in stop noop hang; do
+  for _sr in stop noop hang stall; do
     LANES_TASKS=2; export LANES_TASKS
     LANES_CONFIG='{"overnight": {"kill_grace_seconds": 5}}'; export LANES_CONFIG
     lanes_fixture "syncstop-$_sr" integration A:-
@@ -1672,8 +1672,18 @@ test_lanes_sync_repair_stops() {
       noop) printf 'noop\n' > "$SCEN/A.sync"; _want="no progress" ;;
       hang) printf 'hang\n' > "$SCEN/A.sync"; _want="timed out (session_minutes 90)"
             STUDIO_OVERNIGHT_SESSION_SECONDS=10; export STUDIO_OVERNIGHT_SESSION_SECONDS ;;
+      # #59: a silent sync repair. The task unit before it first emits an
+      # open studio-test call, so a slow unit under load is never stalled.
+      stall) printf '%s\n' '{"type":"system","subtype":"init"}' \
+               '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"sleep 999"}}]}}' > "$TMP/stl2.jsonl"
+             printf '%s\n' '{"type":"system","subtype":"init"}' \
+               '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"studio-test"}}]}}' > "$TMP/stl2-gate.jsonl"
+             printf 'emit %s; push_target A-T1.txt\n' "$TMP/stl2-gate.jsonl" > "$SCEN/A"
+             printf 'emit %s; hang\n' "$TMP/stl2.jsonl" > "$SCEN/A.sync"; _want="stalled (no output for 20 min: Bash: sleep 999)"
+             STUDIO_OVERNIGHT_IDLE_SECONDS=2 STUDIO_OVERNIGHT_IDLE_POLL_SECONDS=1 STUDIO_OVERNIGHT_SESSION_SECONDS=60
+             export STUDIO_OVERNIGHT_IDLE_SECONDS STUDIO_OVERNIGHT_IDLE_POLL_SECONDS STUDIO_OVERNIGHT_SESSION_SECONDS ;;
     esac
-    run_lanes start "$MFP"; unset STUDIO_OVERNIGHT_SESSION_SECONDS
+    run_lanes start "$MFP"; unset STUDIO_OVERNIGHT_SESSION_SECONDS STUDIO_OVERNIGHT_IDLE_SECONDS STUDIO_OVERNIGHT_IDLE_POLL_SECONDS
     assert_contains "$(last_lanes_dir)/stories/A" "^stopped sync repair: $_want$" "$_sr: the story ends stopped sync repair: $_want"
     assert_eq 1 "$(cat "$CALLS/m-A.sync" 2>/dev/null)" "$_sr: no retry"
     assert_eq 1 "$(cat "$CALLS/m-A" 2>/dev/null)" "$_sr: no unit after it"
@@ -2399,6 +2409,23 @@ test_lanes_timed_out_outcome() {
   assert_eq "timed out|timed out" "$(cut -f7 "$R/lanes/1/units.tsv" | paste -sd'|' -)" "both capped units are timed out"
   assert_contains "$R/stories/A" "^stopped timed out on T1 (session_minutes 90)$" "the ending names the timeout"
   assert_contains "$R/report.md" "^Not landed: stopped — timed out on T1 " "and so does the report"
+}
+# #59 R2 (AC3): a lanes unit silent past idle_minutes with an open plain
+# command ends as stalled, not timed out, and names the command.
+test_lanes_stalled_outcome() {
+  LANES_CONFIG='{"overnight": {"kill_grace_seconds": 5}}'; export LANES_CONFIG
+  lanes_fixture stl integration A:-
+  printf '%s\n' '{"type":"system","subtype":"init"}' \
+    '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"sleep 999"}}]}}' > "$TMP/stl.jsonl"
+  printf 'emit %s; hang\nemit %s; hang\n' "$TMP/stl.jsonl" "$TMP/stl.jsonl" > "$SCEN/A"
+  STUDIO_OVERNIGHT_IDLE_SECONDS=2 STUDIO_OVERNIGHT_IDLE_POLL_SECONDS=1 STUDIO_OVERNIGHT_SESSION_SECONDS=60
+  export STUDIO_OVERNIGHT_IDLE_SECONDS STUDIO_OVERNIGHT_IDLE_POLL_SECONDS STUDIO_OVERNIGHT_SESSION_SECONDS
+  run_lanes start "$MFP"; unset STUDIO_OVERNIGHT_IDLE_SECONDS STUDIO_OVERNIGHT_IDLE_POLL_SECONDS STUDIO_OVERNIGHT_SESSION_SECONDS
+  R="$(last_lanes_dir)"
+  assert_eq "stalled|stalled" "$(cut -f7 "$R/lanes/1/units.tsv" | paste -sd'|' -)" "both units stalled"
+  assert_eq "0|0" "$(cut -f6 "$R/lanes/1/units.tsv" | paste -sd'|' -)" "not session-capped"
+  assert_contains "$R/stories/A" '^stopped stalled on T1 (no output for 20 min: Bash: sleep 999)$' "the ending"
+  assert_eq 2 "$(grep -c '"event":"unit_stalled"' "$R/events.jsonl")" "one unit_stalled per unit"
 }
 # The runner's terminal: a line per unit start and end, and a heartbeat with
 # the unit's last activity while it runs.
@@ -4311,6 +4338,7 @@ run_tests test_lanes_setup_preflight_refuses_linked_only test_lanes_setup_prefli
   test_lanes_gate_repair_no_progress test_lanes_gate_repair_model_and_no_log test_lanes_gate_repair_budget test_lanes_gate_repair_halt \
   test_lanes_sync_clean_merge_no_session test_lanes_sync_skips test_lanes_sync_integration_two_refs \
   test_lanes_sync_failed_merge_aborts test_lanes_sync_conflict_launches_repair test_lanes_sync_repair_stops test_lanes_sync_repair_budget \
+  test_lanes_stalled_outcome \
   test_lanes_no_sync_before_repairs \
   test_lanes_final_step_once test_lanes_final_red_after_repair \
   test_lanes_final_repair_turns_green test_lanes_final_conflict test_lanes_final_resume_edits_pr \

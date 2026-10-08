@@ -157,7 +157,13 @@ stories as parallel lanes of dependency chains:
   ends its turn to wait on a background job ends there, and the job is
   orphaned. When a unit ends, the runner ends any gate it left running
   (`.studio/gate.units/`). A unit the watchdog ends with no progress is
-  recorded `timed out`, not `no progress`. Subagents run in the foreground
+  recorded `timed out`, not `no progress`. A unit whose session log stays
+  silent for `overnight.idle_minutes` (default 20; 0 turns it off) while it
+  neither runs nor waits on a gate (`studio-test`, `studio-run`, `studio-setup`,
+  `studio-gate`) is ended and recorded `stalled`, its ending naming the newest
+  open command (`stalled on T3 (no output for 20 min: Bash: …)`;
+  `studio-overnight activity --open <unit.jsonl>` lists a log's open calls).
+  Subagents run in the foreground
   too: under `OMEGA_AUTOPILOT=1` the studio's `autopilot-guard.sh` PreToolUse
   hook denies a background `Agent`, a background `Bash` call and `Monitor`.
   A unit whose session still ended its turn with background work running
