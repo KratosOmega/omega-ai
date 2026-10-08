@@ -230,7 +230,10 @@ test_run_all_serial_ctrl_c() {
   assert_contains "$TMP/sc.out" "interrupted" "the summary says interrupted"
   _p="$(cat "$TMP/pid-a" 2>/dev/null)"
   # by argv, not pgrep -P: an orphan is reparented to pid 1, so -P of a dead suite is always empty
+  # absence waits (reap race): a killed child may linger briefly; a real leak (msleep-sc 300) outlives 10 s
+  _i=0; while pgrep -f "$TMP/bin/msleep-sc" >/dev/null 2>&1 && [ "$_i" -lt 100 ]; do sleep 0.1; _i=$((_i + 1)); done
   assert_eq "" "$(pgrep -f "$TMP/bin/msleep-sc" 2>/dev/null)" "no sleep the suite started survives"
+  _i=0; while kill -0 "${_p:-0}" 2>/dev/null && [ "$_i" -lt 100 ]; do sleep 0.1; _i=$((_i + 1)); done
   assert_eq 1 "$(kill -0 "${_p:-0}" 2>/dev/null && echo 0 || echo 1)" "the suite itself is gone"
   pkill -KILL -f "$TMP/bin/msleep-sc" 2>/dev/null; true
 }
