@@ -160,24 +160,37 @@ emit_task() {
   _et_a="$1"; _et_b="$2"
   emit "$plan" "$_et_a" "$_et_b"
   if [ "$_et_wd" = 1 ]; then directives_part; fi
-  specline="$(sed -n "${_et_a},${_et_b}p" "$plan" | sed -n 's/^Spec: //p' | head -n 1)"
-  if [ -z "$specline" ]; then
+  each_spec_item "$plan" "$_et_a" "$_et_b" emit_task_item || {
     printf '(task %s has no Spec: line)\n' "$_et_n"
     return 0
-  fi
-  # Items are separated by ", " (a heading containing ", " cannot be cited).
-  items="$(printf '%s\n' "$specline" | sed 's/, /\
+  }
+}
+
+# emit_task_item ITEM — emit_task's per-item step: resolve and print the range.
+emit_task_item() {
+  spec_item "$1" || fail "$SI_ERR"
+  emit "$SI_FILE" "$SI_A" "$SI_B"
+}
+
+# each_spec_item FILE A B CALLBACK — the one reader of a task block's first
+# `Spec:` line (lines A-B of FILE), shared by `task`/`check` and `validate`.
+# Items are separated by ", " (a heading containing ", " cannot be cited).
+# Runs CALLBACK ITEM per item with IFS restored; returns 3 when there is no
+# Spec: line.
+each_spec_item() {
+  _es_line="$(sed -n "${2},${3}p" "$1" | sed -n 's/^Spec: //p' | head -n 1)"
+  [ -n "$_es_line" ] || return 3
+  _es_items="$(printf '%s\n' "$_es_line" | sed 's/, /\
 /g')"
-  oldifs="$IFS"; IFS='
+  _es_ifs="$IFS"; IFS='
 '
-  for item in $items; do
-    IFS="$oldifs"
-    spec_item "$item" || fail "$SI_ERR"
-    emit "$SI_FILE" "$SI_A" "$SI_B"
+  for _es_it in $_es_items; do
+    IFS="$_es_ifs"
+    "$4" "$_es_it"
     IFS='
 '
   done
-  IFS="$oldifs"
+  IFS="$_es_ifs"
 }
 
 # context_part — D18: the plan's Context: files under `## Context files`,
@@ -226,6 +239,10 @@ need_plan() {
 
 case "$verb" in
 validate)
+  validate_item() {
+    _vi=$((_vi + 1))
+    spec_item "$1" || { printf 'studio-brief: task %s: %s\n' "$_vn" "$SI_ERR" >&2; _vbad=1; }
+  }
   [ $# -eq 2 ] || usage
   case "$2" in /*) vplan="$2" ;; *) vplan="$CALLER_PWD/$2" ;; esac
   [ -f "$vplan" ] || { printf 'studio-brief: plan %s not found\n' "$2" >&2; exit 2; }
@@ -233,19 +250,8 @@ validate)
   for _vn in $(plan_tasks "$vplan"); do
     _vt=$((_vt + 1))
     _vr="$(section "$vplan" "### Task $_vn:" 0)"
-    _vs="$(sed -n "${_vr% *},${_vr#* }p" "$vplan" | sed -n 's/^Spec: //p' | head -n 1)"
-    if [ -z "$_vs" ]; then printf 'studio-brief: task %s: no Spec: line\n' "$_vn" >&2; _vbad=1; continue; fi
-    _vitems="$(printf '%s\n' "$_vs" | sed 's/, /\
-/g')"
-    _vifs="$IFS"; IFS='
-'
-    for _vit in $_vitems; do
-      IFS="$_vifs"; _vi=$((_vi + 1))
-      spec_item "$_vit" || { printf 'studio-brief: task %s: %s\n' "$_vn" "$SI_ERR" >&2; _vbad=1; }
-      IFS='
-'
-    done
-    IFS="$_vifs"
+    each_spec_item "$vplan" "${_vr% *}" "${_vr#* }" validate_item
+    if [ $? -eq 3 ]; then printf 'studio-brief: task %s: no Spec: line\n' "$_vn" >&2; _vbad=1; fi
   done
   [ "$_vt" -gt 0 ] || { printf 'studio-brief: no ### Task blocks in %s\n' "$2" >&2; exit 1; }
   [ "$_vbad" = 0 ] || exit 1
