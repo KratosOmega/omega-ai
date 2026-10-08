@@ -22,7 +22,16 @@
 # (rc 128+n when a signal ended it) to STATE_ROOT/.studio/gate.times (the
 # newest 50 lines per `who` are kept); studio-overnight's preflight checks the slowest
 # recent studio-test against session_minutes.
-# Exit: the command's status · 2 usage · 128+n when TERM/INT/HUP ended it.
+#
+# Run cap (#59 R1): STUDIO_GATE_MINUTES (a whole number; unset, empty or 0 =
+# no cap) stops a run that goes past it: TERM to the process group, KILL after
+# the 10 s grace, `gate: <who> ran past <n> min — stopped` on stderr, rc 124
+# in gate.times. The timer starts once the lock is held (waiting does not
+# count). Who `setup` is exempt (worktree_setup has its own timer). A nested
+# gate execs before any timer, so re-entry adds no second one.
+# STUDIO_GATE_SECONDS (tests only) replaces minutes x 60.
+# Exit: the command's status · 2 usage · 128+n when TERM/INT/HUP ended it ·
+# 124 when STUDIO_GATE_MINUTES stopped the run.
 # With no .studio/ project there is nothing to protect: the command just runs.
 
 SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -117,6 +126,7 @@ try_take() {
 }
 
 release() {
+  [ -z "${TIMER:-}" ] || kill "$TIMER" 2>/dev/null
   mutex_drop
   if [ "$OWNED" = 1 ] && [ "$(lock_pid)" = "$$" ]; then
     mv "$LOCK" "$LOCK.gone.$$" 2>/dev/null && rm -rf "$LOCK.gone.$$"
@@ -172,6 +182,20 @@ on_signal() {
     exit "$1"
   fi
 }
+# Run cap (#59 R1): the timer starts once the lock is held. At the cap it
+# sends us ALRM: TERM to the targets (on_signal 124); 10 s later it KILLs
+# them itself, since the wait loop below never ends while a TERM-ignoring
+# child lives.
+CAP_SECS=""; CAPPED=0; TIMER=""
+case "${STUDIO_GATE_MINUTES:-}" in
+  ''|*[!0-9]*) ;;
+  *) if [ "$STUDIO_GATE_MINUTES" -gt 0 ] && [ "$WHO" != setup ]; then
+       CAP_SECS="${STUDIO_GATE_SECONDS:-$((STUDIO_GATE_MINUTES * 60))}"
+       case "$CAP_SECS" in ''|*[!0-9]*) CAP_SECS="" ;; esac
+     fi ;;
+esac
+on_cap() { if [ "$RUNNING" = 1 ] && alive "$CHILD"; then CAPPED=1; on_signal 124; fi; }
+[ -z "$CAP_SECS" ] || trap on_cap ALRM
 trap release EXIT
 trap 'on_signal 130' INT
 trap 'on_signal 143' TERM
@@ -195,6 +219,15 @@ T0="$(date +%s)"
 STUDIO_GATE_HELD="$$" "$@" &
 CHILD=$!
 set +m
+if [ -n "$CAP_SECS" ]; then
+  ( _sp=; trap 'kill $_sp 2>/dev/null; exit 0' TERM
+    sleep "$CAP_SECS" & _sp=$!; wait "$_sp"
+    kill -ALRM $$ 2>/dev/null || exit 0
+    sleep 10 & _sp=$!; wait "$_sp"
+    kill -KILL $(targets "$CHILD") 2>/dev/null
+  ) > /dev/null 2>&1 &
+  TIMER=$!
+fi
 [ -z "$REG" ] || printf '%s\n' "$CHILD" > "$REG/$$"
 rc=0
 while :; do
@@ -202,6 +235,7 @@ while :; do
   rc=$?
   alive "$CHILD" || break
 done
+if [ -n "$TIMER" ]; then kill "$TIMER" 2>/dev/null; wait "$TIMER" 2>/dev/null; TIMER=""; fi
 if [ -n "$TARGETS" ]; then
   # Hold the lock until the targets are gone: KILL stragglers after ~10 s
   # and stop waiting after ~15 s so a stuck process cannot wedge the gate.
@@ -212,6 +246,7 @@ if [ -n "$TARGETS" ]; then
     sleep 1
   done
 fi
+[ "$CAPPED" = 0 ] || printf 'gate: %s ran past %s min — stopped\n' "$WHO" "$STUDIO_GATE_MINUTES" >&2
 RUNNING=0
 CHILD=""
 # A signalled run (a reaper, a session cap) is logged too, with 128+n: its

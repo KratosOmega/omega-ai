@@ -869,7 +869,60 @@ test_gate_times_window_per_who() {
   assert_not_contains "$GP/.studio/gate.times" '^11 setup ' "the oldest setup lines went"
 }
 
-run_tests test_gate_times_window_per_who test_gate_no_overlap test_gate_status_and_held test_gate_stale_reclaim_race \
+# #59 AC2: STUDIO_GATE_MINUTES caps the run once the lock is held.
+gate_capped() {   # gate_capped MIN SECS WHO CMD… — run the gate capped; GC_ST, GC_SECS, $TMP/gc.err
+  _gc_m="$1"; _gc_s="$2"; _gc_w="$3"; shift 3
+  _gc_t0=$(date +%s); GC_ST=0
+  ( cd "$GP" && STUDIO_GATE_MINUTES="$_gc_m" STUDIO_GATE_SECONDS="$_gc_s" sh "$GATE" "$_gc_w" -- "$@" ) > "$TMP/gc.out" 2> "$TMP/gc.err" || GC_ST=$?
+  GC_SECS=$(( $(date +%s) - _gc_t0 ))
+}
+test_gate_run_cap_stops_a_long_run() {
+  gate_proj cap1
+  gate_capped 1 1 t sleep 30
+  assert_eq 124 "$GC_ST" "a run past the cap exits 124"
+  assert_eq 1 "$([ "$GC_SECS" -lt 8 ] && echo 1 || echo 0)" "stopped at the cap, not after 30 s"
+  assert_contains "$TMP/gc.err" '^gate: t ran past 1 min — stopped$' "names who and the minutes"
+  assert_contains "$GP/.studio/gate.times" '^[0-9]* t [0-9]* 124$' "gate.times records 124"
+  assert_missing "$GP/.studio/gate.lock" "the lock is released"
+}
+test_gate_run_cap_excludes_lock_wait() {
+  gate_proj cap2
+  ( cd "$GP" && sh "$GATE" holder -- sleep 4 ) 2>/dev/null &
+  _h=$!; sleep 1
+  gate_capped 1 3 waiter sleep 1
+  wait "$_h"
+  assert_eq 0 "$GC_ST" "3 s of lock wait plus a 1 s run is not past a 3 s cap"
+}
+test_gate_run_cap_off_unset_zero_and_setup() {
+  gate_proj cap3
+  ( cd "$GP" && STUDIO_GATE_SECONDS=1 sh "$GATE" t -- sleep 2 ) 2>/dev/null; assert_eq 0 "$?" "unset: no cap (the seam alone does nothing)"
+  gate_capped "" 1 t sleep 2; assert_eq 0 "$GC_ST" "empty: no cap"
+  gate_capped 0 1 t sleep 2; assert_eq 0 "$GC_ST" "0: no cap"
+  gate_capped 1 1 setup sleep 2; assert_eq 0 "$GC_ST" "who setup is exempt"
+}
+# Review Focus 3: TERM ignored → KILL ~10 s after the cap; still 124.
+test_gate_run_cap_kills_a_term_ignorer() {
+  gate_proj cap4
+  gate_capped 1 1 t sh -c 'trap "" TERM; while :; do sleep 1; done'
+  assert_eq 124 "$GC_ST" "killed, still reported as the cap"
+  assert_eq 1 "$([ "$GC_SECS" -ge 9 ] && [ "$GC_SECS" -lt 20 ] && echo 1 || echo 0)" "KILL after the 10 s grace ($GC_SECS s)"
+  assert_missing "$GP/.studio/gate.lock" "the lock is released"
+}
+# Review Focus 3: a run that ends first keeps its status and returns at once.
+test_gate_run_cap_no_false_stop() {
+  gate_proj cap5
+  _o="$(cd "$GP" && STUDIO_GATE_MINUTES=1 STUDIO_GATE_SECONDS=5 sh "$GATE" t -- sh -c 'echo hi; exit 3' 2>/dev/null)"; _st=$?
+  assert_eq 3 "$_st" "the command's own status"
+  assert_eq hi "$_o" "its output"
+  gate_capped 1 5 t true
+  assert_eq 1 "$([ "$GC_SECS" -lt 3 ] && echo 1 || echo 0)" "the timer does not hold the caller ($GC_SECS s)"
+  assert_not_contains "$GP/.studio/gate.times" ' 124$' "no 124 recorded"
+  assert_not_contains "$TMP/gc.err" 'ran past' "no stop message"
+}
+
+run_tests test_gate_run_cap_stops_a_long_run test_gate_run_cap_excludes_lock_wait \
+  test_gate_run_cap_off_unset_zero_and_setup test_gate_run_cap_kills_a_term_ignorer test_gate_run_cap_no_false_stop \
+  test_gate_times_window_per_who test_gate_no_overlap test_gate_status_and_held test_gate_stale_reclaim_race \
   test_gate_waiting_message test_gate_records_pid_and_who test_gate_without_a_project_just_runs \
   test_gate_signal_waits_for_child_then_releases test_gate_three_reclaimers_never_overlap \
   test_gate_signal_reaches_the_grandchild test_gate_unit_registration_and_times test_gate_wraps_test_and_run \
