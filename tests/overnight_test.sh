@@ -33,6 +33,7 @@ for a in "$@"; do printf '%s\n' "$a"; done > "$CALLS/$n.argv"
 pwd -P > "$CALLS/$n.pwd"
 printf '%s %s\n' "${STUDIO_UNIT_TAG:-unset}" "${STUDIO_RUN_DIR:-unset}" > "$CALLS/$n.chan"
 printf '%s\n' "${OMEGA_AUTOPILOT:-unset}" > "$CALLS/$n.env"
+printf '%s %s %s\n' "${BASH_DEFAULT_TIMEOUT_MS:-unset}" "${BASH_MAX_TIMEOUT_MS:-unset}" "${STUDIO_GATE_MINUTES:-unset}" > "$CALLS/$n.caps"
 root="$(sh "$STUB_STATE_BIN" root)"
 cp "$root/.studio/overnight.lock" "$CALLS/$n.lock" 2>/dev/null
 [ -f "$CALLS/caffeinate.pid" ] && kill -0 "$(cat "$CALLS/caffeinate.pid")" 2>/dev/null && echo alive > "$CALLS/$n.caf"
@@ -232,7 +233,8 @@ test_overnight_help() {
            "say <story>" "said <story>" "unsay <story> <id>" "hold <story>" "resume <story>" "stop <story>" "--run <run>" "hold_minutes .*0-1440" \
            "directive_chars .*500-16000" "STUDIO_OVERNIGHT_HOLD_MINUTES — test hook" "STUDIO_OVERNIGHT_HOLD_SECONDS — test hook" \
            "STUDIO_OVERNIGHT_INBOX_WAIT — test hook" "events.jsonl" "next tool call" \
-           "deny-rules \[--dir" "STUDIO_RUN_ORIGIN"; do
+           "deny-rules \[--dir" "STUDIO_RUN_ORIGIN" \
+           "STUDIO_GATE_MINUTES" "min(45, session_minutes/3)" "min(60, session_minutes/2)"; do
     assert_contains "$TMP/help.txt" "$w" "help names $w"
   done
   assert_contains "$REPO_ROOT/docs/game-dev/overnight-events.md" "deny-rules" "the contract doc lists deny-rules"
@@ -295,6 +297,20 @@ test_overnight_session_seconds_refused() {
   done
 }
 
+# #59 AC1: single-plan units get the command caps; the default is 90.
+test_overnight_unit_caps() {
+  fixture caps180 '{ "overnight": { "session_minutes": 180 } }'
+  scenario "cost 1" "cost 1"
+  run_start
+  assert_eq "2700000 10800000 60" "$(cat "$CALLS/1.caps")" "180: command cap 45 min, ceiling 180 min, gate cap 60"
+  assert_eq "2700000 10800000 60" "$(cat "$CALLS/2.caps")" "the retry too"
+  fixture caps90
+  scenario "cost 1" "cost 1"
+  run_start
+  assert_eq "1800000 5400000 45" "$(cat "$CALLS/1.caps")" "90 (default): 30 / 90 / 45"
+  run_start --dry-run
+  assert_contains "$RS_OUT" "BASH_DEFAULT_TIMEOUT_MS='1800000' BASH_MAX_TIMEOUT_MS='5400000' STUDIO_GATE_MINUTES='45' OMEGA_AUTOPILOT=1 claude-gd -p '/game-dev:execute --one'" "the dry-run line carries the caps before OMEGA_AUTOPILOT"
+}
 test_overnight_dry_run() {
   fixture dry
   run_start --dry-run
@@ -2213,7 +2229,7 @@ run_tests test_overnight_setup_preflight_single test_overnight_help_setup_prefli
   test_overnight_timeout test_overnight_kill_after_grace \
   test_overnight_stop_file test_overnight_sigterm test_overnight_sigint test_overnight_sighup \
   test_overnight_stop_no_run test_overnight_inhibitor test_overnight_no_inhibitor \
-  test_overnight_help test_events_contract_doc test_overnight_dry_run \
+  test_overnight_help test_overnight_unit_caps test_events_contract_doc test_overnight_dry_run \
   test_overnight_preflight_refusals test_overnight_preflight_all_failures \
   test_overnight_config_refusals test_overnight_deny_file_required \
   test_overnight_lock test_overnight_first_use_ignores \

@@ -383,12 +383,10 @@ chain_waits() { awk -F'\t' -v k="$1" '$1 == k { print $2; exit }' "$CHAINS"; }
 # story_launch_env ID — the env words of a unit launch for story ID (spec
 # 686-687), each KEY='value' with the value single-quoted (sq):
 # OMEGA_AUTOPILOT STUDIO_RUN (abs RUN_DIR/manifest.md) STUDIO_STORY
-# STUDIO_DOCS_REV BASH_DEFAULT_TIMEOUT_MS BASH_MAX_TIMEOUT_MS (both
-# session_minutes × 60000).
+# STUDIO_DOCS_REV, then the command caps from caps_env (see studio-overnight).
 story_launch_env() {
-  _ms=$((SESSION_MINUTES * 60000))
-  printf 'OMEGA_AUTOPILOT=%s STUDIO_RUN=%s STUDIO_STORY=%s STUDIO_DOCS_REV=%s BASH_DEFAULT_TIMEOUT_MS=%s BASH_MAX_TIMEOUT_MS=%s' \
-    "$(sq 1)" "$(sq "$RUN_DIR/manifest.md")" "$(sq "$1")" "$(sq "$MF_DOCS")" "$(sq "$_ms")" "$(sq "$_ms")"
+  printf 'OMEGA_AUTOPILOT=%s STUDIO_RUN=%s STUDIO_STORY=%s STUDIO_DOCS_REV=%s %s' \
+    "$(sq 1)" "$(sq "$RUN_DIR/manifest.md")" "$(sq "$1")" "$(sq "$MF_DOCS")" "$(caps_env)"
 }
 
 # story_first_label ID — the label of ID's next unit from its studio state
@@ -1101,7 +1099,7 @@ story_gate_loop() {
 run_story() {
   CUR_ID="$1"
   STUDIO_STORY="$1"; STUDIO_RUN="$RUN_DIR/manifest.md"; STUDIO_DOCS_REV="$MF_DOCS"
-  BASH_DEFAULT_TIMEOUT_MS=$((SESSION_MINUTES * 60000)); BASH_MAX_TIMEOUT_MS="$BASH_DEFAULT_TIMEOUT_MS"
+  session_caps; BASH_DEFAULT_TIMEOUT_MS="$CMD_MS"; BASH_MAX_TIMEOUT_MS="$MAX_MS"
   export STUDIO_STORY STUDIO_RUN STUDIO_DOCS_REV BASH_DEFAULT_TIMEOUT_MS BASH_MAX_TIMEOUT_MS
   LAUNCH_ENV="$(story_launch_env "$1")"
   UNIT_PREFIX=""   # run_unit names files <n>-<id>-<label> from CUR_ID (T5)
@@ -1670,8 +1668,7 @@ final_unit() {
   fi
   UNIT_DIR="$RUN_DIR/final"; UNIT_PREFIX=""; CUR_ID=""
   mkdir -p "$UNIT_DIR" || return 1
-  _fu_ms=$((SESSION_MINUTES * 60000))
-  LAUNCH_ENV="OMEGA_AUTOPILOT=$(sq 1) STUDIO_RUN=$(sq "$RUN_DIR/manifest.md") STUDIO_DOCS_REV=$(sq "$MF_DOCS") BASH_DEFAULT_TIMEOUT_MS=$(sq "$_fu_ms") BASH_MAX_TIMEOUT_MS=$(sq "$_fu_ms")${3:+ $3}"
+  LAUNCH_ENV="OMEGA_AUTOPILOT=$(sq 1) STUDIO_RUN=$(sq "$RUN_DIR/manifest.md") STUDIO_DOCS_REV=$(sq "$MF_DOCS") $(caps_env)${3:+ $3}"
   _fu_p="$PROMPT"; PROMPT="$2"; UNIT_CWD="$FINAL_W"
   _fu_h0="$(git -C "$FINAL_W" rev-parse HEAD 2>/dev/null)"
   FINAL_N=$((${FINAL_N:-0} + 1)); run_unit "$FINAL_N" "$1"

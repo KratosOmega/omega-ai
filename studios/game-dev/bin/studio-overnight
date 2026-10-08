@@ -25,6 +25,9 @@ set -u
 # Manifest mode's per-unit words, set only by overnight-lanes.sh: never taken
 # from the user's environment, so a single-plan run evaluates and uses none.
 LAUNCH_ENV=""; UNIT_CWD=""; LDIR=""
+# #59 D2: the runner's own gates (merge, final gate) are never capped; a
+# session gets STUDIO_GATE_MINUTES only through its launch words.
+unset STUDIO_GATE_MINUTES
 # The single-plan run's spec (#42 AC38): set by take_lock in the runner, never
 # taken from the user's environment; other processes read the lock's spec=.
 RUN_SPEC=""
@@ -235,9 +238,10 @@ EOF
   "$_fn" "$@"
 }
 # print_launch ARGS — the launch line; LAUNCH_ENV (manifest mode: a story's
-# env words) replaces the default OMEGA_AUTOPILOT=1.
+# env words) replaces the default: the command caps (caps_env) then
+# OMEGA_AUTOPILOT=1.
 print_launch() {
-  printf 'cd %s && %s claude-gd -p' "$(sq "$START_DIR")" "${LAUNCH_ENV:-OMEGA_AUTOPILOT=1}"
+  printf 'cd %s && %s claude-gd -p' "$(sq "$START_DIR")" "${LAUNCH_ENV:-$(caps_env) OMEGA_AUTOPILOT=1}"
   for _a in "$@"; do printf ' %s' "$(sq "$_a")"; done
   printf '\n'
 }
@@ -391,10 +395,15 @@ run at a time across all lanes and the runner; a dead holder's lock is reclaimed
 Config: .studio/config.json "overnight" (defaults, ranges):
   session_usd          25    1-200    budget cap per session (USD)
   run_usd              0     0-5000   budget cap for the whole run (USD); 0 = no run-wide cap
-  session_minutes      90    10-480   wall-clock cap per session (and per merge command);
-                                    also the Bash timeout cap a session's foreground gate
-                                    runs under. The preflight warns when the slowest recent
-                                    studio-test (.studio/gate.times) × 1.2 + 10 min exceeds it.
+  session_minutes      90    10-480   wall-clock cap per session (and per merge command).
+                                    It sets each session's command caps: a Bash call with
+                                    no timeout gets min(45, session_minutes/3) min
+                                    (BASH_DEFAULT_TIMEOUT_MS); BASH_MAX_TIMEOUT_MS is the
+                                    whole session; studio-gate stops a gate run (studio-test,
+                                    studio-run, studio-setup) past min(60, session_minutes/2)
+                                    min (STUDIO_GATE_MINUTES, exit 124). The preflight warns
+                                    when the slowest recent studio-test (.studio/gate.times)
+                                    × 1.2 + 10 min exceeds the session, or × 1.2 the gate cap.
   worktree_setup       ""             command run once per new worktree under the gate lock
                                     (studio-setup); no backslash. Unset = nothing runs.
                                     Preflighted: start runs it once in a scratch linked
@@ -578,6 +587,7 @@ preflight() {
     fi
   fi
   cfg session_minutes 90 10 480 int
+  [ -z "${SESSION_MINUTES:-}" ] || SESSION_MINUTES="$(printf '%s\n' "$SESSION_MINUTES" | awk '{ print $1 + 0 }')"
   gate_room_check
   cfg retries 1 0 3 int
   cfg gate_repairs 2 0 3 int
@@ -602,6 +612,23 @@ env_line() {
   sh "$SELF_DIR/studio-env" --dir "${START_DIR:-.}" ${1:+--run-pid "$1"} || true
 }
 
+# session_caps — #59 R1: the command caps of every runner-launched session,
+# from SESSION_MINUTES (default 90): CMD_MIN = min(45, S/3) and GATE_MIN =
+# min(60, S/2) (integer minutes), CMD_MS = CMD_MIN × 60000 (Bash calls with no
+# timeout), MAX_MS = S × 60000 (the ceiling gate-routed calls request).
+session_caps() {
+  _sc_s="${SESSION_MINUTES:-90}"
+  CMD_MIN=$((_sc_s / 3)); [ "$CMD_MIN" -le 45 ] || CMD_MIN=45
+  GATE_MIN=$((_sc_s / 2)); [ "$GATE_MIN" -le 60 ] || GATE_MIN=60
+  CMD_MS=$((CMD_MIN * 60000)); MAX_MS=$((_sc_s * 60000))
+}
+# caps_env — the caps as launch env words, each KEY='value' (sq).
+caps_env() {
+  session_caps
+  printf 'BASH_DEFAULT_TIMEOUT_MS=%s BASH_MAX_TIMEOUT_MS=%s STUDIO_GATE_MINUTES=%s' \
+    "$(sq "$CMD_MS")" "$(sq "$MAX_MS")" "$(sq "$GATE_MIN")"
+}
+
 # gate_room_check — a warning (never a refusal) when the slowest of the last
 # 10 studio-test runs plus the slowest of the last 10 gate_command runs
 # (studio-gate's .studio/gate.times, who `studio-test` and `gate`) × 1.2 plus
@@ -615,6 +642,16 @@ gate_room_check() {
   _gr_g="$(awk '$2 == "gate" { s[++n] = $3 }
     END { m = 0; for (i = (n > 10 ? n - 9 : 1); i <= n; i++) if (s[i] ~ /^[0-9]+$/ && s[i] + 0 > m) m = s[i] + 0; print m }' \
     "$STATE_ROOT/.studio/gate.times" 2>/dev/null)"
+  # #59 R1: studio-gate stops a run past GATE_MIN (exit 124): warn when the
+  # slowest recent studio-test or gate run × 1.2 does not fit it.
+  session_caps
+  _gr_m=$(( ${_gr_t:-0} > ${_gr_g:-0} ? ${_gr_t:-0} : ${_gr_g:-0} ))
+  if [ "$_gr_m" -gt 0 ] && [ $((_gr_m * 12)) -gt $((GATE_MIN * 600)) ]; then
+    _gr_cn=$(( (_gr_m * 12 / 10 + 59) / 60 ))
+    if [ "$_gr_cn" -le 60 ]; then _gr_fix="set overnight.session_minutes to at least $((_gr_cn * 2)) in .studio/config.json"
+    else _gr_fix="the cap tops out at 60 min (session_minutes 120 or more): speed up or split the suite"; fi
+    say "warning: gate run cap: the slowest recent studio-test or gate run took $(( (_gr_m + 59) / 60 )) min; × 1.2 is past the gate run cap of $GATE_MIN min (min(60, session_minutes/2)) — $_gr_fix (studio-gate stops a run past the cap, exit 124)"
+  fi
   _gr_s=$(( ${_gr_t:-0} + ${_gr_g:-0} ))
   [ "$_gr_s" -gt 0 ] 2>/dev/null || return 0
   _gr_need=$(( (_gr_s * 12 / 10 + 59) / 60 + 10 ))
@@ -1094,7 +1131,7 @@ reg_end() {
 
 # start_session ARGS — the session in the background, its pid in CPID. Its
 # env words are LAUNCH_ENV (manifest mode: the story's, story_launch_env),
-# else OMEGA_AUTOPILOT=1; STUDIO_GATE_HELD never reaches a session (D17).
+# else the caps then OMEGA_AUTOPILOT=1; STUDIO_GATE_HELD never reaches a session (D17).
 # Under a lane (LDIR set) the pid is also written to LDIR/cpid. The session
 # starts in UNIT_CWD when set (manifest mode's final-step units), else where
 # the story's pointer is (story_dir: START_DIR until a hand-off, #42).
@@ -1103,7 +1140,7 @@ reg_end() {
 # the run's start dir, for every unit (AC30, D42).
 start_session() {
   set -m 2>/dev/null || true   # own process group: a terminal Ctrl-C reaches only the runner (D6; a lane subshell too, D1c)
-  ( cd "${UNIT_CWD:-$(story_dir)}" && unset STUDIO_GATE_HELD && eval "export ${LAUNCH_ENV:-OMEGA_AUTOPILOT=1}" \
+  ( cd "${UNIT_CWD:-$(story_dir)}" && unset STUDIO_GATE_HELD && eval "export ${LAUNCH_ENV:-$(caps_env) OMEGA_AUTOPILOT=1}" \
       && STUDIO_UNIT_TAG="$UNIT_TAG" && export STUDIO_UNIT_TAG \
       && STUDIO_RUN_DIR="$RUN_DIR" && export STUDIO_RUN_DIR \
       && STUDIO_START_DIR="$START_DIR" && export STUDIO_START_DIR && exec claude-gd -p "$@" ) \

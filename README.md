@@ -149,8 +149,11 @@ stories as parallel lanes of dependency chains:
 - One gate lock per project (`.studio/gate.lock`): `studio-test`, `studio-run`,
   the merge command and the final gate take it, so only one test or gate run
   happens at a time across all lanes.
-- Sessions run `studio-test` and `studio-run` as foreground Bash calls with the
-  runner's raised timeout (`session_minutes`): a headless `-p` session that
+- Sessions run `studio-test` and `studio-run` as foreground Bash calls. Every
+  session gets three caps from `session_minutes` (S): a Bash call with no
+  timeout is cut at `min(45, S/3)` min (`BASH_DEFAULT_TIMEOUT_MS`), a call may
+  ask for up to S min (`BASH_MAX_TIMEOUT_MS`), and `studio-gate` stops a gate run
+  past `min(60, S/2)` min (`STUDIO_GATE_MINUTES`, exit 124). A headless `-p` session that
   ends its turn to wait on a background job ends there, and the job is
   orphaned. When a unit ends, the runner ends any gate it left running
   (`.studio/gate.units/`). A unit the watchdog ends with no progress is
@@ -160,7 +163,8 @@ stories as parallel lanes of dependency chains:
   A unit whose session still ended its turn with background work running
   (print mode kills that work 600 s later) is recorded `orphaned`. Every gate run logs its seconds to
   `.studio/gate.times`; preflight warns when the slowest recent `studio-test`
-  leaves too little room under `session_minutes`.
+  leaves too little room under `session_minutes`, and when a gate run would
+  not fit the gate cap.
 - `studio-overnight status` works from any directory: inside a project it shows
   that project's run (each running unit's elapsed time and last tool call or
   subagent, and the gate holder); elsewhere it lists the live runs registered
