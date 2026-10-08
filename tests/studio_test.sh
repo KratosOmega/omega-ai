@@ -480,7 +480,8 @@ test_execute_sync_repair_form() {
   assert_contains "$E" 'fix(sync): <summary>' "the sync repair commit subject"
   assert_contains "$E" 'Synced: <summary>' "the sync repair ledger line"
   assert_contains "$E" 'Stop: sync repair red — <failing line>' "a red sync repair stops"
-  assert_contains "$E" 'studio-test <paths>' "the sync gate is scoped to the touched paths"
+  assert_contains "$E" 'Gate with `studio-test --file <path>\[,<path>…\]`' "the sync gate is one file run of the touched paths"
+  assert_not_contains "$E" 'studio-test <paths\?>' "no positional file runs (several run only the first)"
 }
 
 test_execute_peers_brief_rule() {
@@ -644,7 +645,9 @@ test_execute_gate_repair() {
   assert_contains "$E" 'STUDIO_REPAIR=gate:<log>' "the repair reads the red gate's log"
   assert_contains "$E" 'its latest `Stop:` line is a `gate red` one' "§11's preconditions name the gate red stop"
   assert_contains "$E" 'fix(gate): <summary>' "the repair commit"
-  assert_contains "$E" '`studio-test <path>` for each' "the repair re-runs only the failing test files"
+  assert_contains "$E" '`studio-test --file <path>\[,<path>…\]` with every' "the repair re-runs only the failing test files, in one file run"
+  assert_contains "$E" '`STUDIO_GATE_MINUTES`) and' "§11's env list names the gate cap"
+  assert_not_contains "$E" '`studio-lint` or `studio-run --seconds 10` when that was' "studio-lint is not given the gate timeout"
   assert_contains "$E" 'Repair: gate — <summary>' "the ledger line the runner reads"
   assert_contains "$E" 'Stop: gate repair red — <failing line>' "a repair red after three runs is a hard stop"
   assert_contains "$E" 'Never ships, never lands' "the repair never ships"
@@ -652,7 +655,7 @@ test_execute_gate_repair() {
   assert_not_contains "$E" 'only its repair unit repairs it' "§7 no longer names a unit that does not exist"
   assert_contains "$E" 'Gate-enforced findings are must-fix' "§5's brief makes gate-enforced findings must-fix"
   assert_contains "$E" 'is never ruled `leave`, deferred or parked' "they are never left or deferred"
-  assert_contains "$E" 'running that test file: `studio-test <path>`' "§5 runs the test before accepting an out-of-scope claim"
+  assert_contains "$E" 'running that test file: `studio-test --file <path>`' "§5 runs the test before accepting an out-of-scope claim"
   assert_contains "$E" 'Up to three rounds, a round' "§11 counts rounds, not single runs"
   # The runner starts both repair units in the start checkout, and the Stop
   # and shipped lines they check are in the feature ledger: enter, then check.

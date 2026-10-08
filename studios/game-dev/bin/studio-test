@@ -4,8 +4,9 @@
 # studio-test --file A.gd[,B.gd…] [--file C.gd…] — only those GUT scripts
 # (#59 R3), timed apart as who studio-test-file. A path is relative to the
 # project root (the current directory); a leading ./ or res:// and the
-# project's own absolute prefix are stripped; duplicates run once. A single
-# positional that is an existing file means --file.
+# project's own absolute prefix are stripped; duplicates run once.
+# Positionals that are all existing files (one or several) mean --file;
+# several positionals of any other kind exit 4.
 # studio-test --slowest [N] — the slowest files and tests of the last run's
 # report; it only reads a file, so it never waits for the gate.
 # Exit: the adapter's (0 pass · 1 fail · 2 no Godot · 3 no GUT) · 4 a missing
@@ -14,9 +15,25 @@
 case "${1:-}" in
   --slowest) shift; exec sh "$(dirname "$0")/studio-dispatch" slowest "$@" ;;
 esac
-ft_usage() { printf 'usage: studio-test [PATH] | --file <test.gd>[,<test.gd>…] [--file …] | --slowest [N]\n' >&2; exit 4; }
+ft_usage() { printf 'usage: studio-test [PATH] | <test.gd>… | --file <test.gd>[,<test.gd>…] [--file …] | --slowest [N]\n' >&2; exit 4; }
 ft_missing() { printf 'studio-test: no such test file %s\n' "$1" >&2; exit 4; }
-if [ "$#" -eq 1 ] && [ -f "$1" ]; then set -- --file "$1"; fi
+# Positionals: one that is an existing file means --file; several must all
+# be existing files (one file run). Any other mix of several exits 4: the
+# adapter takes one target, so it would run only the first, timed as a
+# full suite.
+case "${1:-}" in
+  ''|--file|--file=*) ;;
+  *) if [ "$#" -eq 1 ]; then
+       if [ -f "$1" ]; then set -- --file "$1"; fi
+     else
+       _ft_n="$#"
+       for _ft_a in "$@"; do
+         [ -f "$_ft_a" ] || ft_usage
+         set -- "$@" --file "$_ft_a"
+       done
+       shift "$_ft_n"
+     fi ;;
+esac
 case "${1:-}" in
   --file|--file=*)
     _ft_rp="$(pwd -P)"; _ft_rl="$PWD"; _ft_list=""

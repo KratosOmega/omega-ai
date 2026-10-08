@@ -523,7 +523,7 @@ the last task's review. Under `--one`, see §8: a task unit never starts it.
    severity: it would turn the finish gate red, and under a lane that costs
    a gate-repair unit and a second full gate. Never accept a claim that a
    file is outside such a check (it "is not under" that test) without
-   running that test file: `studio-test <path>`.
+   running that test file: `studio-test --file <path>`.
    Re-review per §4a rule 3 (a Minor-only wave is never re-reviewed); never
    a third pass (§4a rule 4).
 6. `studio-state ledger "final review done"`, then commit the ledger:
@@ -860,8 +860,8 @@ a `Stop:` line (§8's stop rule).
 - **The `sync:<ref>` form** merges a peer run's ref into the feature branch:
   enter the feature checkout as above, `git fetch origin`, then
   `git merge <ref>`. Resolve the conflict with one fresh fixer (§4a's brief).
-  Gate with `studio-test <paths>`: the files the resolution touched, as §11
-  scopes it, up to three rounds. Green: commit `fix(sync): <summary>`, push,
+  Gate with `studio-test --file <path>[,<path>…]`: one run of the test files
+  the resolution touched, as §11 scopes it, up to three rounds. Green: commit `fix(sync): <summary>`, push,
   `studio-state ledger "Synced: <summary>"`, committed and pushed. Red after
   three rounds: `studio-state ledger "Stop: sync repair red — <failing line>"`,
   committed, not pushed. The next task's `Verify:` and the finish gate cover
@@ -917,7 +917,8 @@ a red gate (`Stop: gate red — …`, §7's lane rules) and the story has gate
 repairs left (`overnight.gate_repairs`): prompt
 `/game-dev:execute --gate-repair`, from the start checkout, with the
 story's env (`STUDIO_STORY`, `STUDIO_RUN`, `STUDIO_DOCS_REV`,
-`OMEGA_AUTOPILOT=1`, `BASH_DEFAULT_TIMEOUT_MS`, `BASH_MAX_TIMEOUT_MS`) and
+`OMEGA_AUTOPILOT=1`, `BASH_DEFAULT_TIMEOUT_MS`, `BASH_MAX_TIMEOUT_MS`,
+`STUDIO_GATE_MINUTES`) and
 `STUDIO_REPAIR=gate:<log>` set. `<log>` is the newest `studio-test` log of
 the feature checkout (`.studio/reports/test-<stamp>.log`), or `-` when there
 is none; a `gate_command` Stop names its own log in the Stop line, and that is `<log>`. It bypasses §0's stage gate: these preconditions replace it, and
@@ -944,10 +945,12 @@ then launches a fresh finish, which runs the full gate once (§7).
   failing output. It commits `fix(gate): <summary>`.
 - **Verify what failed, not the whole gate:** when the Stop names `gate_command`,
   verify with the command that failed: `studio-setup gate`; otherwise
-  `studio-test <path>` for each
-  failing test file; `studio-lint` or `studio-run --seconds 10` when that was
-  the red command. Each runs as a foreground Bash call with `timeout` set to
-  `$BASH_MAX_TIMEOUT_MS` (§7's lane rule). Up to three rounds, a round
+  `studio-test --file <path>[,<path>…]` with every
+  failing test file; `studio-run --seconds 10` or `studio-lint` when that was
+  the red command. The gate-routed ones (`studio-test`, `studio-run`,
+  `studio-setup gate`) run as a foreground Bash call with `timeout` set to
+  `$BASH_MAX_TIMEOUT_MS` (§7's lane rule); `studio-lint` keeps the default
+  cap (§0). Up to three rounds, a round
   being one run of every failing file (or of the red command); the same
   fixer (or a fresh one given the new failing output) fixes between
   rounds. Exit codes keep §7's lane meaning: `studio-lint` exit 3 is not red;

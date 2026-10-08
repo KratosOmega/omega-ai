@@ -289,6 +289,26 @@ test_test_file_through_gate() {
   assert_not_contains "$P/.studio/gate.times" ' studio-test [0-9]' "no full-suite line"
 }
 
+# Final review I2: several positionals that are all existing files are one
+# file run; any other mix of several positionals is misuse (exit 4), never
+# a full-suite run of the first.
+test_test_file_several_positionals() {
+  P="$(fresh_project multi)"; with_gut "$P"; mkdir -p "$P/tests/unit" "$P/.studio"
+  : > "$P/tests/unit/a.gd"; : > "$P/tests/unit/b.gd"
+  verb "$P" studio-test tests/unit/a.gd ./tests/unit/b.gd
+  assert_eq 0 "$(cat "$TMP/status")" "two existing files pass"
+  assert_contains "$(last_log "$P")" "-gtest=res://tests/unit/a.gd,res://tests/unit/b.gd -gexit" "both run, in one -gtest="
+  assert_contains "$P/.studio/gate.times" '^[0-9]* studio-test-file [0-9]* 0$' "timed as studio-test-file"
+  assert_not_contains "$P/.studio/gate.times" ' studio-test [0-9]' "no full-suite line"
+  rm -f "$P"/.studio/reports/test-*.log
+  verb "$P" studio-test tests/unit/a.gd tests/unit/nope.gd
+  assert_eq 4 "$(cat "$TMP/status")" "a file and a missing path exit 4"
+  assert_contains "$TMP/out" '^usage: studio-test ' "with the usage line"
+  verb "$P" studio-test tests/unit/a.gd tests/unit; assert_eq 4 "$(cat "$TMP/status")" "a file and a directory exit 4"
+  verb "$P" studio-test tests tests/unit; assert_eq 4 "$(cat "$TMP/status")" "two directories exit 4"
+  assert_eq "" "$(ls "$P"/.studio/reports/test-*.log 2>/dev/null)" "no misuse starts Godot"
+}
+
 test_test_targets_a_directory() {
   P="$(fresh_project dir)"
   with_gut "$P"
@@ -594,7 +614,7 @@ test_slowest_does_not_wait_for_the_gate() {
   sleep 30 & holder=$!
   echo "$holder" > "$GP/.studio/gate.lock/pid"; echo studio-test > "$GP/.studio/gate.lock/who"
   verb "$GP" studio-test --slowest
-  kill "$holder" 2>/dev/null; rm -rf "$GP/.studio/gate.lock"
+  kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null; rm -rf "$GP/.studio/gate.lock"
   assert_eq "0" "$(cat "$TMP/status")" "--slowest reads the report while a run holds the gate"
   assert_not_contains "$TMP/out" "gate: waiting" "and never waits for the lock"
 }
@@ -1026,7 +1046,7 @@ run_tests test_gate_run_cap_stops_a_long_run test_gate_run_cap_excludes_lock_wai
   test_resolve_finds_an_app_bundle test_resolve_finds_godot_on_path test_guide_has_an_install_line \
   test_test_needs_a_project test_test_falls_back_to_studio_json test_test_exits_3_without_gut \
   test_test_exits_2_without_engine test_test_passes_and_reports test_test_reports_failures \
-  test_test_targets_a_file test_test_file_runs_named_files test_test_file_missing_exits_4 test_test_file_path_forms test_test_file_misuse_exits_4 test_test_file_through_gate test_test_targets_a_directory test_test_imports_when_dot_godot_is_absent \
+  test_test_targets_a_file test_test_file_runs_named_files test_test_file_missing_exits_4 test_test_file_path_forms test_test_file_misuse_exits_4 test_test_file_through_gate test_test_file_several_positionals test_test_targets_a_directory test_test_imports_when_dot_godot_is_absent \
   test_test_reimports_a_partial_cache test_test_skips_import_when_the_cache_is_complete \
   test_test_reimports_a_product_without_its_md5 test_test_names_a_crash \
   test_test_passes_the_projects_gut_config test_test_gut_config_lookup \
