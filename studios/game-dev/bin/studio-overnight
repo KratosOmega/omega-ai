@@ -970,15 +970,9 @@ unit_activity() {
       return v
     }
     function cut(s, n) { return length(s) > n ? substr(s, 1, n - 1) "…" : s }
-    # gone(ID): ID or a subagent call it ran under (any depth) is answered.
-    function gone(id,   d) {
-      for (d = 0; id != "" && d < 50; d++) { if (id in closed) return 1; id = par[id] }
-      return 0
-    }
     {
       l = $0
       while (match(l, /"tool_use_id":"[^"]*"/)) { closed[substr(l, RSTART + 15, RLENGTH - 16)] = 1; l = substr(l, RSTART + RLENGTH) }
-      p = ""; if (match($0, /"parent_tool_use_id":"[^"]*"/)) p = substr($0, RSTART + 22, RLENGTH - 23)
       l = $0
       while (match(l, /"type":"tool_use","id":"[^"]*","name":"[^"]*"/)) {
         head = substr(l, RSTART, RLENGTH); l = substr(l, RSTART + RLENGTH)
