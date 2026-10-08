@@ -403,7 +403,7 @@ Config: .studio/config.json "overnight" (defaults, ranges):
                                     no timeout gets min(45, session_minutes/3) min
                                     (BASH_DEFAULT_TIMEOUT_MS); BASH_MAX_TIMEOUT_MS is the
                                     whole session; studio-gate stops a gate run (studio-test,
-                                    studio-run, studio-setup) past min(60, session_minutes/2)
+                                    studio-run, studio-setup gate) past min(60, session_minutes/2)
                                     min (STUDIO_GATE_MINUTES, exit 124). The preflight warns
                                     when the slowest recent studio-test (.studio/gate.times)
                                     × 1.2 + 10 min exceeds the session, or × 1.2 the gate cap.
@@ -492,6 +492,8 @@ Test hooks (tests only; never set them for a real run; --detach strips them):
                      inbox lock (default 15)
   STUDIO_ENV_FIXTURE — test hook: a directory of canned outputs studio-env reads
                      in place of uname, sysctl, /proc, nproc, df, pmset and ps
+  activity --open-gate <unit.jsonl> — test hook verb: prints "gate" when an
+                     open Bash call runs a gate-routed verb (the idle check)
 EOF
 }
 
@@ -968,9 +970,15 @@ unit_activity() {
       return v
     }
     function cut(s, n) { return length(s) > n ? substr(s, 1, n - 1) "…" : s }
+    # gone(ID): ID or a subagent call it ran under (any depth) is answered.
+    function gone(id,   d) {
+      for (d = 0; id != "" && d < 50; d++) { if (id in closed) return 1; id = par[id] }
+      return 0
+    }
     {
       l = $0
       while (match(l, /"tool_use_id":"[^"]*"/)) { closed[substr(l, RSTART + 15, RLENGTH - 16)] = 1; l = substr(l, RSTART + RLENGTH) }
+      p = ""; if (match($0, /"parent_tool_use_id":"[^"]*"/)) p = substr($0, RSTART + 22, RLENGTH - 23)
       l = $0
       while (match(l, /"type":"tool_use","id":"[^"]*","name":"[^"]*"/)) {
         head = substr(l, RSTART, RLENGTH); l = substr(l, RSTART + RLENGTH)
@@ -1004,6 +1012,8 @@ unit_activity() {
 # tool: its file name; Grep/Glob: the pattern; else the tool name), newlines
 # and tabs flattened, cut to 120 chars. `gate`: prints `gate` when an open
 # Bash call's FULL command runs a gate-routed verb (never the cut text).
+# A call inside a subagent (its line's parent_tool_use_id) whose Agent/Task
+# call, or any call above that, is answered is over, answered or not.
 # Always exits 0.
 open_calls() {
   [ -s "$1" ] || return 0
@@ -1016,9 +1026,15 @@ open_calls() {
       return v
     }
     function cut(s, n) { return length(s) > n ? substr(s, 1, n - 1) "…" : s }
+    # gone(ID): ID or a subagent call it ran under (any depth) is answered.
+    function gone(id,   d) {
+      for (d = 0; id != "" && d < 50; d++) { if (id in closed) return 1; id = par[id] }
+      return 0
+    }
     {
       l = $0
       while (match(l, /"tool_use_id":"[^"]*"/)) { closed[substr(l, RSTART + 15, RLENGTH - 16)] = 1; l = substr(l, RSTART + RLENGTH) }
+      p = ""; if (match($0, /"parent_tool_use_id":"[^"]*"/)) p = substr($0, RSTART + 22, RLENGTH - 23)
       l = $0
       while (match(l, /"type":"tool_use","id":"[^"]*","name":"[^"]*"/)) {
         head = substr(l, RSTART, RLENGTH); l = substr(l, RSTART + RLENGTH)
@@ -1036,12 +1052,12 @@ open_calls() {
           else d = ""
           txt = (d == "") ? nm : nm ": " d
         }
-        n++; cid[n] = id; ctxt[n] = txt; cfull[n] = full
+        n++; cid[n] = id; ctxt[n] = txt; cfull[n] = full; par[id] = p
       }
     }
     END {
       for (i = n; i >= 1; i--) {
-        if (cid[i] in closed) continue
+        if (gone(cid[i])) continue
         if (mode == "gate") { if (cfull[i] ~ /studio-(test|run|setup|gate)/) { print "gate"; exit } ; continue }
         s = ctxt[i]; gsub(/[\t\r\n]/, " ", s); print cut(s, 120)
       }
@@ -1101,6 +1117,21 @@ heartbeat_stop() {
 
 # ---- Gates a unit left behind ----
 
+# live_gates DIR — the pids, space-separated, of DIR's entries (a unit's
+# gate.units/<tag>/<gate pid>) that are live studio-gate processes. An entry
+# whose gate is dead (SIGKILLed before it could remove it) or whose pid was
+# since reused is skipped. Read by unit_reap and the idle watchdog alike.
+live_gates() {
+  _lg=""
+  for _lg_f in "$1"/*; do
+    [ -f "$_lg_f" ] || continue
+    _lg_p="${_lg_f##*/}"
+    case "$_lg_p" in ''|*[!0-9]*) continue ;; esac
+    kill -0 "$_lg_p" 2>/dev/null && ps -o args= -p "$_lg_p" 2>/dev/null | grep -q studio-gate \
+      && _lg="$_lg $_lg_p"
+  done
+  printf '%s\n' "${_lg# }"
+}
 # unit_reap TAG — end every studio-gate still registered under the unit tag
 # TAG (STATE_ROOT/.studio/gate.units/TAG/<gate pid>, holding its command's
 # pid once it runs): a session that started a gate in the background and
@@ -1112,13 +1143,7 @@ unit_reap() {
   UNIT_REAPED=""
   [ -n "${1:-}" ] || return 0
   _ur_d="$STATE_ROOT/.studio/gate.units/$1"
-  for _ur_f in "$_ur_d"/*; do
-    [ -f "$_ur_f" ] || continue
-    _ur_p="${_ur_f##*/}"
-    case "$_ur_p" in ''|*[!0-9]*) continue ;; esac
-    kill -0 "$_ur_p" 2>/dev/null && ps -o args= -p "$_ur_p" 2>/dev/null | grep -q studio-gate \
-      && UNIT_REAPED="$UNIT_REAPED $_ur_p"
-  done
+  UNIT_REAPED="$(live_gates "$_ur_d")"
   if [ -n "$UNIT_REAPED" ]; then
     _ur_kids=""
     for _ur_p in $UNIT_REAPED; do _ur_kids="$_ur_kids $(cat "$_ur_d/$_ur_p" 2>/dev/null)"; done
@@ -1263,8 +1288,8 @@ run_unit() {
   # runs in the background and is waited on, so the teardown TERM interrupts
   # it at once and the trap reaps it (no orphaned sleep).
   # Idle (#59 R2): every _poll s the watchdog compares the log's size; once
-  # it has not grown for _idle s, and the unit has no registered gate and no
-  # open gate-routed Bash call, it stages `.ended.stall`, takes the claim and
+  # it has not grown for _idle s, and the unit has no live registered gate
+  # (live_gates) and no open gate-routed Bash call, it stages `.ended.stall`, takes the claim and
   # moves the marker inside it (D5), then ends the session as the cap does.
   # With the idle check off (idle_minutes 0) it naps once, to the deadline.
   ( _sp=; _why=; trap 'kill $_sp 2>/dev/null; exit 0' TERM
@@ -1272,12 +1297,12 @@ run_unit() {
     while :; do
       _left=$(( _end - $(date +%s) )); [ "$_left" -gt 0 ] || break
       _nap="$_left"; [ -z "$_idle" ] || [ "$_nap" -le "$_poll" ] || _nap="$_poll"
-      sleep "$_nap" & _sp=$!; wait "$_sp"
+      sleep "$_nap" & _sp=$!; wait "$_sp"; _sp=
       [ -n "$_idle" ] || continue
       _s="$(wc -c < "$_log" 2>/dev/null | tr -d ' ')"; _now=$(date +%s)
       if [ "${_s:-0}" != "$_sz" ]; then _sz="${_s:-0}"; _quiet="$_now"; continue; fi
       [ $((_now - _quiet)) -ge "$_idle" ] || continue
-      [ -z "$(ls -A "$_greg" 2>/dev/null)" ] || continue
+      [ -z "$(live_gates "$_greg")" ] || continue
       [ -z "$(open_calls "$_log" gate)" ] || continue
       _oc="$(open_calls "$_log" | head -n 1)"
       printf 'idle_min=%s\ncommand=%s\n' "$IDLE_MINUTES" "${_oc:--}" > "$_claim.stall"

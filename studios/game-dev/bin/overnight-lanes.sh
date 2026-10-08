@@ -1664,8 +1664,8 @@ final_stopped() {
 # OMEGA_AUTOPILOT, STUDIO_RUN, STUDIO_DOCS_REV and the Bash timeouts, plus
 # ENV_WORDS (KEY='value', sq-quoted); never STUDIO_STORY. Its row in
 # final/units.tsv is `progress` when FINAL_W's HEAD moved, else `noprog`
-# (`timed out` when the session cap ended it, `orphaned` when print mode
-# killed its background work).
+# (`timed out` when the session cap ended it, `stalled` when the idle
+# watchdog did, `orphaned` when print mode killed its background work).
 # Returns 1, launching nothing, when a stop was requested (before the unit or
 # while it waited for a session slot, `stopped before <label>`) or the run budget
 # (story_units' rule: spent_all + SESSION_USD > RUN_USD) refuses it, with a
