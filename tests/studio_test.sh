@@ -596,6 +596,18 @@ test_execute_lane_gate_foreground() {
 }
 
 # #59 R7: one bounded command per hang; file runs and gate timeouts by rule.
+# #59 final review m1, m3, m6 and the API-outage note: the docs match the code.
+test_docs_59_wording() {
+  RM="$REPO_ROOT/README.md"
+  assert_contains "$RM" '^| `studio-test \[PATH\] \\| <test.gd>… \\| --file A.gd\[,B.gd…\]` | .* 4 missing test file · 124 gate run cap |$' "m1: the studio-test row names --file, 4 and 124"
+  assert_contains "$RM" '^| `studio-run .* 2 no Godot · 124 gate run cap |$' "m1: the studio-run row names 124"
+  assert_contains "$RM" 'A unit the session-cap watchdog ends with no progress' "m3: README names which watchdog records timed out"
+  assert_contains "$RM" 'API outage or retry storm longer than' "README warns that an API outage reads as a stall"
+  assert_contains "$REPO_ROOT/studios/game-dev/bin/studio-overnight" 'studio-run, studio-setup gate) past min(60' "m3: help says only studio-setup gate is capped"
+  EV="$REPO_ROOT/docs/game-dev/overnight-events.md"
+  assert_not_contains "$EV" 'just before that unit' "m6: unit_stalled is not always just before unit_ended"
+  assert_contains "$EV" '`unit_stalled` .* written before that unit.s `unit_ended`, whose outcome is `stalled` unless the unit moved the state or recorded a stop' "m6: the outcome rule"
+}
 test_execute_command_caps_text() {
   E="$REPO_ROOT/studios/game-dev/skills/execute/SKILL.md"
   assert_not_contains "$E" "whole session's minutes" "the old sentence is gone"
@@ -805,6 +817,6 @@ run_tests test_plugin_manifests test_skill_frontmatter test_agent_frontmatter \
   test_review_contract test_on_demand_skills_keep_stage test_playtest_contract test_retro_contract \
   test_skill_review_playtest_ask_candidates test_skill_retro_resolves_story \
   test_no_ship_references test_superpowers_requires_referenced test_no_last_playtest_callers \
-  test_execute_one_contract test_router_overnight_lock test_execute_lanes test_execute_lane_gate_foreground test_execute_command_caps_text test_agent_gameplay_programmer_file_runs test_execute_land_and_progress test_execute_gate_repair test_execute_operator_messages test_execute_adopt test_final_wave_contracts \
+  test_execute_one_contract test_router_overnight_lock test_execute_lanes test_execute_lane_gate_foreground test_execute_command_caps_text test_docs_59_wording test_agent_gameplay_programmer_file_runs test_execute_land_and_progress test_execute_gate_repair test_execute_operator_messages test_execute_adopt test_final_wave_contracts \
   test_plan_brainstorm_lanes test_execute_sync_repair_form test_execute_peers_brief_rule test_plan_brainstorm_slug_form test_plan_brainstorm_check_id \
   test_sdd_script_references

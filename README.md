@@ -92,9 +92,9 @@ The shim puts `studios/game-dev/bin/` on `PATH`. From a Godot project root:
 
 | Verb | Does | Exit codes |
 |---|---|---|
-| `studio-test [PATH]` | GUT headless with the project's `.gutconfig.json` (root or `tests/`), so its hooks run; JUnit XML and log in `.studio/reports/` | 0 pass · 1 failures, no tests run, crash, or a failed import · 2 no Godot · 3 GUT missing |
+| `studio-test [PATH] \| <test.gd>… \| --file A.gd[,B.gd…]` | GUT headless with the project's `.gutconfig.json` (root or `tests/`), so its hooks run; JUnit XML and log in `.studio/reports/`. `--file` (repeatable, or a comma list), or test files given as arguments, runs only those scripts | 0 pass · 1 failures, no tests run, crash, or a failed import · 2 no Godot · 3 GUT missing · 4 missing test file · 124 gate run cap |
 | `studio-test --slowest [N]` | The N slowest files and tests of the last report (default 10); reads only, never waits for the gate | 0 · 1 no report, or a bad N |
-| `studio-run [--scene S] [--seconds N] [--windowed]` | Boots the project for N seconds and scans the log for script errors | 0 clean · 1 errors or a failed import · 2 no Godot |
+| `studio-run [--scene S] [--seconds N] [--windowed]` | Boots the project for N seconds and scans the log for script errors | 0 clean · 1 errors or a failed import · 2 no Godot · 124 gate run cap |
 | `studio-lint [PATH]` | `gdlint` and `gdformat --check` when gdtoolkit is installed | 0 clean · 1 findings · 3 not installed |
 | `studio-state …` | Reads and writes `.studio/STATE.md` | 0 · 1 |
 | `studio-overnight start [<manifest>] \| status [--run] \| watch [--run] \| stop [--run \| --all] \| next \| check-id \| say \| said \| unsay \| hold \| resume` | Runs approved plans unattended, one fresh headless session per unit, and takes messages and holds while it runs; see below | start: 0 done · 1 other ending · 2 refused; the channel verbs: 0 · 1 refused · 2 usage; check-id: 0 free · 1 taken · 2 usage |
@@ -156,13 +156,16 @@ stories as parallel lanes of dependency chains:
   past `min(60, S/2)` min (`STUDIO_GATE_MINUTES`, exit 124). A headless `-p` session that
   ends its turn to wait on a background job ends there, and the job is
   orphaned. When a unit ends, the runner ends any gate it left running
-  (`.studio/gate.units/`). A unit the watchdog ends with no progress is
+  (`.studio/gate.units/`). A unit the session-cap watchdog ends with no progress is
   recorded `timed out`, not `no progress`. A unit whose session log stays
   silent for `overnight.idle_minutes` (default 20; 0 turns it off) while it
   neither runs nor waits on a gate (`studio-test`, `studio-run`, `studio-setup`,
   `studio-gate`) is ended and recorded `stalled`, its ending naming the newest
   open command (`stalled on T3 (no output for 20 min: Bash: …)`;
   `studio-overnight activity --open <unit.jsonl>` lists a log's open calls).
+  An API outage or retry storm longer than `idle_minutes` is silence too: it
+  ends running units as `stalled`, and they retry, then hold. Set a higher
+  `idle_minutes`, or 0 to turn the check off, when that is a concern.
   Subagents run in the foreground
   too: under `OMEGA_AUTOPILOT=1` the studio's `autopilot-guard.sh` PreToolUse
   hook denies a background `Agent`, a background `Bash` call and `Monitor`.
