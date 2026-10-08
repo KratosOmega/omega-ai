@@ -899,6 +899,7 @@ test_godot_guard_denies_headless_boot() {
     godot_guard "{\"command\":\"$c\"}"
     assert_denied "denied: $c"
     assert_contains "$TMP/ap.out" 'studio-test --file' "the reason names studio-test --file ($c)"
+    assert_contains "$TMP/ap.out" 'raw headless Godot' "the reason names the case ($c)"
   done
 }
 # AC7 denied (b).
