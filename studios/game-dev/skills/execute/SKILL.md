@@ -115,7 +115,9 @@ is `STUDIO_STORY`:
   `studio-adopt sync` then holds the story, and nothing repairs that by itself.
 - **New branch:**
   `git worktree add --no-track -b <Branch> <STATE_ROOT>/.claude/worktrees/<Branch with / → -> origin/<Target>`,
-  then `EnterWorktree` with `path:`, then
+  then `EnterWorktree` with `path:` (in a story session the studio's
+  `worktree-guard.sh` hook refuses a call without `path:`; a bare call
+  creates a stray worktree), then
   `git checkout $STUDIO_DOCS_REV -- <spec> <plan> .studio/ledger/<id>.md`,
   and commit `docs(<id>): approved plan`. With a `Context:` header the checkout is
   `git checkout $STUDIO_DOCS_REV -- <spec> <plan> .studio/ledger/<id>.md <Context paths>`.
@@ -156,9 +158,26 @@ is `STUDIO_STORY`:
   it is not. A call that outlives its `timeout` is moved to the background
   (its result says so): that is a timed-out gate — run
   `studio-state ledger "Stop: gate timed out — <command> ran past <n> min"`
-  and end the turn. Usually the session cap ends the unit first (the
-  `timeout` is the whole session's minutes): the runner records it
-  `timed out`. Either way the runner ends any gate the unit leaves behind. §2 carries this rule into every subagent brief.
+  and end the turn. Every command is bounded (the runner sets these from
+  `session_minutes`):
+  a Bash call with no `timeout` gets
+  min(45, `session_minutes`/3) minutes (`BASH_DEFAULT_TIMEOUT_MS`), and
+  `studio-gate` stops a gate-routed command that runs past
+  min(60, `session_minutes`/2) minutes (`STUDIO_GATE_MINUTES`); it then
+  exits 124. A gate-routed command that exits 124 is a timed-out gate as
+  well: the same `Stop: gate timed out — <command> ran past <n> min` line,
+  then end the turn. A unit whose log stays silent for `idle_minutes`
+  outside a gate is ended and recorded `stalled`. Either way the runner
+  ends any gate the unit leaves behind. §2 carries this rule into every subagent brief.
+- **Pass `timeout` only on gate-routed commands.**
+  `timeout: $BASH_MAX_TIMEOUT_MS` goes on `studio-test`, `studio-run`,
+  `studio-setup` and `studio-gate` calls only; every other command keeps the default cap.
+  A non-gate command that its timeout moved to the background is hung: stop it with
+  the tool that stops background tasks (TaskStop) and do not wait for it.
+  Run a single test file with `studio-test --file <test file>` (repeatable;
+  a comma list works too). Never build a Godot or GUT command by hand: the
+  studio's `godot-guard.sh` hook refuses a raw headless Godot and a
+  hand-built `gut_cmdln` run.
 - **Subagents run in the foreground too.** Dispatch every subagent (the
   implementer, the reviewer, a fixer) with `run_in_background: false` and
   take its report in the same turn; for parallel work, put several
@@ -272,7 +291,8 @@ procedures, below).
 - **Enter the feature checkout** (a resume): run `studio-state worktree`.
   - Exit 0: when the printed path is not the current checkout
     (`git rev-parse --show-toplevel`), call `EnterWorktree` with
-    `path: <it>`; without that tool, `cd <it>`.
+    `path: <it>` (`worktree-guard.sh` refuses a bare call in a story
+    session); without that tool, `cd <it>`.
   - Exit 3: run the command on its stderr's second line (it unlocks and
     prunes a stale entry first when one holds the branch), then enter the
     new worktree, the path that command added, the same way.
@@ -344,6 +364,11 @@ verbatim (§0, The gate runs in the foreground): "run `studio-test` and
 `studio-run` as foreground Bash calls with `timeout` set to
 `$BASH_MAX_TIMEOUT_MS`; never in the background (no `run_in_background`, no
 `&`), and never end a turn to wait for one".
+
+Every implementer and fixer brief also carries: "run one test file with
+`studio-test --file <test file>`; never build a Godot or GUT command by
+hand; pass `timeout` only on gate-routed commands; a gate-routed command
+that exits 124 is `Stop: gate timed out`".
 
 ## 3. Verify rules (both modes)
 

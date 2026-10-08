@@ -594,6 +594,26 @@ test_execute_lane_gate_foreground() {
   assert_eq 1 "$(tr '\n' ' ' < "$E" | grep -c 'never in the background (no `run_in_background`, no `&`), and never end a turn to wait for one')" "§2's verbatim brief line"
 }
 
+# #59 R7: one bounded command per hang; file runs and gate timeouts by rule.
+test_execute_command_caps_text() {
+  E="$REPO_ROOT/studios/game-dev/skills/execute/SKILL.md"
+  assert_not_contains "$E" "whole session's minutes" "the old sentence is gone"
+  for lit in 'studio-test --file <test file>' 'Never build a Godot or GUT command by hand' \
+    'only on gate-routed commands' 'every other command keeps the default cap' \
+    'the tool that stops background tasks' 'exits 124' 'min(45, `session_minutes`/3)' \
+    'min(60, `session_minutes`/2)' '`stalled`' 'godot-guard.sh' 'worktree-guard.sh'; do
+    assert_contains "$E" "$lit" "execute says: $lit"
+  done
+  assert_eq 2 "$(grep -c 'worktree-guard.sh' "$E")" "both EnterWorktree path: places name the hook"
+}
+test_agent_gameplay_programmer_file_runs() {
+  A="$REPO_ROOT/studios/game-dev/agents/gameplay-programmer.md"
+  for lit in 'studio-test --file <test file>' 'Never build a Godot or GUT command by hand' \
+    'only on gate-routed commands' 'the tool that stops background tasks' 'exits 124'; do
+    assert_contains "$A" "$lit" "gameplay-programmer says: $lit"
+  done
+}
+
 test_execute_land_and_progress() {
   E="$REPO_ROOT/studios/game-dev/skills/execute/SKILL.md"
   assert_contains "$E" '^## 9. Landing repair (--land)' "§9 exists"
@@ -782,6 +802,6 @@ run_tests test_plugin_manifests test_skill_frontmatter test_agent_frontmatter \
   test_review_contract test_on_demand_skills_keep_stage test_playtest_contract test_retro_contract \
   test_skill_review_playtest_ask_candidates test_skill_retro_resolves_story \
   test_no_ship_references test_superpowers_requires_referenced test_no_last_playtest_callers \
-  test_execute_one_contract test_router_overnight_lock test_execute_lanes test_execute_lane_gate_foreground test_execute_land_and_progress test_execute_gate_repair test_execute_operator_messages test_execute_adopt test_final_wave_contracts \
+  test_execute_one_contract test_router_overnight_lock test_execute_lanes test_execute_lane_gate_foreground test_execute_command_caps_text test_agent_gameplay_programmer_file_runs test_execute_land_and_progress test_execute_gate_repair test_execute_operator_messages test_execute_adopt test_final_wave_contracts \
   test_plan_brainstorm_lanes test_execute_sync_repair_form test_execute_peers_brief_rule test_plan_brainstorm_slug_form test_plan_brainstorm_check_id \
   test_sdd_script_references
