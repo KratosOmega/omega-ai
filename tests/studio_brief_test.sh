@@ -347,6 +347,73 @@ test_brief_usage_names_check() {
   sh "$BRIEF" bogus > /dev/null 2> "$TMP/u.err"; st=$?
   assert_eq 2 "$st" "usage exits 2"
   assert_contains "$TMP/u.err" "check <k>" "usage names check"
+  assert_contains "$TMP/u.err" "validate <plan>" "usage names validate"
+}
+# AC9 + Review Focus 5: an L<a> item is one line.
+test_brief_single_line_item() {
+  Q="$TMP/projl"; build_fixture "$Q"
+  sed -i.bak 's#^Spec: docs/spec.md:L3-4$#Spec: docs/spec.md:L3#' "$Q/docs/plan.md"; rm -f "$Q/docs/plan.md.bak"
+  ( cd "$Q" && sh "$STATE_BIN" init && sh "$STATE_BIN" set plan docs/plan.md ) >/dev/null 2>&1
+  brief_in "$Q" task 1 > "$TMP/l.out"; st=$?
+  assert_eq 0 "$st" "task accepts <spec>:L3"
+  assert_contains "$TMP/l.out" '^==> docs/spec.md:L3-3$' "read as L3-3"
+  assert_eq "$(sed -n 3p "$Q/docs/spec.md")" "$(sed -n '/^==> docs\/spec.md:L3-3$/{n;p;}' "$TMP/l.out")" "emits line 3"
+}
+test_brief_validate_good_plan() {
+  Q="$TMP/projv"; build_fixture "$Q"
+  # Tasks 2 and 4 have no Spec: line in the fixture — give them one.
+  awk '/^### Task (2|4):/ { print; print "Spec: docs/spec.md:L1"; next } { print }' "$Q/docs/plan.md" > "$TMP/p" && mv "$TMP/p" "$Q/docs/plan.md"
+  ( cd "$Q" && sh "$BRIEF" validate docs/plan.md ) > "$TMP/v.out" 2> "$TMP/v.err"; st=$?
+  assert_eq 0 "$st" "a good plan passes"
+  assert_contains "$TMP/v.out" '^studio-brief: 4 tasks, 5 Spec items ok$' "counts tasks and items"
+}
+# AC9: every problem in one run.
+test_brief_validate_reports_all() {
+  Q="$TMP/projbad"; mkdir -p "$Q/docs"; printf 'l1\nl2\n# H\nl4\n' > "$Q/docs/s.md"
+  cat > "$Q/docs/plan.md" <<'PLAN'
+# Plan
+### Task 1: a
+Spec: docs/s.md L2
+### Task 2: b
+Spec: docs/s.md:L5-3
+### Task 3: c
+Spec: docs/none.md:L1
+### Task 4: d
+Spec: docs/s.md:L3-9
+### Task 5: e
+Spec: docs/s.md§# Missing
+### Task 6: f
+no spec here
+### Task 7: g
+Spec: docs/s.md:L144, docs/s.md:L1-2, docs/s.md§# H
+PLAN
+  ( cd "$Q" && sh "$BRIEF" validate docs/plan.md ) > "$TMP/b.out" 2> "$TMP/b.err"; st=$?
+  assert_eq 1 "$st" "exit 1"
+  assert_contains "$TMP/b.err" "^studio-brief: task 1: cannot parse Spec: item 'docs/s.md L2'$" "unparseable"
+  assert_contains "$TMP/b.err" "^studio-brief: task 2: bad range in Spec: item 'docs/s.md:L5-3'$" "a > b"
+  assert_contains "$TMP/b.err" "^studio-brief: task 3: spec docs/none.md not found" "missing file"
+  assert_contains "$TMP/b.err" "^studio-brief: task 4: range .* is past the end of docs/s.md (4 lines)$" "past EOF"
+  assert_contains "$TMP/b.err" "^studio-brief: task 5: heading '# Missing' not found in docs/s.md$" "missing heading"
+  assert_contains "$TMP/b.err" "^studio-brief: task 6: no Spec: line$" "no Spec: line"
+  assert_contains "$TMP/b.err" "^studio-brief: task 7: range .*L144.* is past the end" "the phoenix L144 item parses, then fails only on range"
+  assert_eq 7 "$(grep -c '^studio-brief: task ' "$TMP/b.err")" "one line per problem, nothing for good items"
+  assert_eq "" "$(cat "$TMP/b.out")" "no ok line"
+}
+test_brief_validate_missing_plan_and_no_state() {
+  Q="$TMP/projns"; mkdir -p "$Q"
+  ( cd "$Q" && sh "$BRIEF" validate nope.md ) > /dev/null 2> "$TMP/n.err"; st=$?
+  assert_eq 2 "$st" "a missing plan exits 2"
+  assert_contains "$TMP/n.err" "plan nope.md not found" "names it"
+  Q="$TMP/projns2"; build_fixture "$Q"
+  ( cd "$Q" && sh "$BRIEF" validate docs/plan.md ) > /dev/null 2>&1; st=$?
+  assert_eq 1 "$st" "no studio state needed (the fixture plan's tasks 2 and 4 lack Spec:)"
+}
+# D12: the plan path is the caller's; Spec paths are the work root's.
+test_brief_validate_relative_to_caller() {
+  Q="$TMP/projrel"; build_fixture "$Q"
+  awk '/^### Task (2|4):/ { print; print "Spec: docs/spec.md:L1"; next } { print }' "$Q/docs/plan.md" > "$TMP/p" && mv "$TMP/p" "$Q/docs/plan.md"
+  ( cd "$Q/docs" && sh "$BRIEF" validate plan.md ) > /dev/null 2>&1; st=$?
+  assert_eq 0 "$st" "from docs/: plan.md is found, docs/spec.md resolves from the root"
 }
 
-run_tests test_brief_task test_brief_final test_brief_refusals test_brief_missing_sections test_brief_directives_task test_brief_directives_final test_brief_directive_text_not_ruling test_brief_directive_edge_cases test_brief_no_directives_no_part test_brief_context_appended test_brief_context_cap test_brief_context_missing_file test_brief_context_no_glob test_brief_final_plan_acceptance test_brief_check_verb test_brief_check_uses_truth_region test_brief_final_reads_check_rulings test_brief_original_plan_item test_brief_usage_names_check
+run_tests test_brief_task test_brief_final test_brief_refusals test_brief_missing_sections test_brief_directives_task test_brief_directives_final test_brief_directive_text_not_ruling test_brief_directive_edge_cases test_brief_no_directives_no_part test_brief_context_appended test_brief_context_cap test_brief_context_missing_file test_brief_context_no_glob test_brief_final_plan_acceptance test_brief_check_verb test_brief_check_uses_truth_region test_brief_final_reads_check_rulings test_brief_original_plan_item test_brief_usage_names_check test_brief_single_line_item test_brief_validate_good_plan test_brief_validate_reports_all test_brief_validate_missing_plan_and_no_state test_brief_validate_relative_to_caller

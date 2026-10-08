@@ -685,7 +685,13 @@ test_plan_brainstorm_lanes() {
   assert_contains "$PL" '§<heading>' "a Spec: item may cite a heading as written, with its #s"
   assert_contains "$PL" 'Review: task|final' "every task carries a Review: tag"
   assert_contains "$PL" 'new seam, cross-system, gameplay feel, data or schema, or importer' "the risk rule for Review: task"
-  assert_contains "$PL" 'a `Spec:` line whose ranges exist, and a `Review:` line' "self-review checks Spec: and Review:"
+  assert_contains "$PL" '`<spec>:L<a>` — one line' "one-line items"
+  assert_contains "$PL" 'run `studio-brief validate <plan path>`' "self-review validates the Spec: items"
+  _v="$(grep -n -F -m1 -- 'studio-brief validate <plan path>' "$PL" | cut -d: -f1)"
+  _s="$(grep -n -F -m1 -- 'studio-state set plan <plan path>' "$PL" | cut -d: -f1)"
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if [ -n "$_v" ] && [ -n "$_s" ] && [ "$_v" -lt "$_s" ]; then _pass "validate runs before studio-state set plan"
+  else _fail "validate runs before studio-state set plan ($_v, $_s)"; fi
   assert_contains "$PL" 'Decisions swept <id>' "the sweep is ledgered per story"
   assert_contains "$PL" 'Always add the section after Global Constraints when absent, writing `none` when it is empty.' "the plan always carries ## Decisions, none when empty"
   assert_contains "$PL" 'dash.md§## Feel targets' "the section example cites a real spec heading"
