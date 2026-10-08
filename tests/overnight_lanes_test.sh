@@ -13,6 +13,11 @@
 # - run_lanes guards each runner call with a 120 s watchdog; a fired watchdog
 #   kills the runner and fails the test. Every background process a test
 #   starts is killed before the test returns.
+# - #59's idle seams STUDIO_OVERNIGHT_IDLE_SECONDS (production: unset, so
+#   idle_minutes x 60) and STUDIO_OVERNIGHT_IDLE_POLL_SECONDS (production:
+#   unset, so 30 s) are set only by the stall tests, which unset them after the
+#   run; every other unit here runs at both defaults (overnight_test.sh's
+#   test_overnight_idle_default_seams pins them).
 set -u
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 . "$REPO_ROOT/tests/assert.sh"
@@ -4668,6 +4673,11 @@ FAKEGIT
 # exclusive-scan: test_lanes_setup_preflight_refuses_linked_only in (c) a spec seed: it failed under a loaded run and passed alone
 # exclusive-scan: test_lanes_detach_timeout_no_lock_ends_child in (c) a spec seed: it failed under load; the children must be gone inside a ceiling of one second
 # exclusive-scan: test_lanes_end_sessions_spaced_path in (a) a spec seed: the ended sessions are awaited with a one-second ceiling
+# exclusive-scan: test_lanes_stalled_outcome in (d) each unit's stub must emit its open call inside the 3 s idle window, or the stall names -
+# exclusive-scan: test_lanes_sync_repair_stops in (d) its stall case's stub must emit inside a 3 s idle window; its hang case only has to outlast a 10 s session; it is also in the real-clock list
+# exclusive-scan: test_lanes_unit_caps out (static) reads the caps each unit's stub recorded from its environment; no clock
+# exclusive-scan: test_lanes_runner_gates_uncapped out (static) reads the final gate's environment; no clock
+# exclusive-scan: test_lanes_gate_cap_warning out (static) dry runs against canned gate.times; no clock
 TESTS_EXCLUSIVE="test_lanes_slot_wait_not_in_session_minutes test_lanes_direct_merge_timeout \
   test_lanes_direct_merge_timeout_after_merge_lands test_lanes_direct_merge_timeout_term_ignored \
   test_lanes_sigint test_lanes_end_sessions_spaced_path test_lanes_lock_race_single_vs_manifest \
@@ -4675,7 +4685,8 @@ TESTS_EXCLUSIVE="test_lanes_slot_wait_not_in_session_minutes test_lanes_direct_m
   test_lanes_detach_timeout_no_lock_ends_child \
   test_lanes_overhead test_lanes_waiting_chain_starts_after_deps test_lanes_land_conflict_one_repair \
   test_lanes_stop_waiting_story test_lanes_slot_cap_two_across_runs test_lanes_slot_cap_one_alternates \
-  test_lanes_wait_deps_default_poll test_stub_waitexist_and_run_token"
+  test_lanes_wait_deps_default_poll test_stub_waitexist_and_run_token \
+  test_lanes_stalled_outcome test_lanes_sync_repair_stops"
 TESTS_FINAL="test_lanes_no_orphans"
 # Real-clock: timing-behaviour tests (rule 2) and the carriers of each production-value knob (R7).
 TESTS_REAL_CLOCK="test_lanes_sync_repair_stops test_lanes_timed_out_outcome \

@@ -1038,6 +1038,11 @@ test_worktree_guard_off_outside_stories() {
 }
 
 # exclusive-scan: test_inbox_hook_silent_outside_units in (a, c) asserts the hook returns inside a 1 s ceiling with a writer holding the fifo open
+# exclusive-scan: test_godot_guard_variables_wrappers_and_speed out (static) the name says speed, but it asserts only the guard's verdicts; no clock
+# exclusive-scan: test_worktree_guard_registered out (static) reads hooks.json; no clock
+# exclusive-scan: test_worktree_guard_denies_bare_calls_in_story out (static) verdicts only; no clock
+# exclusive-scan: test_worktree_guard_names_the_story_worktree out (static) verdicts only; no clock
+# exclusive-scan: test_worktree_guard_off_outside_stories out (static) verdicts only; no clock
 TESTS_EXCLUSIVE="test_inbox_hook_silent_outside_units"
 run_tests test_worktree_guard_registered test_worktree_guard_denies_bare_calls_in_story test_worktree_guard_names_the_story_worktree test_worktree_guard_off_outside_stories test_godot_guard_registered test_godot_guard_denies_headless_boot test_godot_guard_denies_hand_built_gut \
   test_godot_guard_allows test_godot_guard_skips_heredocs_and_comments test_godot_guard_single_quotes test_godot_guard_variables_wrappers_and_speed test_godot_guard_never_blocks_on_bad_input \

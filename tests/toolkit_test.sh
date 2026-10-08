@@ -1,6 +1,9 @@
 #!/bin/sh
 # The studio-* verbs and the Godot adapter, exercised with a stub Godot so no
 # engine is needed. Every project is a fresh temporary directory.
+# Test-only knobs set here: STUDIO_GATE_POLL_SECONDS (production 1) and #59's
+# STUDIO_GATE_SECONDS (production: unset, so the cap is STUDIO_GATE_MINUTES x 60;
+# test_gate_run_cap_production_seconds runs it at that default).
 set -u
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 . "$REPO_ROOT/tests/assert.sh"
@@ -966,6 +969,11 @@ gate_capped() {   # gate_capped MIN SECS WHO CMD… — run the gate capped; GC_
   ( cd "$GP" && STUDIO_GATE_MINUTES="$_gc_m" STUDIO_GATE_SECONDS="$_gc_s" sh "$GATE" "$_gc_w" -- "$@" ) > "$TMP/gc.out" 2> "$TMP/gc.err" || GC_ST=$?
   GC_SECS=$(( $(date +%s) - _gc_t0 ))
 }
+# cap_bin — $TMP/cap6bin, a link to bin/: a gate run through it carries $TMP in
+# its argv (and so does its timer, a subshell), so process scans match only this suite.
+cap_bin() { [ -L "$TMP/cap6bin" ] || ln -s "$BIN" "$TMP/cap6bin"; }
+# cap_procs WHO — the live (non-zombie) gates and timers of $TMP/cap6bin's gate for WHO.
+cap_procs() { ps -A -o stat=,args= | grep -F "$TMP/cap6bin/studio-gate $1" | grep -v '^Z' | grep -vc grep; }
 test_gate_run_cap_stops_a_long_run() {
   gate_proj cap1
   gate_capped 1 1 t sleep 30
@@ -978,10 +986,13 @@ test_gate_run_cap_stops_a_long_run() {
 test_gate_run_cap_excludes_lock_wait() {
   gate_proj cap2
   ( cd "$GP" && sh "$GATE" holder -- sleep 4 ) 2>/dev/null &
-  _h=$!; sleep 1
+  _h=$!
+  # Event wait: the holder has the lock (ceiling 60 s), then the waiter queues behind it.
+  _i=0; while [ ! -s "$GP/.studio/gate.lock/pid" ] && [ "$_i" -lt 600 ]; do sleep 0.1; _i=$((_i + 1)); done
+  assert_eq 1 "$([ -s "$GP/.studio/gate.lock/pid" ] && echo 1 || echo 0)" "the holder took the lock inside 60 s"
   gate_capped 1 3 waiter sleep 1
   wait "$_h"
-  assert_eq 0 "$GC_ST" "3 s of lock wait plus a 1 s run is not past a 3 s cap"
+  assert_eq 0 "$GC_ST" "up to 4 s of lock wait plus a 1 s run is not past a 3 s cap"
 }
 test_gate_run_cap_off_unset_zero_and_setup() {
   gate_proj cap3
@@ -1019,6 +1030,19 @@ test_gate_run_cap_leading_zeros() {
   gate_capped 090 01 t sleep 30
   assert_eq 124 "$GC_ST" "seconds 01 still caps the run"
 }
+# The STUDIO_GATE_SECONDS seam at its production default (unset: minutes x 60):
+# a 2 s run under STUDIO_GATE_MINUTES=1 ends on its own, and its timer goes with it.
+test_gate_run_cap_production_seconds() {
+  gate_proj cap8; cap_bin
+  _st=0
+  ( cd "$GP" && STUDIO_GATE_MINUTES=1 sh "$TMP/cap6bin/studio-gate" prodcap -- sleep 2 ) 2> "$TMP/gp.err" || _st=$?
+  assert_eq 0 "$_st" "a 2 s run under a 1 min cap, no seconds seam, exits 0"
+  assert_not_contains "$TMP/gp.err" 'ran past' "no stop message"
+  assert_contains "$GP/.studio/gate.times" '^[0-9]* prodcap [0-9]* 0$' "gate.times records rc 0"
+  # Absence wait: the timer polls once a second; 2 s is the ceiling.
+  _i=0; while [ "$(cap_procs prodcap)" != 0 ] && [ "$_i" -lt 20 ]; do sleep 0.1; _i=$((_i + 1)); done
+  assert_eq 0 "$(cap_procs prodcap)" "no timer outlives the gate"
+}
 # Final review I1: the timer cannot outlive its gate or hold it. Ten instant
 # capped runs per shell, each through `$( )`: none takes ≥ 3 s (under dash
 # a blocking `wait` on the timer held the gate for the whole cap), the lock
@@ -1027,12 +1051,13 @@ test_gate_run_cap_leading_zeros() {
 # The nested gate (B1): re-entry adds no timer and logs one run.
 test_gate_run_cap_fast_runs_leave_nothing() {
   gate_proj cap6
+  cap_bin
   for _fsh in sh dash; do
     command -v "$_fsh" >/dev/null 2>&1 || continue
     _slow=0; _held=0; _outs=""; _i=0
     while [ "$_i" -lt 10 ]; do
       _t0=$(date +%s)
-      _o="$(cd "$GP" && STUDIO_GATE_MINUTES=1 STUDIO_GATE_SECONDS=87 "$_fsh" "$GATE" fastcap -- echo ok 2>/dev/null)"
+      _o="$(cd "$GP" && STUDIO_GATE_MINUTES=1 STUDIO_GATE_SECONDS=87 "$_fsh" "$TMP/cap6bin/studio-gate" fastcap -- echo ok 2>/dev/null)"
       [ $(( $(date +%s) - _t0 )) -lt 3 ] || _slow=$((_slow + 1))
       [ ! -e "$GP/.studio/gate.lock" ] || _held=$((_held + 1))
       _outs="$_outs$_o"
@@ -1041,9 +1066,10 @@ test_gate_run_cap_fast_runs_leave_nothing() {
     assert_eq 0 "$_slow" "$_fsh: no instant capped run takes 3 s or more"
     assert_eq 0 "$_held" "$_fsh: the lock is released after every run"
     assert_eq okokokokokokokokokok "$_outs" "$_fsh: each run's output, through \$( )"
-    sleep 2
-    assert_eq 0 "$(ps -A -o args= | grep -c '^sleep 87$')" "$_fsh: no orphaned sleep of the cap"
-    assert_eq 0 "$(ps -A -o args= | grep -F "$GATE fastcap" | grep -vc grep)" "$_fsh: no timer outlives its gate"
+    # Absence wait: the timers poll once a second; the old 2 s sleep is the ceiling.
+    _i=0; while [ "$(cap_procs fastcap)" != 0 ] && [ "$_i" -lt 20 ]; do sleep 0.1; _i=$((_i + 1)); done
+    assert_eq 0 "$(ps -A -o args= | grep -c '^sleep 87$')" "$_fsh: no orphaned sleep of the cap"  # scan-ok: 87 s is this test's own cap; a foreign match can only fail the test, never hide a leak
+    assert_eq 0 "$(cap_procs fastcap)" "$_fsh: no timer outlives its gate"
   done
   # A SIGKILLed gate whose parent never reaps it stays a zombie, so
   # `kill -0` still succeeds: the timer must notice it was reparented and
@@ -1051,21 +1077,24 @@ test_gate_run_cap_fast_runs_leave_nothing() {
   # a sleep that never waits.
   for _fsh in sh dash; do
     command -v "$_fsh" >/dev/null 2>&1 || continue
-    ( cd "$GP" && STUDIO_GATE_MINUTES=1 STUDIO_GATE_SECONDS=89 exec sh -c "\"$_fsh\" \"$GATE\" zombiecap -- sh -c 'while :; do sleep 1; done' zombiecap-cmd & echo \$! > '$TMP/zg'; exec sleep 15" ) >/dev/null 2>&1 &
+    ( cd "$GP" && STUDIO_GATE_MINUTES=1 STUDIO_GATE_SECONDS=89 exec sh -c "\"$_fsh\" \"$TMP/cap6bin/studio-gate\" zombiecap -- sh -c 'while :; do sleep 1; done' '$TMP/zombiecap-cmd' & echo \$! > '$TMP/zg'; exec sleep 15" ) >/dev/null 2>&1 &
     _zp=$!
-    sleep 2
+    # Event wait (ceiling 60 s): the gate holds the lock and its timer runs (two processes).
+    _i=0; while { [ ! -s "$GP/.studio/gate.lock/pid" ] || [ "$(cap_procs zombiecap)" -lt 2 ]; } && [ "$_i" -lt 600 ]; do sleep 0.1; _i=$((_i + 1)); done
+    assert_eq 1 "$([ "$(cap_procs zombiecap)" -ge 2 ] && echo 1 || echo 0)" "$_fsh: the gate and its timer are up inside 60 s"
     _zg="$(cat "$TMP/zg")"
     kill -KILL "$_zg" 2>/dev/null
-    sleep 3
+    # Absence wait: the timer polls once a second; the old 3 s sleep is the ceiling.
+    _i=0; while [ "$(cap_procs zombiecap)" != 0 ] && [ "$_i" -lt 30 ]; do sleep 0.1; _i=$((_i + 1)); done
     assert_eq Z "$(ps -o stat= -p "$_zg" 2>/dev/null | cut -c1)" "$_fsh: the killed gate is an unreaped zombie"
-    assert_eq 0 "$(ps -A -o stat=,args= | grep -F "$GATE zombiecap" | grep -v '^Z' | grep -vc grep)" "$_fsh: its timer exited once reparented"
-    pkill -KILL -f "$GATE zombiecap" 2>/dev/null; pkill -KILL -f zombiecap-cmd 2>/dev/null
+    assert_eq 0 "$(cap_procs zombiecap)" "$_fsh: its timer exited once reparented"
+    pkill -KILL -f "$TMP/cap6bin/studio-gate zombiecap" 2>/dev/null; pkill -KILL -f "$TMP/zombiecap-cmd" 2>/dev/null
     kill "$_zp" 2>/dev/null; wait "$_zp" 2>/dev/null
     rm -rf "$GP/.studio/gate.lock"
   done
   : > "$GP/.studio/gate.times"
   _t0=$(date +%s)
-  _o="$(cd "$GP" && STUDIO_GATE_MINUTES=1 STUDIO_GATE_SECONDS=87 sh "$GATE" fastcap -- sh "$GATE" fastcap -- echo nested 2>/dev/null)"
+  _o="$(cd "$GP" && STUDIO_GATE_MINUTES=1 STUDIO_GATE_SECONDS=87 sh "$TMP/cap6bin/studio-gate" fastcap -- sh "$TMP/cap6bin/studio-gate" fastcap -- echo nested 2>/dev/null)"
   assert_eq 1 "$([ $(( $(date +%s) - _t0 )) -lt 3 ] && echo 1 || echo 0)" "a nested capped gate returns at once"
   assert_eq nested "$_o" "the nested command ran"
   assert_eq 1 "$(wc -l < "$GP/.studio/gate.times" | tr -d ' ')" "re-entry logs one run, not two"
@@ -1085,10 +1114,25 @@ TESTS_REAL_CLOCK="test_gate_no_overlap test_gate_waiting_message test_gate_poll_
 # exclusive-scan: test_gate_signal_waits_for_child_then_releases out (b) TERM is sent after an event wait on the child's pid; the long sleep is no window; real clock
 # exclusive-scan: test_gate_three_reclaimers_never_overlap in (d) staggered starts 0.6 s and 1.3 s must land inside a 1 s slow mv and 2 s holds
 # exclusive-scan: test_gate_signal_reaches_the_grandchild out (b) TERM is sent after an event wait on the grandchild's pid; real clock
-TESTS_EXCLUSIVE="test_run_clean test_run_imports_when_dot_godot_is_absent test_run_terminates_a_long_process test_gate_three_reclaimers_never_overlap test_gate_stale_reclaim_race test_run_detects_script_errors test_run_passes_scene_and_windowed"
+# exclusive-scan: test_gate_run_cap_stops_a_long_run in (a) asserts a 1 s cap stopped the run under 8 s
+# exclusive-scan: test_gate_run_cap_excludes_lock_wait in (b, d) the holder's 4 s sleep must still hold the lock when the waiter queues, and the waiter's run must fit its 3 s cap window
+# exclusive-scan: test_gate_run_cap_kills_a_term_ignorer in (a) asserts the KILL landed inside a 9-20 s window
+# exclusive-scan: test_gate_run_cap_no_false_stop in (a) asserts an instant run under a 5 s cap returns in under 3 s
+# exclusive-scan: test_gate_run_cap_fast_runs_leave_nothing in (a) asserts each of twenty instant capped runs returns in under 3 s
+# exclusive-scan: test_gate_run_cap_off_unset_zero_and_setup out (d) absence checks: with no cap the 2 s runs end on their own, and load only lengthens them
+# exclusive-scan: test_gate_run_cap_leading_zeros out (d) asserts statuses only; the 1 s cap stops a 30 s sleep however late it starts
+# exclusive-scan: test_gate_run_cap_production_seconds out (d) a 2 s run under a 60 s cap; load only lengthens it, and the timer check is an absence wait
+# exclusive-scan: test_test_file_runs_named_files out (static) no clock
+# exclusive-scan: test_test_file_missing_exits_4 out (static) no clock
+# exclusive-scan: test_test_file_path_forms out (static) no clock
+# exclusive-scan: test_test_file_misuse_exits_4 out (static) no clock
+# exclusive-scan: test_test_file_through_gate out (static) no clock
+# exclusive-scan: test_test_file_several_positionals out (static) no clock
+TESTS_EXCLUSIVE="test_run_clean test_run_imports_when_dot_godot_is_absent test_run_terminates_a_long_process test_gate_three_reclaimers_never_overlap test_gate_stale_reclaim_race test_run_detects_script_errors test_run_passes_scene_and_windowed \
+  test_gate_run_cap_stops_a_long_run test_gate_run_cap_excludes_lock_wait test_gate_run_cap_kills_a_term_ignorer test_gate_run_cap_no_false_stop test_gate_run_cap_fast_runs_leave_nothing"
 run_tests test_gate_run_cap_stops_a_long_run test_gate_run_cap_excludes_lock_wait \
   test_gate_run_cap_off_unset_zero_and_setup test_gate_run_cap_kills_a_term_ignorer test_gate_run_cap_no_false_stop \
-  test_gate_run_cap_fast_runs_leave_nothing test_gate_run_cap_leading_zeros \
+  test_gate_run_cap_fast_runs_leave_nothing test_gate_run_cap_leading_zeros test_gate_run_cap_production_seconds \
   test_gate_times_window_per_who test_gate_no_overlap test_gate_status_and_held test_gate_stale_reclaim_race \
   test_gate_waiting_message test_gate_poll_keeps_budget test_gate_poll_rejects_bad_value test_gate_records_pid_and_who test_gate_without_a_project_just_runs \
   test_gate_signal_waits_for_child_then_releases test_gate_three_reclaimers_never_overlap \

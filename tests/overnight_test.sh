@@ -3,6 +3,10 @@
 # (first on PATH) plays each session from a scenario file: one line per
 # session, actions separated by ';'. Runs offline; no real claude, gh or
 # caffeinate is ever called.
+# #59's test-only knobs (studio-overnight --help names them): STUDIO_OVERNIGHT_IDLE_SECONDS
+# (production: unset, so idle_minutes x 60) and STUDIO_OVERNIGHT_IDLE_POLL_SECONDS
+# (production: unset, so 30 s); idle_on sets them, idle_off unsets them, and
+# test_overnight_idle_default_seams runs a unit with both at their defaults.
 set -u
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 . "$REPO_ROOT/tests/assert.sh"
@@ -2420,6 +2424,18 @@ test_overnight_idle_off_and_refusals() {
   fixture pollseam; STUDIO_OVERNIGHT_IDLE_POLL_SECONDS=0; export STUDIO_OVERNIGHT_IDLE_POLL_SECONDS
   refuse_case "zero poll seam" "STUDIO_OVERNIGHT_IDLE_POLL_SECONDS must be a whole number"; unset STUDIO_OVERNIGHT_IDLE_POLL_SECONDS
 }
+# Both idle seams at their production defaults (idle_minutes 20, a 30 s poll):
+# a unit silent for about 5 s with an open plain call ends on its own, never stalled.
+test_overnight_idle_default_seams() {
+  fixture idledef '{ "overnight": { "retries": 0 } }'
+  stall_log "$TMP/idef.jsonl" "sleep 999"
+  scenario "emit $TMP/idef.jsonl; sleep 5"
+  idle_off; run_start
+  R="$(last_run_dir)"
+  assert_eq 1 "$(awk -F'\t' 'END { print NR }' "$R/units.tsv")" "the unit ran"
+  assert_eq ended "$(awk -F'\t' 'NR == 1 { print ($7 == "stalled" || $7 == "timed out") ? $7 : "ended" }' "$R/units.tsv")" "it ends on its own, neither stalled nor timed out"
+  assert_not_contains "$R/events.jsonl" '"unit_stalled"' "no stall event"
+}
 # Review Focus 2: a stalled command containing " until " holds, shows and ends intact.
 # The first (isolating) unit emits an open studio-test call first, so a slow
 # git worktree add under load can never stall it (the gate exemption).
@@ -2514,7 +2530,15 @@ FAKE
 # exclusive-scan: test_overnight_sighup_while_held in (b) a spec seed kept in the exclusive phase; the HUP follows an event wait, so it would also be safe in parallel
 # exclusive-scan: test_overnight_stop_file out (static) its window is now the stub's wait for the stop flag, an event
 # exclusive-scan: test_overnight_status out (static) its window is now the stub's wait for the stop flag, an event
-TESTS_EXCLUSIVE="test_overnight_hold_on_feature_stop test_overnight_stop_held_by_operator test_overnight_overhead test_overnight_timeout test_overnight_inhibitor test_overnight_claim_without_run_dir test_inbox_lock_busy test_overnight_sighup_while_held test_overnight_sigterm test_overnight_sigint test_overnight_stop_beats_resume test_overnight_resume_wins_at_deadline"
+# exclusive-scan: test_overnight_idle_stall in (a, d) asserts the unit's minutes stay under 0.4, and the stub must emit its open call inside the 3 s idle window or the stall names -
+# exclusive-scan: test_overnight_idle_spares_gate_call in (d) with idle 3 s and poll 1 s the stub must emit (and gatereg) before the window closes, or the unit stalls
+# exclusive-scan: test_overnight_stall_holds_with_until_command in (b, d) status must see the 15 s hold still held, and the stub must emit inside the 3 s idle window
+# exclusive-scan: test_overnight_idle_off_and_refusals out (d) idle_minutes 0 turns the check off, so the 5 s session cap ends it however late; the rest are refusals at start
+# exclusive-scan: test_overnight_idle_default_seams out (d) the 5 s session must outlast nothing: at the 20 min default no idle check can fire, and load only lengthens the run
+# exclusive-scan: test_overnight_unit_caps out (static) reads the caps the stub recorded from its environment; no clock
+# exclusive-scan: test_overnight_open_calls out (d) a false hit: "--seconds 5" is text in a fixture log line; activity only parses the log
+TESTS_EXCLUSIVE="test_overnight_hold_on_feature_stop test_overnight_stop_held_by_operator test_overnight_overhead test_overnight_timeout test_overnight_inhibitor test_overnight_claim_without_run_dir test_inbox_lock_busy test_overnight_sighup_while_held test_overnight_sigterm test_overnight_sigint test_overnight_stop_beats_resume test_overnight_resume_wins_at_deadline \
+  test_overnight_idle_stall test_overnight_idle_spares_gate_call test_overnight_stall_holds_with_until_command"
 TESTS_REAL_CLOCK="test_overnight_kill_after_grace test_overnight_sighup test_inbox_lock_released_on_signal test_overnight_hold_default_poll"
 # The knobs run at their production value in the real-clock and exclusive tests; every
 # other test polls fast. A test that sets its own POLL_SECONDS (holds_on) still wins.
@@ -2531,7 +2555,7 @@ before_each() {
 run_tests test_overnight_setup_preflight_single test_overnight_help_setup_preflight \
   test_overnight_fixture_copy_equals_build test_overnight_fixture_failed_build_not_reused \
   test_overnight_open_calls test_overnight_idle_stall test_overnight_idle_spares_gate_call \
-  test_overnight_idle_off_and_refusals test_overnight_stall_holds_with_until_command \
+  test_overnight_idle_off_and_refusals test_overnight_idle_default_seams test_overnight_stall_holds_with_until_command \
   test_overnight_report_done test_overnight_report_not_done test_overnight_preflight_env_warns_not_blocks \
   test_overnight_report_anchors test_overnight_resume_quote test_overnight_label_t1 \
   test_overnight_session_seconds_refused test_overnight_claim_without_run_dir \
