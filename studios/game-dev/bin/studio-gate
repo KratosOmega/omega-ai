@@ -186,12 +186,16 @@ on_signal() {
 # sends us ALRM: TERM to the targets (on_signal 124); 10 s later it KILLs
 # them itself, since the wait loop below never ends while a TERM-ignoring
 # child lives.
-CAP_SECS=""; CAPPED=0; TIMER=""
+# Leading zeros are stripped (decimal() below): `090` would otherwise be an
+# octal arithmetic error that ends the gate before the command runs.
+decimal() { _d="${1#"${1%%[!0]*}"}"; printf '%s\n' "${_d:-0}"; }
+CAP_SECS=""; CAPPED=0; TIMER=""; CAP_MIN=""
 case "${STUDIO_GATE_MINUTES:-}" in
   ''|*[!0-9]*) ;;
-  *) if [ "$STUDIO_GATE_MINUTES" -gt 0 ] && [ "$WHO" != setup ]; then
-       CAP_SECS="${STUDIO_GATE_SECONDS:-$((STUDIO_GATE_MINUTES * 60))}"
-       case "$CAP_SECS" in ''|*[!0-9]*) CAP_SECS="" ;; esac
+  *) CAP_MIN="$(decimal "$STUDIO_GATE_MINUTES")"
+     if [ "$CAP_MIN" -gt 0 ] && [ "$WHO" != setup ]; then
+       CAP_SECS="${STUDIO_GATE_SECONDS:-$((CAP_MIN * 60))}"
+       case "$CAP_SECS" in ''|*[!0-9]*) CAP_SECS="" ;; *) CAP_SECS="$(decimal "$CAP_SECS")" ;; esac
      fi ;;
 esac
 on_cap() { if [ "$RUNNING" = 1 ] && alive "$CHILD"; then CAPPED=1; on_signal 124; fi; }
@@ -251,7 +255,7 @@ if [ -n "$TARGETS" ]; then
     sleep 1
   done
 fi
-[ "$CAPPED" = 0 ] || printf 'gate: %s ran past %s min — stopped\n' "$WHO" "$STUDIO_GATE_MINUTES" >&2
+[ "$CAPPED" = 0 ] || printf 'gate: %s ran past %s min — stopped\n' "$WHO" "$CAP_MIN" >&2
 RUNNING=0
 CHILD=""
 # A signalled run (a reaper, a session cap) is logged too, with 128+n: its

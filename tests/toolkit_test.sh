@@ -970,6 +970,16 @@ test_gate_run_cap_no_false_stop() {
   assert_not_contains "$GP/.studio/gate.times" ' 124$' "no 124 recorded"
   assert_not_contains "$TMP/gc.err" 'ran past' "no stop message"
 }
+# Final review m2: leading zeros are decimal, not an octal arithmetic error
+# (which killed the gate with rc 1 before the command ran).
+test_gate_run_cap_leading_zeros() {
+  gate_proj cap7
+  gate_capped 090 "" t sh -c 'echo ran; exit 5'
+  assert_eq 5 "$GC_ST" "090 minutes: the command's own status"
+  assert_contains "$TMP/gc.out" '^ran$' "090 minutes: the command ran"
+  gate_capped 090 01 t sleep 30
+  assert_eq 124 "$GC_ST" "seconds 01 still caps the run"
+}
 # Final review I1: the timer cannot outlive its gate or hold it. Ten instant
 # capped runs per shell, each through `$( )`: none takes ≥ 3 s (under dash
 # a blocking `wait` on the timer held the gate for the whole cap), the lock
@@ -1006,7 +1016,7 @@ test_gate_run_cap_fast_runs_leave_nothing() {
 
 run_tests test_gate_run_cap_stops_a_long_run test_gate_run_cap_excludes_lock_wait \
   test_gate_run_cap_off_unset_zero_and_setup test_gate_run_cap_kills_a_term_ignorer test_gate_run_cap_no_false_stop \
-  test_gate_run_cap_fast_runs_leave_nothing \
+  test_gate_run_cap_fast_runs_leave_nothing test_gate_run_cap_leading_zeros \
   test_gate_times_window_per_who test_gate_no_overlap test_gate_status_and_held test_gate_stale_reclaim_race \
   test_gate_waiting_message test_gate_records_pid_and_who test_gate_without_a_project_just_runs \
   test_gate_signal_waits_for_child_then_releases test_gate_three_reclaimers_never_overlap \
