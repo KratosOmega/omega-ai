@@ -56,7 +56,7 @@ studio_test                  1       674
 state_test                   1       245
 omega_test                   1       516
 run_affected_test            1       34
-harness_test                 1       98
+harness_test                 1       115
 state_move_test              1       244
 state_pointer_test           1       179
 studio_brief_test            1       111

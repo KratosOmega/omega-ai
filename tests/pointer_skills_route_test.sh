@@ -4,6 +4,7 @@
 set -u
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 . "$REPO_ROOT/tests/assert.sh"
+mk_tmp pointer_skills_route_test; trap 'rm_tmp "$TMP"' EXIT  # no test uses TMP: it makes the suite fail closed on a bad TMPDIR
 SK="$REPO_ROOT/studios/game-dev/skills"
 
 test_skill_router_lists_stories() {

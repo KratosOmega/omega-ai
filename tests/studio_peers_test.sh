@@ -6,7 +6,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 STUDIO_DIR="$REPO_ROOT/studios/game-dev"
 PEERS="$STUDIO_DIR/bin/studio-peers"
 HOOK="$STUDIO_DIR/hooks/peer-runs.sh"
-TMP="$(cd "$(mktemp -d "${TMPDIR:-/tmp}/studio_peers_test.XXXXXX")" && pwd -P)"; trap 'exec 2>/dev/null; kill $DUMMIES; rm -rf "$TMP"' EXIT
+mk_tmp studio_peers_test; trap 'exec 2>/dev/null; kill $DUMMIES; rm_tmp "$TMP"' EXIT
 HOME="$TMP/home"; export HOME; mkdir -p "$HOME"
 DUMMIES=""
 SS_START='{"session_id":"s","hook_event_name":"SessionStart","source":"startup"}'

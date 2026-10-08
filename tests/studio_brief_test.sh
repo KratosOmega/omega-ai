@@ -7,8 +7,8 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 BRIEF="$REPO_ROOT/studios/game-dev/bin/studio-brief"
 STATE_BIN="$REPO_ROOT/studios/game-dev/bin/studio-state"
-TMP="$(cd "$(mktemp -d "${TMPDIR:-/tmp}/studio_brief_test.XXXXXX")" && pwd -P)"
-trap 'rm -rf "$TMP"' EXIT
+mk_tmp studio_brief_test
+trap 'rm_tmp "$TMP"' EXIT
 
 # build_fixture DIR — a temp git repo with spec, plan, story, ledger, manifest.
 build_fixture() {

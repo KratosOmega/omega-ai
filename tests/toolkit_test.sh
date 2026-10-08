@@ -13,8 +13,8 @@ BIN="$STUDIO/bin"
 # Physical path: the adapter scripts resolve the project with pwd -P, so
 # assertions that quote $TMP must use the same spelling (/var -> /private/var on macOS).
 unset STUDIO_GATE_POLL_SECONDS STUDIO_SETUP_POLL_SECONDS
-TMP="$(cd "$(mktemp -d "${TMPDIR:-/tmp}/toolkit.XXXXXX")" && pwd -P)"
-trap 'rm -rf "$TMP"' EXIT
+mk_tmp toolkit
+trap 'rm_tmp "$TMP"' EXIT
 
 # A stub Godot. It records its arguments, honours --path and
 # -gjunit_xml_file=res://… by writing a JUnit file into the project, prints a

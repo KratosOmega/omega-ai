@@ -32,7 +32,8 @@ while [ $# -gt 0 ]; do
 done
 
 cd "$(dirname "$0")/.." || exit 2
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/run_affected.XXXXXX")"
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/run_affected.XXXXXX")" && [ -d "$WORK" ] \
+  || { echo "run_affected: cannot create temp dir under ${TMPDIR:-/tmp}" >&2; exit 2; }
 trap 'rm -rf "$WORK"' EXIT
 
 BASE=$(git rev-parse --verify -q "$REF^{commit}" 2>/dev/null) &&

@@ -4,8 +4,8 @@ set -u
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 . "$REPO_ROOT/tests/assert.sh"
 
-TMP="$(cd "$(mktemp -d "${TMPDIR:-/tmp}/harness_test.XXXXXX")" && pwd -P)"
-trap 'rm -rf "$TMP"' EXIT
+mk_tmp harness_test
+trap 'rm_tmp "$TMP"' EXIT
 
 # gen_suite FILE — 23 tests t01..t23 (one passing assertion each); t05 t12 t19
 # exclusive; t08 final. EXTRA (optional 2nd arg) is shell text placed before run_tests.
@@ -319,6 +319,125 @@ test_suite_tmp_under_tmpdir() {
   done
 }
 
+# ---- fail closed on a temp dir that cannot be made: a bad TMP must never reach a cleanup rm
+# (an unchecked `cd "$(mktemp …)"` gave TMP = the cwd, and the EXIT trap removed the checkout).
+
+# test_suites_fail_closed_without_tmpdir — every suite in the tests dir, run from a sentinel cwd
+# with TMPDIR naming a missing dir and TESTS_ONLY naming no test (so a broken guard can never
+# start real work), under a 60 s alarm: it exits non-zero with mk_tmp's message, and its cwd,
+# the sentinel and the missing TMPDIR are as they were (nothing made, nothing removed).
+test_suites_fail_closed_without_tmpdir() {
+  _fc="$TMP/failclosed"; _nx="$_fc/no-such-tmpdir"; _off=""; _msg=""; _n=0
+  # a suite the static guard flags (or one sourcing a flagged state_fixtures.sh) is never run: its
+  # top level could reach a raw TMP; it is an offender here and in test_suites_use_mk_tmp_and_rm_tmp
+  _flg=" $(guard_raw_tmp_rm "$(GUARD_DIR)" | cut -d: -f1 | sort -u | tr '\n' ' ')"
+  for _f in "$(GUARD_DIR)"/*_test.sh; do
+    _s="$(basename "$_f" .sh)"; _cw="$_fc/$_s/cwd"; _n=$((_n + 1)); _rc=0
+    case "$_flg" in *" $_s.sh "*) _off="$_off $_s:static-guard-flagged"; continue ;; esac
+    case "$_flg" in *" state_fixtures.sh "*)
+      if grep -q 'state_fixtures\.sh' "$_f"; then _off="$_off $_s:static-guard-flagged"; continue; fi ;; esac
+    mkdir -p "$_cw" && : > "$_cw/sentinel"
+    ( cd "$_cw" && exec env TEST_PHASE= TEST_SHARD= TEST_TIMING_LOG= TESTS_ONLY=__no_such_test__ TMPDIR="$_nx" \
+        perl -e 'alarm shift; exec @ARGV or die "exec: $!\n"' 60 ${TEST_SH:-sh} "$_f" ) > "$_fc/$_s.out" 2>&1 || _rc=$?
+    [ "$_rc" -ne 0 ] || _off="$_off $_s:exit-0"
+    [ -d "$_cw" ] || _off="$_off $_s:cwd-removed"
+    [ -f "$_cw/sentinel" ] || _off="$_off $_s:sentinel-removed"
+    [ ! -d "$_cw" ] || [ "$(ls -A "$_cw")" = sentinel ] || _off="$_off $_s:cwd-littered"
+    if [ -e "$_nx" ]; then _off="$_off $_s:tmpdir-made"; rm -rf "$_nx"; fi
+    grep -qxF "$_s: cannot create temp dir under $_nx" "$_fc/$_s.out" || _msg="$_msg $_s"
+  done
+  assert_eq 1 "$([ "$_n" -gt 1 ] && echo 1 || echo 0)" "the fail-closed check found the suites ($_n)"
+  assert_eq "" "$_off" "every suite exits non-zero on a missing TMPDIR and keeps its cwd and sentinel (offenders)"
+  assert_eq "" "$_msg" "every suite names itself and the TMPDIR on stderr (suites without the message)"
+}
+
+# test_mk_tmp_rejects_bad_dirs — mk_tmp behind a shadow mktemp that "succeeds" with an empty
+# line, ".", the cwd's path, a plain file or an existing dir outside TMPDIR: each exits 1 with
+# the message, sets no TMP, and the sentinel cwd is untouched; a real mktemp gives a resolved dir
+# under TMPDIR.
+test_mk_tmp_rejects_bad_dirs() {
+  _mk="$TMP/mkbad"; mkdir -p "$_mk/bin" "$_mk/cwd" "$_mk/td" "$_mk/elsewhere/mkbad.x"
+  : > "$_mk/cwd/sentinel"; : > "$_mk/file"
+  _res=""
+  for _case in empty dot cwd file outside; do
+    case "$_case" in
+      empty) _out='' ;; dot) _out='.' ;; cwd) _out="$_mk/cwd" ;; file) _out="$_mk/file" ;;
+      outside) _out="$_mk/elsewhere/mkbad.x" ;;
+    esac
+    printf '#!/bin/sh\nprintf "%%s\\n" "%s"\n' "$_out" > "$_mk/bin/mktemp"  # scan-ok: a shadow that lies
+    chmod +x "$_mk/bin/mktemp"  # scan-ok: the shadow
+    _rc=0
+    ( cd "$_mk/cwd" && PATH="$_mk/bin:$PATH" TMPDIR="$_mk/td" ${TEST_SH:-sh} -c \
+        '. "$1/tests/assert.sh"; mk_tmp mkbad; echo "made $TMP"' mkbad_test "$REPO_ROOT" ) > "$_mk/$_case.out" 2>&1 || _rc=$?
+    _res="$_res $_case:$_rc:$(grep -c '^made ' "$_mk/$_case.out"):$(grep -cxF "mkbad_test: cannot create temp dir under $_mk/td" "$_mk/$_case.out")"
+  done
+  assert_eq " empty:1:0:1 dot:1:0:1 cwd:1:0:1 file:1:0:1 outside:1:0:1" "$_res" "mk_tmp exits 1 with the message on each bad dir (case:rc:made:message)"
+  assert_eq "sentinel" "$(ls -A "$_mk/cwd")" "the cwd is untouched"
+  _got="$(cd "$_mk/cwd" && TMPDIR="$_mk/td" ${TEST_SH:-sh} -c '. "$1/tests/assert.sh"; mk_tmp good; echo "$TMP"' sh "$REPO_ROOT")"
+  case "$_got" in "$(cd "$_mk/td" && pwd -P)"/good.*) _ok=1 ;; *) _ok=0 ;; esac
+  assert_eq 1 "$_ok" "a good mk_tmp gives a resolved dir under TMPDIR ($_got)"
+}
+
+# test_rm_tmp_refuses_cwd_and_ancestors — rm_tmp removes a temp dir, but refuses an empty name,
+# ".", the cwd, an ancestor of the cwd and an ancestor of the dir the suite started in.
+test_rm_tmp_refuses_cwd_and_ancestors() {
+  _rt="$TMP/rmtmp"; mkdir -p "$_rt/a/b" "$_rt/sib" "$_rt/s/c"; : > "$_rt/a/b/keep"; : > "$_rt/s/c/keep"
+  _res="$(cd "$_rt/a/b" && for _d in "" . "$_rt/a/b" "$_rt/a" "$_rt/sib" "$_rt/never"; do
+      _rc=0; rm_tmp "$_d" 2>/dev/null || _rc=$?; printf '%s ' "$_rc"; done)"
+  assert_eq "1 1 1 1 0 0 " "$_res" "rm_tmp: empty, ., cwd, ancestor refused; a temp dir and a missing one fine"
+  assert_file "$_rt/a/b/keep" "the cwd and its ancestors survive"
+  assert_missing "$_rt/sib" "rm_tmp removed the temp dir"
+  _rc=0
+  ( cd "$_rt/s/c" && ${TEST_SH:-sh} -c '. "$1/tests/assert.sh"; cd /; rm_tmp "$2"' sh "$REPO_ROOT" "$_rt/s" ) 2>/dev/null || _rc=$?
+  assert_eq "1" "$_rc" "rm_tmp refuses an ancestor of the start dir after a cd away"
+  assert_file "$_rt/s/c/keep" "the start dir survives"
+  # other spellings of / and of an ancestor (checked with the private test, so nothing is removed)
+  _up="$(printf '%s' "$_rt/a" | tr '[:lower:]' '[:upper:]')"
+  _res="$(cd "$_rt/a/b" && for _d in // "/$_rt/a" "$_up" "$_rt/a/b/"; do
+      if __rt_tmp_ok "$_d"; then printf 'ok '; else printf 'no '; fi; done)"
+  assert_eq "no no no no " "$_res" "//, a //-spelled ancestor, a case variant and a cwd/ spelling are refused"
+}
+
+# test_rm_tmp_cleans_after_cd_into_tmp — a suite whose test cd's into its own TMP (the test
+# functions run in the main shell) still has TMP removed by the EXIT trap: rm_tmp steps out of
+# the dir mk_tmp made instead of refusing it as the cwd and leaking it.
+test_rm_tmp_cleans_after_cd_into_tmp() {
+  _lk="$TMP/cdin"; mkdir -p "$_lk/cwd" "$_lk/td"
+  { printf '. "%s/tests/assert.sh"\n' "$REPO_ROOT"
+    printf 'mk_tmp fx_test; trap '"'"'rm_tmp "$TMP"'"'"' EXIT\n'
+    printf 't1() { mkdir "$TMP/x" && cd "$TMP/x" && assert_eq 1 1 t1; }\n'
+    printf 'run_tests t1\n'
+  } > "$_lk/fx_test.sh"
+  _rc=0
+  ( cd "$_lk/cwd" && env TEST_PHASE= TEST_SHARD= TEST_TIMING_LOG= TESTS_ONLY= TMPDIR="$_lk/td" \
+      ${TEST_SH:-sh} "$_lk/fx_test.sh" ) > "$_lk/fx.out" 2>&1 || _rc=$?
+  assert_eq "0" "$_rc" "the fixture suite passes"
+  assert_eq "" "$(ls -A "$_lk/td")" "the suite's TMPDIR is left empty after it cd'd into TMP"
+  assert_eq "0" "$(grep -c 'rm_tmp: refusing' "$_lk/fx.out")" "rm_tmp refused nothing"
+}
+
+# guard_raw_tmp_rm DIR — lines (not comments) that rm $TMP itself (any flags, `--`, a trailing
+# slash) or assign TMP from a raw mktemp: every suite makes TMP with mk_tmp and removes it with rm_tmp.
+guard_raw_tmp_rm() {
+  _gp='(^|[^A-Za-z0-9_])rm( +-[A-Za-z]+)*( +--)? +"?\$\{?TMP\}?"?/?"?([^/A-Za-z0-9_"]|$)'  # scan-ok: the guard's own pattern
+  _gp="$_gp"'|TMP="?\$\((cd )?"?\$\(mktemp|TMP="?\$\(mktemp'  # scan-ok: the guard's own pattern
+  grep -nE "$_gp" "$1"/*_test.sh "$1"/state_fixtures.sh | awk -F: '
+    { t = substr($0, length($1) + length($2) + 3)
+      if (t ~ /^[ \t]*#/ || index(t, "# scan-ok:")) next
+      n = split($1, p, "/"); print p[n] ":" $2 }'
+}
+
+test_suites_use_mk_tmp_and_rm_tmp() {
+  assert_eq "" "$(guard_raw_tmp_rm "$(GUARD_DIR)")" \
+    "no suite assigns TMP from a raw mktemp or rm -rf's \$TMP itself (offenders: file:line)"
+  # the guard itself: each spelling of a raw removal of TMP is flagged; a path under TMP is not
+  _gr="$TMP/rawrm"; mkdir -p "$_gr"; : > "$_gr/state_fixtures.sh"
+  printf '%s\n' 'rm -rf "$TMP"' 'rm -rf "$TMP/"' 'rm -rf -- "$TMP"' 'rm -fr "$TMP"' 'rm -r -f ${TMP}' > "$_gr/x_test.sh"  # scan-ok: guard fixture
+  printf '%s\n' "trap 'rm -rf \"\$TMP\"' EXIT" 'rm -rf "$TMP/x"' 'rm -rf "$TMP"/x' 'rm_tmp "$TMP"' 'rm -rf "$TMPX"' >> "$_gr/x_test.sh"
+  assert_eq "1 2 3 4 5 6 " "$(guard_raw_tmp_rm "$_gr" | sed 's/^x_test.sh://' | tr '\n' ' ')" \
+    "the guard flags rm -rf, a trailing slash, --, -fr, -r -f and a trap; not a path under TMP or rm_tmp"
+}
+
 # guard_exclusive_rulings DIR — the five ruling checks over every suite in DIR.
 guard_exclusive_rulings() {
   for _f in "$1"/*_test.sh; do
@@ -389,4 +508,6 @@ run_tests test_shards_cover_every_test_once test_no_phase_runs_all_in_order \
   test_mk_msleep test_next_second test_harness_private_names_unused \
   test_exclusive_scan_flags_fixture test_exclusive_scan_ignores_comments_and_top_level \
   test_no_unscoped_process_scans test_mktemp_uses_tmpdir_template test_suite_tmp_under_tmpdir \
+  test_suites_fail_closed_without_tmpdir test_mk_tmp_rejects_bad_dirs test_rm_tmp_refuses_cwd_and_ancestors \
+  test_rm_tmp_cleans_after_cd_into_tmp test_suites_use_mk_tmp_and_rm_tmp \
   test_exclusive_scan_candidates_ruled test_knobs_named_in_headers

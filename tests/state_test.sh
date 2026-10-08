@@ -6,8 +6,8 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 STATE_BIN="$REPO_ROOT/studios/game-dev/bin/studio-state"
 # Physical path: git prints physical paths, and the tool's root resolution
 # is compared against $TMP textually.
-TMP="$(cd "$(mktemp -d "${TMPDIR:-/tmp}/state_test.XXXXXX")" && pwd -P)"
-trap 'rm -rf "$TMP"' EXIT
+mk_tmp state_test
+trap 'rm_tmp "$TMP"' EXIT
 
 # Every test runs in its own empty project directory.
 fresh_project() {

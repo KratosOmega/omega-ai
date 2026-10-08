@@ -11,8 +11,8 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 OMEGA="$REPO_ROOT/shared/omega"
 MODE="$OMEGA/bin/omega-mode"
-TMP="$(mktemp -d "${TMPDIR:-/tmp}/omega_test.XXXXXX")"
-trap 'rm -rf "$TMP"' EXIT
+mk_tmp omega_test
+trap 'rm_tmp "$TMP"' EXIT
 CFG="$TMP/cfg"
 
 # first_field FILE KEY — the value of a single-line "KEY: value" frontmatter

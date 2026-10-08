@@ -5,10 +5,9 @@ set -u
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 . "$REPO_ROOT/tests/assert.sh"
 
-TMP="$(mktemp -d "${TMPDIR:-/tmp}/run_all_test.XXXXXX")"
-TMP="$(cd "$TMP" && pwd -P)"
+mk_tmp run_all_test
 SD="$TMP/suites"
-trap 'rm -rf "$TMP"' EXIT
+trap 'rm_tmp "$TMP"' EXIT
 
 # fx NAME LISTED [BODY] — fixture suite $SD/NAME_test.sh. It runs BODY (shell text), then
 # writes one L row and one T row per idx 1..LISTED for its partition (one assertion each),

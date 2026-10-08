@@ -4,8 +4,8 @@ set -u
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 . "$REPO_ROOT/tests/assert.sh"
 EV="$REPO_ROOT/studios/game-dev/bin/studio-event"
-TMP="$(cd "$(mktemp -d "${TMPDIR:-/tmp}/studio_event_test.XXXXXX")" && pwd -P)"
-trap 'chmod -R u+w "$TMP" 2>/dev/null; rm -rf "$TMP"' EXIT
+mk_tmp studio_event_test
+trap 'chmod -R u+w "$TMP" 2>/dev/null; rm_tmp "$TMP"' EXIT
 R="$TMP/overnight-demo-20261003-210400"
 fresh() { rm -rf "$R"; mkdir -p "$R"; }
 # field_len KEY — the character count of the last line's string field KEY

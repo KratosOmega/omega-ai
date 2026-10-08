@@ -4,8 +4,8 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 . "$REPO_ROOT/tests/assert.sh"
 . "$REPO_ROOT/lib/common.sh"
 
-TMP="$(cd "$(mktemp -d "${TMPDIR:-/tmp}/lib_test.XXXXXX")" && pwd -P)"
-trap 'rm -rf "$TMP"' EXIT
+mk_tmp lib_test
+trap 'rm_tmp "$TMP"' EXIT
 
 test_json_field() {
   cat > "$TMP/p.json" <<'JSON'
