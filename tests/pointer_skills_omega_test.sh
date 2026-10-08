@@ -4,6 +4,7 @@
 set -u
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 . "$REPO_ROOT/tests/assert.sh"
+mk_tmp pointer_skills_omega_test; trap 'rm_tmp "$TMP"' EXIT  # no test uses TMP: it makes the suite fail closed on a bad TMPDIR
 
 test_skill_omega_handoff_no_adopt() {
   f="$REPO_ROOT/shared/omega/skills/handoff/SKILL.md"

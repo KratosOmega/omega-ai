@@ -6,8 +6,8 @@ set -u
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 . "$REPO_ROOT/tests/assert.sh"
 
-TMP="$(mktemp -d "${TMPDIR:-/tmp}/run_affected_test.XXXXXX")"
-trap 'rm -rf "$TMP"' EXIT
+mk_tmp run_affected_test
+trap 'rm_tmp "$TMP"' EXIT
 
 # repo NAME: R9 mini layout on main, pushed to a bare origin. Sets R.
 repo() {

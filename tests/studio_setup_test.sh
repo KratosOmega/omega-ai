@@ -7,8 +7,8 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SETUP="$REPO_ROOT/studios/game-dev/bin/studio-setup"
 GATE="$REPO_ROOT/studios/game-dev/bin/studio-gate"
 STATE_BIN="$REPO_ROOT/studios/game-dev/bin/studio-state"
-TMP="$(cd "$(mktemp -d "${TMPDIR:-/tmp}/studio_setup_test.XXXXXX")" && pwd -P)"
-trap 'rm -rf "$TMP"' EXIT
+mk_tmp studio_setup_test
+trap 'rm_tmp "$TMP"' EXIT
 mk_msleep || exit 1
 HOME="$TMP/home"; export HOME; mkdir -p "$HOME"
 unset STUDIO_GATE_HELD STUDIO_SETUP_TIMEOUT_SECONDS STUDIO_SETUP_POLL_SECONDS STUDIO_UNIT_TAG

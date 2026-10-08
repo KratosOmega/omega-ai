@@ -7,8 +7,8 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 . "$REPO_ROOT/tests/assert.sh"
 BIN="$REPO_ROOT/studios/game-dev/bin"
 STATE_BIN="$BIN/studio-state"
-TMP="$(cd "$(mktemp -d "${TMPDIR:-/tmp}/overnight_ids_test.XXXXXX")" && pwd -P)"
-trap 'rm -rf "$TMP"' EXIT
+mk_tmp overnight_ids_test
+trap 'rm_tmp "$TMP"' EXIT
 # The runner is reached through a link under $TMP, so its argv names $TMP: pgrep -f "$TMP" finds only this suite's.
 mkdir -p "$TMP/bin" && ln -s "$BIN/studio-overnight" "$TMP/bin/studio-overnight" \
   || { echo "overnight_ids: setup failed" >&2; exit 1; }

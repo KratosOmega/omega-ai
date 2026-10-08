@@ -25,8 +25,8 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BIN="$REPO_ROOT/studios/game-dev/bin"
 STATE_BIN="$BIN/studio-state"
 ADOPT_BIN="$BIN/studio-adopt"
-TMP="$(cd "$(mktemp -d "${TMPDIR:-/tmp}/overnight_lanes_test.XXXXXX")" && pwd -P)"
-trap 'rm -rf "$TMP"' EXIT
+mk_tmp overnight_lanes_test
+trap 'rm_tmp "$TMP"' EXIT
 # The runner is reached through a link under $TMP, so its argv (and its lanes',
 # and a --detach child's) names $TMP: pgrep -f "$TMP" finds only this run's.
 mkdir -p "$TMP/bin" && ln -s "$BIN/studio-overnight" "$TMP/bin/studio-overnight" && mk_msleep \
@@ -275,7 +275,8 @@ auto() {
 
 # push_to BRANCH FILE — commit FILE (content: BRANCH) to origin's BRANCH via a temp clone.
 push_to() {
-  _pd="$(mktemp -d "${TMPDIR:-/tmp}/lanes-stub.XXXXXX")"
+  _pd="$(mktemp -d "${TMPDIR:-/tmp}/lanes-stub.XXXXXX")" && [ -d "$_pd" ] \
+    || { echo "push_to: cannot create temp dir under ${TMPDIR:-/tmp}" >&2; return 1; }
   ( git clone -q "$(git remote get-url origin)" "$_pd/c" && cd "$_pd/c" && git checkout -q "$1" \
     && printf '%s\n' "$1" > "$2" && git add "$2" && git commit -qm "$1 moves: $2" && git push -q origin "$1" ) >&2
   rm -rf "$_pd"
@@ -484,7 +485,8 @@ f="$GH/pr-$1"; rc=0
 case "$out" in
   ok|mergehang)
     head="$(sed -n 's/^head=//p' "$f" | tail -n 1)"; base="$(sed -n 's/^base=//p' "$f" | tail -n 1)"
-    url="$(git remote get-url origin)"; d="$(mktemp -d "${TMPDIR:-/tmp}/lanes-stub.XXXXXX")"
+    url="$(git remote get-url origin)"; d="$(mktemp -d "${TMPDIR:-/tmp}/lanes-stub.XXXXXX")" && [ -d "$d" ] \
+      || { echo "gh stub: cannot create temp dir under ${TMPDIR:-/tmp}" >&2; exit 1; }
     ( cd "$d" && git clone -q "$url" c && cd c && git checkout -q "$base" \
       && git merge -q --no-ff --no-edit "origin/$head" && git push -q origin "$base" \
       && printf 'state=MERGED\noid=%s\n' "$(git rev-parse HEAD)" >> "$f" \
@@ -492,7 +494,8 @@ case "$out" in
     rm -rf "$d" ;;
   ghonly|lagoid|nofetch)
     head="$(sed -n 's/^head=//p' "$f" | tail -n 1)"; base="$(sed -n 's/^base=//p' "$f" | tail -n 1)"
-    url="$(git remote get-url origin)"; d="$(mktemp -d "${TMPDIR:-/tmp}/lanes-stub.XXXXXX")"
+    url="$(git remote get-url origin)"; d="$(mktemp -d "${TMPDIR:-/tmp}/lanes-stub.XXXXXX")" && [ -d "$d" ] \
+      || { echo "gh stub: cannot create temp dir under ${TMPDIR:-/tmp}" >&2; exit 1; }
     ( cd "$d" && git clone -q "$url" c && cd c && git checkout -q "$base" \
       && git merge -q --no-ff --no-edit "origin/$head" \
       && { [ "$out" = ghonly ] || git push -q origin "$base"; } \

@@ -4,9 +4,9 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 . "$REPO_ROOT/tests/assert.sh"
 . "$REPO_ROOT/lib/common.sh"
 
-TMP="$(mktemp -d "${TMPDIR:-/tmp}/sync_test.XXXXXX")"
+mk_tmp sync_test
 SANDBOX="$TMP/repo"
-trap 'rm -rf "$TMP"' EXIT
+trap 'rm_tmp "$TMP"' EXIT
 
 setup_sandbox() {
   rm -rf "$SANDBOX"

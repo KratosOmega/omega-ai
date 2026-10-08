@@ -8,8 +8,8 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 . "$REPO_ROOT/tests/assert.sh"
 . "$REPO_ROOT/lib/common.sh"
 
-TMP="$(mktemp -d "${TMPDIR:-/tmp}/studio_test.XXXXXX")"
-trap 'rm -rf "$TMP"' EXIT
+mk_tmp studio_test
+trap 'rm_tmp "$TMP"' EXIT
 
 # first_field FILE KEY — the value of a single-line "KEY: value" frontmatter
 # field; empty when absent.

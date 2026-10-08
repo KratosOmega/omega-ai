@@ -5,7 +5,7 @@ set -u
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 . "$REPO_ROOT/tests/assert.sh"
 LIB="$REPO_ROOT/studios/game-dev/bin/overnight-runs.sh"
-TMP="$(cd "$(mktemp -d "${TMPDIR:-/tmp}/overnight_runs.XXXXXX")" && pwd -P)"; trap '{ for _d in $DUMMIES; do kill "$_d"; done; wait; } 2>/dev/null; rm -rf "$TMP"' EXIT
+mk_tmp overnight_runs; trap '{ for _d in $DUMMIES; do kill "$_d"; done; wait; } 2>/dev/null; rm_tmp "$TMP"' EXIT
 HOME="$TMP/home"; export HOME; mkdir -p "$HOME"
 DUMMIES=""
 TAB="$(printf '\t')"

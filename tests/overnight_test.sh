@@ -12,8 +12,8 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 . "$REPO_ROOT/tests/assert.sh"
 
 STATE_BIN="$REPO_ROOT/studios/game-dev/bin/studio-state"
-TMP="$(cd "$(mktemp -d "${TMPDIR:-/tmp}/overnight_test.XXXXXX")" && pwd -P)"
-trap 'rm -rf "$TMP"' EXIT
+mk_tmp overnight_test
+trap 'rm_tmp "$TMP"' EXIT
 # The runner is reached through a link under $TMP, so every runner process carries
 # $TMP in its argv (a scan or a kill by pattern finds only this run's).
 mkdir -p "$TMP/bin"

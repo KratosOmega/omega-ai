@@ -5,8 +5,8 @@ set -u
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 . "$REPO_ROOT/tests/assert.sh"
 ENV_BIN="$REPO_ROOT/studios/game-dev/bin/studio-env"
-TMP="$(cd "$(mktemp -d "${TMPDIR:-/tmp}/studio_env_test.XXXXXX")" && pwd -P)"
-trap 'rm -rf "$TMP"' EXIT
+mk_tmp studio_env_test
+trap 'rm_tmp "$TMP"' EXIT
 FX="$TMP/fx"
 
 # mac LOAD5 PRESSURE SWAP_USED — a macOS fixture: 10 cores, 182 GB free, on AC.

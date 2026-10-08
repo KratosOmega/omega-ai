@@ -9,9 +9,9 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 . "$REPO_ROOT/tests/assert.sh"
 BIN="$REPO_ROOT/studios/game-dev/bin"
 RUNNER="$BIN/studio-overnight"
-TMP="$(cd "$(mktemp -d "${TMPDIR:-/tmp}/overnight_progress.XXXXXX")" && pwd -P)"
+mk_tmp overnight_progress
 DUMMIES=""
-trap '{ for _d in $DUMMIES; do kill "$_d"; done; wait; } 2>/dev/null; rm -rf "$TMP"' EXIT
+trap '{ for _d in $DUMMIES; do kill "$_d"; done; wait; } 2>/dev/null; rm_tmp "$TMP"' EXIT
 HOME="$TMP/home"; export HOME; mkdir -p "$HOME"
 GIT_AUTHOR_NAME=t; GIT_AUTHOR_EMAIL=t@t; GIT_COMMITTER_NAME=t; GIT_COMMITTER_EMAIL=t@t
 export GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL

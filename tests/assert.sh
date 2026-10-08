@@ -13,7 +13,7 @@
 #   TEST_TIMING_LOG   append an L row per run_tests call and a T row per test
 # Suite declarations before run_tests: TESTS_EXCLUSIVE, TESTS_REAL_CLOCK, TESTS_FINAL
 # (space-separated test names) and an optional before_each function (TEST_NAME is set).
-# Helpers: is_real_clock, own_group CMD..., mk_msleep, next_second.
+# Helpers: is_real_clock, own_group CMD..., mk_msleep, next_second, mk_tmp NAME, rm_tmp DIR.
 for __rt_v in $(env | sed -nE 's/^(CLAUDECODE|AI_AGENT|CLAUDE_[A-Za-z0-9_]*|OMEGA_[A-Za-z0-9_]*|STUDIO_[A-Za-z0-9_]*|GIT_DIR|GIT_WORK_TREE|GIT_INDEX_FILE|GIT_COMMON_DIR|GIT_OBJECT_DIRECTORY|GIT_ALTERNATE_OBJECT_DIRECTORIES|GIT_NAMESPACE)=.*/\1/p'); do
   unset "$__rt_v"
 done
@@ -99,6 +99,67 @@ mk_msleep() {
 next_second() {
   __rt_ns=$(date +%s); __rt_ni=0
   while [ "$(date +%s)" = "$__rt_ns" ] && [ "$__rt_ni" -lt 30 ]; do sleep 0.1; __rt_ni=$((__rt_ni + 1)); done
+}
+
+# An exported CDPATH makes `cd DIR` echo the dir, so `$(cd DIR && pwd -P)` gives two lines.
+unset CDPATH
+# The dir the suite was started from: mk_tmp and rm_tmp never take it, or an ancestor, as TMP.
+__rt_cwd0="$(pwd -P 2>/dev/null)" || __rt_cwd0=""
+# The dir mk_tmp made (rm_tmp steps out of it before removing it).
+__rt_made=""
+# __rt_anc DIR START — DIR is START or an ancestor of it (or /). Compares with -ef (same inode),
+# so a `//` spelling or a case variant on a case-insensitive disk still matches.
+__rt_anc() {
+  [ -n "$2" ] || return 1
+  __rt_a="$2"
+  while [ -n "$__rt_a" ]; do
+    [ "$1" -ef "$__rt_a" ] && return 0
+    case "$__rt_a" in */*) ;; *) return 1 ;; esac
+    __rt_a="${__rt_a%/*}"
+  done
+  [ "$1" -ef / ]
+}
+# __rt_tmp_ok DIR — DIR is non-empty, a directory, not /, and neither the start dir, the cwd,
+# nor an ancestor of either.
+__rt_tmp_ok() {
+  [ -n "$1" ] && [ -d "$1" ] && ! [ "$1" -ef / ] || return 1
+  ! __rt_anc "$1" "$__rt_cwd0" && ! __rt_anc "$1" "$(pwd -P 2>/dev/null)"
+}
+# mk_tmp NAME — TMP=<new dir from mktemp -d "${TMPDIR:-/tmp}/NAME.XXXXXX">, resolved with pwd -P.
+# Fails closed: when mktemp fails (its own error stays on stderr), or the dir comes out empty,
+# not a directory, not a NAME.* child of TMPDIR, the cwd (what `cd ""` gives) or an ancestor of
+# it, prints "SUITE: cannot create temp dir under DIR" on stderr and exits the suite 1; never a
+# fallback dir. Call it at the top level, not in $(...), and set the cleanup trap only after it:
+# mk_tmp foo_test; trap 'rm_tmp "$TMP"' EXIT
+mk_tmp() {
+  TMP=""
+  __rt_mt="$(mktemp -d "${TMPDIR:-/tmp}/$1.XXXXXX")" && [ -n "$__rt_mt" ] && [ -d "$__rt_mt" ] \
+    && __rt_mt="$(cd "$__rt_mt" && pwd -P)" && [ "${__rt_mt%/*}" -ef "${TMPDIR:-/tmp}" ] \
+    && case "${__rt_mt##*/}" in "$1".?*) true ;; *) false ;; esac && __rt_tmp_ok "$__rt_mt" || {
+      printf '%s: cannot create temp dir under %s\n' "$(basename "$0" .sh)" "${TMPDIR:-/tmp}" >&2
+      exit 1
+    }
+  TMP="$__rt_mt"; __rt_made="$__rt_mt"
+}
+# rm_tmp DIR — rm -rf DIR (gone already: nothing to do). When DIR is the dir mk_tmp made and the
+# cwd is inside it (a test cd'd there: test functions run in the main shell), it first cd's back
+# to the start dir. Refuses, with a stderr line and status 1, an empty DIR, /, the start dir, the
+# cwd or an ancestor of either: a suite that skipped mk_tmp still never removes its checkout.
+rm_tmp() {
+  if [ -z "$1" ]; then printf '%s: rm_tmp: refusing an empty dir\n' "$(basename "$0" .sh)" >&2; return 1; fi
+  [ -e "$1" ] || [ -L "$1" ] || return 0
+  if [ -d "$1" ]; then
+    __rt_rd="$(cd "$1" 2>/dev/null && pwd -P)" || __rt_rd=""
+    if [ -n "$__rt_rd" ] && [ -n "$__rt_made" ] && [ "$__rt_rd" = "$__rt_made" ] \
+        && __rt_anc "$__rt_rd" "$(pwd -P 2>/dev/null)"; then
+      cd "${__rt_cwd0:-/}" 2>/dev/null || cd /
+    fi
+    if [ -z "$__rt_rd" ] || ! __rt_tmp_ok "$__rt_rd"; then
+      printf '%s: rm_tmp: refusing to remove %s (unresolvable, /, the cwd or an ancestor of it)\n' "$(basename "$0" .sh)" "$1" >&2
+      return 1
+    fi
+  fi
+  rm -rf "$1"
 }
 
 __rt_in() { case " $2 " in *" $1 "*) return 0 ;; esac; return 1; }

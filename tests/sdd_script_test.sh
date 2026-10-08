@@ -5,8 +5,8 @@ set -u
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 . "$REPO_ROOT/tests/assert.sh"
 BIN="$REPO_ROOT/studios/game-dev/bin/sdd-script"
-TMP="$(cd "$(mktemp -d "${TMPDIR:-/tmp}/sdd_script_test.XXXXXX")" && pwd -P)"
-trap 'rm -rf "$TMP"' EXIT
+mk_tmp sdd_script_test
+trap 'rm_tmp "$TMP"' EXIT
 SDD=skills/subagent-driven-development/scripts
 
 # fresh N — a new empty config dir $CFG
