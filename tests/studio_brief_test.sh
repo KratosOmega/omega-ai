@@ -399,6 +399,25 @@ PLAN
   assert_eq 7 "$(grep -c '^studio-brief: task ' "$TMP/b.err")" "one line per problem, nothing for good items"
   assert_eq "" "$(cat "$TMP/b.out")" "no ok line"
 }
+# Final review m10: a second `### Task 3:` block is never checked (and
+# `task 3` can never reach it), so validate names the duplicate.
+test_brief_validate_duplicate_task() {
+  Q="$TMP/projdup"; mkdir -p "$Q/docs"; printf 'l1\nl2\n' > "$Q/docs/s.md"
+  cat > "$Q/docs/plan.md" <<'PLAN'
+# Plan
+### Task 1: a
+Spec: docs/s.md:L1
+### Task 3: b
+Spec: docs/s.md:L2
+### Task 3: c
+Spec: docs/none.md:L1
+PLAN
+  ( cd "$Q" && sh "$BRIEF" validate docs/plan.md ) > "$TMP/d.out" 2> "$TMP/d.err"; st=$?
+  assert_eq 1 "$st" "exit 1"
+  assert_contains "$TMP/d.err" '^studio-brief: task 3: duplicate ### Task heading$' "names the duplicate"
+  assert_eq 1 "$(grep -c '^studio-brief: task 3: duplicate' "$TMP/d.err")" "once"
+  assert_eq "" "$(cat "$TMP/d.out")" "no ok line"
+}
 test_brief_validate_missing_plan_and_no_state() {
   Q="$TMP/projns"; mkdir -p "$Q"
   ( cd "$Q" && sh "$BRIEF" validate nope.md ) > /dev/null 2> "$TMP/n.err"; st=$?
@@ -416,4 +435,4 @@ test_brief_validate_relative_to_caller() {
   assert_eq 0 "$st" "from docs/: plan.md is found, docs/spec.md resolves from the root"
 }
 
-run_tests test_brief_task test_brief_final test_brief_refusals test_brief_missing_sections test_brief_directives_task test_brief_directives_final test_brief_directive_text_not_ruling test_brief_directive_edge_cases test_brief_no_directives_no_part test_brief_context_appended test_brief_context_cap test_brief_context_missing_file test_brief_context_no_glob test_brief_final_plan_acceptance test_brief_check_verb test_brief_check_uses_truth_region test_brief_final_reads_check_rulings test_brief_original_plan_item test_brief_usage_names_check test_brief_single_line_item test_brief_validate_good_plan test_brief_validate_reports_all test_brief_validate_missing_plan_and_no_state test_brief_validate_relative_to_caller
+run_tests test_brief_task test_brief_final test_brief_refusals test_brief_missing_sections test_brief_directives_task test_brief_directives_final test_brief_directive_text_not_ruling test_brief_directive_edge_cases test_brief_no_directives_no_part test_brief_context_appended test_brief_context_cap test_brief_context_missing_file test_brief_context_no_glob test_brief_final_plan_acceptance test_brief_check_verb test_brief_check_uses_truth_region test_brief_final_reads_check_rulings test_brief_original_plan_item test_brief_usage_names_check test_brief_single_line_item test_brief_validate_good_plan test_brief_validate_reports_all test_brief_validate_duplicate_task test_brief_validate_missing_plan_and_no_state test_brief_validate_relative_to_caller

@@ -32,7 +32,8 @@
 #   studio-brief validate <plan>
 #                           resolve every task's Spec: items without printing
 #                           them: exit 0 and `<T> tasks, <I> Spec items ok`, or
-#                           every problem on stderr as `task <n>: <error>`.
+#                           every problem on stderr as `task <n>: <error>`
+#                           (a repeated `### Task <n>:` heading is one).
 #                           The plan path is the caller's; Spec: paths are the
 #                           work root's. Needs no studio state.
 #
@@ -246,8 +247,19 @@ validate)
   [ $# -eq 2 ] || usage
   case "$2" in /*) vplan="$2" ;; *) vplan="$CALLER_PWD/$2" ;; esac
   [ -f "$vplan" ] || { printf 'studio-brief: plan %s not found\n' "$2" >&2; exit 2; }
-  _vt=0; _vi=0; _vbad=0
+  _vt=0; _vi=0; _vbad=0; _vseen=" "; _vdup=" "
   for _vn in $(plan_tasks "$vplan"); do
+    # A repeated number: `task <n>` only ever reaches the first block, so the
+    # later one is never briefed or checked. Named once, not re-validated.
+    case "$_vseen" in
+      *" $_vn "*)
+        case "$_vdup" in *" $_vn "*) ;; *)
+          printf 'studio-brief: task %s: duplicate ### Task heading\n' "$_vn" >&2
+          _vdup="$_vdup$_vn "; _vbad=1 ;;
+        esac
+        continue ;;
+    esac
+    _vseen="$_vseen$_vn "
     _vt=$((_vt + 1))
     _vr="$(section "$vplan" "### Task $_vn:" 0)"
     each_spec_item "$vplan" "${_vr% *}" "${_vr#* }" validate_item
