@@ -1026,6 +1026,24 @@ test_gate_run_cap_fast_runs_leave_nothing() {
     assert_eq 0 "$(ps -A -o args= | grep -c '^sleep 87$')" "$_fsh: no orphaned sleep of the cap"
     assert_eq 0 "$(ps -A -o args= | grep -F "$GATE fastcap" | grep -vc grep)" "$_fsh: no timer outlives its gate"
   done
+  # A SIGKILLed gate whose parent never reaps it stays a zombie, so
+  # `kill -0` still succeeds: the timer must notice it was reparented and
+  # exit, or at the cap it could KILL a reused pgid. The parent here execs
+  # a sleep that never waits.
+  for _fsh in sh dash; do
+    command -v "$_fsh" >/dev/null 2>&1 || continue
+    ( cd "$GP" && STUDIO_GATE_MINUTES=1 STUDIO_GATE_SECONDS=89 exec sh -c "\"$_fsh\" \"$GATE\" zombiecap -- sh -c 'while :; do sleep 1; done' zombiecap-cmd & echo \$! > '$TMP/zg'; exec sleep 15" ) >/dev/null 2>&1 &
+    _zp=$!
+    sleep 2
+    _zg="$(cat "$TMP/zg")"
+    kill -KILL "$_zg" 2>/dev/null
+    sleep 3
+    assert_eq Z "$(ps -o stat= -p "$_zg" 2>/dev/null | cut -c1)" "$_fsh: the killed gate is an unreaped zombie"
+    assert_eq 0 "$(ps -A -o stat=,args= | grep -F "$GATE zombiecap" | grep -v '^Z' | grep -vc grep)" "$_fsh: its timer exited once reparented"
+    pkill -KILL -f "$GATE zombiecap" 2>/dev/null; pkill -KILL -f zombiecap-cmd 2>/dev/null
+    kill "$_zp" 2>/dev/null; wait "$_zp" 2>/dev/null
+    rm -rf "$GP/.studio/gate.lock"
+  done
   : > "$GP/.studio/gate.times"
   _t0=$(date +%s)
   _o="$(cd "$GP" && STUDIO_GATE_MINUTES=1 STUDIO_GATE_SECONDS=87 sh "$GATE" fastcap -- sh "$GATE" fastcap -- echo nested 2>/dev/null)"

@@ -227,12 +227,26 @@ set +m
 # can neither outlive the gate (signalling a reused pid) nor hold it: the
 # gate never waits for it. Deadlines are wall-clock, so the polls' own cost
 # does not stretch the cap.
+# A gate SIGKILLed by a parent that never reaps it stays a zombie, so
+# `kill -0 $$` still succeeds; the timer is reparented then, so it also
+# exits once its parent is no longer the gate. Its own pid (`$$` in a
+# subshell is the gate's; bash 3.2 has no BASHPID) is the parent of its
+# first background sleep.
 if [ -n "$CAP_SECS" ]; then
-  ( _end=$(( $(date +%s) + CAP_SECS ))
-    while [ "$(date +%s)" -lt "$_end" ]; do sleep 1; kill -0 $$ 2>/dev/null || exit 0; done
+  ( # A failed ps read (empty) never ends the timer: the cap must not fail open.
+    gate_here() {
+      kill -0 $$ 2>/dev/null || return 1
+      [ -n "$_me" ] || return 0
+      _pp="$(ps -o ppid= -p "$_me" 2>/dev/null | tr -d ' ')"
+      [ -z "$_pp" ] || [ "$_pp" = "$$" ]
+    }
+    _end=$(( $(date +%s) + CAP_SECS ))
+    sleep 1 & _k=$!; _me="$(ps -o ppid= -p "$_k" 2>/dev/null | tr -d ' ')"; wait "$_k"
+    gate_here || exit 0
+    while [ "$(date +%s)" -lt "$_end" ]; do sleep 1; gate_here || exit 0; done
     kill -ALRM $$ 2>/dev/null || exit 0
     _end=$(( $(date +%s) + 10 ))
-    while [ "$(date +%s)" -lt "$_end" ]; do sleep 1; kill -0 $$ 2>/dev/null || exit 0; done
+    while [ "$(date +%s)" -lt "$_end" ]; do sleep 1; gate_here || exit 0; done
     kill -KILL $(targets "$CHILD") 2>/dev/null
   ) > /dev/null 2>&1 &
   TIMER=$!
