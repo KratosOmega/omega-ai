@@ -349,3 +349,39 @@ plugin's design spec, implementation plans and progress log, plus
 ```sh
 sh tests/run_all.sh
 ```
+
+This is the merge gate. It runs in parallel: each suite (or shard of a big one) is a
+job in its own process group, `TEST_JOBS` at a time (default: CPUs minus 2). Each job
+gets its own `TMPDIR` and log, and whatever it leaves running is killed when it ends.
+Then the tests a suite marks exclusive run alone. A run is red if a job fails or times
+out, a listed test did not run exactly once, or a suite's assertion count is below its
+floor. The summary lists the slowest tests; `TEST_SLOWEST` sets how many.
+
+- `TEST_JOBS=1` is the old serial gate: each suite whole, in name order, no perl.
+- `TEST_SUITES="state_test hook_test"` and `TESTS_ONLY="test_a test_b"` narrow a run.
+  `TESTS_ONLY` skips the completeness checks; `TEST_SUITES` runs them on the selected
+  suites only. Neither is the merge gate.
+- `TEST_SH=dash` runs every suite under dash (the portability check).
+- Two gates on one machine slow each other's exclusive phase; lower `TEST_JOBS`.
+
+While you work, `sh tests/run_affected.sh [--base REF] [--list]` runs only the suites
+your change can reach (default base `origin/main`, never fetched). It is a quick check,
+never a gate; `--list` prints each suite and why it was picked.
+
+Writing a suite (`tests/assert.sh` has the full contract):
+
+- `TESTS_EXCLUSIVE` names tests that run alone because they bound elapsed time, signal
+  a process they started, or beat a short window. `tests/exclusive_scan.awk` flags
+  candidates; record each ruling above the list as `# exclusive-scan: <test> in|out (flags) why`.
+- `TESTS_REAL_CLOCK` marks tests that need the real clock; `TESTS_FINAL` runs last;
+  `before_each` runs before every test.
+- Use `mk_msleep` (`$TMP/bin/msleep`) for sleepers you must find again, and `own_group CMD`
+  to start a process in its own group. Scope `pgrep`/`pkill` to your `$TMP`; a line that
+  is safe anyway carries `# scan-ok: <reason>`.
+- Use `mktemp "${TMPDIR:-/tmp}/..."`, never a bare `/tmp`.
+- Assertion floors and shard counts live in the table in `tests/run_all.sh`; raise a
+  floor when a suite grows.
+- Test-only knobs (`STUDIO_SETUP_TIMEOUT_SECONDS`, `STUDIO_SETUP_POLL_SECONDS`,
+  `STUDIO_GATE_POLL_SECONDS`, `STUDIO_OVERNIGHT_REAP_POLL_SECONDS`,
+  `STUDIO_OVERNIGHT_DETACH_POLL_SECONDS`) shrink waits in tests; production keeps its
+  defaults.

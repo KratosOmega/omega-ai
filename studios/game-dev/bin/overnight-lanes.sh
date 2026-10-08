@@ -1166,6 +1166,7 @@ lanes_wait() {
 # Used by the runner's exit path (lanes then see the stop and end) and by
 # the sweep for a lane that died with its session live. Paths are quoted
 # throughout (a project path may hold a space); lane names are numbers.
+# Its grace poll is STUDIO_OVERNIGHT_REAP_POLL_SECONDS (studio-overnight's help), read at startup into REAP_POLL/REAP_TPS; sourced alone (a unit test), the 1 s default applies.
 lanes_end_sessions() {
   if [ "$#" -eq 0 ]; then
     for _es_d in "$RUN_DIR"/lanes/*; do [ ! -d "$_es_d" ] || set -- "$@" "${_es_d##*/}"; done
@@ -1189,13 +1190,13 @@ lanes_end_sessions() {
     kill -TERM -"$_es_p" 2>/dev/null || { pkill -TERM -P "$_es_p"; kill -TERM "$_es_p"; } 2>/dev/null
   done
   _es_g=0
-  while [ -n "$_es_pids" ] && [ "$_es_g" -lt "${GRACE:-30}" ]; do
+  while [ -n "$_es_pids" ] && [ "$_es_g" -lt $(( ${GRACE:-30} * ${REAP_TPS:-1} )) ]; do
     _es_alive=0
     for _es_p in $_es_pids; do
       { kill -0 -"$_es_p" 2>/dev/null || pid_live "$_es_p"; } && _es_alive=1
     done
     [ "$_es_alive" = 1 ] || break
-    sleep 1; _es_g=$((_es_g + 1))
+    sleep "${REAP_POLL:-1}"; _es_g=$((_es_g + 1))
   done
   for _es_p in $_es_pids; do
     kill -KILL -"$_es_p" 2>/dev/null || { pkill -KILL -P "$_es_p"; kill -KILL "$_es_p"; } 2>/dev/null

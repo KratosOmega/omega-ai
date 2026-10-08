@@ -24,6 +24,7 @@
 # recent studio-test against session_minutes.
 # Exit: the command's status · 2 usage · 128+n when TERM/INT/HUP ended it.
 # With no .studio/ project there is nothing to protect: the command just runs.
+# Test hook: STUDIO_GATE_POLL_SECONDS (1, 0.5, 0.2 or 0.1; default 1) — the lock wait's poll; the waiting message stays every 60 s.
 
 SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
 
@@ -33,6 +34,12 @@ if [ "$#" -lt 3 ] || [ "$2" != "--" ]; then
 fi
 WHO="$1"
 shift 2
+
+case "${STUDIO_GATE_POLL_SECONDS:-1}" in
+  1) GATE_POLL=1; GATE_TPS=1 ;;     0.5) GATE_POLL=0.5; GATE_TPS=2 ;;
+  0.2) GATE_POLL=0.2; GATE_TPS=5 ;; 0.1) GATE_POLL=0.1; GATE_TPS=10 ;;
+  *) printf 'studio-gate: STUDIO_GATE_POLL_SECONDS must be 1, 0.5, 0.2 or 0.1, got %s\n' "$STUDIO_GATE_POLL_SECONDS" >&2; exit 2 ;;
+esac
 
 ROOT="$(sh "$SELF_DIR/studio-state" root 2>/dev/null)" || ROOT=""
 if [ -z "$ROOT" ] || [ ! -d "$ROOT/.studio" ]; then
@@ -179,11 +186,11 @@ trap 'on_signal 129' HUP
 
 waited=0
 until try_take; do
-  if [ $((waited % 60)) -eq 0 ]; then
+  if [ $((waited % (60 * GATE_TPS))) -eq 0 ]; then
     printf 'gate: waiting for %s (pid %s)\n' "$(cat "$LOCK/who" 2>/dev/null)" "$(lock_pid)" >&2
   fi
   waited=$((waited + 1))
-  sleep 1
+  sleep "$GATE_POLL"
 done
 
 # `set -m` makes the child lead its own process group (pgid == its pid), so

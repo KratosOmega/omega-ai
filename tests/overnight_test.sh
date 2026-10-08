@@ -7,10 +7,15 @@ set -u
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 . "$REPO_ROOT/tests/assert.sh"
 
-RUNNER="$REPO_ROOT/studios/game-dev/bin/studio-overnight"
 STATE_BIN="$REPO_ROOT/studios/game-dev/bin/studio-state"
-TMP="$(cd "$(mktemp -d)" && pwd -P)"
+TMP="$(cd "$(mktemp -d "${TMPDIR:-/tmp}/overnight_test.XXXXXX")" && pwd -P)"
 trap 'rm -rf "$TMP"' EXIT
+# The runner is reached through a link under $TMP, so every runner process carries
+# $TMP in its argv (a scan or a kill by pattern finds only this run's).
+mkdir -p "$TMP/bin"
+ln -s "$REPO_ROOT/studios/game-dev/bin/studio-overnight" "$TMP/bin/studio-overnight"
+RUNNER="$TMP/bin/studio-overnight"
+mk_msleep || { printf 'overnight_test: mk_msleep failed\n' >&2; exit 1; }
 # The runner's user-level registry lives under $HOME: never the real one.
 HOME="$TMP/home"; export HOME; mkdir -p "$HOME"
 FAKE="$TMP/fakebin"
@@ -67,6 +72,13 @@ for act in "$@"; do
     "wtledger "*) ( cd "$(sh "$STUB_STATE_BIN" worktree)" && sh "$STUB_STATE_BIN" ledger "${act#wtledger }" ) ;;
     "cost "*)     cost="${act#cost }" ;;
     nocost)       cost="" ;;
+    # waitexist PATH: an event wait in place of a fixed sleep — returns once PATH exists
+    # (@RUN@ in PATH is this session's run dir). Ceiling 60 s; a wait that reaches it
+    # records its path in $CALLS/wait.timeout, which the test asserts missing.
+    "waitexist "*) _wp="${act#waitexist }"
+                  case "$_wp" in *@RUN@*) _wp="${_wp%%@RUN@*}${STUDIO_RUN_DIR:-}${_wp#*@RUN@}" ;; esac
+                  _wi=0; while [ ! -e "$_wp" ] && [ "$_wi" -lt 600 ]; do sleep 0.1; _wi=$((_wi + 1)); done
+                  [ -e "$_wp" ] || printf '%s\n' "$_wp" >> "$CALLS/wait.timeout" ;;
     "sleep "*)    sleep "${act#sleep }" ;;
     ignoreterm)   trap '' TERM ;;
     hang)         while :; do sleep 1; done ;;
@@ -101,25 +113,53 @@ export PATH="$FAKE:$PATH" STUB_STATE_BIN="$STATE_BIN" STUB_RUNNER="$RUNNER" STUB
 # The suites test today's endings: hold_minutes 0 (spec milestone gate 1).
 STUDIO_OVERNIGHT_HOLD_MINUTES=0; export STUDIO_OVERNIGHT_HOLD_MINUTES
 
-# fixture NAME [CONFIG_JSON] — a committed project at stage plan with an
-# approved spec and plan (with ## Decisions); fresh $CALLS and scenario.
+# OVERNIGHT_FIXTURE_TEMPLATES (suite-local): 1 (default) builds each config's project once
+# under $TMP/tpl/o-<key>/ and copies it per call; 0 builds fresh every call, as before.
+OVERNIGHT_FIXTURE_TEMPLATES="${OVERNIGHT_FIXTURE_TEMPLATES:-1}"
+# fixture_build DIR ORIGIN [CONFIG_JSON] — the fixture project at DIR, its bare origin at
+# ORIGIN; status non-zero on any failed step.
+fixture_build() {
+  rm -rf "$1" "$2"; mkdir -p "$1/docs" && git init -q --bare "$2" || return 1
+  # An && chain, not set -e: fixture_build runs as an if/|| condition, where errexit is off
+  # even inside the subshell.
+  ( cd "$1" &&
+    git init -q -b main &&
+    git -c user.name=t -c user.email=t@t commit -q --allow-empty -m init &&
+    git remote add origin "$2" &&
+    git push -q origin main &&
+    git remote set-head origin main &&
+    sh "$STATE_BIN" init >/dev/null &&
+    { [ -z "${3:-}" ] || printf '%s\n' "$3" > .studio/config.json; } &&
+    printf '# Spec\n' > docs/spec.md &&
+    printf '# Plan\n\n## Decisions\n\n- none\n' > docs/plan.md &&
+    sh "$STATE_BIN" set spec docs/spec.md && sh "$STATE_BIN" set plan docs/plan.md &&
+    sh "$STATE_BIN" set stage plan &&
+    sh "$STATE_BIN" ledger "spec approved docs/spec.md" &&
+    sh "$STATE_BIN" ledger "plan approved docs/plan.md" &&
+    git add -A &&
+    git -c user.name=t -c user.email=t@t commit -q -m fixture ) >/dev/null 2>&1
+}
+# fixture NAME [CONFIG_JSON] — a committed project at stage plan with an approved spec and
+# plan (with ## Decisions); fresh $CALLS and scenario. A reused NAME is always a fresh project.
 fixture() {
   P="$TMP/$1"; CALLS="$TMP/calls-$1"; TMP_WT="$TMP/wts-$1"
   OVERNIGHT_SCENARIO="$TMP/scenario-$1"
   export CALLS TMP_WT OVERNIGHT_SCENARIO
-  mkdir -p "$P/docs" "$CALLS" "$TMP_WT"; : > "$OVERNIGHT_SCENARIO"
-  rm -rf "$TMP/$1.git"; git init -q --bare "$TMP/$1.git"
-  ( cd "$P" && git init -q -b main && git -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
-    git remote add origin "$TMP/$1.git" && git push -q origin main && git remote set-head origin main
-    sh "$STATE_BIN" init >/dev/null
-    [ -z "${2:-}" ] || printf '%s\n' "$2" > .studio/config.json
-    printf '# Spec\n' > docs/spec.md
-    printf '# Plan\n\n## Decisions\n\n- none\n' > docs/plan.md
-    sh "$STATE_BIN" set spec docs/spec.md; sh "$STATE_BIN" set plan docs/plan.md
-    sh "$STATE_BIN" set stage plan
-    sh "$STATE_BIN" ledger "spec approved docs/spec.md"
-    sh "$STATE_BIN" ledger "plan approved docs/plan.md"
-    git add -A && git -c user.name=t -c user.email=t@t commit -q -m fixture ) >/dev/null 2>&1
+  rm -rf "$P" "$TMP/$1.git" "$CALLS" "$TMP_WT"
+  mkdir -p "$CALLS" "$TMP_WT"; : > "$OVERNIGHT_SCENARIO"
+  if [ "$OVERNIGHT_FIXTURE_TEMPLATES" = 0 ]; then
+    fixture_build "$P" "$TMP/$1.git" "${2:-}" || { TESTS_RUN=$((TESTS_RUN + 1)); _fail "fixture $1: setup failed"; }
+    return 0
+  fi
+  _fx_t="$TMP/tpl/o-$(printf '%s|%s' "${2:-}" "$(date +%Y-%m-%d)" | cksum | tr ' ' -)"
+  if [ ! -f "$_fx_t/ok" ]; then
+    if fixture_build "$_fx_t/p" "$_fx_t/p.git" "${2:-}"; then : > "$_fx_t/ok"; else rm -rf "$_fx_t"; fi
+  fi
+  if [ -f "$_fx_t/ok" ] && cp -Rp "$_fx_t/p" "$P" && cp -Rp "$_fx_t/p.git" "$TMP/$1.git" \
+       && git -C "$P" remote set-url origin "$TMP/$1.git"; then
+    return 0
+  fi
+  TESTS_RUN=$((TESTS_RUN + 1)); _fail "fixture $1: setup failed"
 }
 # scenario LINE... — one line per stub session.
 scenario() { printf '%s\n' "$@" > "$OVERNIGHT_SCENARIO"; }
@@ -630,17 +670,16 @@ test_overnight_overhead() {
   if [ "$g" -le 5 ]; then _pass "runner overhead between units <= 5 s (min of two: ${g}s)"; else _fail "runner overhead ${g}s > 5 s"; fi
 }
 
-# start_bg [ARGS] — the runner in the background with job control on, so it
-# is not started with SIGINT ignored (POSIX ignores it for async lists in a
-# non-interactive shell, and an ignored-on-entry signal cannot be trapped).
+# start_bg [ARGS] — the runner in the background in a process group of its own
+# (own_group), so it is not started with SIGINT ignored (POSIX ignores it for async
+# lists in a non-interactive shell, and an ignored-on-entry signal cannot be trapped).
+# `set -m` does not work under dash with no tty. RPID is the runner's pid.
 start_bg() {
-  set -m 2>/dev/null
-  ( cd "$P" && exec sh "$RUNNER" start "$@" ) > "$TMP/bg.out" 2> "$TMP/bg.err" &
+  ( cd "$P" && own_group sh "$RUNNER" start "$@" ) > "$TMP/bg.out" 2> "$TMP/bg.err" &
   RPID=$!
-  set +m 2>/dev/null
 }
-# wait_for FILE — up to 10 s.
-wait_for() { _i=0; while [ ! -e "$1" ] && [ "$_i" -lt 50 ]; do sleep 0.2; _i=$((_i + 1)); done; }
+# wait_for FILE — up to 60 s (it returns as soon as FILE exists).
+wait_for() { _i=0; while [ ! -e "$1" ] && [ "$_i" -lt 300 ]; do sleep 0.2; _i=$((_i + 1)); done; }
 bg_status() { BG_STATUS=0; wait "$RPID" || BG_STATUS=$?; }
 # ---- #27: single-plan holds ----
 # holds_on SECS — holds on for the next run: hold_minutes 5, a deadline of
@@ -668,7 +707,7 @@ bg_alive() {
 # bg_end SECS MSG — passes MSG when the start_bg run ends within SECS (else
 # KILLs it and fails); then bg_status.
 bg_end() {
-  _be_i=0; while bg_alive && [ "$_be_i" -lt "$1" ]; do sleep 1; _be_i=$((_be_i + 1)); done
+  _be_i=0; while bg_alive && [ "$_be_i" -lt $(( $1 * 5 )) ]; do sleep 0.2; _be_i=$((_be_i + 1)); done
   TESTS_RUN=$((TESTS_RUN + 1))
   if bg_alive; then kill -KILL "$RPID" 2>/dev/null; _fail "$2 (still running after $1 s)"; else _pass "$2"; fi
   bg_status
@@ -699,8 +738,42 @@ test_overnight_kill_after_grace() {
   assert_eq "timed out" "$(awk -F'\t' 'NR == 1 { print $7 }' "$(last_run_dir)/units.tsv")" "a unit the watchdog ended with no progress is recorded timed out, not noprog"
 }
 
+test_overnight_reap_poll_keeps_budget() {
+  fixture rpk '{ "overnight": { "kill_grace_seconds": 5 } }'
+  # A closed terminal runs on_exit -> end_session: TERM, then up to GRACE s of
+  # polling, then KILL. At a 0.2 s poll the budget must still be a whole GRACE.
+  scenario "stage execute; ignoreterm; hang" "task 1/2"
+  STUDIO_OVERNIGHT_REAP_POLL_SECONDS=0.2; export STUDIO_OVERNIGHT_REAP_POLL_SECONDS
+  start_bg; unset STUDIO_OVERNIGHT_REAP_POLL_SECONDS
+  wait_for "$CALLS/1.t0"
+  spid="$(cat "$CALLS/1.pid")"
+  # The hang loop's sleep child exists only after the TERM trap is installed, so the
+  # HUP's TERM can never land before the trap.
+  _i=0
+  until pgrep -x -P "$spid" sleep >/dev/null 2>&1 || [ "$_i" -ge 300 ]; do sleep 0.2; _i=$((_i+1)); done  # scan-ok: pid-scoped
+  assert_eq 1 "$([ "$_i" -lt 300 ] && echo 1 || echo 0)" "the session reached its hang loop (TERM is ignored by now)"
+  _t0=$(date +%s)
+  kill -HUP "$RPID"; bg_status
+  _el=$(( $(date +%s) - _t0 ))
+  assert_eq 1 "$([ "$_el" -ge 5 ] && echo 1 || echo 0)" "a TERM-ignoring session gets its whole 5 s grace at a 0.2 s poll (${_el}s)"
+  assert_eq dead "$(kill -0 "$spid" 2>/dev/null && echo live || echo dead)" "the session was killed after the grace"
+  assert_eq 1 "$(calls)" "no further unit starts"
+}
+
+test_overnight_reap_poll_rejects_bad_value() {
+  fixture rpb
+  st=0
+  out="$( cd "$P" && STUDIO_OVERNIGHT_REAP_POLL_SECONDS=0.3 sh "$RUNNER" start 2>&1 )" || st=$?
+  assert_eq 2 "$st" "a bad reap poll exits 2"
+  printf '%s\n' "$out" > "$TMP/rpb.out"
+  assert_contains "$TMP/rpb.out" "studio-overnight: STUDIO_OVERNIGHT_REAP_POLL_SECONDS must be 1, 0.5, 0.2 or 0.1, got 0.3" "the refusal names the knob and the value"
+  assert_missing "$P/.studio/overnight.lock" "no lock was taken"
+  assert_eq 0 "$(ls -d "$P"/.studio/reports/overnight-* 2>/dev/null | wc -l | tr -d ' ')" "no run dir was made"
+  assert_eq 0 "$(calls)" "no session started"
+}
+
 test_overnight_stop_file() {
-  fixture stopf; scenario "stage execute; sleep 2; task 1/3" "task 2/3" "task 3/3"
+  fixture stopf; scenario "stage execute; waitexist $P/.studio/overnight.stop; task 1/3" "task 2/3" "task 3/3"
   start_bg; wait_for "$CALLS/1.t0"
   out="$(cd "$P" && sh "$RUNNER" stop)"; st=$?
   assert_eq 0 "$st" "stop exits 0 while a run is live"
@@ -708,6 +781,7 @@ test_overnight_stop_file() {
   assert_eq 1 "$(calls)" "the running unit finishes and no other starts"
   assert_contains "$(last_run_dir)/report.md" "stopped by user" "the ending says so"
   assert_missing "$P/.studio/overnight.stop" "the stop file is removed at the end"
+  assert_missing "$CALLS/wait.timeout" "no stub wait hit its ceiling"
 }
 
 test_overnight_sigterm() {
@@ -752,7 +826,7 @@ test_overnight_inhibitor() {
   assert_contains "$CALLS/1.caf" "^alive$" "caffeinate is alive during the first unit"
   assert_contains "$CALLS/4.caf" "^alive$" "caffeinate is still alive during the last unit (AC13)"
   cpid="$(cat "$CALLS/caffeinate.pid")"; _i=0
-  while kill -0 "$cpid" 2>/dev/null && [ "$_i" -lt 30 ]; do sleep 0.1; _i=$((_i + 1)); done
+  while kill -0 "$cpid" 2>/dev/null && [ "$_i" -lt 600 ]; do sleep 0.1; _i=$((_i + 1)); done
   assert_eq dead "$(kill -0 "$cpid" 2>/dev/null && echo live || echo dead)" "caffeinate ends with the run"
 }
 
@@ -770,8 +844,7 @@ test_overnight_claim_without_run_dir() {
 # make_minbin — $TMP/minbin: only what the runner needs, plus the stubs.
 make_minbin() {
   mkdir -p "$TMP/minbin"
-  for u in sh git sed awk grep sort comm date ps pkill kill sleep cat mkdir rm touch \
-           head tail tr cut ln dirname basename readlink wc uname mktemp cp mv chmod env printf; do
+  for u in sh git sed awk grep sort comm date ps pkill kill sleep cat mkdir rm touch head tail tr cut ln dirname basename readlink wc uname mktemp cp mv chmod env printf; do # scan-ok: a tool name in a PATH list
     p="$(command -v "$u" 2>/dev/null)" && case "$p" in /*) ln -sf "$p" "$TMP/minbin/$u" ;; esac
   done
   for f in claude claude-gd gh; do ln -sf "$FAKE/$f" "$TMP/minbin/$f"; done
@@ -846,7 +919,7 @@ test_overnight_crash_resume() {
   start_bg; wait_for "$CALLS/1.t0"
   # Crash mid-session: wait for the stub's own sleep, so the kill lands in it.
   spid="$(cat "$CALLS/1.pid")"; _i=0
-  while [ -z "$(pgrep -P "$spid" 2>/dev/null)" ] && [ "$_i" -lt 50 ]; do sleep 0.2; _i=$((_i + 1)); done
+  while [ -z "$(pgrep -P "$spid" 2>/dev/null)" ] && [ "$_i" -lt 300 ]; do sleep 0.2; _i=$((_i + 1)); done
   # Record the runner's children (the session and the watchdog) while it lives.
   kids="$(pgrep -P "$RPID" 2>/dev/null | tr '\n' ' ')"
   kill -KILL "$RPID"; wait "$RPID" 2>/dev/null
@@ -857,7 +930,7 @@ test_overnight_crash_resume() {
   kill -KILL -"$spid" 2>/dev/null; kill -KILL -"$RPID" 2>/dev/null
   for k in $kids; do pkill -KILL -P "$k" 2>/dev/null; kill -KILL "$k" 2>/dev/null; done
   _i=0  # killed orphans are reaped by init, not by us: give it a moment
-  while [ -n "$(for k in $spid $kids; do kill -0 "$k" 2>/dev/null && echo "$k"; done)" ] && [ "$_i" -lt 30 ]; do sleep 0.1; _i=$((_i + 1)); done
+  while [ -n "$(for k in $spid $kids; do kill -0 "$k" 2>/dev/null && echo "$k"; done)" ] && [ "$_i" -lt 600 ]; do sleep 0.1; _i=$((_i + 1)); done
   assert_eq "" "$(for k in $spid $kids; do kill -0 "$k" 2>/dev/null && echo "$k"; done)" "no recorded orphan survives the cleanup"
   assert_file "$P/.studio/overnight.lock" "a killed runner leaves its lock"
   run_start
@@ -867,7 +940,7 @@ test_overnight_crash_resume() {
 }
 
 test_overnight_status() {
-  fixture stat; scenario "stage execute; task 1/2; cost 1.5" "sleep 3; task 2/2"
+  fixture stat; scenario "stage execute; task 1/2; cost 1.5" "waitexist $P/.studio/overnight.stop; task 2/2"
   start_bg; wait_for "$CALLS/2.t0"
   ( cd "$P" && sh "$RUNNER" status ) > "$TMP/st.out"; st=$?
   assert_eq 0 "$st" "status exits 0 while a run is live"
@@ -885,6 +958,7 @@ test_overnight_status() {
   ( cd "$P" && sh "$RUNNER" status ) > "$TMP/st.out" 2>&1
   assert_contains "$TMP/st.out" "^no run — the last run: $P/.studio/reports/overnight-" "status with no run names the last run"
   assert_contains "$TMP/st.out" "^ended (stopped by user) — report: $P/.studio/reports/overnight-.*/report.md — resume: " "and how it ended, its report and how to resume"
+  assert_missing "$CALLS/wait.timeout" "no stub wait hit its ceiling"
 }
 
 test_overnight_check_unit() {
@@ -1560,7 +1634,7 @@ test_overnight_hold_on_feature_stop() {
   fixture hof; holds_on 60
   scenario "$ISO1" "wtledger Stop: need art"
   start_bg
-  wait_held 20; assert_file "$R/control/-.held" "a feature-ledger Stop: after isolation holds the story"
+  wait_held 60; assert_file "$R/control/-.held" "a feature-ledger Stop: after isolation holds the story"
   assert_contains "$R/control/-.held" "^held stop: need art until 20[0-9-]*T[0-9:]*Z$" "the held record: why, then the deadline"
   sleep 2; assert_eq 2 "$(calls)" "no session runs while held"
   assert_contains "$R/events.jsonl" '"event":"story_state","story":"-","state":"held","why":"stop: need art","until":"20' "a held story_state event"
@@ -1591,7 +1665,7 @@ test_overnight_resume_runs_next_unit() {
   fixture rnu; holds_on 60
   scenario "$ISO1" "wtledger Stop: need art" "inbox; task 2/2; wtledger T2 complete b..c" \
            "wtledger final review done" "wtledger shipped https://x/pull/3; stage idle; task -"
-  start_bg; wait_held 20
+  start_bg; wait_held 60
   verb say - "use the bus"; assert_eq 1 "$(cat "$V_OUT")" "say on the held story: id 1"
   verb say - --unit "skip polish"
   verb resume -; assert_eq "resume requested: - resumes within one poll" "$(cat "$V_OUT")" "resume -"
@@ -1611,13 +1685,13 @@ test_overnight_resume_runs_next_unit() {
 test_overnight_new_stop_holds_again() {
   fixture nsh; holds_on 60
   scenario "$ISO1" "wtledger Stop: need art" "wtledger Stop: still need art"
-  start_bg; wait_held 20
+  start_bg; wait_held 60
   verb resume -
-  _i=0; while [ "$(calls)" -lt 3 ] && [ "$_i" -lt 50 ]; do sleep 0.2; _i=$((_i + 1)); done
-  wait_held 20
-  _j=0; until grep -q 'still need art' "$R/control/-.held" 2>/dev/null || [ "$_j" -ge 50 ]; do sleep 0.2; _j=$((_j + 1)); done
+  _i=0; while [ "$(calls)" -lt 3 ] && [ "$_i" -lt 300 ]; do sleep 0.2; _i=$((_i + 1)); done
+  wait_held 60
+  _j=0; until grep -q 'still need art' "$R/control/-.held" 2>/dev/null || [ "$_j" -ge 300 ]; do sleep 0.2; _j=$((_j + 1)); done
   assert_contains "$R/control/-.held" "^held stop: still need art until " "a new stop after a resume holds again (AC20)"
-  verb stop -; bg_end 20 "the run ends"
+  verb stop -; bg_end 60 "the run ends"
   assert_contains "$R/report.md" "^Ending: stop: still need art$" "with the new why"
   holds_off
 }
@@ -1631,13 +1705,25 @@ test_overnight_hold_deadline() {
   assert_eq 2 "$(calls)" "no unit ran while held"
   holds_off
 }
+# D9: the hold wait at its production 5 s poll (the knob unset). The deadline is 3 s,
+# so the first poll after it is the one at 5 s; the lower bound holds under any load.
+test_overnight_hold_default_poll() {
+  fixture hdp; holds_on 3; unset STUDIO_OVERNIGHT_POLL_SECONDS
+  scenario "$ISO1" "wtledger Stop: need art"
+  t0="$(date +%s)"; run_start; t1="$(date +%s)"
+  assert_eq 1 "$RS_STATUS" "the run ends 1"
+  assert_contains "$(last_run_dir)/report.md" "^Ending: stop: need art (held 0h0m, no reply)$" "the deadline ended the hold"
+  assert_eq 1 "$([ $((t1 - t0)) -ge 5 ] && echo 1 || echo 0)" "the run took at least 5 s (a lower bound only: the units before the hold take longer than that)"
+  assert_eq 2 "$(calls)" "no unit ran while held"
+  holds_off
+}
 test_overnight_stop_beats_resume() {
   fixture sbr; holds_on 60; STUDIO_OVERNIGHT_POLL_SECONDS=3
   scenario "$ISO1" "wtledger Stop: need art" "wtledger final review done"
-  start_bg; wait_held 20; sleep 1
+  start_bg; wait_held 60; sleep 1
   # Both files land between two polls: the runner is paused while they are written.
   kill -STOP "$RPID"; : > "$R/control/-.stop"; : > "$R/control/-.resume"; kill -CONT "$RPID"
-  bg_end 20 "the run ends"
+  bg_end 60 "the run ends"
   assert_contains "$R/report.md" "^Ending: stop: need art$" ".stop beats .resume in one poll (AC22)"
   assert_eq 2 "$(calls)" "no unit ran"
   holds_off
@@ -1646,7 +1732,7 @@ test_overnight_resume_wins_at_deadline() {
   fixture rwd; holds_on 2; STUDIO_OVERNIGHT_POLL_SECONDS=4
   scenario "$ISO1" "wtledger Stop: need art" "wtledger final review done" \
            "wtledger shipped https://x/pull/7; stage idle; task -"
-  start_bg; wait_held 20; sleep 1
+  start_bg; wait_held 60; sleep 1
   verb resume -
   bg_end 60 "the run ends"
   assert_eq 0 "$BG_STATUS" "a resume seen at the poll after the deadline still resumes (AC22)"
@@ -1661,7 +1747,7 @@ test_overnight_requeue_then_hold() {
   start_bg; wait_held 60
   assert_contains "$R/control/-.held" "^held directive 1 not recorded until " "requeued retries + 1 times: the story holds (AC14)"
   assert_eq "progress progress progress" "$(unit_col 7)" "the unit's own outcome is kept in its row"
-  verb stop -; bg_end 20 "the run ends"
+  verb stop -; bg_end 60 "the run ends"
   assert_contains "$R/report.md" "^Ending: directive 1 not recorded$" "stop ends it with that why"
   assert_contains "$R/report.md" "^- 1 (story, requeues 2): use the bus$" "the message is listed"
   holds_off
@@ -1743,7 +1829,7 @@ test_overnight_stop_story_running() {
 test_overnight_hold_story_running() {
   fixture hsr; holds_on 60
   scenario "$ISO1; holdop" "wtledger final review done" "wtledger shipped https://x/pull/9; stage idle; task -"
-  start_bg; wait_held 20
+  start_bg; wait_held 60
   assert_contains "$R/control/-.held" "^held held by operator until " "hold - holds at the next unit boundary"
   assert_eq 1 "$(calls)" "before the next unit"
   verb resume -; bg_end 60 "the run goes on"
@@ -1764,9 +1850,9 @@ test_overnight_hold_last_unit_done_finishes() {
 test_overnight_run_stop_while_held() {
   fixture rsh; holds_on 60
   scenario "$ISO1" "wtledger Stop: need art"
-  start_bg; wait_held 20
+  start_bg; wait_held 60
   verb stop; assert_contains "$V_OUT" "^stop requested: the run ends after its running unit" "bare stop, as today"
-  bg_end 20 "the run ends"
+  bg_end 60 "the run ends"
   assert_contains "$R/report.md" "^Ending: stopped by user (was held: stop: need art)$" "the halt's reason, then the hold's (AC25)"
   holds_off
 }
@@ -1809,7 +1895,7 @@ test_overnight_orphaned_holds_after_isolation() {
 test_overnight_stop_held_by_operator() {
   fixture sho; holds_on 60
   scenario "$ISO1; holdop" "wtledger final review done"
-  start_bg; wait_held 20
+  start_bg; wait_held 60
   assert_contains "$R/control/-.held" "^held held by operator until " "held by the operator"
   verb stop -; bg_end 20 "the run ends within a poll"
   assert_contains "$R/report.md" "^Ending: stopped by operator$" "a stop on an operator-held story is stopped by operator (R5)"
@@ -1829,7 +1915,7 @@ test_overnight_stop_pending_never_holds() {
 test_overnight_sighup_while_held() {
   fixture shh; holds_on 60
   scenario "$ISO1" "wtledger Stop: need art"
-  start_bg; wait_held 20
+  start_bg; wait_held 60
   kill -HUP "$RPID"; bg_status
   assert_eq 1 "$BG_STATUS" "a closed terminal exits 1"
   assert_contains "$R/report.md" "^Ending: stop: terminal closed (SIGHUP) (was held: stop: need art)$" "the closed terminal keeps the hold's why (AC25)"
@@ -2027,10 +2113,10 @@ test_help_names_concurrent_runs() {
   done
 }
 # ---- #42: the single-plan runner follows its story (AC38, AC39) ----
-# wait_task DIR TASK — up to 10 s for DIR's own pointer to read `task: TASK`.
+# wait_task DIR TASK — up to 60 s for DIR's own pointer to read `task: TASK`.
 wait_task() {
   _wt_i=0
-  while ! grep -qx "task: $2" "$1/.studio/STATE.md" 2>/dev/null && [ "$_wt_i" -lt 50 ]; do sleep 0.2; _wt_i=$((_wt_i + 1)); done
+  while ! grep -qx "task: $2" "$1/.studio/STATE.md" 2>/dev/null && [ "$_wt_i" -lt 300 ]; do sleep 0.2; _wt_i=$((_wt_i + 1)); done
 }
 test_single_plan_follows_story_after_unit_1() {
   fixture fol
@@ -2148,7 +2234,7 @@ test_single_plan_in_place_keeps_main_pointer() {
 test_channel_ledger_follows_story() {
   fixture clf; holds_on 60
   scenario "$ISO1; wtledger Directive 7: keep the bus" "wtledger Stop: need art"
-  start_bg; wait_held 20
+  start_bg; wait_held 60
   # A second worktree story at execute: worktree's candidate list from P has two.
   ( git -C "$P" worktree add -q "$TMP_WT/wt-oth" -b oth && cd "$TMP_WT/wt-oth" \
       && sh "$STATE_BIN" set spec docs/other.md && sh "$STATE_BIN" set stage execute ) >/dev/null 2>&1
@@ -2157,32 +2243,38 @@ test_channel_ledger_follows_story() {
   verb say - x
   assert_eq 0 "$V_STATUS" "say - succeeds during the hold"
   assert_eq 8 "$(cat "$V_OUT")" "the next id counts the story worktree's Directive lines"
-  verb stop -; bg_end 20 "the run ends"
+  verb stop -; bg_end 60 "the run ends"
   assert_contains "$R/report.md" "^Ending: stop: need art$" "with the story's Stop:"
   holds_off
 }
 test_status_reads_persisted_spec() {
-  fixture srp; scenario "$ISO1; sleep 3"
+  fixture srp; scenario "$ISO1; waitexist $CALLS/release-srp"
   start_bg; wait_task "$TMP_WT/wt-feat" 1/2
   verb status
   assert_contains "$V_OUT" "^task: 1/2$" "status reads the task in the story's worktree"
-  bg_end 40 "the run ends"
-  fixture srp2; scenario "$ISO1; rmwt feat; sleep 3"
+  : > "$CALLS/release-srp"
+  bg_end 60 "the run ends"
+  assert_missing "$CALLS/wait.timeout" "no stub wait hit its ceiling"
+  fixture srp2; scenario "$ISO1; rmwt feat; waitexist $CALLS/release-srp2"
   start_bg; wait_for "$CALLS/1.t0"
-  _i=0; until { [ -n "$(git -C "$P" branch --list feat)" ] && [ ! -d "$TMP_WT/wt-feat" ]; } || [ "$_i" -ge 50 ]; do sleep 0.2; _i=$((_i + 1)); done
+  _i=0; until { [ -n "$(git -C "$P" branch --list feat)" ] && [ ! -d "$TMP_WT/wt-feat" ]; } || [ "$_i" -ge 300 ]; do sleep 0.2; _i=$((_i + 1)); done
   verb status
   assert_contains "$V_OUT" "^task: story docs/spec.md not found$" "an unresolved story is named in place of the task"
-  bg_end 40 "the run ends"
+  : > "$CALLS/release-srp2"
+  bg_end 60 "the run ends"
+  assert_missing "$CALLS/wait.timeout" "no stub wait hit its ceiling"
 }
 test_single_plan_ignores_new_story_in_start() {
   fixture ins
-  scenario "$ISO1; sleep 3" "task 2/2; wtledger T2 complete b..c" "wtledger final review done" \
+  scenario "$ISO1; waitexist $CALLS/release-ins" "task 2/2; wtledger T2 complete b..c" "wtledger final review done" \
            "wtledger shipped https://x/pull/1; stage idle; task -"
   start_bg; wait_task "$TMP_WT/wt-feat" 1/2
   ( cd "$P" && sh "$STATE_BIN" set stage brainstorm && sh "$STATE_BIN" set spec docs/other.md \
       && sh "$STATE_BIN" ledger "Stop: unrelated" ) >/dev/null 2>&1
   assert_contains "$P/.studio/ledger/other.md" "Stop: unrelated" "a new story in P has a Stop: line"
+  : > "$CALLS/release-ins"
   bg_end 60 "the run ends"
+  assert_missing "$CALLS/wait.timeout" "no stub wait hit its ceiling"
   assert_eq 0 "$BG_STATUS" "the run is not stopped by an unrelated story in P"
   assert_contains "$(last_run_dir)/report.md" "^Ending: done$" "it finishes"
   assert_eq 4 "$(calls)" "every unit ran"
@@ -2205,12 +2297,104 @@ test_overnight_help_setup_preflight() {
   sh "$RUNNER" --help > "$TMP/help-pf.txt" 2>&1
   assert_contains "$TMP/help-pf.txt" "Preflighted: start runs it once in a scratch linked" "help: worktree_setup says it is preflighted"
 }
+# fx_norm SRC DEST NAME — a copy of the work tree SRC at DEST (.git left out), with the
+# tree's own path ($TMP/NAME) turned into @N@ in every file that holds it.
+fx_norm() {
+  rm -rf "$2"; mkdir -p "$2"
+  ( cd "$1" && tar -cf - --exclude=./.git . ) | ( cd "$2" && tar -xf - )
+  for _fn_f in $(grep -rlF "$TMP/$3" "$2" 2>/dev/null); do
+    sed "s|$TMP/$3|@N@|g" "$_fn_f" > "$_fn_f.n" && mv "$_fn_f.n" "$_fn_f"
+  done
+}
+test_overnight_fixture_copy_equals_build() {
+  _eq_save="$OVERNIGHT_FIXTURE_TEMPLATES"
+  for _eq_cfg in '' '{"overnight": {"kill_grace_seconds": 5}}'; do
+    OVERNIGHT_FIXTURE_TEMPLATES=1; fixture eqA "$_eq_cfg"
+    OVERNIGHT_FIXTURE_TEMPLATES=0; fixture eqB "$_eq_cfg"
+    OVERNIGHT_FIXTURE_TEMPLATES="$_eq_save"
+    fx_norm "$TMP/eqA" "$TMP/eqn/A" eqA; fx_norm "$TMP/eqB" "$TMP/eqn/B" eqB
+    _eq_d="$(diff -r "$TMP/eqn/A" "$TMP/eqn/B" 2>&1)"
+    assert_eq "" "$_eq_d" "a copied fixture's tree (git-ignored files too) equals a fresh build's [${_eq_cfg:-no config}]"
+    assert_eq "$(git -C "$TMP/eqB" log --all --format='%T %s')" "$(git -C "$TMP/eqA" log --all --format='%T %s')" "the same commits (tree and subject) [${_eq_cfg:-no config}]"
+    assert_eq "" "$(git -C "$TMP/eqA" status --porcelain)$(git -C "$TMP/eqB" status --porcelain)" "both trees are clean [${_eq_cfg:-no config}]"
+    assert_eq "$TMP/eqA.git" "$(git -C "$TMP/eqA" remote get-url origin)" "the copy's origin is its own bare repo [${_eq_cfg:-no config}]"
+    assert_eq "" "$(grep -rF "$TMP/tpl" "$TMP/eqA" 2>/dev/null | head -n 1)" "nothing in the copy names the template [${_eq_cfg:-no config}]"
+  done
+  # A reused name is a fresh project, not a copy nested into the old one.
+  OVERNIGHT_FIXTURE_TEMPLATES=1
+  fixture eqX '{"a":1}'; fixture eqX '{"b":2}'
+  OVERNIGHT_FIXTURE_TEMPLATES="$_eq_save"
+  assert_eq '{"b":2}' "$(cat "$TMP/eqX/.studio/config.json")" "a second fixture of the same name carries the new config"
+  assert_missing "$TMP/eqX/eqX" "and does not nest the copy inside the old project"
+}
+test_overnight_fixture_failed_build_not_reused() {
+  mkdir -p "$TMP/fbbin"; _fb_real="$(command -v git)"
+  cat > "$TMP/fbbin/git" <<'FAKE'
+#!/bin/sh
+for a in "$@"; do
+  if [ "$a" = push ] && [ ! -e "$FB_COUNT" ]; then : > "$FB_COUNT"; exit 1; fi
+done
+exec "$FB_REAL" "$@"
+FAKE
+  chmod +x "$TMP/fbbin/git"
+  _fb_path="$PATH"; _fb_save="$OVERNIGHT_FIXTURE_TEMPLATES"; OVERNIGHT_FIXTURE_TEMPLATES=1
+  FB_COUNT="$TMP/fb.count"; FB_REAL="$_fb_real"; export FB_COUNT FB_REAL
+  PATH="$TMP/fbbin:$PATH"
+  _fb_key="$(printf '%s|%s' '{"t":1}' "$(date +%Y-%m-%d)" | cksum | tr ' ' -)"
+  _fb_before="$TESTS_FAILED"
+  fixture fb1 '{"t":1}' > "$TMP/fb1.out"
+  PATH="$_fb_path"; unset FB_COUNT FB_REAL
+  assert_contains "$TMP/fb1.out" "fixture fb1: setup failed" "a failed build is reported"
+  assert_eq $((_fb_before + 1)) "$TESTS_FAILED" "and counted as a failure"
+  TESTS_FAILED=$((TESTS_FAILED - 1))
+  assert_missing "$TMP/tpl/o-$_fb_key/ok" "a failed build leaves no ok marker"
+  fixture fb2 '{"t":1}'
+  OVERNIGHT_FIXTURE_TEMPLATES="$_fb_save"
+  assert_eq "$_fb_before" "$TESTS_FAILED" "the next fixture of that config builds afresh and succeeds"
+  assert_file "$TMP/tpl/o-$_fb_key/ok" "the rebuilt template is marked ok"
+  assert_eq '{"t":1}' "$(cat "$TMP/fb2/.studio/config.json")" "and the project carries the config"
+}
+# exclusive-scan: test_overnight_overhead in (a) it bounds the runner's own gap between units, a pure elapsed ceiling that a loaded machine breaks
+# exclusive-scan: test_overnight_timeout in (a) it asserts the watchdog cut a long session far short of its sleep, which needs a quiet machine
+# exclusive-scan: test_overnight_kill_after_grace out (d) the one-second watchdog only has to fire, and a late start gives the same ending; the grace runs on the real clock, so the test is also in the real-clock list
+# exclusive-scan: test_overnight_reap_poll_keeps_budget out (b) the HUP lands after an event wait for the session's hang loop, which only starts once its TERM trap is set, and the elapsed check is a lower bound only
+# exclusive-scan: test_overnight_inhibitor in (seed) a spec seed kept in the exclusive phase; its caffeinate-death wait is an event with a long ceiling
+# exclusive-scan: test_overnight_sigterm in (b) the TERM must land while the one live session is still inside its sleep, a short window
+# exclusive-scan: test_overnight_sigint in (b) the INT must land while the one live session is still inside its sleep, a short window
+# exclusive-scan: test_overnight_sighup out (b) the session sleeps for a long time and the HUP lands after an event wait, so no window; it is in the real-clock list
+# exclusive-scan: test_overnight_claim_without_run_dir in (d) the one-second watchdog and an elapsed ceiling on the whole run
+# exclusive-scan: test_overnight_hold_on_feature_stop in (c) the stop must end the held run within one hold poll, an elapsed upper bound that a loaded machine breaks
+# exclusive-scan: test_overnight_stop_held_by_operator in (c) the stop must end the operator-held run within one hold poll, an elapsed upper bound that a loaded machine breaks
+# exclusive-scan: test_overnight_hold_config_refused out (d) the values are refused at start, nothing runs against a clock
+# exclusive-scan: test_inbox_lock_failures out (d) a lock wait that only gives up; the result is the same however slowly it runs
+# exclusive-scan: test_inbox_lock_busy in (d) lock contention timed against the wait the code under test is given
+# exclusive-scan: test_overnight_stop_beats_resume in (d) both files must land between two polls of the runner, a window
+# exclusive-scan: test_overnight_resume_wins_at_deadline in (d) the resume must land between the hold deadline and the next poll, a window
+# exclusive-scan: test_overnight_sighup_while_held in (b) a spec seed kept in the exclusive phase; the HUP follows an event wait, so it would also be safe in parallel
+# exclusive-scan: test_overnight_stop_file out (static) its window is now the stub's wait for the stop flag, an event
+# exclusive-scan: test_overnight_status out (static) its window is now the stub's wait for the stop flag, an event
+TESTS_EXCLUSIVE="test_overnight_hold_on_feature_stop test_overnight_stop_held_by_operator test_overnight_overhead test_overnight_timeout test_overnight_inhibitor test_overnight_claim_without_run_dir test_inbox_lock_busy test_overnight_sighup_while_held test_overnight_sigterm test_overnight_sigint test_overnight_stop_beats_resume test_overnight_resume_wins_at_deadline"
+TESTS_REAL_CLOCK="test_overnight_kill_after_grace test_overnight_sighup test_inbox_lock_released_on_signal test_overnight_hold_default_poll"
+# The knobs run at their production value in the real-clock and exclusive tests; every
+# other test polls fast. A test that sets its own POLL_SECONDS (holds_on) still wins.
+before_each() {
+  unset STUDIO_SETUP_POLL_SECONDS STUDIO_GATE_POLL_SECONDS \
+        STUDIO_OVERNIGHT_REAP_POLL_SECONDS STUDIO_OVERNIGHT_DETACH_POLL_SECONDS STUDIO_OVERNIGHT_POLL_SECONDS
+  is_real_clock && return 0
+  STUDIO_SETUP_POLL_SECONDS=0.2; STUDIO_GATE_POLL_SECONDS=0.2
+  STUDIO_OVERNIGHT_REAP_POLL_SECONDS=0.2; STUDIO_OVERNIGHT_DETACH_POLL_SECONDS=0.2
+  STUDIO_OVERNIGHT_POLL_SECONDS=1   # land-lock and hold polls: 5 s -> 1 s (existing knob, whole seconds)
+  export STUDIO_SETUP_POLL_SECONDS STUDIO_GATE_POLL_SECONDS STUDIO_OVERNIGHT_REAP_POLL_SECONDS \
+         STUDIO_OVERNIGHT_DETACH_POLL_SECONDS STUDIO_OVERNIGHT_POLL_SECONDS
+}
 run_tests test_overnight_setup_preflight_single test_overnight_help_setup_preflight \
+  test_overnight_fixture_copy_equals_build test_overnight_fixture_failed_build_not_reused \
   test_overnight_report_done test_overnight_report_not_done test_overnight_preflight_env_warns_not_blocks \
   test_overnight_report_anchors test_overnight_resume_quote test_overnight_label_t1 \
   test_overnight_session_seconds_refused test_overnight_claim_without_run_dir \
   test_overnight_report_runner_error test_overnight_crash_resume test_overnight_status \
   test_overnight_timeout test_overnight_kill_after_grace \
+  test_overnight_reap_poll_keeps_budget test_overnight_reap_poll_rejects_bad_value \
   test_overnight_stop_file test_overnight_sigterm test_overnight_sigint test_overnight_sighup \
   test_overnight_stop_no_run test_overnight_inhibitor test_overnight_no_inhibitor \
   test_overnight_help test_events_contract_doc test_overnight_dry_run \
@@ -2258,7 +2442,7 @@ run_tests test_overnight_setup_preflight_single test_overnight_help_setup_prefli
   test_overnight_start_ledger_stop_ends_at_once \
   test_overnight_resume_runs_next_unit \
   test_overnight_new_stop_holds_again \
-  test_overnight_hold_deadline \
+  test_overnight_hold_deadline test_overnight_hold_default_poll \
   test_overnight_stop_beats_resume \
   test_overnight_resume_wins_at_deadline \
   test_overnight_requeue_then_hold \

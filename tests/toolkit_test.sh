@@ -9,7 +9,8 @@ STUDIO="$REPO_ROOT/studios/game-dev"
 BIN="$STUDIO/bin"
 # Physical path: the adapter scripts resolve the project with pwd -P, so
 # assertions that quote $TMP must use the same spelling (/var -> /private/var on macOS).
-TMP="$(cd "$(mktemp -d)" && pwd -P)"
+unset STUDIO_GATE_POLL_SECONDS STUDIO_SETUP_POLL_SECONDS
+TMP="$(cd "$(mktemp -d "${TMPDIR:-/tmp}/toolkit.XXXXXX")" && pwd -P)"
 trap 'rm -rf "$TMP"' EXIT
 
 # A stub Godot. It records its arguments, honours --path and
@@ -752,10 +753,28 @@ test_gate_stale_reclaim_race() {
 test_gate_waiting_message() {
   gate_proj msg
   ( cd "$GP" && sh "$GATE" first -- sleep 3 ) 2>/dev/null &
-  sleep 1
+  _i=0; while [ ! -s "$GP/.studio/gate.lock/pid" ] && [ "$_i" -lt 600 ]; do sleep 0.1; _i=$((_i + 1)); done
+  [ -s "$GP/.studio/gate.lock/pid" ] || { echo "FAIL: the first gate never took the lock inside 60 s"; wait; return 1; }
   ( cd "$GP" && sh "$GATE" second -- true ) 2> "$TMP/gm"
   wait
   assert_contains "$TMP/gm" "^gate: waiting for first" "a waiter names the holder"
+}
+test_gate_poll_keeps_budget() {
+  gate_proj pollb
+  ( cd "$GP" && sh "$GATE" holder -- sleep 13 ) >/dev/null 2>&1 &
+  _i=0; while [ ! -s "$GP/.studio/gate.lock/pid" ] && [ "$_i" -lt 100 ]; do sleep 0.1; _i=$((_i + 1)); done
+  _rc=0
+  ( cd "$GP" && STUDIO_GATE_POLL_SECONDS=0.1 sh "$GATE" waiter -- true ) 2> "$TMP/gw.err" || _rc=$?
+  wait
+  assert_eq 0 "$_rc" "the waiter exits 0 once the holder is done"
+  assert_eq 1 "$(grep -c '^gate: waiting for' "$TMP/gw.err")" "one waiting line in 13 s: the 60 s cadence is not scaled"
+}
+test_gate_poll_rejects_bad_value() {
+  gate_proj pollx
+  _rc=0
+  ( cd "$GP" && STUDIO_GATE_POLL_SECONDS=2 sh "$GATE" x -- true ) 2> "$TMP/gx.err" || _rc=$?
+  assert_eq 2 "$_rc" "a bad poll value exits 2"
+  assert_contains "$TMP/gx.err" '^studio-gate: STUDIO_GATE_POLL_SECONDS must be 1, 0.5, 0.2 or 0.1, got 2$' "naming the knob and the value"
 }
 test_gate_records_pid_and_who() {
   gate_proj files
@@ -869,8 +888,23 @@ test_gate_times_window_per_who() {
   assert_not_contains "$GP/.studio/gate.times" '^11 setup ' "the oldest setup lines went"
 }
 
+TESTS_REAL_CLOCK="test_gate_no_overlap test_gate_waiting_message test_gate_poll_keeps_budget test_gate_signal_waits_for_child_then_releases test_gate_signal_reaches_the_grandchild"
+# exclusive-scan: test_run_clean in (d) shares the run window the stub must beat: it must start and print inside the one second --seconds cap
+# exclusive-scan: test_run_detects_script_errors in (c, d) failed under load, passed alone (I-4): the stub must print inside a one second --seconds cap
+# exclusive-scan: test_run_passes_scene_and_windowed in (c, d) failed under load, passed alone (I-4): the stub must start inside a one second --seconds cap
+# exclusive-scan: test_run_terminates_a_long_process in (a, d) asserts the engine is gone inside a 10 s ceiling, with a one second --seconds window
+# exclusive-scan: test_run_traps_signals_to_avoid_orphaning_the_child out (b) only greps run.sh for its trap text; no signal is sent
+# exclusive-scan: test_run_imports_when_dot_godot_is_absent in (d) shares the run window the stub must beat: each of its runs must start and print inside the one second --seconds cap
+# exclusive-scan: test_gate_waiting_message out (b) the first gate's lock file is awaited as an event, so the three second hold is no window; real clock
+# exclusive-scan: test_gate_no_overlap out (d) checks only the order of three 2 s holds, never an upper bound; real clock
+# exclusive-scan: test_gate_stale_reclaim_race in (b) two reclaimers race on a dead lock while each holds 1 s
+# exclusive-scan: test_gate_poll_rejects_bad_value out (d) the bad knob value 2 is refused at once; no window
+# exclusive-scan: test_gate_signal_waits_for_child_then_releases out (b) TERM is sent after an event wait on the child's pid; the long sleep is no window; real clock
+# exclusive-scan: test_gate_three_reclaimers_never_overlap in (d) staggered starts 0.6 s and 1.3 s must land inside a 1 s slow mv and 2 s holds
+# exclusive-scan: test_gate_signal_reaches_the_grandchild out (b) TERM is sent after an event wait on the grandchild's pid; real clock
+TESTS_EXCLUSIVE="test_run_clean test_run_imports_when_dot_godot_is_absent test_run_terminates_a_long_process test_gate_three_reclaimers_never_overlap test_gate_stale_reclaim_race test_run_detects_script_errors test_run_passes_scene_and_windowed"
 run_tests test_gate_times_window_per_who test_gate_no_overlap test_gate_status_and_held test_gate_stale_reclaim_race \
-  test_gate_waiting_message test_gate_records_pid_and_who test_gate_without_a_project_just_runs \
+  test_gate_waiting_message test_gate_poll_keeps_budget test_gate_poll_rejects_bad_value test_gate_records_pid_and_who test_gate_without_a_project_just_runs \
   test_gate_signal_waits_for_child_then_releases test_gate_three_reclaimers_never_overlap \
   test_gate_signal_reaches_the_grandchild test_gate_unit_registration_and_times test_gate_wraps_test_and_run \
   test_dispatch_rejects_unknown_engine test_dispatch_needs_a_studio_root \

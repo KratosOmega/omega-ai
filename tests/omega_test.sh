@@ -11,7 +11,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 OMEGA="$REPO_ROOT/shared/omega"
 MODE="$OMEGA/bin/omega-mode"
-TMP="$(mktemp -d)"
+TMP="$(mktemp -d "${TMPDIR:-/tmp}/omega_test.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
 CFG="$TMP/cfg"
 
@@ -639,6 +639,7 @@ test_skill_contracts() {
   # Bump when a skill is added.
   assert_eq 7 "$ran" "seven skill contracts ran"
 }
+
 
 run_tests test_plugin_files test_skill_stubs test_marketplace \
   test_mode_round_trip test_mode_validation test_mode_brief test_mode_env_autopilot \

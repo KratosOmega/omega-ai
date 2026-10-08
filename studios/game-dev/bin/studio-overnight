@@ -470,6 +470,11 @@ Test hooks (tests only; never set them for a real run; --detach strips them):
                      place of hold_minutes x 60; a whole number
   STUDIO_OVERNIGHT_INBOX_WAIT — test hook: seconds a verb waits for the
                      inbox lock (default 15)
+  STUDIO_OVERNIGHT_REAP_POLL_SECONDS — test hook: the poll while a TERMed
+                     session or gate is given its grace: 1 (default), 0.5,
+                     0.2 or 0.1; the grace stays in seconds
+  STUDIO_OVERNIGHT_DETACH_POLL_SECONDS — test hook: the poll of --detach's
+                     10 s status window: 1 (default), 0.5, 0.2 or 0.1
   STUDIO_ENV_FIXTURE — test hook: a directory of canned outputs studio-env reads
                      in place of uname, sysctl, /proc, nproc, df, pmset and ps
 EOF
@@ -479,6 +484,19 @@ case "${1:-}" in
   --help|-h) usage; exit 0 ;;
   '') usage >&2; exit 2 ;;
 esac
+
+# poll_knob NAME VALUE — sets _pk_poll/_pk_tps for a test-only poll knob (1, 0.5, 0.2 or 0.1),
+# or refuses: read once, here, so a bad value never reaches a run, and --detach's STUDIO_*
+# strip cannot drop the detach window's value (it reads the locals).
+poll_knob() {
+  case "${2:-1}" in
+    1) _pk_poll=1; _pk_tps=1 ;;     0.5) _pk_poll=0.5; _pk_tps=2 ;;
+    0.2) _pk_poll=0.2; _pk_tps=5 ;; 0.1) _pk_poll=0.1; _pk_tps=10 ;;
+    *) say "$1 must be 1, 0.5, 0.2 or 0.1, got $2"; exit 2 ;;
+  esac
+}
+poll_knob STUDIO_OVERNIGHT_REAP_POLL_SECONDS "${STUDIO_OVERNIGHT_REAP_POLL_SECONDS:-}"; REAP_POLL=$_pk_poll; REAP_TPS=$_pk_tps
+poll_knob STUDIO_OVERNIGHT_DETACH_POLL_SECONDS "${STUDIO_OVERNIGHT_DETACH_POLL_SECONDS:-}"; DETACH_POLL=$_pk_poll; DETACH_TPS=$_pk_tps
 
 START_DIR="$(sh "$STATE_BIN" root --work 2>/dev/null || true)"
 STATE_ROOT="$(sh "$STATE_BIN" root 2>/dev/null || true)"
@@ -1018,11 +1036,12 @@ unit_reap() {
     for _ur_p in $UNIT_REAPED; do _ur_kids="$_ur_kids $(cat "$_ur_d/$_ur_p" 2>/dev/null)"; done
     kill -TERM $UNIT_REAPED 2>/dev/null
     _ur_g=0; _ur_max="${GRACE:-30}"; [ "$_ur_max" -ge 20 ] || _ur_max=20
+    _ur_max=$((_ur_max * REAP_TPS))
     while [ "$_ur_g" -lt "$_ur_max" ]; do
       _ur_a=0
       for _ur_p in $UNIT_REAPED; do kill -0 "$_ur_p" 2>/dev/null && _ur_a=1; done
       [ "$_ur_a" = 1 ] || break
-      sleep 1; _ur_g=$((_ur_g + 1))
+      sleep "$REAP_POLL"; _ur_g=$((_ur_g + 1))
     done
     for _ur_p in $UNIT_REAPED; do
       kill -0 "$_ur_p" 2>/dev/null || continue
@@ -1267,8 +1286,8 @@ end_session() {
   { [ -n "${CPID:-}" ] && kill -0 "$CPID" 2>/dev/null; } || { unit_reap "${UNIT_TAG:-}"; session_release; return 0; }
   kill -TERM -"$CPID" 2>/dev/null || { pkill -TERM -P "$CPID"; kill -TERM "$CPID"; } 2>/dev/null
   _g=0
-  while { kill -0 -"$CPID" 2>/dev/null || kill -0 "$CPID" 2>/dev/null; } && [ "$_g" -lt "${GRACE:-30}" ]; do
-    sleep 1; _g=$((_g + 1))
+  while { kill -0 -"$CPID" 2>/dev/null || kill -0 "$CPID" 2>/dev/null; } && [ "$_g" -lt $(( ${GRACE:-30} * REAP_TPS )) ]; do
+    sleep "$REAP_POLL"; _g=$((_g + 1))
   done
   kill -KILL -"$CPID" 2>/dev/null || { pkill -KILL -P "$CPID"; kill -KILL "$CPID"; } 2>/dev/null
   wait "$CPID" 2>/dev/null
@@ -1409,7 +1428,7 @@ detach_start() {
   fi
   _dpid=$!
   _di=0
-  while [ "$_di" -lt 10 ]; do
+  while [ "$_di" -lt $((10 * DETACH_TPS)) ]; do
     if kill -0 "$_dpid" 2>/dev/null; then
       if { if [ -n "$_dhs" ]; then eval "$_dhs"; else sh "$SELF_ABS" status --run "$_dslug"; fi; } >/dev/null 2>&1 && [ "$(lock_pid)" = "$_dpid" ]; then
         _drun="$(sed -n 's/^run=//p' "$LOCK" 2>/dev/null | head -n 1)"
@@ -1425,7 +1444,7 @@ detach_start() {
       [ "$_drc" -ne 0 ] || _drc=1
       return "$_drc"
     fi
-    sleep 1; _di=$((_di + 1))
+    sleep "$DETACH_POLL"; _di=$((_di + 1))
   done
   if lock_live && [ "$(lock_pid)" = "$_dpid" ]; then
     # The child holds the run lock: the run is live, only status was slow.

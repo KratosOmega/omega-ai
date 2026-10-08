@@ -430,10 +430,10 @@ test_inbox_hook_silent_outside_units() {
   done
   # Reads no stdin: a writer that holds the pipe open for 3 s must not delay it.
   rm -f "$TMP/ib.fifo"; mkfifo "$TMP/ib.fifo"
-  ( exec 3> "$TMP/ib.fifo"; sleep 3 ) & _w=$!
+  ( exec 3> "$TMP/ib.fifo"; exec sleep 3 ) & _w=$!
   t0="$(date +%s)"
   ( unset STUDIO_UNIT_TAG STUDIO_RUN_DIR; sh "$INBOX" < "$TMP/ib.fifo" ) > "$TMP/ib.out" 2>&1
-  t1="$(date +%s)"; wait "$_w" 2>/dev/null
+  t1="$(date +%s)"; kill "$_w" 2>/dev/null; wait "$_w" 2>/dev/null
   assert_eq 1 "$([ $((t1 - t0)) -le 1 ] && echo 1 || echo 0)" "exits without reading stdin"
 }
 
@@ -869,6 +869,8 @@ test_skill_bootstrap_stage_line() {
   assert_not_contains "$_b" 'When `.studio/STATE.md` exists' "the file-exists wording is gone"
 }
 
+# exclusive-scan: test_inbox_hook_silent_outside_units in (a, c) asserts the hook returns inside a 1 s ceiling with a writer holding the fifo open
+TESTS_EXCLUSIVE="test_inbox_hook_silent_outside_units"
 run_tests test_session_start_stage_per_checkout test_session_start_take_hint \
   test_session_start_never_writes test_skill_bootstrap_stage_line test_hook_files test_hook_output_shape test_hook_defaults_from_studio_json \
   test_hook_reads_project_config test_hook_partial_config_falls_back test_hook_escapes_json \

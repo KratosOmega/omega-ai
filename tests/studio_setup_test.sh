@@ -7,10 +7,11 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SETUP="$REPO_ROOT/studios/game-dev/bin/studio-setup"
 GATE="$REPO_ROOT/studios/game-dev/bin/studio-gate"
 STATE_BIN="$REPO_ROOT/studios/game-dev/bin/studio-state"
-TMP="$(cd "$(mktemp -d)" && pwd -P)"
+TMP="$(cd "$(mktemp -d "${TMPDIR:-/tmp}/studio_setup_test.XXXXXX")" && pwd -P)"
 trap 'rm -rf "$TMP"' EXIT
+mk_msleep || exit 1
 HOME="$TMP/home"; export HOME; mkdir -p "$HOME"
-unset STUDIO_GATE_HELD STUDIO_SETUP_TIMEOUT_SECONDS STUDIO_UNIT_TAG
+unset STUDIO_GATE_HELD STUDIO_SETUP_TIMEOUT_SECONDS STUDIO_SETUP_POLL_SECONDS STUDIO_UNIT_TAG
 
 # proj NAME CONFIG_JSON — $P: a committed studio project with that config.
 proj() {
@@ -21,6 +22,29 @@ proj() {
 }
 # setup DIR [ARGS] — studio-setup in DIR: SU_STATUS, $TMP/su.out, $TMP/su.err.
 setup() { _d="$1"; shift; SU_STATUS=0; ( cd "$_d" && sh "$SETUP" "$@" ) > "$TMP/su.out" 2> "$TMP/su.err" || SU_STATUS=$?; }
+# TMPRE: $TMP escaped for use inside an ERE.
+# MS: the msleep path, single-quoted, for use inside generated command text (TMPDIR may hold a space).
+MS="'$TMP/bin/msleep'"
+TMPRE="$(printf '%s' "$TMP" | sed 's/[][\.*^$+?(){}|/]/\\&/g')"
+# count_procs N - how many processes ARE $TMP/bin/msleep N: argv exactly "$TMP/bin/msleep N", or behind
+# the perl fallback's "perl ". The anchor keeps studio-gate and the sh -c wrapper, whose argv only ends
+# in "msleep' N" (the path is single-quoted in the command text), from matching. N may be an ERE fragment.
+count_procs() { pgrep -f "(^|perl )$TMPRE/bin/msleep $1\$" | wc -l | tr -d ' '; } # scan-ok: scoped to this run's $TMP/bin/msleep
+# wait_absent N TICKS - poll every 0.1 s until no msleep N is left, at most TICKS ticks.
+wait_absent() { _wa=0; while [ "$(count_procs "$1")" != 0 ] && [ "$_wa" -lt "$2" ]; do sleep 0.1; _wa=$((_wa + 1)); done; }
+# wait_present N TICKS - poll every 0.1 s until an msleep N runs, at most TICKS ticks (event wait: pass 600).
+wait_present() { _wp=0; while [ "$(count_procs "$1")" = 0 ] && [ "$_wp" -lt "$2" ]; do sleep 0.1; _wp=$((_wp + 1)); done; }
+# R7: knobs unset at the top; non-real-clock tests poll at 0.2 s.
+before_each() {
+  unset STUDIO_SETUP_POLL_SECONDS STUDIO_GATE_POLL_SECONDS \
+        STUDIO_OVERNIGHT_REAP_POLL_SECONDS STUDIO_OVERNIGHT_DETACH_POLL_SECONDS STUDIO_OVERNIGHT_POLL_SECONDS
+  is_real_clock && return 0
+  STUDIO_SETUP_POLL_SECONDS=0.2; STUDIO_GATE_POLL_SECONDS=0.2
+  STUDIO_OVERNIGHT_REAP_POLL_SECONDS=0.2; STUDIO_OVERNIGHT_DETACH_POLL_SECONDS=0.2
+  STUDIO_OVERNIGHT_POLL_SECONDS=1
+  export STUDIO_SETUP_POLL_SECONDS STUDIO_GATE_POLL_SECONDS STUDIO_OVERNIGHT_REAP_POLL_SECONDS \
+         STUDIO_OVERNIGHT_DETACH_POLL_SECONDS STUDIO_OVERNIGHT_POLL_SECONDS
+}
 
 test_setup_unset_is_silent() {
   proj un '{ "engine": "godot4" }'
@@ -61,21 +85,22 @@ test_setup_nonzero_exit() {
   assert_contains "$(ls "$P"/.studio/reports/setup-*.log)" '^boom$' "the log holds the output"
 }
 test_setup_timeout_ends_group() {
-  proj to '{ "worktree_setup": "sleep 4801 & sleep 4802" }'
+  proj to '{ "worktree_setup": "'"$MS"' 4801 & '"$MS"' 4802" }'
   STUDIO_SETUP_TIMEOUT_SECONDS=2; export STUDIO_SETUP_TIMEOUT_SECONDS
   setup "$P"; unset STUDIO_SETUP_TIMEOUT_SECONDS
   assert_eq 1 "$SU_STATUS" "a timeout exits 1"
   assert_contains "$TMP/su.err" '^worktree setup failed — exit 124 — log ' "exit 124 names the timeout"
   assert_eq 1 "$(wc -l < "$TMP/su.err" | tr -d ' ')" "no job-control noise on stderr"
-  sleep 1
-  assert_eq 0 "$(ps -A -o args= | grep -c '^sleep 480[12]$')" "the grandchild sleeps are gone"
+  wait_absent '480[12]' 10
+  assert_eq 0 "$(count_procs '480[12]')" "the grandchild sleeps are gone"
   assert_contains "$(ls "$P"/.studio/reports/setup-*.log)" 'timed out after 2 s' "the log says so"
   assert_missing "$P/.studio/gate.lock" "the lock is released"
 }
 test_setup_timer_starts_after_lock() {
   proj tl '{ "worktree_setup": "echo ran > ran.txt" }'
   ( cd "$P" && sh "$GATE" holder -- sleep 3 ) >/dev/null 2>&1 &
-  _h=$!; while [ ! -f "$P/.studio/gate.lock/pid" ]; do sleep 1; done
+  _h=$!; _i=0; while [ ! -f "$P/.studio/gate.lock/pid" ] && [ "$_i" -lt 300 ]; do sleep 0.2; _i=$((_i + 1)); done
+  assert_file "$P/.studio/gate.lock/pid" "the holder took the lock within the 60 s ceiling"
   STUDIO_SETUP_TIMEOUT_SECONDS=1; export STUDIO_SETUP_TIMEOUT_SECONDS
   setup "$P"; unset STUDIO_SETUP_TIMEOUT_SECONDS; wait "$_h"
   assert_eq 0 "$SU_STATUS" "waiting 3 s for the lock is not a 1 s timeout"
@@ -102,24 +127,24 @@ test_setup_gate_green_and_red() {
   assert_contains "$TMP/su.err" '^gate_command exit 3 — log \.studio/reports/gate-[0-9-]*\.log$' "the red line"
 }
 test_setup_signal_stops_child_and_releases_lock() {
-  proj sg '{ "worktree_setup": "sleep 4811" }'
+  proj sg '{ "worktree_setup": "'"$MS"' 4811" }'
   ( cd "$P" && exec sh "$SETUP" ) > "$TMP/sg.out" 2>&1 &
   _s=$!
-  _i=0; while [ ! -f "$P/.studio/gate.lock/who" ] && [ "$_i" -lt 20 ]; do sleep 1; _i=$((_i + 1)); done
-  sleep 1
+  wait_present 4811 600
+  assert_eq 1 "$(count_procs 4811)" "the setup command is running before TERM is sent"
   kill -TERM "$_s"; _rc=0; wait "$_s" || _rc=$?
   assert_eq 143 "$_rc" "TERM ends studio-setup with 128+15"
-  sleep 1
-  assert_eq 0 "$(ps -A -o args= | grep -c '^sleep 4811$')" "the setup command is gone"
+  wait_absent 4811 10
+  assert_eq 0 "$(count_procs 4811)" "the setup command is gone"
   assert_missing "$P/.studio/gate.lock" "the gate lock is released"
 }
 test_setup_timeout_kills_term_ignorer() {
   proj ti '{ "worktree_setup": "sh ign.sh" }'
-  printf "trap '' TERM\nsleep 4821\n" > "$P/ign.sh"
+  printf "trap '' TERM\n%s 4821\n" "$MS" > "$P/ign.sh"
   STUDIO_SETUP_TIMEOUT_SECONDS=1; export STUDIO_SETUP_TIMEOUT_SECONDS
   setup "$P"; unset STUDIO_SETUP_TIMEOUT_SECONDS
   assert_contains "$TMP/su.err" '^worktree setup failed — exit 124 — log ' "exit 124 after KILL"
-  assert_eq 0 "$(ps -A -o args= | grep -c '^sleep 4821$')" "the TERM-ignoring command is gone"
+  assert_eq 0 "$(count_procs 4821)" "the TERM-ignoring command is gone"
   assert_missing "$P/.studio/gate.lock" "the lock is released"
 }
 test_setup_quoted_minutes_refused() {
@@ -152,11 +177,50 @@ test_setup_help() {
   assert_status 0 "--help exits 0" -- sh "$SETUP" --help
   sh "$SETUP" --help > "$TMP/help.out" 2>&1
   assert_contains "$TMP/help.out" 'worktree_setup' "--help prints the usage text"
+  STUDIO_SETUP_POLL_SECONDS=0.3; export STUDIO_SETUP_POLL_SECONDS
+  assert_status 0 "--help exits 0 even with a bad poll value" -- sh "$SETUP" --help
+  unset STUDIO_SETUP_POLL_SECONDS
 }
 
+test_setup_poll_keeps_budget() {
+  proj pk '{ "worktree_setup": "sh ign.sh" }'
+  # ign.sh signals "ready" only after its trap is in. A 1 s timeout (whole-second clock, 0.2 s polls) can
+  # fire before that, so such an attempt proves nothing: retry it, and fail loudly if none gets ready.
+  printf "trap '' TERM\n: > ready\n%s 4822\n" "$MS" > "$P/ign.sh"
+  STUDIO_SETUP_TIMEOUT_SECONDS=1; STUDIO_SETUP_POLL_SECONDS=0.2; export STUDIO_SETUP_TIMEOUT_SECONDS STUDIO_SETUP_POLL_SECONDS
+  _try=0
+  while [ "$_try" -lt 5 ]; do
+    rm -f "$P/ready"
+    _t0=$(date +%s); setup "$P"; _el=$(( $(date +%s) - _t0 ))
+    [ -f "$P/ready" ] && break
+    _try=$((_try + 1))
+  done
+  unset STUDIO_SETUP_TIMEOUT_SECONDS STUDIO_SETUP_POLL_SECONDS
+  assert_file "$P/ready" "the TERM-ignoring stub got its trap in before the timeout fired ($_try retries)"
+  assert_eq 1 "$SU_STATUS" "a timed-out setup exits 1"
+  assert_contains "$TMP/su.err" 'exit 124' "with exit 124"
+  _ok=no; [ "$_el" -ge 5 ] && _ok=yes
+  assert_eq yes "$_ok" "tg_stop's 5 s grace survives 0.2 s ticks (took $_el s)"
+}
+test_setup_poll_rejects_bad_value() {
+  proj pb '{ "worktree_setup": "true" }'
+  STUDIO_SETUP_POLL_SECONDS=0.3; export STUDIO_SETUP_POLL_SECONDS
+  setup "$P"; unset STUDIO_SETUP_POLL_SECONDS
+  assert_eq 2 "$SU_STATUS" "a bad poll value exits 2"
+  assert_contains "$TMP/su.err" '^studio-setup: STUDIO_SETUP_POLL_SECONDS must be 1, 0.5, 0.2 or 0.1, got 0.3$' "naming the knob and the value"
+  assert_missing "$P/.studio/gate.lock" "no lock is left"
+}
+
+# exclusive-scan: test_setup_timeout_ends_group in (d) a two-second setup timeout the group kill must beat, then a one-second absence window
+# exclusive-scan: test_setup_timer_starts_after_lock in (b) a three-second lock holder must still be running when setup starts waiting, against a one-second timeout (d)
+# exclusive-scan: test_setup_signal_stops_child_and_releases_lock in (b) TERM is sent to the live setup run, and the child must disappear after a one-second absence window
+# exclusive-scan: test_setup_timeout_kills_term_ignorer in (d) a one-second timeout; the TERM-ignorer must be KILLed after the full five-second grace (production poll)
+# exclusive-scan: test_setup_poll_keeps_budget in (d) a one-second whole-second-clock timeout races the stub's trap, and the grace is waited at a 0.2 s poll
+TESTS_EXCLUSIVE="test_setup_timeout_ends_group test_setup_timer_starts_after_lock test_setup_timeout_kills_term_ignorer test_setup_signal_stops_child_and_releases_lock test_setup_poll_keeps_budget"
+TESTS_REAL_CLOCK=""
 run_tests test_setup_unset_is_silent test_setup_runs_under_lock_and_logs test_setup_marker_skip_and_rerun \
   test_setup_nonzero_exit test_setup_timeout_ends_group test_setup_timer_starts_after_lock \
   test_setup_bad_config test_setup_gate_green_and_red test_setup_help \
   test_setup_signal_stops_child_and_releases_lock test_setup_timeout_kills_term_ignorer \
   test_setup_quoted_minutes_refused test_setup_logs_unique_per_run test_setup_gate_backslash_refused \
-  test_setup_no_studio_dir
+  test_setup_no_studio_dir test_setup_poll_keeps_budget test_setup_poll_rejects_bad_value
