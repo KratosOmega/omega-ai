@@ -811,7 +811,12 @@ test_sdd_script_references() {
 # #66 R4 / AC6: implementer briefs get the gated task text; Godot scripts and imports go through studio-gate.
 test_execute_task_brief_rewritten() {
   E="$REPO_ROOT/studios/game-dev/skills/execute/SKILL.md"
-  assert_contains "$E" '"$(sdd-script task-brief)" <plan> <n> | studio-brief rewrite' "the task text is piped through studio-brief rewrite"
+  # task-brief writes the task text to a file and prints only `wrote <file>: N lines`,
+  # so the rewrite gates that file in place; a pipe would gate the status line.
+  assert_contains "$E" '``bash "$(sdd-script task-brief)" <plan> <n>``' "the task text comes from task-brief as its own call"
+  assert_contains "$E" 'wrote <file>: <N> lines' "the skill names task-brief's output line"
+  assert_contains "$E" '``studio-brief rewrite <file>``' "the brief file task-brief wrote is rewritten in place"
+  assert_not_contains "$E" '| studio-brief rewrite' "task-brief's stdout is not piped into rewrite"
   assert_contains "$E" 'studio-gate godot -- <command>' "a Godot script or import runs through the gate"
   assert_contains "$E" 'an unwrapped script or import run' "the hook's third refusal is named"
 }

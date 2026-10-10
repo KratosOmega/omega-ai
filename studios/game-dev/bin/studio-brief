@@ -43,6 +43,12 @@
 #   studio-brief rewrite    markdown on stdin, the same text on stdout with each
 #                           bare Godot script/import run gated as
 #                           `studio-gate godot -- …` (#66 R4); exit 0.
+#   studio-brief rewrite <file>
+#                           the same, in place: a temp file beside <file>, then
+#                           mv over it; untouched when there is nothing to gate.
+#                           <file> is the caller's path. A missing or failing
+#                           detector or no temp file: <file> untouched, one
+#                           warning, exit 0. A missing <file>: exit 2.
 #
 # `task`, `check` and `final` print plan and spec text with each bare Godot
 # script/import run gated the same way; Context files are printed as is.
@@ -56,7 +62,8 @@
 # Exit: 0 ok · 1 a task, cited range, heading or story that cannot be
 # resolved, or a range past the end of its file (validate: any bad item, a
 # bare Godot script/import run, a missing godot-cmd.awk, a task without
-# Spec:, or no tasks) · 2 bad usage or (validate) a missing plan
+# Spec:, or no tasks) · 2 bad usage, (validate) a missing plan or (rewrite) a
+# missing file
 set -u
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -64,7 +71,7 @@ STATE_BIN="$HERE/studio-state"
 DET="$HERE/godot-cmd.awk"
 
 usage() {
-  printf 'usage: studio-brief task <n> | final | check <k> | validate <plan> | rewrite\n' >&2
+  printf 'usage: studio-brief task <n> | final | check <k> | validate <plan> | rewrite [<file>]\n' >&2
   exit 2
 }
 fail() { printf 'studio-brief: %s\n' "$*" >&2; exit 1; }
@@ -316,7 +323,24 @@ EOF
   printf 'studio-brief: %s tasks, %s Spec items ok\n' "$_vt" "$_vi"
   ;;
 rewrite)
-  [ $# -eq 1 ] || usage
+  [ $# -le 2 ] || usage
+  if [ $# -eq 2 ]; then
+    # In place (#66 I1): task-brief writes the brief to a file and prints only its path.
+    case "$2" in /*) _rf="$2" ;; *) _rf="$CALLER_PWD/$2" ;; esac
+    [ -f "$_rf" ] || { printf 'studio-brief: %s not found\n' "$2" >&2; exit 2; }
+    if [ ! -f "$DET" ]; then no_det_warn; exit 0; fi
+    _rf_tmp="$(mktemp "$(dirname "$_rf")/.studio-brief.XXXXXX" 2>/dev/null)" || {
+      printf 'studio-brief: warning: cannot make a temp file beside %s — not rewritten\n' "$2" >&2; exit 0; }
+    trap 'rm -f "$_rf_tmp"' EXIT
+    cp -p "$_rf" "$_rf_tmp" 2>/dev/null   # the brief keeps its mode
+    _rf_nonl=0; [ ! -s "$_rf" ] || [ -z "$(tail -c1 "$_rf")" ] || _rf_nonl=1
+    if ! LC_ALL=C awk -v mode=md -v out=rewrite -v nonl="$_rf_nonl" -f "$DET" "$_rf" > "$_rf_tmp"; then
+      printf 'studio-brief: warning: the Godot command check failed — %s not rewritten\n' "$2" >&2; exit 0
+    fi
+    cmp -s "$_rf" "$_rf_tmp" && exit 0
+    mv -f "$_rf_tmp" "$_rf" || printf 'studio-brief: warning: cannot replace %s — not rewritten\n' "$2" >&2
+    exit 0
+  fi
   _rw_in="$(mktemp "${TMPDIR:-/tmp}/studio-brief.XXXXXX")" || {
     printf 'studio-brief: warning: cannot make a temp file — text not rewritten\n' >&2; exec cat; }
   _rw_out="$_rw_in.out"

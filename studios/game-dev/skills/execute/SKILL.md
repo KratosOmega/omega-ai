@@ -354,9 +354,19 @@ The `Role:` values are the studio's agents: `game-dev:gameplay-programmer`,
 `game-dev:producer`, `game-dev:playtester` and `game-dev:reviewer` never
 appear in `Role:`.
 
-Every brief also carries: the task text (via the skill's task-brief script piped through the studio's rewrite, ``bash "$(sdd-script task-brief)" <plan> <n> | studio-brief rewrite``, so the brief shows only the gated Godot form; the plan file is never edited),
-the spec sections the task cites, and the project `CLAUDE.md` architecture
-rules. The agent's own `## Skills you may call` section (in
+Every brief also carries the task text, the spec sections the task cites,
+and the project `CLAUDE.md` architecture rules. Make the task text in two
+separate calls, so the brief shows only the gated Godot form (the plan file
+is never edited):
+
+1. ``bash "$(sdd-script task-brief)" <plan> <n>`` — the skill's task-brief
+   script writes the task text to a file and prints only
+   `wrote <file>: <N> lines`.
+2. ``studio-brief rewrite <file>``, with `<file>` the path from that line —
+   it gates that file in place. The implementer reads that file.
+
+Never pipe task-brief into the rewrite: its stdout is that one status line,
+not the task text. The agent's own `## Skills you may call` section (in
 `agents/<role>.md`) names the skills it reads before writing code. A stuck
 implementer reads `superpowers:systematic-debugging`.
 

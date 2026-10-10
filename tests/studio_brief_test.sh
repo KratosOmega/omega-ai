@@ -498,6 +498,91 @@ MD
   assert_eq 'x `studio-gate godot -- Godot --script a`' "$(cat "$TMP/nonl.out")" "nonl: rewritten"
   assert_eq "$(printf 'x `studio-gate godot -- Godot --script a`' | wc -c | tr -d ' ')" "$(wc -c < "$TMP/nonl.out" | tr -d ' ')" "nonl=1: no newline added"
 }
+# #66 I2: multi-line forms and CommonMark fences — a \-continued fenced
+# command, a span wrapped across lines (also when the Godot word is on its
+# second line), a blank line ending a paragraph, a ~~~ fence holding ``` lines,
+# a ```` fence holding a ``` line, a ``` line with a backtick in its info
+# string (a span, not a fence), and an unclosed fence running to EOF.
+test_godot_cmd_md_multiline() {
+  cat > "$TMP/ml.md" <<'MD'
+Intro text.
+```sh
+Godot --headless --path . \
+  --script res://y.gd
+cd x && \
+  Godot --import .
+```
+Intro `Godot --headless --path .
+  --script res://x.gd` wrapped, and `ls
+-la` too. Run `cd x &&
+  Godot -s w.gd` now.
+
+- item `Godot --script q
+
+- next `Godot --path . -s r.gd`
+~~~md
+```sh
+Godot --import .
+~~~
+Godot --script later.gd in plain prose.
+````
+```
+Godot -s inner.gd
+````
+Then `Godot -s tail.gd`.
+``` Godot -s inline.gd ```
+```
+Godot --import eof
+MD
+  printf '%s\t%s\t%s\n' \
+    3 c 'Godot --headless --path . --script res://y.gd' \
+    6 c 'Godot --import .' \
+    8 c 'Godot --headless --path . --script res://x.gd' \
+    11 c 'Godot -s w.gd' \
+    15 c 'Godot --path . -s r.gd' \
+    18 c 'Godot --import .' \
+    23 c 'Godot -s inner.gd' \
+    25 c 'Godot -s tail.gd' \
+    26 c 'Godot -s inline.gd' \
+    28 c 'Godot --import eof' > "$TMP/ml.want"
+  godot_md "$TMP/ml.md" > "$TMP/ml.got"; st=$?
+  assert_eq 0 "$st" "md mode exits 0 on multi-line forms"
+  assert_eq "$(cat "$TMP/ml.want")" "$(cat "$TMP/ml.got")" "rows: continued and wrapped commands are one command at their first line; fences close only on their own kind and length; prose after mixed fences ignored"
+  cat > "$TMP/ml.rw.want" <<'MD'
+Intro text.
+```sh
+studio-gate godot -- Godot --headless --path . \
+  --script res://y.gd
+cd x && \
+  studio-gate godot -- Godot --import .
+```
+Intro `studio-gate godot -- Godot --headless --path .
+  --script res://x.gd` wrapped, and `ls
+-la` too. Run `cd x &&
+  studio-gate godot -- Godot -s w.gd` now.
+
+- item `Godot --script q
+
+- next `studio-gate godot -- Godot --path . -s r.gd`
+~~~md
+```sh
+studio-gate godot -- Godot --import .
+~~~
+Godot --script later.gd in plain prose.
+````
+```
+studio-gate godot -- Godot -s inner.gd
+````
+Then `studio-gate godot -- Godot -s tail.gd`.
+``` studio-gate godot -- Godot -s inline.gd ```
+```
+studio-gate godot -- Godot --import eof
+MD
+  godot_md "$TMP/ml.md" rewrite > "$TMP/ml.rw.got"
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if cmp -s "$TMP/ml.rw.want" "$TMP/ml.rw.got"; then _pass "rewrite: the gate lands at each segment's own line and column"
+  else _fail "rewrite: the gate lands at each segment's own line and column ($(diff "$TMP/ml.rw.want" "$TMP/ml.rw.got" | head -n 6 | tr '\n' '|'))"; fi
+}
 # godot_fixture DIR — ctx_fixture plus bare Godot forms: a Task 1 step, the
 # spec's Purpose line (in Task 1's L3-4) and AC 1 (S1's final), and Context c1.
 godot_fixture() {
@@ -613,5 +698,58 @@ test_brief_rewrite_no_tmpdir() {
   if cmp -s "$TMP/nt.md" "$TMP/nt.out"; then _pass "and passes stdin through unchanged"; else _fail "and passes stdin through unchanged"; fi
   assert_contains "$TMP/nt.err" 'temp file' "with a warning"
 }
+# #66 I1: rewrite <file> gates the file in place (task-brief writes the brief to
+# a file and prints only its path); no c form, a missing or failing detector or
+# an unwritable directory leave it untouched; a missing file is an error.
+test_brief_rewrite_file() {
+  mkdir -p "$TMP/rf"
+  printf -- '### Task 1: x\n- [ ] **Step 1:** `Godot --headless --path . --script res://a.gd` then check.\n```sh\nGodot --headless --import .\n```\n' > "$TMP/rf/brief.md"
+  printf -- '### Task 1: x\n- [ ] **Step 1:** `studio-gate godot -- Godot --headless --path . --script res://a.gd` then check.\n```sh\nstudio-gate godot -- Godot --headless --import .\n```\n' > "$TMP/rf/brief.want"
+  ( cd "$TMP/rf" && sh "$BRIEF" rewrite brief.md ) > "$TMP/rf.out" 2> "$TMP/rf.err"; st=$?
+  assert_eq 0 "$st" "rewrite <file> exits 0"
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if cmp -s "$TMP/rf/brief.want" "$TMP/rf/brief.md"; then _pass "the file is gated in place (path relative to the caller)"
+  else _fail "the file is gated in place ($(diff "$TMP/rf/brief.want" "$TMP/rf/brief.md" | head -n 4 | tr '\n' '|'))"; fi
+  assert_eq "" "$(cat "$TMP/rf.out")" "nothing on stdout"
+  assert_eq "" "$(cat "$TMP/rf.err")" "nothing on stderr"
+  assert_eq "brief.md brief.want" "$(ls -A "$TMP/rf" | tr '\n' ' ' | sed 's/ $//')" "no temp file left beside it"
+  printf 'a\tb\r\n- `ls -la` \303\251\n```\nGodot --version\n```\nno final newline `Godot --script a.gd' > "$TMP/rf/same.md"
+  cp "$TMP/rf/same.md" "$TMP/rf.same.orig"
+  sh "$BRIEF" rewrite "$TMP/rf/same.md" 2> "$TMP/rf.err"; st=$?
+  assert_eq 0 "$st" "no c form: exits 0"
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if cmp -s "$TMP/rf.same.orig" "$TMP/rf/same.md"; then _pass "no c form: byte-identical (tab, CR, UTF-8, fence, no final newline)"; else _fail "no c form: byte-identical"; fi
+  printf 'x `Godot --script a.gd`' > "$TMP/rf/nonl.md"
+  sh "$BRIEF" rewrite "$TMP/rf/nonl.md"
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if [ "$(cat "$TMP/rf/nonl.md")" = 'x `studio-gate godot -- Godot --script a.gd`' ] && [ -n "$(tail -c1 "$TMP/rf/nonl.md")" ]; then _pass "no final newline in, none added"; else _fail "no final newline in, none added"; fi
+  mkdir -p "$TMP/rfbad"; cp "$BRIEF" "$TMP/rfbad/studio-brief"; ln -s "$STATE_BIN" "$TMP/rfbad/studio-state"
+  printf 'BEGIN { exit 3 }\n' > "$TMP/rfbad/godot-cmd.awk"
+  printf 'x `Godot --script a.gd`\n' > "$TMP/rf/bd.md"; cp "$TMP/rf/bd.md" "$TMP/rf.bd.orig"
+  sh "$TMP/rfbad/studio-brief" rewrite "$TMP/rf/bd.md" > "$TMP/rf.out" 2> "$TMP/rf.err"; st=$?
+  assert_eq 0 "$st" "a failing detector: exits 0"
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if cmp -s "$TMP/rf.bd.orig" "$TMP/rf/bd.md"; then _pass "a failing detector leaves the file untouched"; else _fail "a failing detector leaves the file untouched"; fi
+  assert_eq 1 "$(grep -c . "$TMP/rf.err")" "a failing detector: one warning"
+  rm -f "$TMP/rfbad/godot-cmd.awk"
+  sh "$TMP/rfbad/studio-brief" rewrite "$TMP/rf/bd.md" > "$TMP/rf.out" 2> "$TMP/rf.err"; st=$?
+  assert_eq 0 "$st" "a missing detector: exits 0"
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if cmp -s "$TMP/rf.bd.orig" "$TMP/rf/bd.md"; then _pass "a missing detector leaves the file untouched"; else _fail "a missing detector leaves the file untouched"; fi
+  assert_eq 1 "$(grep -c . "$TMP/rf.err")" "a missing detector: one warning"
+  assert_contains "$TMP/rf.err" 'godot-cmd.awk' "naming the detector"
+  mkdir -p "$TMP/rfro"; cp "$TMP/rf/bd.md" "$TMP/rfro/bd.md"; chmod 555 "$TMP/rfro"
+  sh "$BRIEF" rewrite "$TMP/rfro/bd.md" > "$TMP/rf.out" 2> "$TMP/rf.err"; st=$?
+  chmod 755 "$TMP/rfro"
+  assert_eq 0 "$st" "no temp file possible: exits 0"
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if cmp -s "$TMP/rf.bd.orig" "$TMP/rfro/bd.md"; then _pass "no temp file possible: the file is untouched"; else _fail "no temp file possible: the file is untouched"; fi
+  assert_eq 1 "$(grep -c . "$TMP/rf.err")" "no temp file possible: one warning"
+  sh "$BRIEF" rewrite "$TMP/rf/nope.md" > "$TMP/rf.out" 2> "$TMP/rf.err"; st=$?
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if [ "$st" -ne 0 ]; then _pass "a missing file exits non-zero"; else _fail "a missing file exits non-zero"; fi
+  assert_contains "$TMP/rf.err" 'nope\.md not found' "and names the file"
+  assert_eq 0 "$(ls "$TMP/rf" | grep -c nope)" "and creates nothing"
+}
 
-run_tests test_godot_cmd_md_finds_bare_forms test_godot_cmd_md_span_edges test_brief_task test_brief_final test_brief_refusals test_brief_missing_sections test_brief_directives_task test_brief_directives_final test_brief_directive_text_not_ruling test_brief_directive_edge_cases test_brief_no_directives_no_part test_brief_context_appended test_brief_context_cap test_brief_context_missing_file test_brief_context_no_glob test_brief_final_plan_acceptance test_brief_check_verb test_brief_check_uses_truth_region test_brief_final_reads_check_rulings test_brief_original_plan_item test_brief_usage_names_check test_brief_single_line_item test_brief_validate_good_plan test_brief_validate_reports_all test_brief_validate_duplicate_task test_brief_validate_missing_plan_and_no_state test_brief_validate_relative_to_caller test_brief_rewrite_wraps_only test_brief_task_check_final_rewritten test_brief_validate_godot_form test_brief_missing_detector test_brief_broken_detector test_brief_rewrite_no_tmpdir
+run_tests test_godot_cmd_md_finds_bare_forms test_godot_cmd_md_span_edges test_godot_cmd_md_multiline test_brief_task test_brief_final test_brief_refusals test_brief_missing_sections test_brief_directives_task test_brief_directives_final test_brief_directive_text_not_ruling test_brief_directive_edge_cases test_brief_no_directives_no_part test_brief_context_appended test_brief_context_cap test_brief_context_missing_file test_brief_context_no_glob test_brief_final_plan_acceptance test_brief_check_verb test_brief_check_uses_truth_region test_brief_final_reads_check_rulings test_brief_original_plan_item test_brief_usage_names_check test_brief_single_line_item test_brief_validate_good_plan test_brief_validate_reports_all test_brief_validate_duplicate_task test_brief_validate_missing_plan_and_no_state test_brief_validate_relative_to_caller test_brief_rewrite_wraps_only test_brief_task_check_final_rewritten test_brief_validate_godot_form test_brief_missing_detector test_brief_broken_detector test_brief_rewrite_no_tmpdir test_brief_rewrite_file

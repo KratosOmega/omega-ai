@@ -24,7 +24,8 @@ case "$D" in "$HOME"/GameDev/*) echo "refused: $D is under ~/GameDev" >&2; exit 
 mkdir -p "$D/bin" "$D/proj"; LOG="$D/stub.log"; : > "$LOG"
 echo "probe dir: $D"; claude --version
 
-# The spec's R3 rules (bin/overnight-allow.txt's ten lines); rollout reads the file.
+# The spec's ten R3 rules as probed in T1 (the four $GODOT* rules were then
+# dropped; bin/overnight-allow.txt has six); rollout reads the file.
 RULES='Bash(studio-test:*)
 Bash(studio-run:*)
 Bash(studio-gate godot -- /Applications/Godot.app/Contents/MacOS/Godot *)

@@ -97,7 +97,11 @@ unit, the report says so and names the command.
     JSON-unescaped in awk (no jq/python, as today).
   - `mode=md`: markdown. Commands are taken from each line inside a fenced
     code block, and from each inline backtick span on any other line; each is
-    parsed as its own command text. Prose outside spans is ignored.
+    parsed as its own command text. Prose outside spans is ignored. (Final
+    review I2:) fences follow CommonMark (closed only by the same character,
+    at least as long; unclosed runs to the end), a fenced line ending in `\`
+    joins the next into one command, and a span may wrap across the lines of
+    one paragraph.
 - `godot-guard.sh` becomes the thin wrapper: run the detector in json mode,
   build the R1 message, print the deny JSON.
 
@@ -117,6 +121,8 @@ unit, the report says so and names the command.
   `Bash(studio-gate godot -- Godot *)`, `Bash(studio-gate godot -- godot *)`,
   `Bash(studio-gate godot -- $GODOT *)`, `Bash(studio-gate godot -- ${GODOT} *)`,
   `Bash(studio-gate godot -- $GODOT_PATH *)`, `Bash(studio-gate godot -- $GODOT_BIN *)`.
+  The four `$GODOT*` rules were dropped after the probe (§Probe results (a):
+  they never match), so the allow file ships the other six.
   No `Bash(studio-gate:*)`, no `Bash(studio-gate godot -- *)`, no wildcard
   inside the app path — each would let other binaries skip the classifier. A
   Godot at another path, or a quoted path, is not pre-allowed; its wrapped
@@ -140,13 +146,18 @@ unit, the report says so and names the command.
   R1 verdict-c segment (found in md mode) replaced by
   `studio-gate godot -- <segment>`; every other byte unchanged. Missing
   detector: pass the text through unchanged and warn once on stderr.
+  `studio-brief rewrite <file>` does the same in place (a temp file beside it,
+  then `mv`; untouched when there is nothing to gate, and on a missing or
+  failing detector or no temp file, with one warning; a missing file exits 2).
 - Every studio-brief output that quotes plan or spec text goes through the
   same rewrite: `task <n>`, `check <k>`, `final`, and the cited spec ranges.
 - `skills/execute/SKILL.md`: implementer briefs take the task text from
-  ``bash "$(sdd-script task-brief)" <plan> <n> | studio-brief rewrite`` (today
-  the task-brief output is used raw — the incident's denial came from such a
-  subagent). Approved plan files are never edited; the rewrite is on output
-  only.
+  ``bash "$(sdd-script task-brief)" <plan> <n>``, then
+  ``studio-brief rewrite <file>`` on the file it reports
+  (`wrote <file>: N lines`; task-brief prints only that line, so a pipe would
+  gate nothing — final review I1). Today the task-brief output is used raw —
+  the incident's denial came from such a subagent. Approved plan files are
+  never edited; the rewrite is on output only.
 - `studio-brief validate <plan>`: a verdict-c command in the plan is an error
   naming its line and the wrapped form; exit non-zero, like the existing
   checks. Missing detector: validate fails closed with a "reinstall" error.
@@ -223,7 +234,8 @@ unit, the report says so and names the command.
    an ending `stop: … [permission-route — denied: <command> (+1 more)]` in
    status and report.md, and the story still holds; a `done` unit with a
    denial gets no suffix.
-6. Skill text: execute SKILL pipes task-brief through `studio-brief rewrite`;
+6. Skill text: execute SKILL runs task-brief, then `studio-brief rewrite <file>`
+   on the brief file it wrote;
    plan SKILL names the gated forms (pinned by a test where the repo already
    tests skill text; otherwise checked in review).
 7. R3 probe (a) and (b) results and the rollout check are recorded (spec / PR
