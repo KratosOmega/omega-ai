@@ -229,3 +229,33 @@ unit, the report says so and names the command.
 7. R3 probe (a) and (b) results and the rollout check are recorded (spec / PR
    body).
 8. `sh tests/run_all.sh` green.
+
+## Probe results (T1, 2026-10-09)
+
+Claude Code 2.1.296, model sonnet (claude-sonnet-5-5), `tests/probes/godot_route_probe.sh allow|hookcount`.
+Stub `studio-gate`/`studio-test`/`Godot` on PATH; this checkout's plugins; `$GODOT` set. Logs (not committed):
+`<scratch>/run-T1/godot-route-allow.C9JsHY` (run 1), `.../godot-route-allow.RHn0SG` (run 2, same result),
+`.../godot-route-hookcount.HRsk7L`.
+
+### (a) allow rules under auto mode: PARTIAL
+
+- dontAsk control, both runs: calls 1, 3, 4 ran (`STUB-GATE godot -- Godot ... probe1.gd`, `STUB-GATE godot -- /Applications/Godot_mono.app/... probe3.gd`, `STUB-TEST --file tests/unit/probe4.gd`).
+  Call 2 (`studio-gate godot -- $GODOT --headless --import .`) did NOT run: `permission_denied ... decision_reason_type":"mode"` ("running in don't ask mode"). So the `$GODOT` rules do not match; the near miss (call 5) was correctly denied the same way.
+- auto: zero `permission_denied` events; calls 1-4 all ran (call 5 too: the classifier allowed the benign stub). No classifier denial.
+- auto debug log records no rule drops and no decision source (no line naming classifier/strip/drop). The only trace is timing, `[Stall] tool_dispatch_start ... permissionDecisionMs=N`:
+  - dontAsk (rules): `15, 15, 6` ms for calls 1, 3, 4.
+  - auto run 1: call 1 `18`, call 2 `736`, call 3 `1076`, call 4 `4`, call 5 `716`.
+  - auto run 2: call 1 `16`, call 2 `223`, call 3 `264`, call 4 `3`, call 5 `244`.
+  - Calls 1 and 4 (`Godot *` form, `studio-test`) take the rule path in auto. Calls 2, 3, 5 take a classifier-latency path. Call 2 and 5 have no matching rule (`Permission suggestions for Bash: []` for call 2). Call 3 matches by rule under dontAsk but is NOT rule-fast in auto in either run.
+- Verdict per the T1 table: PARTIAL (only call 2 fails the control): drop the four `$GODOT*` rules in T7.
+- Caveat for T7: the timing shows the absolute-path rule (call 3, which also carries `2>&1 | tail -5`) is not fast-pathed in auto, so it is classifier-judged there (allowed here, but a real Godot call could be denied). The probe cannot tell whether the cause is the absolute path or the pipeline; the short `Godot *` / `godot *` forms are the ones proven to survive.
+
+### (b) hook denials vs the consecutive-denial limit: PASS
+
+- Stand-in `--settings` PreToolUse hook denied 3 `echo PROBE_REFUSE_n` calls in a row; calls 4-6 then ran (`probe4/ok: yes`, `PROBE_OK` in output).
+- `RESULT hookcount: PASS`; `asyncAgent events: 0`.
+- A hook denial emits NO `permission_denied` event at all (0 in the stream). The debug log records it as `Hook PreToolUse (...) returned permissionDecision: deny` and `Hook result has permissionBehavior=deny`, so it has no `decision_reason_type` and never reaches the auto-mode denial counter.
+
+### Probe notes
+
+- The probe takes `PROBE_OVERNIGHT` (default: this checkout's `studio-overnight`) to override the deny-rules source; run during Wave 1 with the main checkout's copy because T4's in-progress `studio-overnight` had a syntax error at line 1054.
