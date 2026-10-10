@@ -81,6 +81,13 @@ the self-review. Two studio rules override its defaults:
   - `Review: task|final` says whether execute reviews the task by itself.
     `task` is for new seam, cross-system, gameplay feel, data or schema, or importer work; `final` is for the rest, which
     folds into the final review.
+  - A step that runs Godot writes the gated form: a script or import run as
+    `studio-gate godot -- <Godot command>` (e.g.
+    `studio-gate godot -- Godot --headless --path . --script res://tools/x.gd`),
+    tests as `studio-test` or `studio-test --file <test file>`, the game as
+    `studio-run`. Never a bare Godot script/import run (`-s`, `--script`,
+    `--import`): the studio's hook refuses it, and `studio-brief validate`
+    fails the plan on it (§6).
 - Invoked with an id (`/game-dev:plan <id>`), the plan header gains the line
   below, exactly that, on its own line:
 
@@ -158,7 +165,7 @@ to a task; every `Verify: unit` task names a test file; every
 `Verify: playtest` task states its playtest item; every task has
 a `Spec:` line and a `Review:` line. Then run `studio-brief validate <plan path>`
 and fix the plan until it exits 0: it checks every task's `Spec:` items (the
-file, the range, the heading) the way execute's brief will read them.
+file, the range, the heading) the way execute's brief will read them. It also fails on a bare Godot script/import run anywhere in the plan, naming the line and the gated form to write.
 
 Then run `studio-state set stage plan`, `studio-state set plan <plan path>`,
 `studio-state set task 0/N` (N = number of tasks outside the backlog), and

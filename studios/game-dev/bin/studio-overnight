@@ -41,6 +41,7 @@ done
 SELF_DIR="$(cd "$(dirname "$self")" && pwd -P)"
 STATE_BIN="$SELF_DIR/studio-state"
 DENY_FILE="$SELF_DIR/overnight-deny.txt"
+ALLOW_FILE="$SELF_DIR/overnight-allow.txt"
 
 say() { printf 'studio-overnight: %s\n' "$*" >&2; }
 # sq TEXT — TEXT as one single-quoted shell word ('\'' for each ').
@@ -173,6 +174,12 @@ deny_rules() {
     printf '%s\n' "$_r" | sed "s|{default_branch}|$_db|g; s|{merge_basename}|$_mb|g"
   done < "$DENY_FILE"
 }
+# allow_rules — #66 R3: the allow file's rules, one per line (comments and
+# blanks dropped; no templates). Nothing when the file is absent.
+allow_rules() {
+  [ -f "$ALLOW_FILE" ] || return 0
+  sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' "$ALLOW_FILE" | grep -v '^#' | grep . || true
+}
 # cmd_deny_rules [--dir PATH] — the deny rules a unit would get for the
 # project at PATH (default: here), one per line (AC1 of #28). Reads no run
 # state; works outside git. Notes for dropped placeholders go to stderr.
@@ -222,12 +229,24 @@ model_for() {
 }
 
 # with_launch_args FN — FN with the session's argv: prompt, --model, the
-# flags, --disallowedTools last with one argument per deny rule.
+# flags, --allowedTools (when the allow file has rules) with one argument per
+# allow rule, then --disallowedTools last with one argument per deny rule.
 with_launch_args() {
   _fn="$1"
   set -- "$PROMPT" --model "$UNIT_MODEL" --output-format stream-json --verbose \
     --permission-mode auto --permission-prompts none \
-    --max-budget-usd "$SESSION_USD" --disallowedTools
+    --max-budget-usd "$SESSION_USD"
+  _rules="$(allow_rules)"
+  if [ -n "$_rules" ]; then
+    set -- "$@" --allowedTools
+    while IFS= read -r _r || [ -n "$_r" ]; do
+      [ -n "$_r" ] || continue
+      set -- "$@" "$_r"
+    done <<EOF
+$_rules
+EOF
+  fi
+  set -- "$@" --disallowedTools
   _rules="$(deny_rules)"
   while IFS= read -r _r || [ -n "$_r" ]; do
     [ -n "$_r" ] || continue
@@ -442,6 +461,10 @@ its first word an executable file under the checkout.
 Deny rules: $DENY_FILE
   one --disallowedTools rule per line.
 
+Allow rules: $ALLOW_FILE
+  one --allowedTools rule per line (the gate verbs and the gated Godot form);
+  no file or no rules: no --allowedTools.
+
 The morning report is written to .studio/reports/overnight-<ts>/report.md on
 every ending (manifest mode: overnight-<slug>-<ts>/report.md, a section per
 story, the resume command and the cleanup command).
@@ -499,6 +522,8 @@ Test hooks (tests only; never set them for a real run; --detach strips them):
                      in place of uname, sysctl, /proc, nproc, df, pmset and ps
   activity --open-gate <unit.jsonl> — test hook verb: prints "gate" when an
                      open Bash call runs a gate-routed verb (the idle check)
+  activity --denied <unit.jsonl> — test hook verb: prints the permission-route
+                     note a unit's ending would carry (#66); nothing when none
 EOF
 }
 
@@ -887,9 +912,11 @@ isolated() { [ "${FEATURE_DIR:-$START_DIR}" != "$START_DIR" ]; }
 holdable() {
   [ "$HOLD_ON" = 1 ] || return 1
   ! stop_requested || return 1
-  case "$ENDING" in
+  # #66 R5: the permission-route note never decides a hold.
+  _h_e="${ENDING%% \[permission-route — *}"
+  case "$_h_e" in
     "held by operator") return 0 ;;
-    "stop: "*) [ "$ENDING" = "${STOP_ENDING:-}" ] && [ "${STOP_SRC:-}" = feature ] && isolated; return $? ;;
+    "stop: "*) [ "$_h_e" = "${STOP_ENDING:-}" ] && [ "${STOP_SRC:-}" = feature ] && isolated; return $? ;;
     "no progress on "*|"timed out on "*|"directive "*" not recorded"|"gate red after "*|"gate repair made no progress"|"gate repair timed out"*|"stalled on "*|"gate repair stalled"*)
       isolated; return $? ;;
   esac
@@ -1026,6 +1053,7 @@ unit_activity() {
 # Bash call's FULL command runs a gate-routed verb (never the cut text).
 # A call inside a subagent (its line's parent_tool_use_id) whose Agent/Task
 # call, or any call above that, is answered is over, answered or not.
+# `denied`: `<n>\t<command>` for the classifier's permission_denied events (#66 R5) — see deny_note.
 # Always exits 0.
 open_calls() {
   [ -s "$1" ] || return 0
@@ -1044,6 +1072,13 @@ open_calls() {
       return 0
     }
     {
+      # #66 R5: a classifier denial event — count it, keep the first one id.
+      # Event text quoted inside a tool_result is escaped (\") and never matches.
+      if (index($0, "\"subtype\":\"permission_denied\"") && match($0, /"decision_reason_type":"[^"]*"/) \
+          && substr($0, RSTART + 24, RLENGTH - 25) == "classifier") {
+        nd++
+        if (nd == 1) { did = "-"; if (match($0, /"tool_use_id":"[^"]*"/)) did = substr($0, RSTART + 15, RLENGTH - 16) }
+      }
       l = $0
       while (match(l, /"tool_use_id":"[^"]*"/)) { closed[substr(l, RSTART + 15, RLENGTH - 16)] = 1; l = substr(l, RSTART + RLENGTH) }
       p = ""; if (match($0, /"parent_tool_use_id":"[^"]*"/)) p = substr($0, RSTART + 22, RLENGTH - 23)
@@ -1058,7 +1093,7 @@ open_calls() {
           t = val(inp, "subagent_type"); sub(/^.*:/, "", t); if (t == "") t = "agent"
           txt = t " · \"" val(inp, "description") "\""
         } else {
-          if (nm == "Bash") { d = val(inp, "command"); full = d }
+          if (nm == "Bash") { d = val(inp, "command"); full = d; bash[id] = d }
           else if (nm ~ /^(Read|Edit|Write|NotebookEdit)$/) { d = val(inp, "file_path"); sub(/.*\//, "", d) }
           else if (nm ~ /^(Grep|Glob)$/) d = val(inp, "pattern")
           else d = ""
@@ -1068,6 +1103,10 @@ open_calls() {
       }
     }
     END {
+      if (mode == "denied") {
+        if (nd) { c = (did in bash) ? bash[did] : "-"; gsub(/[\t\r\n]/, " ", c); print nd "\t" c }
+        exit
+      }
       for (i = n; i >= 1; i--) {
         if (gone(cid[i])) continue
         if (mode == "gate") { if (cfull[i] ~ /studio-(test|run|setup|gate)/) { print "gate"; exit } ; continue }
@@ -1276,6 +1315,7 @@ unit_pre() { return 0; }
 # the heartbeat). Once the session is gone, the gates it left are ended
 # (unit_reap; UNIT_REAPED).
 run_unit() {
+  UNIT_DENY_NOTE=""
   UNIT_STEM="$UNIT_PREFIX$1-${CUR_ID:+$CUR_ID-}$2"; printf '%s\n' "${CUR_ID:+$CUR_ID }$2" > "$UNIT_DIR/current"
   UNIT_TAG="$(printf '%s' "$(basename "$RUN_DIR")-${LANE_K:-0}-$UNIT_STEM" | tr -c 'A-Za-z0-9._-' '_')"
   [ -z "${LDIR:-}" ] || printf '%s\n' "$UNIT_TAG" > "$LDIR/utag"
@@ -1359,6 +1399,7 @@ run_unit() {
   unit_reap "$UNIT_TAG"; [ -z "${LDIR:-}" ] || rm -f "$LDIR/utag"
   UNIT_MIN="$(awk -v s="$(( $(date +%s) - _t0 ))" 'BEGIN { printf "%.1f", s / 60 }')"
   UNIT_COST="$(cost_of "$UNIT_DIR/$UNIT_STEM.jsonl")"; [ -n "$UNIT_COST" ] || UNIT_COST=unknown
+  UNIT_DENY_NOTE="$(deny_note "$_log")"   # #66 R5: appended by the caller to a non-done ending
   requeue_check
 }
 row() {  # row N LABEL OUTCOME — the label column is ID-LABEL when CUR_ID is set
@@ -1388,6 +1429,30 @@ orphan_note() {
 # stall_note — #59 R2: the cause appended to a stalled ending, from the last
 # run_unit: ` (no output for <N> min: <newest open call, or ->)`.
 stall_note() { printf ' (no output for %s min: %s)' "${UNIT_STALL_MIN:-${IDLE_MINUTES:-}}" "${UNIT_STALL_CMD:--}"; }
+# cut_utf8 N — stdin (one line) cut to N bytes, backing off to a UTF-8
+# character boundary, "…" appended when cut (byte semantics: LC_ALL=C).
+cut_utf8() {
+  LC_ALL=C awk -v n="$1" '
+    BEGIN { for (i = 128; i < 192; i++) CONT[sprintf("%c", i)] = 1 }
+    { s = s (NR > 1 ? " " : "") $0 }
+    END {
+      if (length(s) <= n) { print s; exit }
+      k = n; while (k > 0 && (substr(s, k + 1, 1) in CONT)) k--
+      print substr(s, 1, k) "\342\200\246"
+    }'
+}
+# deny_note JSONL — #66 R5: ` [permission-route — denied: <command>[ (+<n>
+# more)]]` when the unit's transcript holds auto-mode classifier denials
+# (asyncAgent ones not counted): the first denied Bash call's command, cut to
+# 200 bytes; `-` when that call is not in the log. Empty otherwise, and for
+# a missing or unparsable transcript.
+deny_note() {
+  _dn="$(open_calls "$1" denied)"; [ -n "$_dn" ] || return 0
+  _dn_n="${_dn%%	*}"; _dn_c="$(printf '%s\n' "${_dn#*	}" | cut_utf8 200)"
+  printf ' [permission-route — denied: %s' "$_dn_c"
+  [ "$_dn_n" -le 1 ] || printf ' (+%s more)' "$((_dn_n - 1))"
+  printf ']'
+}
 # write_report REASON — the morning report: how it ended, what it cost, the
 # rulings to check, what to play, the PR, and how to resume.
 write_report() {
@@ -1515,18 +1580,18 @@ story_units() {
     [ "$UNIT_HALTED" = 0 ] || { ENDING="$(halt_reason)"; return 0; }   # halted waiting for a slot (D22)
     snapshot "$UNIT_DIR/stops.after"
     take_new_stop "$UNIT_DIR/stops.before" "$UNIT_DIR/stops.after"
-    if [ -n "$NEW_STOP" ]; then row "$n" "$_base$suffix" stop; ENDING="$STOP_ENDING"; return 0; fi
+    if [ -n "$NEW_STOP" ]; then row "$n" "$_base$suffix" stop; ENDING="$STOP_ENDING$UNIT_DENY_NOTE"; return 0; fi
     if [ "$SIG_STAGE" = idle ] && [ "$SIG_SHIPPED" -gt 0 ]; then row "$n" "$_base$suffix" done; ENDING=done; return 0; fi
     if [ -n "$REQ_LIMIT" ]; then
       if [ "$SIG" != "$_before" ]; then _su_o=progress; else _su_o="$(unit_outcome)"; fi
-      row "$n" "$_base$suffix" "$_su_o"; ENDING="directive $REQ_LIMIT not recorded"; return 0
+      row "$n" "$_base$suffix" "$_su_o"; ENDING="directive $REQ_LIMIT not recorded$UNIT_DENY_NOTE"; return 0
     fi
     if [ "$SIG" != "$_before" ]; then row "$n" "$_base$suffix" progress; noprog=0; suffix=""; continue; fi
     _out="$(unit_outcome)"; row "$n" "$_base$suffix" "$_out"; noprog=$((noprog + 1))
     if [ "$noprog" -le "$RETRIES" ]; then suffix="-retry"; continue; fi
-    if [ "$_out" = "timed out" ]; then ENDING="timed out on $_base (session_minutes $SESSION_MINUTES)"
-    elif [ "$_out" = stalled ]; then ENDING="stalled on $_base$(stall_note)"
-    else ENDING="no progress on $_base$(orphan_note "$_out")"; fi
+    if [ "$_out" = "timed out" ]; then ENDING="timed out on $_base (session_minutes $SESSION_MINUTES)$UNIT_DENY_NOTE"
+    elif [ "$_out" = stalled ]; then ENDING="stalled on $_base$(stall_note)$UNIT_DENY_NOTE"
+    else ENDING="no progress on $_base$(orphan_note "$_out")$UNIT_DENY_NOTE"; fi
     return 0
   done
 }
@@ -2181,6 +2246,8 @@ case "$1" in
     # --open: the open calls (#59 R2); --open-gate: open_calls' gate mode (a test hook).
     if [ "${2:-}" = --open ]; then [ "$#" -eq 3 ] && [ -f "$3" ] || { usage >&2; exit 2; }; open_calls "$3"; exit 0; fi
     if [ "${2:-}" = --open-gate ]; then [ "$#" -eq 3 ] && [ -f "$3" ] || { usage >&2; exit 2; }; open_calls "$3" gate; exit 0; fi
+    # --denied: the permission-route note run_unit would append (#66 R5; a test hook).
+    if [ "${2:-}" = --denied ]; then [ "$#" -eq 3 ] && [ -f "$3" ] || { usage >&2; exit 2; }; _dn_o="$(deny_note "$3")"; [ -z "$_dn_o" ] || printf '%s\n' "$_dn_o"; exit 0; fi
     [ "$#" -eq 2 ] && [ -f "$2" ] || { usage >&2; exit 2; }
     unit_activity "$2"; exit 0 ;;
   deny-rules) shift; cmd_deny_rules "$@" ;;

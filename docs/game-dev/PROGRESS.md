@@ -14,6 +14,31 @@ approval page in `artifacts/`.
 
 ## Log
 
+### 2026-10-09 — Bare Godot runs go through the gate (#66)
+
+- Incident: phoenix run kan-1496, unit 2-KAN-1496-T1, ran a bare
+  `/Applications/Godot_mono.app/Contents/MacOS/Godot --headless --path . --script res://tools/web_tools_importer.gd 2>&1 | tail -5`.
+  The auto-mode classifier denied it and then every later Bash call; the run held.
+- R1: godot-guard verdict c refuses unwrapped `-s`/`--script`/`--import` runs and
+  names `studio-gate godot -- <segment>`. The shared detector `bin/godot-cmd.awk`
+  (json and md modes) serves godot-guard and studio-brief; md mode handles fences
+  per CommonMark, `\`-continued fenced lines and hard-wrapped spans.
+- R3: runner sessions get `--allowedTools` from `bin/overnight-allow.txt`:
+  `studio-test`, `studio-run`, and `studio-gate godot --` with the Godot.app,
+  Godot_mono.app, `Godot` and `godot` binaries. Probe (Claude Code 2.1.296):
+  `$GODOT*` rules never matched, so they are dropped; hook denials do not count
+  toward auto mode's consecutive-denial limit; piped wrapped calls still reach
+  the classifier.
+- R4: `studio-brief rewrite` (stdin, or `<file>` in place) rewrites task, check and
+  final output, and `validate` refuses bare forms. The execute skill rewrites
+  task-brief's file; the plan skill writes the gated form.
+- R5: a non-done unit ending gets ` [permission-route — denied: <command> (+n more)]`
+  in status and report.md.
+- Rollout check PASS: a bare call was refused, the gated retry ran, no classifier
+  denials. Follow-ups: #67.
+- Spec `specs/2026-10-09-godot-classifier-route.md`; plan
+  `plans/2026-10-09-godot-classifier-route.md`.
+
 ### 2026-10-07 — Unique story ids (#56)
 
 - Why: phoenix's new run reused the id `S1`, and its `S1` inherited KAN-1499's

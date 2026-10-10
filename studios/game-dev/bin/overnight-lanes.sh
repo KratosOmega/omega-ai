@@ -418,6 +418,7 @@ lanes_dry_run() {
     with_launch_args print_launch
     LAUNCH_ENV=""
   done < "$CHAINS"
+  printf 'allow: %s rules\n' "$(allow_rules | grep -c .)"
   printf 'deny: %s rules\n' "$(deny_rules | grep -c .)"
 }
 
@@ -673,7 +674,7 @@ land_repair() {
   _lr_new="$(new_stop "$UNIT_DIR/stops.before" "$UNIT_DIR/stops.after")"
   _lr_a="$(ledger_of "$FEATURE_DIR" | grep -c '^- [0-9-]* Repair: ')"
   if [ -n "$_lr_new" ]; then
-    row "$n" repair stop; story_write "$1" "stopped stop: ${_lr_new#*Stop: }"; return 1
+    row "$n" repair stop; story_write "$1" "stopped stop: ${_lr_new#*Stop: }$UNIT_DENY_NOTE"; return 1
   fi
   if [ "$_lr_a" -gt "$_lr_b" ]; then
     row "$n" repair progress
@@ -682,9 +683,9 @@ land_repair() {
   fi
   _lr_o="$(unit_outcome)"
   case "$_lr_o" in
-    "timed out") row "$n" repair "timed out"; story_write "$1" "stopped repair timed out (session_minutes $SESSION_MINUTES)" ;;
-    stalled) row "$n" repair stalled; story_write "$1" "stopped repair stalled$(stall_note)" ;;
-    *) row "$n" repair "$_lr_o"; story_write "$1" "stopped repair made no progress$(orphan_note "$_lr_o")" ;;
+    "timed out") row "$n" repair "timed out"; story_write "$1" "stopped repair timed out (session_minutes $SESSION_MINUTES)$UNIT_DENY_NOTE" ;;
+    stalled) row "$n" repair stalled; story_write "$1" "stopped repair stalled$(stall_note)$UNIT_DENY_NOTE" ;;
+    *) row "$n" repair "$_lr_o"; story_write "$1" "stopped repair made no progress$(orphan_note "$_lr_o")$UNIT_DENY_NOTE" ;;
   esac
   return 1
 }
@@ -713,7 +714,7 @@ gate_log_of() {
 # repair red` is a hard stop); `gate repair made no progress [(orphaned: …)]`; or `gate
 # repair timed out (session_minutes N)`; `gate repair stalled (no output for
 # N min: <command>)` (#59) — the halt reason instead when the
-# lane must stop.
+# lane must stop. Each ending carries the unit's permission-route note (#66 R5).
 gate_repair() {
   if lane_halt; then ENDING="$(lane_halt_reason)"; return 1; fi
   if run_budget_out; then ENDING="stop: run budget"; return 1; fi
@@ -729,13 +730,13 @@ gate_repair() {
   snapshot "$UNIT_DIR/stops.after"
   take_new_stop "$UNIT_DIR/stops.before" "$UNIT_DIR/stops.after"
   _gr_a="$(ledger_of "$FEATURE_DIR" | grep -c '^- [0-9-]* Repair: ')"
-  if [ -n "$NEW_STOP" ]; then row "$n" gate-repair stop; ENDING="$STOP_ENDING"; return 1; fi
+  if [ -n "$NEW_STOP" ]; then row "$n" gate-repair stop; ENDING="$STOP_ENDING$UNIT_DENY_NOTE"; return 1; fi
   if [ "$_gr_a" -gt "$_gr_b" ]; then row "$n" gate-repair progress; story_write "$1" running; return 0; fi
   _gr_o="$(unit_outcome)"
   case "$_gr_o" in
-    "timed out") row "$n" gate-repair "timed out"; ENDING="gate repair timed out (session_minutes $SESSION_MINUTES)" ;;
-    stalled) row "$n" gate-repair stalled; ENDING="gate repair stalled$(stall_note)" ;;
-    *) row "$n" gate-repair "$_gr_o"; ENDING="gate repair made no progress$(orphan_note "$_gr_o")" ;;
+    "timed out") row "$n" gate-repair "timed out"; ENDING="gate repair timed out (session_minutes $SESSION_MINUTES)$UNIT_DENY_NOTE" ;;
+    stalled) row "$n" gate-repair stalled; ENDING="gate repair stalled$(stall_note)$UNIT_DENY_NOTE" ;;
+    *) row "$n" gate-repair "$_gr_o"; ENDING="gate repair made no progress$(orphan_note "$_gr_o")$UNIT_DENY_NOTE" ;;
   esac
   # A halt that ended the unit (or arrived while it ran) names the story's end.
   ! lane_halt || ENDING="$(lane_halt_reason)"
@@ -811,7 +812,8 @@ sync_check() {
 # story stops at once (no retry, no hold): the halt reason; `stop: run budget`; `sync repair:
 # stop: <reason>` for a new Stop: line; `sync repair: no progress [(orphaned:
 # …)]`; `sync repair: timed out (session_minutes N)` (D32); `sync repair:
-# stalled (no output for N min: <command>)` (#59).
+# stalled (no output for N min: <command>)` (#59). Each ending carries the
+# unit's permission-route note (#66 R5).
 sync_repair() {
   if lane_halt; then ENDING="$(lane_halt_reason)"; return 1; fi
   if run_budget_out; then ENDING="stop: run budget"; return 1; fi
@@ -826,7 +828,7 @@ sync_repair() {
   snapshot "$UNIT_DIR/sync.after"
   take_new_stop "$UNIT_DIR/sync.before" "$UNIT_DIR/sync.after"
   _sr_a="$(ledger_of "$FEATURE_DIR" | grep -c '^- [0-9-]* Synced: ')"
-  if [ -n "$NEW_STOP" ]; then row "$n" sync-repair stop; ENDING="sync repair: $STOP_ENDING"; return 1; fi
+  if [ -n "$NEW_STOP" ]; then row "$n" sync-repair stop; ENDING="sync repair: $STOP_ENDING$UNIT_DENY_NOTE"; return 1; fi
   if [ "$_sr_a" -gt "$_sr_b" ]; then
     row "$n" sync-repair progress; story_write "$1" running; snapshot "$UNIT_DIR/stops.before"
     # story_units checked these before the repair; the repair took time,
@@ -838,9 +840,9 @@ sync_repair() {
   fi
   _sr_o="$(unit_outcome)"
   case "$_sr_o" in
-    "timed out") row "$n" sync-repair "timed out"; ENDING="sync repair: timed out (session_minutes $SESSION_MINUTES)" ;;
-    stalled) row "$n" sync-repair stalled; ENDING="sync repair: stalled$(stall_note)" ;;
-    *) row "$n" sync-repair "$_sr_o"; ENDING="sync repair: no progress$(orphan_note "$_sr_o")" ;;
+    "timed out") row "$n" sync-repair "timed out"; ENDING="sync repair: timed out (session_minutes $SESSION_MINUTES)$UNIT_DENY_NOTE" ;;
+    stalled) row "$n" sync-repair stalled; ENDING="sync repair: stalled$(stall_note)$UNIT_DENY_NOTE" ;;
+    *) row "$n" sync-repair "$_sr_o"; ENDING="sync repair: no progress$(orphan_note "$_sr_o")$UNIT_DENY_NOTE" ;;
   esac
   # A halt that ended the unit (or arrived while it ran) names the story's end.
   ! lane_halt || ENDING="$(lane_halt_reason)"
@@ -1689,7 +1691,8 @@ final_unit() {
   # A stop while it waited for a session slot (D22): nothing ran.
   if [ "$UNIT_HALTED" != 0 ]; then FINAL_COLOR=red; final_note "stopped before $1"; return 1; fi
   if [ "$(git -C "$FINAL_W" rev-parse HEAD 2>/dev/null)" != "$_fu_h0" ]; then row "$FINAL_N" "$1" progress
-  else row "$FINAL_N" "$1" "$(unit_outcome)"; fi
+  else row "$FINAL_N" "$1" "$(unit_outcome)"
+    [ -z "$UNIT_DENY_NOTE" ] || final_note "the $1 unit ended$UNIT_DENY_NOTE"; fi
   if [ -n "$(git -C "$FINAL_W" status --porcelain 2>&1)" ]; then
     FINAL_COLOR=red; final_note "the $1 unit left uncommitted changes (discarded)"
     git -C "$FINAL_W" merge --abort >/dev/null 2>&1

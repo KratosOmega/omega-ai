@@ -33,9 +33,25 @@
 #                           resolve every task's Spec: items without printing
 #                           them: exit 0 and `<T> tasks, <I> Spec items ok`, or
 #                           every problem on stderr as `task <n>: <error>`
-#                           (a repeated `### Task <n>:` heading is one).
-#                           The plan path is the caller's; Spec: paths are the
-#                           work root's. Needs no studio state.
+#                           (a repeated `### Task <n>:` heading is one). It also
+#                           refuses a bare Godot script/import run anywhere in
+#                           the plan: `line <n>: unwrapped Godot script/import
+#                           run; write it as: studio-gate godot -- <segment>`
+#                           (no godot-cmd.awk: exit 1, reinstall omega-ai). The
+#                           plan path is the caller's; Spec: paths are the work
+#                           root's. Needs no studio state.
+#   studio-brief rewrite    markdown on stdin, the same text on stdout with each
+#                           bare Godot script/import run gated as
+#                           `studio-gate godot -- …` (#66 R4); exit 0.
+#   studio-brief rewrite <file>
+#                           the same, in place: a temp file beside <file>, then
+#                           mv over it; untouched when there is nothing to gate.
+#                           <file> is the caller's path. A missing or failing
+#                           detector or no temp file: <file> untouched, one
+#                           warning, exit 0. A missing <file>: exit 2.
+#
+# `task`, `check` and `final` print plan and spec text with each bare Godot
+# script/import run gated the same way; Context files are printed as is.
 #
 # `Context:` (a comma-separated file list before the plan's first `## `) adds a
 # `## Context files` part to all three verbs: whole files while the byte total
@@ -45,14 +61,17 @@
 # Spec: line, prints a one-line note in its place and still exits 0.
 # Exit: 0 ok · 1 a task, cited range, heading or story that cannot be
 # resolved, or a range past the end of its file (validate: any bad item, a
-# task without Spec:, or no tasks) · 2 bad usage or (validate) a missing plan
+# bare Godot script/import run, a missing godot-cmd.awk, a task without
+# Spec:, or no tasks) · 2 bad usage, (validate) a missing plan or (rewrite) a
+# missing file
 set -u
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 STATE_BIN="$HERE/studio-state"
+DET="$HERE/godot-cmd.awk"
 
 usage() {
-  printf 'usage: studio-brief task <n> | final | check <k> | validate <plan>\n' >&2
+  printf 'usage: studio-brief task <n> | final | check <k> | validate <plan> | rewrite [<file>]\n' >&2
   exit 2
 }
 fail() { printf 'studio-brief: %s\n' "$*" >&2; exit 1; }
@@ -72,8 +91,32 @@ section() {
   ' "$1"
 }
 
-# emit FILE A B — the part header, then the lines.
-emit() { printf '==> %s:L%s-%s\n' "$1" "$2" "$3"; sed -n "$2,$3p" "$1"; }
+# no_det_warn — one warning per run that the detector is missing (#66 R4).
+no_det_warn() {
+  [ -z "${_NODET_WARNED:-}" ] || return 0
+  printf 'studio-brief: warning: %s missing — Godot commands are not rewritten (reinstall omega-ai)\n' "$DET" >&2
+  _NODET_WARNED=1
+}
+# emit FILE A B — the part header, then lines A-B, each bare Godot
+# script/import run wrapped as `studio-gate godot -- …` (#66 R4). The whole
+# file is rewritten, then sliced, so fences and line numbers hold. No
+# detector: the raw lines and one warning.
+emit() {
+  printf '==> %s:L%s-%s\n' "$1" "$2" "$3"
+  if [ -f "$DET" ]; then
+    # the trailing x keeps $(...) from eating the file's final blank lines
+    if _em_all="$(LC_ALL=C awk -v mode=md -v out=rewrite -f "$DET" "$1" && printf x)"; then printf '%s' "${_em_all%x}" | sed -n "$2,$3p"
+    else det_fail_warn; sed -n "$2,$3p" "$1"; fi
+  else no_det_warn; sed -n "$2,$3p" "$1"; fi
+}
+# det_fail_warn — one warning per run that the detector ran and failed.
+det_fail_warn() {
+  [ -z "${_DETFAIL_WARNED:-}" ] || return 0
+  printf 'studio-brief: warning: the Godot command detector failed (%s) — Godot commands are not rewritten\n' "$DET" >&2
+  _DETFAIL_WARNED=1
+}
+# emit_raw FILE A B — the part header, then the lines verbatim (Context files).
+emit_raw() { printf '==> %s:L%s-%s\n' "$1" "$2" "$3"; sed -n "$2,$3p" "$1"; }
 
 # spec_item ITEM — one Spec: item (the format: skills/plan/SKILL.md, the
 # Spec-line rule). Paths resolve from the current directory. Sets SI_FILE,
@@ -210,7 +253,7 @@ context_part() {
     if [ -z "$_cp_over" ] && [ $((_cp_t + _cp_c)) -le 12000 ]; then
       _cp_t=$((_cp_t + _cp_c)); _cp_n="$(wc -l < "$_cp_f" | tr -d ' ')"
       [ -n "$(tail -c1 "$_cp_f")" ] && _cp_n=$((_cp_n + 1))
-      if [ "$_cp_n" -eq 0 ]; then printf '==> %s:L0-0\n' "$_cp_f"; else emit "$_cp_f" 1 "$_cp_n"; fi
+      if [ "$_cp_n" -eq 0 ]; then printf '==> %s:L0-0\n' "$_cp_f"; else emit_raw "$_cp_f" 1 "$_cp_n"; fi
     else
       [ -n "$_cp_over" ] || printf 'Read these as well:\n'; _cp_over=1; printf -- '- %s\n' "$_cp_f"
     fi
@@ -248,6 +291,16 @@ validate)
   case "$2" in /*) vplan="$2" ;; *) vplan="$CALLER_PWD/$2" ;; esac
   [ -f "$vplan" ] || { printf 'studio-brief: plan %s not found\n' "$2" >&2; exit 2; }
   _vt=0; _vi=0; _vbad=0; _vseen=" "; _vdup=" "
+  [ -f "$DET" ] || { printf 'studio-brief: %s missing — reinstall omega-ai\n' "$DET" >&2; exit 1; }
+  _vg_rows="$(LC_ALL=C awk -v mode=md -f "$DET" "$vplan")" \
+    || { printf 'studio-brief: the Godot command check failed on %s — reinstall omega-ai\n' "$2" >&2; exit 1; }
+  while IFS='	' read -r _vg_l _vg_v _vg_s; do
+    [ "$_vg_v" = c ] || continue
+    printf 'studio-brief: line %s: unwrapped Godot script/import run; write it as: studio-gate godot -- %s\n' "$_vg_l" "$_vg_s" >&2
+    _vbad=1
+  done <<EOF
+$_vg_rows
+EOF
   for _vn in $(plan_tasks "$vplan"); do
     # A repeated number: `task <n>` only ever reaches the first block, so the
     # later one is never briefed or checked. Named once, not re-validated.
@@ -268,6 +321,35 @@ validate)
   [ "$_vt" -gt 0 ] || { printf 'studio-brief: no ### Task blocks in %s\n' "$2" >&2; exit 1; }
   [ "$_vbad" = 0 ] || exit 1
   printf 'studio-brief: %s tasks, %s Spec items ok\n' "$_vt" "$_vi"
+  ;;
+rewrite)
+  [ $# -le 2 ] || usage
+  if [ $# -eq 2 ]; then
+    # In place (#66 I1): task-brief writes the brief to a file and prints only its path.
+    case "$2" in /*) _rf="$2" ;; *) _rf="$CALLER_PWD/$2" ;; esac
+    [ -f "$_rf" ] || { printf 'studio-brief: %s not found\n' "$2" >&2; exit 2; }
+    if [ ! -f "$DET" ]; then no_det_warn; exit 0; fi
+    _rf_tmp="$(mktemp "$(dirname "$_rf")/.studio-brief.XXXXXX" 2>/dev/null)" || {
+      printf 'studio-brief: warning: cannot make a temp file beside %s — not rewritten\n' "$2" >&2; exit 0; }
+    trap 'rm -f "$_rf_tmp"' EXIT
+    cp -p "$_rf" "$_rf_tmp" 2>/dev/null   # the brief keeps its mode
+    _rf_nonl=0; [ ! -s "$_rf" ] || [ -z "$(tail -c1 "$_rf")" ] || _rf_nonl=1
+    if ! LC_ALL=C awk -v mode=md -v out=rewrite -v nonl="$_rf_nonl" -f "$DET" "$_rf" > "$_rf_tmp"; then
+      printf 'studio-brief: warning: the Godot command check failed — %s not rewritten\n' "$2" >&2; exit 0
+    fi
+    cmp -s "$_rf" "$_rf_tmp" && exit 0
+    mv -f "$_rf_tmp" "$_rf" || printf 'studio-brief: warning: cannot replace %s — not rewritten\n' "$2" >&2
+    exit 0
+  fi
+  _rw_in="$(mktemp "${TMPDIR:-/tmp}/studio-brief.XXXXXX")" || {
+    printf 'studio-brief: warning: cannot make a temp file — text not rewritten\n' >&2; exec cat; }
+  _rw_out="$_rw_in.out"
+  trap 'rm -f "$_rw_in" "$_rw_out"' EXIT
+  cat > "$_rw_in"
+  if [ ! -f "$DET" ]; then no_det_warn; cat "$_rw_in"; exit 0; fi
+  _rw_nonl=0; [ ! -s "$_rw_in" ] || [ -z "$(tail -c1 "$_rw_in")" ] || _rw_nonl=1
+  if LC_ALL=C awk -v mode=md -v out=rewrite -v nonl="$_rw_nonl" -f "$DET" "$_rw_in" > "$_rw_out"; then cat "$_rw_out"
+  else printf 'studio-brief: warning: the Godot command check failed — text not rewritten\n' >&2; cat "$_rw_in"; fi
   ;;
 task)
   [ $# -eq 2 ] || usage
