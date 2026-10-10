@@ -2360,6 +2360,51 @@ test_overnight_open_calls() {
   assert_eq "Bash: sleep 999" "$(sh "$RUNNER" activity --open "$TMP/ocphantom.jsonl")" "an answered subagent's inner calls are not open"
   assert_eq "" "$(sh "$RUNNER" activity --open-gate "$TMP/ocphantom.jsonl")" "nor gate calls: the hung sleep can stall"
 }
+PRD_FIX="$REPO_ROOT/tests/fixtures/overnight-permission-denied.jsonl"
+PRD_CMD='/Applications/Godot_mono.app/Contents/MacOS/Godot --headless --path . --script res://tools/web_tools_importer.gd 2>&1 | tail -5'
+# #66 R5 + Review Focus 5: the note activity --denied prints is the one run_unit appends.
+test_overnight_denied_scan() {
+  assert_eq " [permission-route — denied: $PRD_CMD (+1 more)]" "$(sh "$RUNNER" activity --denied "$PRD_FIX")" \
+    "two classifier events: the first's command, +1 more (asyncAgent and the quoted event text not counted)"
+  printf '%s\n' '{"type":"system","subtype":"permission_denied","tool_name":"Bash","tool_use_id":"toolu_X","decision_reason_type":"classifier"}' > "$TMP/dn1.jsonl"
+  assert_eq " [permission-route — denied: -]" "$(sh "$RUNNER" activity --denied "$TMP/dn1.jsonl")" "a denied call not in the log is -"
+  printf '%s\n' '{"type":"system","subtype":"init"}' > "$TMP/dn0.jsonl"
+  assert_eq "" "$(sh "$RUNNER" activity --denied "$TMP/dn0.jsonl")" "no denial: no note"
+  : > "$TMP/dne.jsonl"
+  assert_eq "" "$(sh "$RUNNER" activity --denied "$TMP/dne.jsonl")" "an empty log: no note"
+  # "echo " + 100 × é is 205 bytes; byte 200 is the lead byte of the 98th é, so the cut backs off to 199 bytes.
+  _e100="$(awk 'BEGIN { for (i = 0; i < 100; i++) printf "\303\251" }')"; _e97="$(awk 'BEGIN { for (i = 0; i < 97; i++) printf "\303\251" }')"
+  { printf '%s\n' "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"toolu_L\",\"name\":\"Bash\",\"input\":{\"command\":\"echo $_e100\"}}]}}"
+    printf '%s\n' '{"type":"system","subtype":"permission_denied","tool_name":"Bash","tool_use_id":"toolu_L","decision_reason_type":"classifier"}'; } > "$TMP/dnl.jsonl"
+  assert_eq " [permission-route — denied: echo ${_e97}…]" "$(sh "$RUNNER" activity --denied "$TMP/dnl.jsonl")" "cut to 200 bytes on a character boundary, … appended"
+  _st=0; sh "$RUNNER" activity --denied "$TMP/nope.jsonl" > /dev/null 2>&1 || _st=$?
+  assert_eq 2 "$_st" "no such log: usage"
+}
+# #66 R5 / AC5 + Review Focus 4: the note on a held stop, a no-progress ending and never on done.
+test_overnight_permission_route_ending() {
+  N=" \[permission-route — denied: $PRD_CMD (+1 more)\]"
+  fixture prstop; holds_on 2
+  scenario "$ISO1" "emit $PRD_FIX; wtledger Stop: tests blocked"
+  run_start
+  R="$(last_run_dir)"
+  assert_contains "$R/report.md" "^Ending: stop: tests blocked$N (held 0h0m, no reply)\$" "the stop names the denied command, and the story still held (holdable ignores the note)"
+  assert_contains "$R/events.jsonl" "\"state\":\"held\",\"why\":\"stop: tests blocked$N\"" "the held story_state event carries it"
+  verb status
+  assert_contains "$V_OUT" "^ended (stop: tests blocked$N (held 0h0m, no reply)) — report: " "status shows it"
+  assert_eq "progress stop" "$(awk -F'\t' '{ printf "%s%s", (NR > 1 ? " " : ""), $7 }' "$R/units.tsv")" "the units.tsv outcome column is unchanged"
+  holds_off
+  fixture prnoprog; scenario "cost 1" "emit $PRD_FIX; cost 1"; run_start
+  assert_contains "$(last_run_dir)/report.md" "no progress on T1$N" "a no-progress ending names it (the last unit's denials)"
+  assert_eq "noprog noprog" "$(awk -F'\t' '{ printf "%s%s", (NR > 1 ? " " : ""), $7 }' "$(last_run_dir)/units.tsv")" "outcomes unchanged"
+  fixture prdone
+  scenario "stage execute; task 1/2; ledger T1 complete a..b; cost 2" \
+           "task 2/2; ledger T2 complete b..c; cost 2.25" \
+           "ledger final review done; cost 3" \
+           "emit $PRD_FIX; ledger P1 Play: jump on the box; ledger shipped https://github.com/o/r/pull/9; stage idle; task -; cost 1"
+  run_start
+  assert_contains "$(last_run_dir)/report.md" "^Ending: done$" "a done unit with denials gets no suffix"
+  assert_not_contains "$(last_run_dir)/report.md" "permission-route" "nowhere in the report"
+}
 # stall_log FILE CMD — a session log: init, then one open Bash call running CMD.
 stall_log() {
   printf '%s\n' '{"type":"system","subtype":"init"}' \
@@ -2554,7 +2599,7 @@ before_each() {
 }
 run_tests test_overnight_setup_preflight_single test_overnight_help_setup_preflight \
   test_overnight_fixture_copy_equals_build test_overnight_fixture_failed_build_not_reused \
-  test_overnight_open_calls test_overnight_idle_stall test_overnight_idle_spares_gate_call \
+  test_overnight_open_calls test_overnight_denied_scan test_overnight_permission_route_ending test_overnight_idle_stall test_overnight_idle_spares_gate_call \
   test_overnight_idle_off_and_refusals test_overnight_idle_default_seams test_overnight_stall_holds_with_until_command \
   test_overnight_report_done test_overnight_report_not_done test_overnight_preflight_env_warns_not_blocks \
   test_overnight_report_anchors test_overnight_resume_quote test_overnight_label_t1 \

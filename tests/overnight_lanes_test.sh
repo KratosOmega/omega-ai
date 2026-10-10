@@ -2910,6 +2910,35 @@ test_lanes_gate_repair_noprog_holds() {
     "$(story_rows A)" "repair, hold, repair, fresh finish"
   lholds_off
 }
+# #66 R5 + Review Focus 4: the note on a held gate repair (exact-pattern
+# holdable), a land repair's stopped record, and the final repair's note.
+test_lanes_permission_route_note() {
+  F="$REPO_ROOT/tests/fixtures/overnight-permission-denied.jsonl"
+  N=" \[permission-route — denied: /Applications/Godot_mono.app/Contents/MacOS/Godot --headless --path . --script res://tools/web_tools_importer.gd 2>&1 | tail -5 (+1 more)\]"
+  LANES_CONFIG='{"overnight": {"gate_repairs": 1}}'; export LANES_CONFIG
+  lanes_fixture prgr integration A:-
+  lholds_on 120
+  printf 'auto\nauto\nstop gate red — x\nauto\n' > "$SCEN/A"
+  printf 'emit %s; noop\ngaterepair\n' "$F" > "$SCEN/A.gate"
+  lanes_bg
+  wait_for 'is_held A' 60
+  assert_contains "$(last_lanes_dir)/stories/A" "^held gate repair made no progress$N until " "a gate repair with no progress still holds, with the note"
+  lverb resume A
+  wait_pid_or_fail "$RPID" 120 "the run finishes"
+  assert_contains "$(last_lanes_dir)/stories/A" "^landed " "A lands after the resume"
+  lholds_off; unset LANES_CONFIG
+  lanes_fixture prland integration A:- B:-
+  printf 'conflict shared.txt\n' > "$SCEN/A"; printf 'conflict shared.txt\nauto\nwaitfor %s\n' "$P/.studio/runs/demo/landed.tsv" > "$SCEN/B"
+  printf 'emit %s; noop\n' "$F" > "$SCEN/B.land"
+  run_lanes start "$MFP"
+  assert_contains "$(last_lanes_dir)/stories/B" "^stopped repair made no progress$N\$" "a land repair's record carries the note"
+  lanes_fixture prfin integration A:-
+  printf 'emit %s; noop\n' "$F" > "$SCEN/final-repair"
+  use_gate "exit 1"
+  run_lanes start "$MFP"
+  use_gate true
+  assert_contains "$(last_lanes_dir)/report.md" "^Final note: .*the final-repair unit ended$N" "the final repair's note"
+}
 test_lanes_landing_never_holds() {
   lholds_on 120
   lanes_fixture lnh integration A:- B:-
@@ -4765,7 +4794,7 @@ run_tests test_stub_waitexist_and_run_token test_lanes_setup_preflight_refuses_l
   test_lanes_unit_caps test_lanes_runner_gates_uncapped test_lanes_gate_cap_warning \
   test_lanes_gate_room_warning test_lanes_gate_times_non_integer test_lanes_check_truth_region test_lanes_gate_log_from_stop test_lanes_story_listed_events test_lanes_unit_env_run_dir \
   test_lanes_held_dependents_wait test_lanes_resume_after_gate_red_runs_gate_repair test_lanes_resume_gate_repairs_counted \
-  test_lanes_resume_not_gate_red_no_repair_unit test_lanes_gate_repair_noprog_holds test_lanes_landing_never_holds \
+  test_lanes_resume_not_gate_red_no_repair_unit test_lanes_gate_repair_noprog_holds test_lanes_permission_route_note test_lanes_landing_never_holds \
   test_lanes_stop_queued_story test_lanes_stop_running_story test_lanes_stop_waiting_story \
   test_lanes_hold_waiting_story_holds_at_start test_lanes_hold_running_then_resume test_lanes_run_stop_held_was_held \
   test_lanes_final_step_no_delivery test_lanes_deadline \
