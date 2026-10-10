@@ -337,6 +337,8 @@ studios/<name>/
 ├── skills/ agents/ hooks/       plugin content, loaded live via --plugin-dir
 ├── bin/                         toolkit, linked into the config root and put on PATH
 │   ├── studio-overnight         overnight runner: one fresh session per unit to a draft PR
+│   ├── godot-cmd.awk            the Godot command detector, shared by godot-guard and studio-brief
+│   ├── overnight-allow.txt      the runner's allow list: gate verbs, gated Godot (data)
 │   └── overnight-deny.txt       the runner's deny list (data)
 └── CLAUDE.md settings.json memory/   installed into the config root
 
