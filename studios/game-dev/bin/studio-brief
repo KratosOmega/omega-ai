@@ -37,15 +37,15 @@
 #                           refuses a bare Godot script/import run anywhere in
 #                           the plan: `line <n>: unwrapped Godot script/import
 #                           run; write it as: studio-gate godot -- <segment>`
-#                           (no godot-cmd.awk: exit 1, reinstall omega-ai).
+#                           (no godot-cmd.awk: exit 1, reinstall omega-ai). The
+#                           plan path is the caller's; Spec: paths are the work
+#                           root's. Needs no studio state.
 #   studio-brief rewrite    markdown on stdin, the same text on stdout with each
 #                           bare Godot script/import run gated as
 #                           `studio-gate godot -- …` (#66 R4); exit 0.
 #
 # `task`, `check` and `final` print plan and spec text with each bare Godot
 # script/import run gated the same way; Context files are printed as is.
-#                           The plan path is the caller's; Spec: paths are the
-#                           work root's. Needs no studio state.
 #
 # `Context:` (a comma-separated file list before the plan's first `## `) adds a
 # `## Context files` part to all three verbs: whole files while the byte total
@@ -54,9 +54,9 @@
 # A plan without ## Global Constraints or ## Decisions, or a task without a
 # Spec: line, prints a one-line note in its place and still exits 0.
 # Exit: 0 ok · 1 a task, cited range, heading or story that cannot be
-# resolved, or a range past the end of its file (validate: any bad item, a bare
-# Godot script/import run, a missing godot-cmd.awk, a
-# task without Spec:, or no tasks) · 2 bad usage or (validate) a missing plan
+# resolved, or a range past the end of its file (validate: any bad item, a
+# bare Godot script/import run, a missing godot-cmd.awk, a task without
+# Spec:, or no tasks) · 2 bad usage or (validate) a missing plan
 set -u
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -96,8 +96,17 @@ no_det_warn() {
 # detector: the raw lines and one warning.
 emit() {
   printf '==> %s:L%s-%s\n' "$1" "$2" "$3"
-  if [ -f "$DET" ]; then LC_ALL=C awk -v mode=md -v out=rewrite -f "$DET" "$1" | sed -n "$2,$3p"
+  if [ -f "$DET" ]; then
+    # the trailing x keeps $(...) from eating the file's final blank lines
+    if _em_all="$(LC_ALL=C awk -v mode=md -v out=rewrite -f "$DET" "$1" && printf x)"; then printf '%s' "${_em_all%x}" | sed -n "$2,$3p"
+    else det_fail_warn; sed -n "$2,$3p" "$1"; fi
   else no_det_warn; sed -n "$2,$3p" "$1"; fi
+}
+# det_fail_warn — one warning per run that the detector ran and failed.
+det_fail_warn() {
+  [ -z "${_DETFAIL_WARNED:-}" ] || return 0
+  printf 'studio-brief: warning: the Godot command detector failed (%s) — Godot commands are not rewritten\n' "$DET" >&2
+  _DETFAIL_WARNED=1
 }
 # emit_raw FILE A B — the part header, then the lines verbatim (Context files).
 emit_raw() { printf '==> %s:L%s-%s\n' "$1" "$2" "$3"; sed -n "$2,$3p" "$1"; }
@@ -308,7 +317,8 @@ EOF
   ;;
 rewrite)
   [ $# -eq 1 ] || usage
-  _rw_in="$(mktemp "${TMPDIR:-/tmp}/studio-brief.XXXXXX")" || fail "cannot make a temp file"
+  _rw_in="$(mktemp "${TMPDIR:-/tmp}/studio-brief.XXXXXX")" || {
+    printf 'studio-brief: warning: cannot make a temp file — text not rewritten\n' >&2; exec cat; }
   _rw_out="$_rw_in.out"
   trap 'rm -f "$_rw_in" "$_rw_out"' EXIT
   cat > "$_rw_in"

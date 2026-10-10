@@ -583,5 +583,35 @@ test_brief_missing_detector() {
   assert_contains "$TMP/ndt.out" "MARK-T3" "with the raw task text"
   assert_eq 1 "$(grep -c 'godot-cmd.awk' "$TMP/ndt.err")" "one warning for all its parts"
 }
+# #66 R4: a detector that is present but fails — task warns once and prints raw; validate fails closed; rewrite passes through.
+test_brief_broken_detector() {
+  mkdir -p "$TMP/baddet"; cp "$BRIEF" "$TMP/baddet/studio-brief"; ln -s "$STATE_BIN" "$TMP/baddet/studio-state"
+  printf 'BEGIN { exit 3 }\n' > "$TMP/baddet/godot-cmd.awk"
+  Q="$TMP/projbd"; build_fixture "$Q"
+  ( cd "$Q" && STUDIO_STORY=S1 sh "$TMP/baddet/studio-brief" task 3 ) > "$TMP/bdt.out" 2> "$TMP/bdt.err"; st=$?
+  assert_eq 0 "$st" "task with a failing detector exits 0"
+  assert_contains "$TMP/bdt.out" "MARK-T3" "and prints the raw task body"
+  assert_contains "$TMP/bdt.err" 'detector failed' "with a warning that the detector failed"
+  assert_eq 1 "$(grep -c 'detector failed' "$TMP/bdt.err")" "one warning for all its parts"
+  awk '/^### Task (2|4):/ { print; print "Spec: docs/spec.md:L1"; next } { print }' "$Q/docs/plan.md" > "$TMP/p" && mv "$TMP/p" "$Q/docs/plan.md"
+  ( cd "$Q" && sh "$TMP/baddet/studio-brief" validate docs/plan.md ) > "$TMP/bdv.out" 2> "$TMP/bdv.err"; st=$?
+  assert_eq 1 "$st" "validate with a failing detector fails closed"
+  assert_contains "$TMP/bdv.err" 'reinstall omega-ai' "and says to reinstall"
+  printf 'x `Godot --script a.gd`\n' > "$TMP/bd.md"
+  sh "$TMP/baddet/studio-brief" rewrite < "$TMP/bd.md" > "$TMP/bdr.out" 2> "$TMP/bdr.err"; st=$?
+  assert_eq 0 "$st" "rewrite with a failing detector exits 0"
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if cmp -s "$TMP/bd.md" "$TMP/bdr.out"; then _pass "and passes the text through"; else _fail "and passes the text through"; fi
+  assert_eq 1 "$(grep -c . "$TMP/bdr.err")" "one warning"
+}
+# #66 R4: rewrite with an unusable TMPDIR warns and passes stdin through.
+test_brief_rewrite_no_tmpdir() {
+  printf 'x `Godot --script a.gd`\n' > "$TMP/nt.md"
+  ( TMPDIR="$TMP/does-not-exist"; export TMPDIR; sh "$BRIEF" rewrite < "$TMP/nt.md" > "$TMP/nt.out" 2> "$TMP/nt.err" ); st=$?
+  assert_eq 0 "$st" "rewrite with an unusable TMPDIR exits 0"
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if cmp -s "$TMP/nt.md" "$TMP/nt.out"; then _pass "and passes stdin through unchanged"; else _fail "and passes stdin through unchanged"; fi
+  assert_contains "$TMP/nt.err" 'temp file' "with a warning"
+}
 
-run_tests test_godot_cmd_md_finds_bare_forms test_godot_cmd_md_span_edges test_brief_task test_brief_final test_brief_refusals test_brief_missing_sections test_brief_directives_task test_brief_directives_final test_brief_directive_text_not_ruling test_brief_directive_edge_cases test_brief_no_directives_no_part test_brief_context_appended test_brief_context_cap test_brief_context_missing_file test_brief_context_no_glob test_brief_final_plan_acceptance test_brief_check_verb test_brief_check_uses_truth_region test_brief_final_reads_check_rulings test_brief_original_plan_item test_brief_usage_names_check test_brief_single_line_item test_brief_validate_good_plan test_brief_validate_reports_all test_brief_validate_duplicate_task test_brief_validate_missing_plan_and_no_state test_brief_validate_relative_to_caller test_brief_rewrite_wraps_only test_brief_task_check_final_rewritten test_brief_validate_godot_form test_brief_missing_detector
+run_tests test_godot_cmd_md_finds_bare_forms test_godot_cmd_md_span_edges test_brief_task test_brief_final test_brief_refusals test_brief_missing_sections test_brief_directives_task test_brief_directives_final test_brief_directive_text_not_ruling test_brief_directive_edge_cases test_brief_no_directives_no_part test_brief_context_appended test_brief_context_cap test_brief_context_missing_file test_brief_context_no_glob test_brief_final_plan_acceptance test_brief_check_verb test_brief_check_uses_truth_region test_brief_final_reads_check_rulings test_brief_original_plan_item test_brief_usage_names_check test_brief_single_line_item test_brief_validate_good_plan test_brief_validate_reports_all test_brief_validate_duplicate_task test_brief_validate_missing_plan_and_no_state test_brief_validate_relative_to_caller test_brief_rewrite_wraps_only test_brief_task_check_final_rewritten test_brief_validate_godot_form test_brief_missing_detector test_brief_broken_detector test_brief_rewrite_no_tmpdir
