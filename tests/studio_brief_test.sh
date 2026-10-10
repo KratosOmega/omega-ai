@@ -348,6 +348,7 @@ test_brief_usage_names_check() {
   assert_eq 2 "$st" "usage exits 2"
   assert_contains "$TMP/u.err" "check <k>" "usage names check"
   assert_contains "$TMP/u.err" "validate <plan>" "usage names validate"
+  assert_contains "$TMP/u.err" "| rewrite" "usage names rewrite"
 }
 # AC9 + Review Focus 5: an L<a> item is one line.
 test_brief_single_line_item() {
@@ -497,5 +498,90 @@ MD
   assert_eq 'x `studio-gate godot -- Godot --script a`' "$(cat "$TMP/nonl.out")" "nonl: rewritten"
   assert_eq "$(printf 'x `studio-gate godot -- Godot --script a`' | wc -c | tr -d ' ')" "$(wc -c < "$TMP/nonl.out" | tr -d ' ')" "nonl=1: no newline added"
 }
+# godot_fixture DIR — ctx_fixture plus bare Godot forms: a Task 1 step, the
+# spec's Purpose line (in Task 1's L3-4) and AC 1 (S1's final), and Context c1.
+godot_fixture() {
+  ctx_fixture "$1"
+  awk '{ print } /^MARK-T1$/ { print "- [ ] **Step 3:** `Godot --headless --path . --script res://tools/importer.gd` then check." }' "$1/docs/plan.md" > "$TMP/gp" && mv "$TMP/gp" "$1/docs/plan.md"
+  sed -i.bak -e 's/^MARK-PURPOSE$/MARK-PURPOSE run `Godot --headless --import .` first/' \
+             -e 's|^1\. First MARK-AC1$|1. First MARK-AC1 via `Godot --headless --path . --script res://ac.gd`|' "$1/docs/spec.md"
+  rm -f "$1/docs/spec.md.bak"
+  printf 'MARK-C1 `Godot --headless --import .`\n' > "$1/docs/c1.md"
+}
+# #66 AC4 + Review Focus 3: rewrite wraps only the c forms; every other byte is the same.
+test_brief_rewrite_wraps_only() {
+  cat "$TMP/ac3.md" "$TMP/edge.md" > "$TMP/rw.in"
+  { sed -e 's/^Godot --headless --path \. --script res:\/\/tools/studio-gate godot -- &/' \
+        -e 's/`Godot --headless --path \. --script res:\/\/a\.gd`/`studio-gate godot -- Godot --headless --path . --script res:\/\/a.gd`/' \
+        -e 's/^Run `Godot --headless --import \.` and then `Godot/Run `studio-gate godot -- Godot --headless --import .` and then `studio-gate godot -- Godot/' "$TMP/ac3.md"
+    cat "$TMP/edge.rw.want"; } > "$TMP/rw.want"
+  sh "$BRIEF" rewrite < "$TMP/rw.in" > "$TMP/rw.out" 2> "$TMP/rw.err"; st=$?
+  assert_eq 0 "$st" "rewrite exits 0"
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if cmp -s "$TMP/rw.want" "$TMP/rw.out"; then _pass "rewrite: each c form gated, nothing else changed"
+  else _fail "rewrite: each c form gated ($(diff "$TMP/rw.want" "$TMP/rw.out" | head -n 4))"; fi
+  assert_eq "" "$(cat "$TMP/rw.err")" "nothing on stderr"
+  printf 'a\tb\r\n- `ls -la` \303\251\n\n```\nGodot --version\n```\n' > "$TMP/rw0.in"
+  sh "$BRIEF" rewrite < "$TMP/rw0.in" > "$TMP/rw0.out"
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if cmp -s "$TMP/rw0.in" "$TMP/rw0.out"; then _pass "no c form: byte-identical (tab, CR, UTF-8, fences)"; else _fail "no c form: byte-identical"; fi
+  printf 'x `Godot --script a`' | sh "$BRIEF" rewrite > "$TMP/rw1.out"
+  assert_eq "$(printf 'x `studio-gate godot -- Godot --script a`' | wc -c | tr -d ' ')" "$(wc -c < "$TMP/rw1.out" | tr -d ' ')" "no final newline in, none out"
+  : | sh "$BRIEF" rewrite > "$TMP/rw2.out"
+  assert_eq 0 "$(wc -c < "$TMP/rw2.out" | tr -d ' ')" "empty in, empty out"
+}
+# #66 AC4: task, check and final output is rewritten; Context files are not.
+test_brief_task_check_final_rewritten() {
+  Q="$TMP/projg"; godot_fixture "$Q"; commit_fixture "$Q"
+  ledger_in "$Q" "adopt-base $S0"; ledger_in "$Q" "T1 complete $S0..$S1"
+  for v in "task 1" "check 1"; do
+    # shellcheck disable=SC2086
+    brief_in "$Q" $v > "$TMP/g.out" 2> "$TMP/g.err"; st=$?
+    assert_eq 0 "$st" "$v exits 0"
+    assert_contains "$TMP/g.out" 'Step 3:\*\* `studio-gate godot -- Godot --headless --path \. --script res://tools/importer\.gd` then check\.$' "$v: the plan step is gated"
+    assert_contains "$TMP/g.out" '^MARK-PURPOSE run `studio-gate godot -- Godot --headless --import \.` first$' "$v: the cited spec range is gated"
+    assert_contains "$TMP/g.out" '^MARK-C1 `Godot --headless --import \.`$' "$v: a Context file is printed as is"
+    assert_contains "$TMP/g.out" '^==> docs/plan\.md:L[0-9]*-[0-9]*$' "$v: part headers unchanged"
+    assert_eq "" "$(cat "$TMP/g.err")" "$v: no warning"
+  done
+  brief_in "$Q" final > "$TMP/gf.out"; st=$?
+  assert_eq 0 "$st" "final exits 0"
+  assert_contains "$TMP/gf.out" '^1\. First MARK-AC1 via `studio-gate godot -- Godot --headless --path \. --script res://ac\.gd`$' "final: the AC text is gated"
+}
+# #66 AC4: validate names the line and the wrapped form; the gated form passes.
+test_brief_validate_godot_form() {
+  Q="$TMP/projvg"; build_fixture "$Q"
+  awk '/^### Task (2|4):/ { print; print "Spec: docs/spec.md:L1"; next } { print }' "$Q/docs/plan.md" > "$TMP/p" && mv "$TMP/p" "$Q/docs/plan.md"
+  printf -- '- [ ] **Step 2:** `Godot --headless --path . --script res://x.gd 2>&1 | tail -5` then commit.\n' >> "$Q/docs/plan.md"
+  _ln="$(grep -c '' "$Q/docs/plan.md")"
+  ( cd "$Q" && sh "$BRIEF" validate docs/plan.md ) > "$TMP/vg.out" 2> "$TMP/vg.err"; st=$?
+  assert_eq 1 "$st" "a bare Godot script run fails validate"
+  assert_contains "$TMP/vg.err" "^studio-brief: line $_ln: unwrapped Godot script/import run; write it as: studio-gate godot -- Godot --headless --path \. --script res://x\.gd 2>&1\$" "names the line and the wrapped form"
+  assert_eq "" "$(cat "$TMP/vg.out")" "no ok line"
+  sed -i.bak 's/`Godot --headless/`studio-gate godot -- Godot --headless/' "$Q/docs/plan.md"; rm -f "$Q/docs/plan.md.bak"
+  ( cd "$Q" && sh "$BRIEF" validate docs/plan.md ) > "$TMP/vg.out" 2> "$TMP/vg.err"; st=$?
+  assert_eq 0 "$st" "the gated form passes"
+  assert_contains "$TMP/vg.out" '^studio-brief: 4 tasks, 5 Spec items ok$' "and counts as before"
+}
+# #66 AC4: no detector → rewrite passes through with one warning; validate fails closed; task warns once.
+test_brief_missing_detector() {
+  mkdir -p "$TMP/nodet"; cp "$BRIEF" "$TMP/nodet/studio-brief"; ln -s "$STATE_BIN" "$TMP/nodet/studio-state"
+  printf 'x `Godot --script a.gd`\n' > "$TMP/nd.md"
+  sh "$TMP/nodet/studio-brief" rewrite < "$TMP/nd.md" > "$TMP/nd.out" 2> "$TMP/nd.err"; st=$?
+  assert_eq 0 "$st" "rewrite without the detector exits 0"
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if cmp -s "$TMP/nd.md" "$TMP/nd.out"; then _pass "and passes the text through"; else _fail "and passes the text through"; fi
+  assert_contains "$TMP/nd.err" 'godot-cmd.awk' "with a warning naming the detector"
+  assert_eq 1 "$(grep -c . "$TMP/nd.err")" "one warning"
+  Q="$TMP/projnd"; build_fixture "$Q"
+  awk '/^### Task (2|4):/ { print; print "Spec: docs/spec.md:L1"; next } { print }' "$Q/docs/plan.md" > "$TMP/p" && mv "$TMP/p" "$Q/docs/plan.md"
+  ( cd "$Q" && sh "$TMP/nodet/studio-brief" validate docs/plan.md ) > "$TMP/ndv.out" 2> "$TMP/ndv.err"; st=$?
+  assert_eq 1 "$st" "validate without the detector fails closed"
+  assert_contains "$TMP/ndv.err" 'reinstall omega-ai' "and says to reinstall"
+  ( cd "$Q" && STUDIO_STORY=S1 sh "$TMP/nodet/studio-brief" task 3 ) > "$TMP/ndt.out" 2> "$TMP/ndt.err"; st=$?
+  assert_eq 0 "$st" "task without the detector still exits 0"
+  assert_contains "$TMP/ndt.out" "MARK-T3" "with the raw task text"
+  assert_eq 1 "$(grep -c 'godot-cmd.awk' "$TMP/ndt.err")" "one warning for all its parts"
+}
 
-run_tests test_godot_cmd_md_finds_bare_forms test_godot_cmd_md_span_edges test_brief_task test_brief_final test_brief_refusals test_brief_missing_sections test_brief_directives_task test_brief_directives_final test_brief_directive_text_not_ruling test_brief_directive_edge_cases test_brief_no_directives_no_part test_brief_context_appended test_brief_context_cap test_brief_context_missing_file test_brief_context_no_glob test_brief_final_plan_acceptance test_brief_check_verb test_brief_check_uses_truth_region test_brief_final_reads_check_rulings test_brief_original_plan_item test_brief_usage_names_check test_brief_single_line_item test_brief_validate_good_plan test_brief_validate_reports_all test_brief_validate_duplicate_task test_brief_validate_missing_plan_and_no_state test_brief_validate_relative_to_caller
+run_tests test_godot_cmd_md_finds_bare_forms test_godot_cmd_md_span_edges test_brief_task test_brief_final test_brief_refusals test_brief_missing_sections test_brief_directives_task test_brief_directives_final test_brief_directive_text_not_ruling test_brief_directive_edge_cases test_brief_no_directives_no_part test_brief_context_appended test_brief_context_cap test_brief_context_missing_file test_brief_context_no_glob test_brief_final_plan_acceptance test_brief_check_verb test_brief_check_uses_truth_region test_brief_final_reads_check_rulings test_brief_original_plan_item test_brief_usage_names_check test_brief_single_line_item test_brief_validate_good_plan test_brief_validate_reports_all test_brief_validate_duplicate_task test_brief_validate_missing_plan_and_no_state test_brief_validate_relative_to_caller test_brief_rewrite_wraps_only test_brief_task_check_final_rewritten test_brief_validate_godot_form test_brief_missing_detector
