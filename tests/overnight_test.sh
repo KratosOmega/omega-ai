@@ -284,7 +284,7 @@ test_overnight_help() {
   out="$(sh "$RUNNER" --help 2>&1)"; st=$?
   assert_eq 0 "$st" "--help exits 0"
   printf '%s\n' "$out" > "$TMP/help.txt"
-  for w in "start \[--dry-run\]" "status" "stop" "STUDIO_OVERNIGHT_SESSION_SECONDS" "overnight-deny.txt" "report.md" \
+  for w in "start \[--dry-run\]" "status" "stop" "STUDIO_OVERNIGHT_SESSION_SECONDS" "overnight-deny.txt" "overnight-allow.txt" "report.md" \
            "run_usd .*0-5000" "max_lanes" "model_task" "model_final" "model_finish" "model_repair" "model_progress" "merge_command" "gate_repairs .*0-3" \
            "say <story>" "said <story>" "unsay <story> <id>" "hold <story>" "resume <story>" "stop <story>" "--run <run>" "hold_minutes .*0-1440" \
            "directive_chars .*500-16000" "STUDIO_OVERNIGHT_HOLD_MINUTES — test hook" "STUDIO_OVERNIGHT_HOLD_SECONDS — test hook" \
@@ -578,6 +578,45 @@ test_overnight_launch_argv() {
   assert_eq "1" "$(cat "$CALLS/1.env")" "OMEGA_AUTOPILOT=1 reaches the session"
   assert_eq "$P" "$(cat "$CALLS/1.pwd")" "every session starts in START_DIR"
 }
+
+# #66 R3 / AC5: --allowedTools once, then every allow-file rule in file order,
+# right before --disallowedTools (still last); no allow file or no rules: no flag.
+test_overnight_launch_allow_rules() {
+  fixture allowargv; done_scenario; run_start
+  a="$CALLS/1.argv"
+  sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' "$REPO_ROOT/studios/game-dev/bin/overnight-allow.txt" | grep -v '^#' | grep . > "$TMP/allow.txt"
+  N="$(grep -c . "$TMP/allow.txt")"
+  assert_eq 6 "$N" "the allow file holds the six rules"
+  assert_eq 1 "$(grep -cx -- '--allowedTools' "$a")" "--allowedTools appears once"
+  _ai="$(grep -nx -- '--allowedTools' "$a" | cut -d: -f1)"; [ -n "$_ai" ] || _ai=0
+  _di="$(grep -nx -- '--disallowedTools' "$a" | cut -d: -f1)"
+  assert_eq "$(cat "$TMP/allow.txt")" "$(sed -n "$((_ai + 1)),$((_ai + N))p" "$a")" "every allow rule follows it, one argument each, in file order"
+  assert_eq "$((_ai + N + 1))" "$_di" "--disallowedTools comes right after the allow rules"
+  for r in 'Bash(studio-test:*)' 'Bash(studio-run:*)' 'Bash(studio-gate godot -- Godot *)' 'Bash(studio-gate godot -- godot *)' \
+           'Bash(studio-gate godot -- /Applications/Godot.app/Contents/MacOS/Godot *)' \
+           'Bash(studio-gate godot -- /Applications/Godot_mono.app/Contents/MacOS/Godot *)'; do
+    TESTS_RUN=$((TESTS_RUN + 1))
+    if grep -qxF -- "$r" "$a"; then _pass "argv allows $r (literally)"; else _fail "argv allows $r (literally)"; fi
+  done
+  for r in 'Bash(studio-gate:*)' 'Bash(studio-gate godot -- *)' 'Bash(studio-gate godot -- $GODOT *)'; do
+    TESTS_RUN=$((TESTS_RUN + 1))
+    if grep -qxF -- "$r" "$a"; then _fail "no broad or variable rule $r"; else _pass "no broad or variable rule $r"; fi
+  done
+  fixture allowdry   # the first run left the ledger dirty; a dry run needs a clean one
+  run_start --dry-run
+  assert_contains "$RS_OUT" "'--max-budget-usd' '25' '--allowedTools' 'Bash(studio-test:\*)' 'Bash(studio-run:\*)'" "the dry-run line shows the allow rules after the budget"
+  assert_contains "$RS_OUT" "'Bash(studio-gate godot -- godot \*)' '--disallowedTools'" "single-quoted, then the deny rules"
+  # A copy of bin/ without the allow file, then with a comments-only one: no flag.
+  cp -R "$REPO_ROOT/studios/game-dev/bin" "$TMP/allowbin"; rm -f "$TMP/allowbin/overnight-allow.txt"
+  ( cd "$P" && sh "$TMP/allowbin/studio-overnight" start --dry-run ) > "$TMP/na.out" 2> "$TMP/na.err"; st=$?
+  assert_eq 0 "$st" "the dry run works with no allow file $(cat "$TMP/na.err")"
+  assert_not_contains "$TMP/na.out" "'--allowedTools'" "no allow file: no --allowedTools"
+  assert_contains "$TMP/na.out" "'--disallowedTools' 'Bash(" "the deny rules are still passed"
+  printf '# only a comment\n\n' > "$TMP/allowbin/overnight-allow.txt"
+  ( cd "$P" && sh "$TMP/allowbin/studio-overnight" start --dry-run ) > "$TMP/na.out" 2>/dev/null
+  assert_not_contains "$TMP/na.out" "'--allowedTools'" "no rules: no --allowedTools"
+}
+
 
 # Final fix wave (AC19): a single-plan run never uses the manifest mode's
 # LAUNCH_ENV, UNIT_CWD or LDIR inherited from the user's environment.
@@ -2614,7 +2653,7 @@ run_tests test_overnight_setup_preflight_single test_overnight_help_setup_prefli
   test_overnight_config_refusals test_overnight_deny_file_required \
   test_overnight_lock test_overnight_first_use_ignores \
   test_overnight_start_args test_overnight_reclaim_race test_overnight_reclaim_finds_live_lock \
-  test_overnight_sequence_to_done test_overnight_launch_argv test_overnight_ignores_inherited_lane_vars \
+  test_overnight_sequence_to_done test_overnight_launch_argv test_overnight_launch_allow_rules test_overnight_ignores_inherited_lane_vars \
   test_overnight_retry_then_no_progress test_overnight_orphaned_unit test_overnight_progress_resets_retry \
   test_overnight_retries_zero test_overnight_stop_line test_overnight_copied_stop_not_new \
   test_overnight_run_budget test_overnight_cost_unknown test_overnight_unexpected_stage \

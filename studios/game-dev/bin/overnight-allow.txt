@@ -1,0 +1,20 @@
+# Allow rules for studio-overnight sessions (#66 R3). One Claude Code
+# permission rule per line; blank lines and lines starting with # are ignored.
+# Same format as overnight-deny.txt, but with no {templates}. Each rule becomes
+# one --allowedTools argument on every unit session, passed right before
+# --disallowedTools.
+#
+# Least privilege: never Bash(studio-gate:*) or Bash(studio-gate godot -- *).
+# Either would let any binary skip the auto-mode classifier. Only the gate
+# verbs and the gated Godot binaries named below are allowed.
+#
+# The $GODOT / ${GODOT} / $GODOT_PATH / $GODOT_BIN forms are left out on
+# purpose: Claude Code 2.1.296 never matched them (probe, spec "Probe
+# results"). A piped or compound wrapped call is still judged by the
+# classifier.
+Bash(studio-test:*)
+Bash(studio-run:*)
+Bash(studio-gate godot -- /Applications/Godot.app/Contents/MacOS/Godot *)
+Bash(studio-gate godot -- /Applications/Godot_mono.app/Contents/MacOS/Godot *)
+Bash(studio-gate godot -- Godot *)
+Bash(studio-gate godot -- godot *)

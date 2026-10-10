@@ -760,6 +760,7 @@ test_lanes_chain_rule() {
   assert_contains "$LS_OUT" "Bash(git push \* main)" "the deny rules are expanded"
   assert_eq 4 "$(grep -c "claude-gd -p" "$LS_OUT")" "one launch line per chain"
   assert_contains "$LS_OUT" "^deny: [0-9][0-9]* rules$" "the deny rule count"
+  assert_contains "$LS_OUT" "^allow: 6 rules$" "the allow rule count"
   assert_eq 0 "$(calls)" "dry run launches no session"
   assert_missing "$P/.studio/overnight.lock" "dry run takes no lock"
   assert_missing "$P/.studio/runs/demo/lock" "nor a per-run lock"

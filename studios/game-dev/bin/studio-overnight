@@ -41,6 +41,7 @@ done
 SELF_DIR="$(cd "$(dirname "$self")" && pwd -P)"
 STATE_BIN="$SELF_DIR/studio-state"
 DENY_FILE="$SELF_DIR/overnight-deny.txt"
+ALLOW_FILE="$SELF_DIR/overnight-allow.txt"
 
 say() { printf 'studio-overnight: %s\n' "$*" >&2; }
 # sq TEXT — TEXT as one single-quoted shell word ('\'' for each ').
@@ -173,6 +174,12 @@ deny_rules() {
     printf '%s\n' "$_r" | sed "s|{default_branch}|$_db|g; s|{merge_basename}|$_mb|g"
   done < "$DENY_FILE"
 }
+# allow_rules — #66 R3: the allow file's rules, one per line (comments and
+# blanks dropped; no templates). Nothing when the file is absent.
+allow_rules() {
+  [ -f "$ALLOW_FILE" ] || return 0
+  sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' "$ALLOW_FILE" | grep -v '^#' | grep . || true
+}
 # cmd_deny_rules [--dir PATH] — the deny rules a unit would get for the
 # project at PATH (default: here), one per line (AC1 of #28). Reads no run
 # state; works outside git. Notes for dropped placeholders go to stderr.
@@ -222,12 +229,24 @@ model_for() {
 }
 
 # with_launch_args FN — FN with the session's argv: prompt, --model, the
-# flags, --disallowedTools last with one argument per deny rule.
+# flags, --allowedTools (when the allow file has rules) with one argument per
+# allow rule, then --disallowedTools last with one argument per deny rule.
 with_launch_args() {
   _fn="$1"
   set -- "$PROMPT" --model "$UNIT_MODEL" --output-format stream-json --verbose \
     --permission-mode auto --permission-prompts none \
-    --max-budget-usd "$SESSION_USD" --disallowedTools
+    --max-budget-usd "$SESSION_USD"
+  _rules="$(allow_rules)"
+  if [ -n "$_rules" ]; then
+    set -- "$@" --allowedTools
+    while IFS= read -r _r || [ -n "$_r" ]; do
+      [ -n "$_r" ] || continue
+      set -- "$@" "$_r"
+    done <<EOF
+$_rules
+EOF
+  fi
+  set -- "$@" --disallowedTools
   _rules="$(deny_rules)"
   while IFS= read -r _r || [ -n "$_r" ]; do
     [ -n "$_r" ] || continue
@@ -441,6 +460,10 @@ its first word an executable file under the checkout.
 
 Deny rules: $DENY_FILE
   one --disallowedTools rule per line.
+
+Allow rules: $ALLOW_FILE
+  one --allowedTools rule per line (the gate verbs and the gated Godot form);
+  no file or no rules: no --allowedTools.
 
 The morning report is written to .studio/reports/overnight-<ts>/report.md on
 every ending (manifest mode: overnight-<slug>-<ts>/report.md, a section per

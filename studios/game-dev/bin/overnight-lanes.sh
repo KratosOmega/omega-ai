@@ -418,6 +418,7 @@ lanes_dry_run() {
     with_launch_args print_launch
     LAUNCH_ENV=""
   done < "$CHAINS"
+  printf 'allow: %s rules\n' "$(allow_rules | grep -c .)"
   printf 'deny: %s rules\n' "$(deny_rules | grep -c .)"
 }
 
