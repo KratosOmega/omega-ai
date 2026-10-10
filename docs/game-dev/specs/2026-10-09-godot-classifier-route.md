@@ -10,7 +10,7 @@ detector shared by the hook and studio-brief, and a new runner stop kind).
 Run `overnight-kan-1496-elemental-shifting-av-20261009-175351`, unit
 `2-KAN-1496-T1` (`lanes/1/2-KAN-1496-T1.jsonl`, Bash calls 36 and 43):
 
-    /Applications/Godot_mono.app/Contents/MacOS/Godot --headless --path . --script res://tools/web_tools_importer.gd
+    /Applications/Godot_mono.app/Contents/MacOS/Godot --headless --path . --script res://tools/web_tools_importer.gd 2>&1 | tail -5
 
 The auto-mode classifier denied it (`[Auto-Mode Bypass]`) and then denied
 every Bash call for the rest of the session. T1 could not run tests or commit,
@@ -47,86 +47,133 @@ unit, the report says so and names the command.
 - The Godot detector (first word after assignments and the existing wrappers;
   basename `godot*` any case, or `$GODOT`/`$GODOT_PATH`/`$GODOT_BIN`) is
   unchanged.
-- New verdict `c`: a Godot invocation with `-s`, `--script` or `--import` (as
-  its own word; `--script=…` also counts) is refused. Precedence: `b`
-  (gut_cmdln) over `c` over `a`.
-- Not refused: `--version`, `--help`, `-h`, `--doctool` without `-s`/`--script`/
-  `--import`; any simple command whose first word is `studio-gate`,
-  `studio-test` or `studio-run` (the hook already only checks the first word,
-  so the wrapped form passes with no special case — a test pins this).
-- The refusal message names the retry exactly:
+- New verdict `c`: a Godot invocation with `-s`, `--script`, `--script=…` or
+  `--import` among its options is refused. Option scanning stops at a bare
+  `--` (what follows is the game's own user arguments). `--check-only
+  --script` is refused too (on purpose: the wrap is cheap and it still runs
+  Godot).
+- Not refused: `--version`, `--help`, `-h`, `--doctool` without the c options;
+  any simple command whose first word is `studio-gate`, `studio-test` or
+  `studio-run` — the hook only checks the first word, so the wrapped form
+  passes with no special case (a test pins this).
+- Redirections are not separators: `>&`, `<&`, `&>` and `&>>` (e.g. `2>&1`)
+  stay inside the word, so the segment of
+  `… --script res://x.gd 2>&1 | tail -5` is `… --script res://x.gd 2>&1` and
+  the pipe stays outside it. This also fixes verdicts `a`/`b` segmenting.
+- Message. Each verdict class present in the command (any number of
+  segments) contributes its sentence, in order b, c, a; the `_use` line ends
+  the message. The c sentence:
   `game-dev: refused an unwrapped Godot script/import run: outside the gate it skips the lock, the run cap and gate.times, and auto mode may deny it and every later Bash call. Run it as: studio-gate godot -- <segment>`
-  where `<segment>` is the offending simple command's original source text
-  (from its first word to its end, leading assignments/wrappers dropped,
-  original quoting kept), JSON-escaped (`\` and `"`, control characters as
-  `\n`/`\t`) and cut to 400 characters with `…` if longer.
-- `who` is always `godot`, so gate.times keeps one bucket and R2's allow rules
-  can match one fixed prefix.
-- The hook still fails open: any parse problem allows the call (exit 0, no
-  output).
+  where `<segment>` is the first c segment's original source text (its first
+  word to its end, leading assignments/wrappers dropped, original quoting
+  kept). The segment is cut first (to 400 bytes, backing off to a UTF-8
+  character boundary, `…` appended when cut) and then JSON-escaped (`\`, `"`,
+  control characters as `\n`/`\t`/`\uXXXX`), so the hook output is always
+  valid JSON.
+- Existing `tests/hook_test.sh` cases that intentionally change: `:913`
+  (`-s other.gd`) and `:914` (`--import`) move from allowed to refused (c);
+  `:890` (`--import . ; … -gtest=…`) stays refused and keeps its asserted
+  `raw headless Godot` and `studio-test --file` text (a and c both present),
+  and now also contains the c sentence. All other godot_guard cases pass
+  unchanged.
+- `who` is always `godot`, so gate.times keeps one bucket and R3's allow
+  rules can match one fixed prefix.
+- The hook still fails open: any parse problem, or a missing detector file,
+  allows the call (exit 0, no output).
 
-### R2. Shared detector `godot-cmd.awk`
+### R2. Shared detector `bin/godot-cmd.awk`
 
-- The quote-aware splitter and Godot-invocation check move out of
-  `godot-guard.sh` into `studios/game-dev/hooks/godot-cmd.awk`, loaded with
-  `awk -f` by both the hook and `studio-brief`. One source of truth; no drift.
-- Interface: input is the command text (already JSON-unescaped by the
-  caller); output is one line per refused simple command,
-  `<verdict>\t<segment>` (verdicts `a`, `b`, `c`), nothing when clean.
-- The hook locates the file relative to its own path; if it is missing the
-  hook allows (fail open) — the existing `hook_test.sh` cases still pass
-  unchanged against the refactor.
+- The JSON extraction/unescape, quote-aware splitter, heredoc/comment logic
+  and Godot-invocation check move out of `godot-guard.sh` into
+  `studios/game-dev/bin/godot-cmd.awk` (in `bin/` because install links
+  `bin/` entries into the target and drops `hooks/`; studio-brief resolves it
+  next to itself, the hook as `$(dirname "$0")/../bin/godot-cmd.awk`, which
+  holds in the plugin copy).
+- Interface: `awk -v mode=<json|md> -f godot-cmd.awk`; the whole input is
+  slurped and processed in `END` (heredocs need the whole string). Output: one
+  line per refused simple command, `<line>\t<verdict>\t<segment>` (`line` =
+  1-based input line where the segment starts), nothing when clean.
+  - `mode=json`: the PreToolUse payload; the `command` field is extracted and
+    JSON-unescaped in awk (no jq/python, as today).
+  - `mode=md`: markdown. Commands are taken from each line inside a fenced
+    code block, and from each inline backtick span on any other line; each is
+    parsed as its own command text. Prose outside spans is ignored.
+- `godot-guard.sh` becomes the thin wrapper: run the detector in json mode,
+  build the R1 message, print the deny JSON.
 
 ### R3. Runner allow rules (least privilege)
 
 - New `studios/game-dev/bin/overnight-allow.txt`, same format as
-  `overnight-deny.txt` (one rule per line, `#` comments). Each rule becomes one
-  `--allowedTools` argument in `with_launch_args`, alongside the unchanged
-  `--disallowedTools` rules; `print_launch` shows them.
+  `overnight-deny.txt` (one rule per line, `#` comments, no templates).
+- `with_launch_args` adds `--allowedTools <rule>…` (the flag once, then the
+  rules, as `--disallowedTools` does) before `--disallowedTools`, which stays
+  last. No allow file or no rules: no `--allowedTools` flag. `print_launch`
+  shows them; `lanes_dry_run` prints the allow count next to the deny count.
+  `run_unit` is the only launch site.
 - Rules: `Bash(studio-test:*)`, `Bash(studio-run:*)`, and studio-gate only in
   the R1 form with a Godot binary as the wrapped command's first word:
-  `Bash(studio-gate godot -- /Applications/Godot*.app/Contents/MacOS/Godot *)`,
+  `Bash(studio-gate godot -- /Applications/Godot.app/Contents/MacOS/Godot *)`,
+  `Bash(studio-gate godot -- /Applications/Godot_mono.app/Contents/MacOS/Godot *)`,
   `Bash(studio-gate godot -- Godot *)`, `Bash(studio-gate godot -- godot *)`,
-  and the `$GODOT`, `${GODOT}`, `$GODOT_PATH`, `$GODOT_BIN` forms. No
-  `Bash(studio-gate:*)` and no `Bash(studio-gate godot -- *)` — either would
-  let any wrapped command skip the classifier. A Godot at another path (e.g.
-  `./godot`) is not pre-allowed; its wrapped call is judged by the classifier
-  as today.
-- Probe first (plan Task 1): on the installed Claude Code, in a scratch dir,
-  confirm that `-p --permission-mode auto` keeps these rules (auto mode drops
-  broad allow rules) and that a matching call is allowed by rule rather than
-  sent to the classifier. Record version and evidence in this spec, as the
-  deny list did. If the probe shows auto mode ignores them, R3 is dropped and
-  reported; R1/R2/R4/R5 ship regardless.
+  `Bash(studio-gate godot -- $GODOT *)`, `Bash(studio-gate godot -- ${GODOT} *)`,
+  `Bash(studio-gate godot -- $GODOT_PATH *)`, `Bash(studio-gate godot -- $GODOT_BIN *)`.
+  No `Bash(studio-gate:*)`, no `Bash(studio-gate godot -- *)`, no wildcard
+  inside the app path — each would let other binaries skip the classifier. A
+  Godot at another path, or a quoted path, is not pre-allowed; its wrapped
+  call is judged by the classifier as today.
+- Probe first (plan Task 1), on the installed Claude Code in a scratch dir
+  with no `.studio/`, `-p --permission-mode auto`:
+  (a) the rules survive auto mode (it drops broad allow rules) and a matching
+  call is allowed by rule, not classifier — evidence from the stream-json /
+  transcript; include a `$GODOT` form;
+  (b) three R1 hook refusals in a row, then an ordinary call: hook denials do
+  not count toward auto mode's consecutive-denial limit
+  (`decision_reason_type: asyncAgent`, "3 consecutive actions were blocked").
+  Record version and evidence in this spec, as the deny list did. If (a)
+  fails, R3 is dropped and reported; if (b) fails, R1's design is revisited
+  before merge. R1/R2/R4/R5 ship regardless of (a).
 - The deny list and the permission mode are not changed.
 
 ### R4. Gated forms only in briefs and plans
 
-- `studio-brief task <n>` (and `final`, wherever it quotes plan text): a
-  quoted line holding an R1 verdict-`c` command is emitted with that segment
-  wrapped as `studio-gate godot -- <segment>`; everything else on the line is
-  kept. Approved plan files are never edited — the rewrite is on output only.
-- `studio-brief validate <plan>`: a task step holding a verdict-`c` command is
-  an error naming the line number and the wrapped form; exit non-zero, like
-  the existing checks. Only the plan skill calls `validate`, so a live run's
-  already-approved plan is unaffected.
+- New `studio-brief rewrite`: markdown on stdin, same text on stdout with each
+  R1 verdict-c segment (found in md mode) replaced by
+  `studio-gate godot -- <segment>`; every other byte unchanged. Missing
+  detector: pass the text through unchanged and warn once on stderr.
+- Every studio-brief output that quotes plan or spec text goes through the
+  same rewrite: `task <n>`, `check <k>`, `final`, and the cited spec ranges.
+- `skills/execute/SKILL.md`: implementer briefs take the task text from
+  ``bash "$(sdd-script task-brief)" <plan> <n> | studio-brief rewrite`` (today
+  the task-brief output is used raw — the incident's denial came from such a
+  subagent). Approved plan files are never edited; the rewrite is on output
+  only.
+- `studio-brief validate <plan>`: a verdict-c command in the plan is an error
+  naming its line and the wrapped form; exit non-zero, like the existing
+  checks. Missing detector: validate fails closed with a "reinstall" error.
+  Only the plan skill calls `validate`, so a live run's approved plan is
+  unaffected.
 - Plan skill (`skills/plan/SKILL.md`): task steps that run Godot scripts or
   imports use `studio-gate godot -- …`, tests use `studio-test`; §6 notes that
   `validate` enforces it.
 
-### R5. Classifier denial as its own stop kind
+### R5. Classifier denials named in the unit ending
 
-- When a unit ends without success (any non-`done` outcome: Stop line,
-  noprog, timed out, stalled), the runner scans its transcript for
+- Computed once in `run_unit` (the transcript `$UNIT_DIR/$UNIT_STEM.jsonl` is
+  known there for every outcome) and exposed to its five callers, which
+  append it to the ENDING they already build.
+- When a unit's outcome is anything but `done` (stop, progress, noprog,
+  `timed out`, stalled, orphaned; retry units alike) and its transcript holds
   `"subtype":"permission_denied"` events with
-  `"decision_reason_type":"classifier"`. If any, the unit's stop is recorded as
-  `permission-route — denied: <command>` (+ ` (+<n> more)` when several), the
-  command taken from the Bash `tool_use` whose id matches the first event,
-  cut to 200 characters. The agent's own Stop text, if any, is kept after it.
-- Shown in `studio-overnight status` and `report.md` wherever stop reasons
-  already appear.
-- A unit that ends `done` despite a denial is not changed (no stop to explain).
-- Missing or unparsable transcript: fall back to today's behaviour.
+  `"decision_reason_type":"classifier"`, the ending gets the suffix
+  ` [permission-route — denied: <command>]` (+ ` (+<n> more)` counting the
+  other classifier events; `asyncAgent` events are not counted). The command
+  is the input of the Bash `tool_use` whose id matches the first event (reuse
+  the `open_calls` awk, `studio-overnight` ~:1030), cut to 200 bytes.
+- The existing ENDING prefixes (`stop: `, `no progress on `, `timed out on `,
+  `stalled on `, `gate repair …`) are kept, so `holdable()` still holds the
+  story; the units.tsv outcome column is unchanged.
+- Shown wherever endings appear: `studio-overnight status` and `report.md`.
+- A `done` unit is unchanged. Missing or unparsable transcript: no suffix.
 
 ## Non-goals
 
@@ -143,25 +190,42 @@ unit, the report says so and names the command.
 - Before reinstall: a runner-style session (`claude-gd -p --permission-mode
   auto` with the runner's allow/deny args) in a throwaway Godot project runs a
   bare `--script` call, gets the R1 refusal, and succeeds with the suggested
-  `studio-gate godot -- …` retry. Recorded in the PR.
+  `studio-gate godot -- …` retry, then makes an ordinary call (the session is not poisoned). Recorded in the PR.
 
 ## Acceptance criteria
 
-1. `tests/hook_test.sh`: refuses `Godot --headless --path . --script res://x.gd`
-   and `Godot --headless --import .` (and the absolute
-   `/Applications/Godot_mono.app/Contents/MacOS/Godot` form); the message
-   contains `studio-gate godot -- Godot --headless --path . --script res://x.gd`.
-   Allows `studio-gate importer -- Godot --headless --path . --script res://x.gd`,
-   `studio-gate godot -- …`, `Godot --version`, `Godot --help`. All existing
-   godot_guard cases pass unchanged.
-2. A message with `"` or `\` in the segment is still valid JSON (tested with
-   a JSON parse in the suite's existing way, or a strict escape check).
-3. `tests/overnight_test.sh`: launch argv carries one `--allowedTools` per
-   allow-file rule and the deny rules unchanged; a unit transcript fixture with
-   a classifier `permission_denied` event yields `permission-route — denied:
-   <command>` in status and report.md; a `done` unit with one does not.
-4. `tests/studio_brief_test.sh`: `task` rewrites a quoted bare `--script` line
-   to the gated form and leaves other lines byte-identical; `validate` fails on
-   a plan with a bare form and passes on the gated form.
-5. R3 probe result and the rollout check are recorded (spec / PR body).
-6. `sh tests/run_all.sh` green.
+1. `tests/hook_test.sh` refuses `Godot --headless --path . --script res://x.gd`,
+   `Godot --headless --import .`, the absolute
+   `/Applications/Godot_mono.app/Contents/MacOS/Godot … --script …` form and
+   the incident's `… --script res://x.gd 2>&1 | tail -5`; the message contains
+   `studio-gate godot -- Godot --headless --path . --script res://x.gd` (for
+   the incident form: `… res://x.gd 2>&1`, not `… 2>`). Allows
+   `studio-gate importer -- Godot --headless --path . --script res://x.gd`,
+   `studio-gate godot -- …`, `Godot --version`, `Godot --help`, and
+   `Godot --path . -- -s` (user args). `:913`/`:914` flip to refused; `:890`
+   keeps its assertions; every other godot_guard case passes unchanged.
+2. Hook output is valid JSON for a segment holding `"`, `\`, a tab and a
+   multibyte character, including a 400-byte cut landing on an escape or
+   inside a UTF-8 character.
+3. `godot-cmd.awk` md mode (a new case group in the studio-brief suite):
+   finds a bare form in a fenced block, in a bullet with an inline backtick
+   span (``- [ ] **Step 3:** `Godot … --script …` ``), and in a prose line
+   with two spans; reports the right line numbers; ignores prose outside spans.
+4. `tests/studio_brief_test.sh`: `rewrite` wraps those forms and leaves every
+   other byte identical; `task`, `check` and `final` output is rewritten;
+   `validate` fails on a plan with a bare form (naming line and wrapped form)
+   and passes on the gated form; missing detector → `rewrite` passes through
+   with a warning, `validate` fails closed.
+5. `tests/overnight_test.sh`: launch argv carries `--allowedTools` + every
+   allow-file rule before `--disallowedTools`, which stays last with the deny
+   rules unchanged; no allow file → no flag. A unit transcript fixture with
+   two classifier `permission_denied` events and one `asyncAgent` event yields
+   an ending `stop: … [permission-route — denied: <command> (+1 more)]` in
+   status and report.md, and the story still holds; a `done` unit with a
+   denial gets no suffix.
+6. Skill text: execute SKILL pipes task-brief through `studio-brief rewrite`;
+   plan SKILL names the gated forms (pinned by a test where the repo already
+   tests skill text; otherwise checked in review).
+7. R3 probe (a) and (b) results and the rollout check are recorded (spec / PR
+   body).
+8. `sh tests/run_all.sh` green.
