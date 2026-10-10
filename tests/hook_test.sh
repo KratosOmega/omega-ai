@@ -877,6 +877,26 @@ godot_guard() {
   sh "$GODOT_GUARD" < "$TMP/gg.in" > "$TMP/ap.out" 2> "$TMP/ap.err" || _gst=$?
   assert_eq 0 "$_gst" "the Godot guard exits 0"
 }
+# gg_c JSON_CMD SEGMENT — JSON_CMD is refused (c); its retry is SEGMENT and
+# ends the sentence (a JSON \n follows). SEGMENT is a grep BRE.
+gg_c() {
+  godot_guard "{\"command\":\"$1\"}"
+  assert_denied "refused (c): $1"
+  assert_contains "$TMP/ap.out" 'refused an unwrapped Godot script/import run' "the c sentence ($1)"
+  assert_contains "$TMP/ap.out" "Run it as: studio-gate godot -- $2\\\\n" "the retry is the segment ($1)"
+}
+# json_ok FILE — FILE's one line is valid deny JSON: jq when present; else the
+# exact deny shape whose reason is a well-formed JSON string, in valid UTF-8.
+json_ok() {
+  if command -v jq >/dev/null 2>&1; then jq -e .hookSpecificOutput.permissionDecisionReason "$1" >/dev/null 2>&1; return; fi
+  iconv -f UTF-8 -t UTF-8 "$1" >/dev/null 2>&1 || return 1
+  LC_ALL=C awk 'NR == 1 {
+      p = "{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\""
+      if (index($0, p) != 1 || substr($0, length($0) - 2) != "\"}}") exit 1
+      r = substr($0, length(p) + 1, length($0) - length(p) - 3)
+      ok = (r ~ /^([^"\\\001-\037]|\\["\\\/bfnrt]|\\u[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F])*$/) }
+    END { exit !(NR == 1 && ok) }' "$1"
+}
 test_godot_guard_registered() {
   assert_file "$GODOT_GUARD" "godot-guard.sh exists"
   assert_contains "$STUDIO_DIR/hooks/hooks.json" 'CLAUDE_PLUGIN_ROOT}/hooks/godot-guard.sh' "hooks.json runs it from the plugin root"
@@ -908,16 +928,85 @@ test_godot_guard_denies_hand_built_gut() {
   assert_denied "a hand-built GUT run"
   assert_contains "$TMP/ap.out" 'gut_cmdln' "the reason names the case"
 }
+# #66 R1 / AC1: an unwrapped script/import run is refused (c), naming the exact retry.
+test_godot_guard_refuses_script_import() {
+  gg_c 'Godot --headless --path . --script res://x.gd' 'Godot --headless --path . --script res://x.gd'
+  gg_c 'Godot --headless --import .' 'Godot --headless --import .'
+  gg_c '/Applications/Godot_mono.app/Contents/MacOS/Godot --headless --path . --script res://x.gd' \
+       '/Applications/Godot_mono.app/Contents/MacOS/Godot --headless --path . --script res://x.gd'
+  gg_c '/Applications/Godot_mono.app/Contents/MacOS/Godot --headless --path . --script res://x.gd 2>&1 | tail -5' \
+       '/Applications/Godot_mono.app/Contents/MacOS/Godot --headless --path . --script res://x.gd 2>&1'
+  assert_not_contains "$TMP/ap.out" 'tail -5' "the incident's pipe stays outside the segment"
+  gg_c 'Godot --headless --path . -s other.gd' 'Godot --headless --path . -s other.gd'
+  gg_c 'Godot --headless --path . --import' 'Godot --headless --path . --import'
+  gg_c 'Godot --check-only --script res://x.gd' 'Godot --check-only --script res://x.gd'
+  gg_c '$GODOT --headless --path . --script res://x.gd' '$GODOT --headless --path . --script res://x.gd'
+  gg_c 'cd x && A=1 timeout 60 godot4 --headless --script=res://y.gd' 'godot4 --headless --script=res://y.gd'
+  # The :890 command: c first, then a, then the use line.
+  godot_guard '{"command":"Godot --headless --import . ; Godot --headless --path . -gtest=res://a.gd"}'
+  assert_contains "$TMP/ap.out" 'Run it as: studio-gate godot -- Godot --headless --import .\\ngame-dev: refused a raw headless Godot command' "c, then a"
+  assert_contains "$TMP/ap.out" 'never exits\.\\nRun a test file with studio-test --file' "then the use line"
+  # b before c.
+  godot_guard '{"command":"Godot -s addons/gut/gut_cmdln.gd; Godot --import ."}'
+  assert_contains "$TMP/ap.out" 'runs the whole suite\.\\ngame-dev: refused an unwrapped Godot script/import run' "b, then c"
+  # Two c segments: one sentence, naming the first.
+  godot_guard '{"command":"Godot --headless --import . && Godot --headless -s a.gd"}'
+  assert_eq 1 "$(grep -o 'Run it as:' "$TMP/ap.out" | grep -c .)" "one c sentence for two c segments"
+  assert_contains "$TMP/ap.out" 'studio-gate godot -- Godot --headless --import .\\n' "naming the first"
+}
+# #66 R1 + Review Focus 1: >& <& &> &>> are redirections; a plain & still separates.
+test_godot_guard_redirections() {
+  gg_c 'Godot --headless --path . --script res://x.gd 2>&1 | tail -5' 'Godot --headless --path . --script res://x.gd 2>&1'
+  gg_c 'Godot --headless --script=res://y.gd &>/dev/null && echo ok' 'Godot --headless --script=res://y.gd &>/dev/null'
+  gg_c 'Godot --headless --script res://y.gd &>>log.txt; ls' 'Godot --headless --script res://y.gd &>>log.txt'
+  gg_c 'Godot --headless --script res://y.gd <&3 & wait' 'Godot --headless --script res://y.gd <&3'
+  gg_c 'cd x && A=1 timeout 60 Godot --script res://y.gd >&2 & wait' 'Godot --script res://y.gd >&2'
+  godot_guard '{"command":"Godot --headless --path . & Godot --version"}'
+  assert_denied "a plain & still separates: the first command is a raw headless boot"
+  godot_guard '{"command":"ls & Godot --version"}'
+  assert_allowed "a plain & still separates: Godot --version alone is allowed"
+}
+# #66 AC2 + Review Focus 2: cut first (400 bytes, UTF-8 boundary), then escape.
+test_godot_guard_message_is_valid_json() {
+  godot_guard '{"command":"Godot --headless --script \"res://a b.gd\" q\\\\x\ty é"}'
+  assert_denied "quote, backslash, tab and é in the segment"
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if json_ok "$TMP/ap.out"; then _pass "valid JSON (no cut)"; else _fail "valid JSON (no cut)"; fi
+  # "Godot --script res://x.gd " is 26 bytes; after the 373-byte pad the next
+  # byte is the segment's 400th: a quote, a backslash, a tab, the lead byte of é.
+  _pad="$(awk 'BEGIN { while (length(s) < 373) s = s "a"; printf "%s", s }')"
+  for t in '\"zz' '\\zz' '\tzz' 'éz'; do
+    godot_guard "{\"command\":\"Godot --script res://x.gd $_pad$t\"}"
+    assert_denied "cut at byte 400 on $t"
+    TESTS_RUN=$((TESTS_RUN + 1))
+    if json_ok "$TMP/ap.out"; then _pass "valid JSON (cut on $t)"; else _fail "valid JSON (cut on $t)"; fi
+    assert_contains "$TMP/ap.out" '…\\nRun a test file' "the cut ends in … ($t)"
+  done
+}
+# #66 R1: no detector file → allow (fail open).
+test_godot_guard_missing_detector_allows() {
+  mkdir -p "$TMP/nodet/hooks"; cp "$GODOT_GUARD" "$TMP/nodet/hooks/godot-guard.sh"
+  ptu_in Bash '{"command":"Godot --headless --import ."}' > "$TMP/gg.in"; _gst=0
+  sh "$TMP/nodet/hooks/godot-guard.sh" < "$TMP/gg.in" > "$TMP/ap.out" 2> "$TMP/ap.err" || _gst=$?
+  assert_eq 0 "$_gst" "exit 0 with no detector"
+  assert_allowed "no detector: the call is allowed"
+  assert_eq "" "$(cat "$TMP/ap.err")" "and nothing on stderr"
+}
 # AC7 allowed + Review Focus 4.
 test_godot_guard_allows() {
   for c in \
-    'Godot --headless --path . -s other.gd' \
-    'Godot --headless --path . --import' \
     'Godot --version' \
+    'Godot --help' \
+    'Godot -h' \
+    'Godot --path . -- -s' \
+    'Godot --doctool docs' \
     'Godot --headless --path . --export-release Mac out.dmg' \
     'Godot --headless --path . --quit-after 5' \
     'Godot -e --path .' \
     'studio-test --file tests/unit/x.gd' \
+    'studio-gate importer -- Godot --headless --path . --script res://x.gd' \
+    'studio-gate godot -- Godot --headless --path . --script res://x.gd 2>&1 | tail -5' \
+    'studio-gate godot -- $GODOT --headless --import .' \
     'echo \"Godot --headless --path .\"' \
     'echo \"a; Godot --headless --path .\"' \
     'grep -r godot --path' \
@@ -1046,6 +1135,7 @@ test_worktree_guard_off_outside_stories() {
 TESTS_EXCLUSIVE="test_inbox_hook_silent_outside_units"
 run_tests test_worktree_guard_registered test_worktree_guard_denies_bare_calls_in_story test_worktree_guard_names_the_story_worktree test_worktree_guard_off_outside_stories test_godot_guard_registered test_godot_guard_denies_headless_boot test_godot_guard_denies_hand_built_gut \
   test_godot_guard_allows test_godot_guard_skips_heredocs_and_comments test_godot_guard_single_quotes test_godot_guard_variables_wrappers_and_speed test_godot_guard_never_blocks_on_bad_input \
+  test_godot_guard_refuses_script_import test_godot_guard_redirections test_godot_guard_message_is_valid_json test_godot_guard_missing_detector_allows \
   test_session_start_stage_per_checkout test_session_start_take_hint \
   test_session_start_never_writes test_skill_bootstrap_stage_line test_hook_files test_hook_output_shape test_hook_defaults_from_studio_json \
   test_hook_reads_project_config test_hook_partial_config_falls_back test_hook_escapes_json \

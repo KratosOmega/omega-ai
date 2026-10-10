@@ -109,7 +109,7 @@ test_bin_syntax() {
   for f in "$REPO_ROOT"/studios/*/bin/* "$REPO_ROOT"/studios/*/engines/*/*.sh "$REPO_ROOT"/studios/*/hooks/*.sh \
            "$REPO_ROOT"/shared/omega/bin/* "$REPO_ROOT"/shared/omega/hooks/*.sh; do
     [ -f "$f" ] || continue
-    case "$(basename "$f")" in .gitkeep|*.txt) continue ;; esac
+    case "$(basename "$f")" in .gitkeep|*.txt|*.awk) continue ;; esac
     rel="${f#"$REPO_ROOT"/}"
     assert_status 0 "$rel parses as POSIX sh" -- sh -n "$f"
     TESTS_RUN=$((TESTS_RUN + 1))

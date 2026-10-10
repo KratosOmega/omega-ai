@@ -435,4 +435,67 @@ test_brief_validate_relative_to_caller() {
   assert_eq 0 "$st" "from docs/: plan.md is found, docs/spec.md resolves from the root"
 }
 
-run_tests test_brief_task test_brief_final test_brief_refusals test_brief_missing_sections test_brief_directives_task test_brief_directives_final test_brief_directive_text_not_ruling test_brief_directive_edge_cases test_brief_no_directives_no_part test_brief_context_appended test_brief_context_cap test_brief_context_missing_file test_brief_context_no_glob test_brief_final_plan_acceptance test_brief_check_verb test_brief_check_uses_truth_region test_brief_final_reads_check_rulings test_brief_original_plan_item test_brief_usage_names_check test_brief_single_line_item test_brief_validate_good_plan test_brief_validate_reports_all test_brief_validate_duplicate_task test_brief_validate_missing_plan_and_no_state test_brief_validate_relative_to_caller
+DET="$REPO_ROOT/studios/game-dev/bin/godot-cmd.awk"
+# godot_md FILE [OUT] — the detector's md output (rows, or OUT) for FILE.
+godot_md() { LC_ALL=C awk -v mode=md ${2:+-v out=$2} -f "$DET" "$1"; }
+# #66 AC3: a fenced block, a bullet's inline span, a prose line with two spans; prose ignored.
+test_godot_cmd_md_finds_bare_forms() {
+  cat > "$TMP/ac3.md" <<'MD'
+# Plan
+Prose Godot --headless --script res://p.gd is not a command.
+```sh
+Godot --headless --path . --script res://tools/importer.gd 2>&1 | tail -5
+studio-gate godot -- Godot --headless --import .
+```
+- [ ] **Step 3:** `Godot --headless --path . --script res://a.gd` then check.
+Run `Godot --headless --import .` and then `Godot --headless --path . --script res://b.gd`; done.
+MD
+  printf '%s\t%s\t%s\n' \
+    4 c 'Godot --headless --path . --script res://tools/importer.gd 2>&1' \
+    7 c 'Godot --headless --path . --script res://a.gd' \
+    8 c 'Godot --headless --import .' \
+    8 c 'Godot --headless --path . --script res://b.gd' > "$TMP/ac3.want"
+  godot_md "$TMP/ac3.md" > "$TMP/ac3.got"; st=$?
+  assert_eq 0 "$st" "md mode exits 0"
+  assert_eq "$(cat "$TMP/ac3.want")" "$(cat "$TMP/ac3.got")" "rows: line, verdict c, segment; prose and the gated line ignored"
+}
+# #66 Review Focus 3: span and fence edges, rows and rewrite.
+test_godot_cmd_md_span_edges() {
+  cat > "$TMP/edge.md" <<'MD'
+Double ``Godot --script `x` y`` here.
+Unclosed `Godot --script z
+   ~~~
+   godot --import
+   ~~~
+Already `studio-gate godot -- Godot --script res://c.gd` here.
+`Godot --version` and `Godot --path . -- -s` and `cd x && Godot -s y.gd`
+```
+`Godot --script in-a-fence-is-shell-text.gd`
+```
+MD
+  printf '%s\t%s\t%s\n' 1 c 'Godot --script `x` y' 4 c 'godot --import' 7 c 'Godot -s y.gd' > "$TMP/edge.want"
+  godot_md "$TMP/edge.md" > "$TMP/edge.got"
+  assert_eq "$(cat "$TMP/edge.want")" "$(cat "$TMP/edge.got")" "double-backtick span, indented ~~~ fence, && in a span; unclosed, gated, --version, -- args and fenced backticks ignored"
+  cat > "$TMP/edge.rw.want" <<'MD'
+Double ``studio-gate godot -- Godot --script `x` y`` here.
+Unclosed `Godot --script z
+   ~~~
+   studio-gate godot -- godot --import
+   ~~~
+Already `studio-gate godot -- Godot --script res://c.gd` here.
+`Godot --version` and `Godot --path . -- -s` and `cd x && studio-gate godot -- Godot -s y.gd`
+```
+`Godot --script in-a-fence-is-shell-text.gd`
+```
+MD
+  godot_md "$TMP/edge.md" rewrite > "$TMP/edge.rw.got"
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if cmp -s "$TMP/edge.rw.want" "$TMP/edge.rw.got"; then _pass "rewrite inserts the gate at each c segment, every other byte the same"
+  else _fail "rewrite inserts the gate at each c segment ($(diff "$TMP/edge.rw.want" "$TMP/edge.rw.got" | head -n 4))"; fi
+  printf 'x `Godot --script a`' > "$TMP/nonl.md"
+  LC_ALL=C awk -v mode=md -v out=rewrite -v nonl=1 -f "$DET" "$TMP/nonl.md" > "$TMP/nonl.out"
+  assert_eq 'x `studio-gate godot -- Godot --script a`' "$(cat "$TMP/nonl.out")" "nonl: rewritten"
+  assert_eq "$(printf 'x `studio-gate godot -- Godot --script a`' | wc -c | tr -d ' ')" "$(wc -c < "$TMP/nonl.out" | tr -d ' ')" "nonl=1: no newline added"
+}
+
+run_tests test_godot_cmd_md_finds_bare_forms test_godot_cmd_md_span_edges test_brief_task test_brief_final test_brief_refusals test_brief_missing_sections test_brief_directives_task test_brief_directives_final test_brief_directive_text_not_ruling test_brief_directive_edge_cases test_brief_no_directives_no_part test_brief_context_appended test_brief_context_cap test_brief_context_missing_file test_brief_context_no_glob test_brief_final_plan_acceptance test_brief_check_verb test_brief_check_uses_truth_region test_brief_final_reads_check_rulings test_brief_original_plan_item test_brief_usage_names_check test_brief_single_line_item test_brief_validate_good_plan test_brief_validate_reports_all test_brief_validate_duplicate_task test_brief_validate_missing_plan_and_no_state test_brief_validate_relative_to_caller
