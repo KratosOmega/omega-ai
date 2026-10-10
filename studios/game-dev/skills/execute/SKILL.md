@@ -176,8 +176,10 @@ is `STUDIO_STORY`:
   the tool that stops background tasks (TaskStop) and do not wait for it.
   Run a single test file with `studio-test --file <test file>` (repeatable;
   a comma list works too). Never build a Godot or GUT command by hand: the
-  studio's `godot-guard.sh` hook refuses a raw headless Godot and a
-  hand-built `gut_cmdln` run.
+  studio's `godot-guard.sh` hook refuses a raw headless Godot, a
+  hand-built `gut_cmdln` run, and an unwrapped script or import run (`-s`,
+  `--script`, `--import`); run a Godot script or import as
+  `studio-gate godot -- <command>`, the retry its refusal names.
 - **Subagents run in the foreground too.** Dispatch every subagent (the
   implementer, the reviewer, a fixer) with `run_in_background: false` and
   take its report in the same turn; for parallel work, put several
@@ -352,7 +354,7 @@ The `Role:` values are the studio's agents: `game-dev:gameplay-programmer`,
 `game-dev:producer`, `game-dev:playtester` and `game-dev:reviewer` never
 appear in `Role:`.
 
-Every brief also carries: the task text (via the skill's task-brief script, ``bash "$(sdd-script task-brief)" <plan> <n>``),
+Every brief also carries: the task text (via the skill's task-brief script piped through the studio's rewrite, ``bash "$(sdd-script task-brief)" <plan> <n> | studio-brief rewrite``, so the brief shows only the gated Godot form; the plan file is never edited),
 the spec sections the task cites, and the project `CLAUDE.md` architecture
 rules. The agent's own `## Skills you may call` section (in
 `agents/<role>.md`) names the skills it reads before writing code. A stuck
@@ -367,7 +369,7 @@ verbatim (§0, The gate runs in the foreground): "run `studio-test` and
 
 Every implementer and fixer brief also carries: "run one test file with
 `studio-test --file <test file>`; never build a Godot or GUT command by
-hand; pass `timeout` only on gate-routed commands; a gate-routed command
+hand; run a Godot script or import as `studio-gate godot -- <command>`; pass `timeout` only on gate-routed commands; a gate-routed command
 that exits 124 is `Stop: gate timed out`".
 
 ## 3. Verify rules (both modes)

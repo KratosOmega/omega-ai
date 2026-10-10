@@ -808,6 +808,22 @@ test_sdd_script_references() {
   done
 }
 
+# #66 R4 / AC6: implementer briefs get the gated task text; Godot scripts and imports go through studio-gate.
+test_execute_task_brief_rewritten() {
+  E="$REPO_ROOT/studios/game-dev/skills/execute/SKILL.md"
+  assert_contains "$E" '"$(sdd-script task-brief)" <plan> <n> | studio-brief rewrite' "the task text is piped through studio-brief rewrite"
+  assert_contains "$E" 'studio-gate godot -- <command>' "a Godot script or import runs through the gate"
+  assert_contains "$E" 'an unwrapped script or import run' "the hook's third refusal is named"
+}
+# #66 R4 / AC6: plans write only the gated forms; validate enforces it.
+test_plan_gated_godot_forms() {
+  PL="$REPO_ROOT/studios/game-dev/skills/plan/SKILL.md"
+  assert_contains "$PL" 'studio-gate godot -- <Godot command>' "plan names the gated form"
+  assert_contains "$PL" 'bare Godot script/import run' "and the refused one"
+  assert_contains "$PL" 'fails the plan on it' "§2 says validate enforces it"
+  assert_contains "$PL" 'also fails on a bare Godot script/import run' "§6 says so too"
+}
+
 run_tests test_plugin_manifests test_skill_frontmatter test_agent_frontmatter \
   test_external_references_declared test_required_plugins_enabled test_bin_syntax \
   test_role_agents_exist test_stage_skill_contracts test_plan_skill_contract \
@@ -819,4 +835,4 @@ run_tests test_plugin_manifests test_skill_frontmatter test_agent_frontmatter \
   test_no_ship_references test_superpowers_requires_referenced test_no_last_playtest_callers \
   test_execute_one_contract test_router_overnight_lock test_execute_lanes test_execute_lane_gate_foreground test_execute_command_caps_text test_docs_59_wording test_agent_gameplay_programmer_file_runs test_execute_land_and_progress test_execute_gate_repair test_execute_operator_messages test_execute_adopt test_final_wave_contracts \
   test_plan_brainstorm_lanes test_execute_sync_repair_form test_execute_peers_brief_rule test_plan_brainstorm_slug_form test_plan_brainstorm_check_id \
-  test_sdd_script_references
+  test_sdd_script_references test_execute_task_brief_rewritten test_plan_gated_godot_forms
