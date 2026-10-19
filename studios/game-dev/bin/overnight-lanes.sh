@@ -255,7 +255,9 @@ EOF_MC
       esac
       printf '%s\n' "$_show" | grep -qx -- "- [0-9-]* Decisions swept $_id" \
         || refuse "$_id: no 'Decisions swept $_id' ledger line (run the question sweep)"
-      _stg="$(story_state "$_id" get stage 2>/dev/null)"
+      # #70: the stage is `show`'s own header line (get stage reads the same
+      # first `stage: ` line of the story file): one studio-state call, not two.
+      _stg="$(printf '%s\n' "$_show" | sed -n 's/^stage: //p' | head -n 1)"
       case "$_stg" in
         plan|execute) ;;
         # The shipped line is ledgered in the story's own checkout (its
