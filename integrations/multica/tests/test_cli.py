@@ -17,6 +17,8 @@ from bridge.multica_cli import (AuthError, Cli, ForbiddenWrite, KeychainError, N
 
 TESTS = os.path.dirname(os.path.abspath(__file__))
 FIX = os.path.join(TESTS, "fixtures", "cli")
+INSTR = 'The overnight run\'s Run issue OMEG-2 has ended. Read its "studio: run ended:" comment and the report ' \
+        'it names, then do what this issue\'s description says comes after the run.'
 
 
 class CliTest(BridgeCase):
@@ -93,6 +95,30 @@ class CliTest(BridgeCase):
         self.assertEqual(self.board.calls(), [])
         row = self.cli.create_issue("Run x", "d", "OMEG-1", {})
         self.assertEqual(row["parent_issue_id"], "iss-1")
+
+    def test_create_wakeup_args_and_not_guarded(self):
+        self.board.add_issue("request"); self.board.add_issue("run")
+        self.board.reset_calls()
+        self.cli.forbidden.add("OMEG-1")
+        rule = self.cli.create_wakeup("OMEG-1", "OMEG-2", "ended", "ag-1", "336h", INSTR)
+        self.assertEqual(self.board.calls("issue wakeup create")[0]["argv"],
+                         ["issue", "wakeup", "create", "OMEG-1", "--until-issue", "OMEG-2", "--until-issue-state", "ended",
+                          "--agent-id", "ag-1", "--mode", "once", "--expires-in", "336h", "--instruction", INSTR,
+                          "--output", "json"])
+        self.assertEqual(rule["condition"], {"type": "other_issue", "identifier": "OMEG-2", "issue_id": "iss-2", "state": "ended"})
+        self.assertEqual([r["id"] for r in self.cli.list_wakeups("OMEG-1")], [rule["id"]])
+        with self.assertRaises(ForbiddenWrite):
+            self.cli.set_status("OMEG-1", "done")
+        with self.assertRaises(ForbiddenWrite):
+            self.cli.add_comment("OMEG-1", "studio: hi")
+
+    def test_stub_wakeup_errors(self):
+        self.board.add_issue("request")
+        with self.assertRaises(NotFoundError):
+            self.cli.create_wakeup("OMEG-1", "OMEG-9", "ended", "ag-1", "336h", "x")
+        with self.assertRaises(PermanentError):
+            self.cli.create_wakeup("OMEG-1", "OMEG-1", "in_progress", "ag-1", "336h", "x")
+        self.assertEqual(self.cli.list_wakeups("OMEG-1"), [])
 
     def test_status_calls_pass_no_start(self):
         self.board.add_issue("x")
@@ -247,6 +273,10 @@ class CliTest(BridgeCase):
         "issue-list-run.json": ["issue", "list", "--property", "omega_run=k"],
         "issue-status.json": ["issue", "status", "OMEG-1", "done"],
         "issue-runs.json": ["issue", "runs", "OMEG-1"],
+        "wakeup-list.json": ["issue", "wakeup", "list", "OMEG-1"],
+        "wakeup-create.json": ["issue", "wakeup", "create", "OMEG-1", "--until-issue", "OMEG-1", "--until-issue-state",
+                               "ended", "--agent-id", "ag-1", "--mode", "once", "--expires-in", "336h",
+                               "--instruction", "x"],
         "comment-add.json": ["issue", "comment", "add", "OMEG-1", "--content", "hello"],
         "comment-reply.json": ["issue", "comment", "add", "OMEG-1", "--content", "re", "--parent", "cm-1"],
         "comment-list.json": ["issue", "comment", "list", "OMEG-1"],
@@ -272,6 +302,7 @@ class CliTest(BridgeCase):
         self.board.add_issue("fixture run", props={"omega_run": "k", "omega_story": "S1"})
         self.board.add_comment("OMEG-1", "seed", author_type="agent", author_id="ag-1")
         self.board.add_run("OMEG-1", "run-1", "2026-10-04T05:00:00Z", "2026-10-04T05:05:00Z")
+        self.board.add_wakeup("OMEG-1", {"type": "other_issue", "identifier": "OMEG-1", "issue_id": "iss-1", "state": "ended"})
         for fixture in sorted(os.listdir(FIX)):
             if fixture.endswith(".json"):
                 self.assertIn(fixture, self.CONFORMANCE, "fixture without a stub mapping")
@@ -285,11 +316,13 @@ class CliTest(BridgeCase):
         self.board.add_issue("x", props={"omega_run": "k"}, assignee=("agent", "a"))
         self.board.add_comment("OMEG-1", "c")
         self.board.add_run("OMEG-1", "r1", "2026-10-04T05:00:00Z")
+        self.board.add_wakeup("OMEG-1")
         need = {
             "issue": ("identifier", "status", "status_category", "assignee_type", "assignee_id", "created_at",
                       "parent_issue_id", "properties"),
             "comment": ("id", "parent_id", "author_type", "author_id", "content", "created_at"),
-            "run": ("id", "started_at", "completed_at"),
+            "run": ("id", "started_at", "completed_at", "agent_id"),
+            "wakeup": ("id", "enabled", "condition"),
         }
         for k in need["issue"]:
             self.assertIn(k, self.cli.get_issue("OMEG-1"))
@@ -297,6 +330,8 @@ class CliTest(BridgeCase):
             self.assertIn(k, self.cli.list_comments("OMEG-1", "2026-01-01T00:00:00Z")[0])
         for k in need["run"]:
             self.assertIn(k, self.cli.issue_runs("OMEG-1")[0])
+        for k in need["wakeup"]:
+            self.assertIn(k, self.cli.list_wakeups("OMEG-1")[0])
 
     def test_no_deprecated_calls(self):
         files = glob.glob(os.path.join(TESTS, "..", "bridge", "*.py"))

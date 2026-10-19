@@ -44,7 +44,7 @@ class Board:
                  "version": "0.6.1", "now": None, "counters": {}, "deleted": [],
                  "user": {"id": OPERATOR, "name": "Operator", "email": "operator@example.com"},
                  "properties": [], "issues": [], "comments": [], "runs": {}, "runtimes": [],
-                 "runtime_profiles": [], "agents": []}
+                 "runtime_profiles": [], "agents": [], "wakeups": []}
         for name in ("omega_run", "omega_story"):
             board["properties"].append(stub.make_property(board, name, "text"))
         self.save(board)
@@ -113,12 +113,26 @@ class Board:
         iid = self._row(d, ident)["id"]
         return [c for c in d["comments"] if c["issue_id"] == iid]
 
-    def add_run(self, ident, run_id, started_at, completed_at=None, status="completed") -> None:
+    def add_run(self, ident, run_id, started_at, completed_at=None, status="completed", agent_id="ag-1") -> None:
         d = self.data()
         r = self._row(d, ident)
         d["runs"].setdefault(r["identifier"], []).append(
-            stub.make_run(r["id"], run_id, started_at, completed_at, status))
+            stub.make_run(r["id"], run_id, started_at, completed_at, status, agent_id))
         self.save(d)
+
+    def add_wakeup(self, ident, condition=None, enabled=True, fire_count=0, agent_id="ag-1") -> str:
+        d = self.data()
+        r = self._row(d, ident)
+        cond = condition or {"type": "other_issue", "identifier": "OMEG-9", "issue_id": "iss-9", "state": "ended"}
+        row = stub.make_wakeup(d, r, agent_id, cond, enabled=enabled, fire_count=fire_count)
+        d.setdefault("wakeups", []).append(row)
+        self.save(d)
+        return row["id"]
+
+    def wakeups(self, ident) -> list:
+        d = self.data()
+        iid = self._row(d, ident)["id"]
+        return [w for w in d.get("wakeups", []) if w["issue_id"] == iid]
 
     def calls(self, prefix: str = "") -> list:
         path = os.path.join(self.state, "calls.jsonl")

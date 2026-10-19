@@ -11,3 +11,7 @@ fixture maps to one stub command, and the key sets must match exactly.
 `errors/<name>.txt` and `.exit` are the stderr text and exit code of the recording. `duplicate` and
 `bad-status` are templates: `{ident}`, `{title}` and `{status}` are filled in by the stub. There
 is no `errors/forbidden.txt`; the stub uses its default text.
+
+The two wakeup fixtures (`wakeup-list.json`, `wakeup-create.json`) carry the subset of keys known
+from the 2026-10-19 live 0.6.1 output (that output has more keys, which the bridge does not read).
+A live `issue wakeup list --output json` can refresh them.
