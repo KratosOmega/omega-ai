@@ -2,7 +2,14 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** `start --detach` starts large manifests: fast id checks, one studio-state call per story, a window that waits for the lock, and a preflight token that skips only manifest-pure checks.
+**Goal:** `start --detach` starts large manifests: fast id checks, one studio-state call per story, and a window that waits for the lock.
+
+> **As executed (after the falsifier pass):** the spec's amended Design 1 and 3 supersede this plan where they differ:
+> - the ids index is reused within one mf_check;
+> - success also needs `$run/manifest.path`;
+> - the window is a wall-clock deadline with a 300 s default (not 120).
+>
+> Task 4 (the preflight token) was dropped: it saves about 1 s. It is tracked in #74.
 
 **Architecture:** POSIX sh changes in `studios/game-dev/bin/{overnight-ids.sh,overnight-lanes.sh,studio-overnight}`, plus shell tests in `tests/`. Two waves: T1, T2 and T3 touch disjoint files or regions and run in parallel; T4 builds on T2 and T3.
 
