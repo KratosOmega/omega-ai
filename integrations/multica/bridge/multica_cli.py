@@ -226,6 +226,9 @@ class Cli:
     def issue_runs(self, ident: str) -> list[dict]:
         return rows(self.call(["issue", "runs", ident]))
 
+    def list_wakeups(self, ident: str) -> list[dict]:
+        return rows(self.call(["issue", "wakeup", "list", ident]))
+
     def list_comments(self, ident: str, since: str) -> list[dict]:
         # P7e: --since is inclusive; callers de-duplicate by comment id.
         return rows(self.call(["issue", "comment", "list", ident, "--since", since]))
@@ -263,3 +266,12 @@ class Cli:
         if parent:
             args += ["--parent", parent]
         return self.call(args, stdin=self._clean(text))
+
+    def create_wakeup(self, issue: str, until_issue: str, state: str, agent_id: str, expires: str,
+                      instruction: str) -> dict:
+        """The AC17 carve-out, deliberately without _guard: a wakeup rule is neither a comment nor a status, starts
+        no run when created, and is the bridge's one write on a request issue.
+        See docs/game-dev/specs/2026-10-19-queued-kickoff-wake-design.md."""
+        return self.call(["issue", "wakeup", "create", issue, "--until-issue", until_issue,
+                          "--until-issue-state", state, "--agent-id", agent_id, "--mode", "once",
+                          "--expires-in", expires, "--instruction", self._clean(instruction)])

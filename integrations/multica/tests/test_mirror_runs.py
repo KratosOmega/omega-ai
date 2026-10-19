@@ -205,6 +205,8 @@ class MirrorRunsTest(MirrorCase):
         self.assertEqual(len(creates), 2)
         self.assertNotIn("--parent", creates[1]["argv"])
         self.assertIsNone(self.run_issue(run)["parent_issue_id"])
+        self.assertEqual(self.load(run)["end_wake"]["outcome"], "armed")
+        self.assertEqual(len(self.board.wakeups(req)), 1)
 
     def test_run_issue_both_fail_retires_and_notifies(self):
         run = self.mk()

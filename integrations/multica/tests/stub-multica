@@ -45,6 +45,9 @@ SPEC = {  # command words: (value flags, bool flags, positional count)
     ("issue", "status"): ((), ("--no-start",), 2),
     ("issue", "assign"): (("--agent", "--member", "--squad"), ("--unassign", "--no-start"), 1),
     ("issue", "runs"): ((), ("--active",), 1),
+    ("issue", "wakeup", "list"): ((), (), 1),
+    ("issue", "wakeup", "create"): (("--until-issue", "--until-issue-state", "--agent-id", "--mode", "--expires-in",
+                                     "--instruction"), (), 1),
     ("issue", "comment", "add"): (("--parent", "--content"), ("--content-stdin",), 1),
     ("issue", "comment", "list"): (("--since",), (), 1),
     ("property", "list"): ((), ("--include-archived",), 0),
@@ -154,14 +157,23 @@ def make_comment(board, issue_id, content, author_type="member", author_id=None,
     return row
 
 
-def make_run(issue_id, run_id, started_at, completed_at=None, status="completed"):
-    return {"agent_id": "ag-1", "attempt": 1, "attribution": None, "completed_at": completed_at,
+def make_run(issue_id, run_id, started_at, completed_at=None, status="completed", agent_id="ag-1"):
+    return {"agent_id": agent_id, "attempt": 1, "attribution": None, "completed_at": completed_at,
             "created_at": started_at, "delivered_comment_ids": [], "dispatched_at": started_at,
             "error": None, "id": run_id, "issue_id": issue_id, "kind": "issue_assignment",
             "max_attempts": 2, "priority": 0, "relative_work_dir": "", "result": {},
             "runtime_id": "rt-1", "started_at": started_at, "status": status,
             "trigger_comment_id": None, "trigger_summary": "", "usage": [], "work_dir": "",
             "workspace_id": ws()}
+
+
+def make_wakeup(board, issue_row, agent_id, condition, mode="once", instruction="", expires_at=None,
+                enabled=True, fire_count=0):
+    name = next((a["name"] for a in board.get("agents", []) if a["id"] == agent_id), None)
+    return {"agent_id": agent_id, "agent_name": name, "condition": condition, "created_by_agent": False,
+            "enabled": enabled, "expires_at": expires_at, "fire_count": fire_count,
+            "id": "wk-%d" % next_n(board, "wakeup"), "instruction": instruction, "issue_id": issue_row["id"],
+            "kind": "event", "mode": mode}
 
 
 def make_property(board, name, ptype="text", description=""):
@@ -428,6 +440,38 @@ def h_issue_runs(board, d, v, b, pos, stdin):
     return [r for r in runs if "--active" not in b or r["status"] in ACTIVE_RUN]
 
 
+def h_wakeup_list(board, d, v, b, pos, stdin):
+    row = find_issue(board, pos[0], d)
+    return [w for w in board.get("wakeups", []) if w["issue_id"] == row["id"]]
+
+
+def h_wakeup_create(board, d, v, b, pos, stdin):
+    row = find_issue(board, pos[0], d)
+    if not v.get("--until-issue"):
+        raise usage("required flag(s) \"until-issue\" not set")
+    until = find_issue(board, v["--until-issue"], d)
+    state = v.get("--until-issue-state")
+    if not state:
+        raise usage("required flag(s) \"until-issue-state\" not set")
+    if state not in ("done", "cancelled", "ended"):
+        raise usage("invalid --until-issue-state \"%s\"; valid values: done, cancelled, ended" % state)
+    if not v.get("--agent-id"):
+        raise usage("required flag(s) \"agent-id\" not set")
+    expires = v.get("--expires-in")
+    if expires is not None and not (expires.endswith("h") and expires[:-1].isdigit()):
+        raise usage("invalid --expires-in \"%s\" (want <hours>h)" % expires)
+    expires_at = None
+    if expires is not None:
+        base = board.get("now")
+        base = time.time() if base is None else base
+        expires_at = fmt(base + int(expires[:-1]) * 3600)
+    condition = {"type": "other_issue", "identifier": until["identifier"], "issue_id": until["id"], "state": state}
+    rule = make_wakeup(board, row, v["--agent-id"], condition, v.get("--mode", "once"),
+                       v.get("--instruction", ""), expires_at)
+    board.setdefault("wakeups", []).append(rule)
+    return rule
+
+
 def h_comment_add(board, d, v, b, pos, stdin):
     row = find_issue(board, pos[0], d)
     if "--content-stdin" in b:
@@ -528,6 +572,7 @@ HANDLERS = {
     ("version",): h_version, ("user", "profile", "get"): h_profile_get,
     ("issue", "create"): h_issue_create, ("issue", "get"): h_issue_get, ("issue", "list"): h_issue_list,
     ("issue", "status"): h_issue_status, ("issue", "assign"): h_issue_assign, ("issue", "runs"): h_issue_runs,
+    ("issue", "wakeup", "list"): h_wakeup_list, ("issue", "wakeup", "create"): h_wakeup_create,
     ("issue", "comment", "add"): h_comment_add, ("issue", "comment", "list"): h_comment_list,
     ("property", "list"): h_property_list, ("property", "create"): h_property_create,
     ("runtime", "list"): h_runtime_list, ("runtime", "profile", "list"): h_profile_list,

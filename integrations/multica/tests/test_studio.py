@@ -68,6 +68,16 @@ class StudioTest(BridgeCase):
         r.kill()
         self.assertFalse(studio.runner_live(r.pid))
 
+    def test_dummy_kill_leaves_no_orphan_sleep(self):
+        r = make_run(self.home, self.root)
+        group = lambda: subprocess.run(["pgrep", "-g", str(r.pid)], capture_output=True, text=True).stdout.split()
+        end = time.monotonic() + 5
+        while len(group()) < 2 and time.monotonic() < end:     # sh and its sleep child
+            time.sleep(0.05)
+        self.assertGreaterEqual(len(group()), 2)
+        r.kill()
+        self.assertEqual(group(), [])
+
     def test_pid_reused_by_other_process(self):
         p = subprocess.Popen(["sleep", "60"])
         self.addCleanup(p.wait)
