@@ -364,6 +364,44 @@ rc=0" "$(cat "$IS_OUT")" "free, then taken by the new record, then free again"
   run_ids check-id S1
   assert_eq 1 "$IS_STATUS" "the next check-id sees the new record"
 }
+# #70: within one check (no key reset) the index is reused: a record written
+# between two ids_check calls in the same shell is not seen by the second.
+test_ids_index_reused_within_check() {
+  ids_fixture tru - 'S1|-|-'
+  ids_shell 'ids_check S1 - demo - main /dev/null emit S1-b; echo "rc=$?"
+    mkdir -p "$P/.studio/runs/old"; printf "S1\told-b\tS1\t-\t-\t\n" > "$P/.studio/runs/old/rows.tsv"
+    ids_check S1 - demo - main /dev/null emit S1-b; echo "rc=$?"'
+  assert_eq "rc=0
+rc=0" "$(cat "$IS_OUT")" "the second check reuses the first one's index: the new record is not read"
+  run_ids check-id S1
+  assert_eq 1 "$IS_STATUS" "a new check-id reads it"
+}
+# #70: records are never pruned, so their list must not ride awk's argv:
+# past ARG_MAX (1 MiB on macOS) the exec failed and every record-held id
+# looked free. 800 records with 250-character names (rows.tsv and landed.tsv
+# each: over 1.2 MB as argv); the one that holds S1 sorts last. An awk on
+# PATH that logs its argc shows the list reaches awk on stdin, on any OS.
+test_ids_index_many_records() {
+  ids_fixture tmr - 'S1|-|-'
+  _rr="$P/.studio/runs"; mkdir -p "$_rr/zz" "$TMP/spy"
+  ( cd "$_rr" && awk 'BEGIN { p = sprintf("%245s", ""); gsub(/ /, "x", p)
+      for (i = 1; i <= 800; i++) print "r" i "-" p }' | xargs mkdir )
+  for _d in "$_rr"/r*/; do
+    printf 'X1\tx-b\n' > "${_d}rows.tsv"; printf 'X2\tintegration/x\tabc\t1\n' > "${_d}landed.tsv"
+  done
+  printf 'S1\told-b\n' > "$_rr/zz/rows.tsv"
+  printf '#!/bin/sh\necho "$#" >> "%s"\nexec %s "$@"\n' "$TMP/spy/argc" "$(command -v awk)" > "$TMP/spy/awk"
+  chmod +x "$TMP/spy/awk"; : > "$TMP/spy/argc"
+  ids_shell 'PATH="$TMP/spy:$PATH"; ids_reasons S1 - demo main S1-b; echo "rc=$?"
+    printf "%s\n" "$_ix_all" | grep -c "^row	x1	x-b	run r[0-9]*-x* (record \.studio/runs/r[0-9]*-x*) lists it\$"'
+  assert_eq "run zz (record .studio/runs/zz) lists it
+rc=0
+800" "$(cat "$IS_OUT")" "the last record's id is taken, every record is indexed, nothing on stderr"
+  assert_eq "" "$(awk '$1 > 8' "$TMP/spy/argc")" "no awk's argc grows with the records"
+  run_ids check-id S1
+  assert_eq 1 "$IS_STATUS" "check-id: taken"
+  assert_contains "$IS_ERR" "story id 'S1' is taken: run zz (record \.studio/runs/zz) lists it\$" "names the record"
+}
 test_ids_usage() {                                   # spec test 15
   ids_fixture t15 - 'S1|-|-'
   run_ids check-id 'S 1'
@@ -392,4 +430,4 @@ test_ids_docs() {                                    # R5
 run_tests test_ids_main_ledger_taken test_ids_main_plan_only test_ids_run_branch_plan_not_checked \
   test_ids_own_ledger test_ids_integration_branches test_ids_integration_inherits_main test_ids_plan_case_and_color test_ids_default_ref_missing test_ids_slug_dash_and_readonly test_ids_run_records test_ids_carried_over_branch test_ids_defaults_any_case test_ids_case_insensitive \
   test_ids_suggestion test_ids_defaults_need_listed_row test_ids_multi_source_manifest test_ids_suggest_skips_record_taken_candidate \
-  test_ids_index_rebuilt_per_check test_ids_usage test_ids_docs
+  test_ids_index_rebuilt_per_check test_ids_index_reused_within_check test_ids_index_many_records test_ids_usage test_ids_docs

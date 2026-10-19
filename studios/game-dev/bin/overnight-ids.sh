@@ -43,8 +43,8 @@ ids_detail() {
 # ids_index SLUG D — what rules 1-4 read that does not depend on the id, in
 # _ix_all, so each id costs one awk (#57: per id, rule 2 listed every
 # integration branch and rule 3 read every run record). Built in the calling
-# shell and reused while IDS_IX_KEY is this (STATE_ROOT, SLUG, D): one
-# mf_check's stories share it (#70). mf_check and cmd_check_id reset the key,
+# shell and reused while IDS_IX_KEY is this (STATE_ROOT, SLUG, D) and
+# _ix_all is set: one mf_check's stories share it (#70). mf_check and cmd_check_id reset the key,
 # so each check reads refs and records afresh. Build it outside $( ) (as
 # ids_check does): one built in a subshell dies with it. One section per
 # header line, in the order ids_reasons answers (D4):
@@ -57,22 +57,8 @@ ids_detail() {
 #       of another run's record, in glob order (rule 3; a record without
 #       rows.tsv: its newest report's rows, D2)
 ids_index() {
-  [ "${IDS_IX_KEY:-}" != "$STATE_ROOT|$1|$2" ] || return 0
+  [ "${IDS_IX_KEY:-}" != "$STATE_ROOT|$1|$2" ] || [ -z "${_ix_all+x}" ] || return 0
   _ix_sl="$1"; _ix_db="$2"; _ix_ref="refs/remotes/origin/$2"
-  # Rule 3's files, as kind, file and reason triples for one awk.
-  set --
-  for _ix_d in "$STATE_ROOT"/.studio/runs/*/; do
-    [ -d "$_ix_d" ] || continue
-    _ix_d="${_ix_d%/}"; _ix_n="${_ix_d##*/}"
-    [ "$_ix_n" != "$_ix_sl" ] || continue
-    _ix_b="${_ix_n%.[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]T[0-9][0-9][0-9][0-9][0-9][0-9]Z}"
-    _ix_y="run $_ix_b (record .studio/runs/$_ix_n) lists it"
-    if [ -f "$_ix_d/rows.tsv" ]; then set -- "$@" row "$_ix_d/rows.tsv" "$_ix_y"
-    elif [ "$_ix_b" != "$_ix_sl" ] && _ix_rw="$(runs_rows "$STATE_ROOT" "$_ix_b")"; then
-      set -- "$@" row "$_ix_rw" "$_ix_y"
-    fi
-    [ ! -f "$_ix_d/landed.tsv" ] || set -- "$@" landed "$_ix_d/landed.tsv" "$_ix_y"
-  done
   _ix_all="$(
     echo '#M'; git -C "$START_DIR" ls-tree "$_ix_ref" -- .studio/ledger/ 2>/dev/null
     # -z: names unquoted, NUL (made \001) after the name; the -l list, quoted
@@ -92,10 +78,26 @@ ids_index() {
       printf '#I\t%s\n' "$_ix_s"; git -C "$START_DIR" ls-tree "$_ix_r" -- .studio/ledger/ 2>/dev/null
     done
     echo '#R'
-    awk 'BEGIN { for (i = 1; i + 2 < ARGC; i += 3) {
-        while ((getline l < ARGV[i + 1]) > 0) {
-          split(l, f, "\t"); print ARGV[i] "\t" tolower(f[1]) "\t" f[2] "\t" ARGV[i + 2] }
-        close(ARGV[i + 1]) } }' "$@"
+    # The files of rule 3, in glob order, as kind, file and reason lines (the
+    # name of a record is a one-line slug) on the stdin of one awk: an argv
+    # would grow with every record (archived ones are never pruned), and past
+    # ARG_MAX the exec fails, which would leave every record-held id looking
+    # free. (No apostrophe here: bash 3.2 misreads one in a comment in $( ).)
+    for _ix_d in "$STATE_ROOT"/.studio/runs/*/; do
+      [ -d "$_ix_d" ] || continue
+      _ix_d="${_ix_d%/}"; _ix_n="${_ix_d##*/}"
+      [ "$_ix_n" != "$_ix_sl" ] || continue
+      _ix_b="${_ix_n%.[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]T[0-9][0-9][0-9][0-9][0-9][0-9]Z}"
+      _ix_y="run $_ix_b (record .studio/runs/$_ix_n) lists it"
+      if [ -f "$_ix_d/rows.tsv" ]; then printf 'row\n%s\n%s\n' "$_ix_d/rows.tsv" "$_ix_y"
+      elif [ "$_ix_b" != "$_ix_sl" ] && _ix_rw="$(runs_rows "$STATE_ROOT" "$_ix_b")"; then
+        printf 'row\n%s\n%s\n' "$_ix_rw" "$_ix_y"
+      fi
+      [ ! -f "$_ix_d/landed.tsv" ] || printf 'landed\n%s\n%s\n' "$_ix_d/landed.tsv" "$_ix_y"
+    done | awk '{ k = $0; getline fl; getline y
+        while ((getline l < fl) > 0) {
+          split(l, f, "\t"); print k "\t" tolower(f[1]) "\t" f[2] "\t" y }
+        close(fl) }'
   )"
   IDS_IX_KEY="$STATE_ROOT|$_ix_sl|$_ix_db"
 }
