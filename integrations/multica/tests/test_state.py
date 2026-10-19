@@ -100,8 +100,9 @@ class StateTest(unittest.TestCase):
                 "mode", "stories", "story_desc", "story_failed", "story_recreated", "offset", "pending",
                 "intended", "last_set", "hands_off", "held_back", "repair_stopped", "catchup", "cursors",
                 "cursor_ts", "seen", "posted", "clock_offset", "journal", "ended", "gone_polls", "poll_fails",
-                "retire_after_catchup", "retired", "delayed_for", "log_id", "released"}
+                "retire_after_catchup", "retired", "delayed_for", "log_id", "released", "end_wake"}
         self.assertEqual(set(st), want)
+        self.assertIsNone(st["end_wake"])
         self.assertEqual(st["request"], {"state": "pending", "task": "t-1", "issue": None,
                                          "since": 1791000000.0})
         self.assertEqual(st["run_dir"], "/g/.studio/reports/overnight-1")

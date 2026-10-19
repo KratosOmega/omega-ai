@@ -21,6 +21,13 @@ PERMANENT_ATTEMPTS = 3
 GONE_POLLS = 3
 POSTED_KEEP = 500
 LOG_GONE = "studio: event log replaced or removed — mirroring stopped"
+WAKE_STATE = "ended"
+WAKE_EXPIRES = "336h"
+WAKE_INSTRUCTION = ("The overnight run's Run issue %s has ended. Read its \"studio: run ended:\" comment and the "
+                    "report it names, then do what this issue's description says comes after the run.")
+WAKE_FAILED_NOTE = ("studio: could not arm the end-of-run wake on %s (%s). Arm it by hand: "
+                    "`multica issue wakeup create %s --until-issue %s --until-issue-state ended --agent-id %s "
+                    "--mode once --expires-in 336h`")
 
 
 def cost(usd) -> str:
@@ -622,6 +629,50 @@ def check_end_or_gone(ctx, st):
         retire(ctx, st)
 
 
+# ----- the end-of-run wake (#72) --------------------------------------------
+
+def _wakes_on_end(rule, run_ident, run_uuid) -> bool:
+    """True when rule is a wakeup on the Run issue's end, matched by identifier (any case) or by id."""
+    c = rule.get("condition") if isinstance(rule, dict) else None
+    if not isinstance(c, dict) or c.get("type") != "other_issue" or c.get("state") not in ("done", "ended"):
+        return False
+    return str(c.get("identifier") or "").upper() == run_ident.upper() or bool(run_uuid and c.get("issue_id") == run_uuid)
+
+
+def _end_wake(ctx, st, outcome, why, rule=None):
+    st["end_wake"] = {"outcome": outcome, "why": why, "rule": rule}
+    state.save_run(ctx.paths, st)
+
+
+def ensure_end_wake(ctx, st):
+    """#72: a request issue no sub-issue wake covers gets one end-of-run wakeup rule (the AC17 carve-out)."""
+    rq, run = st["request"], st.get("run_issue")
+    if rq["state"] != "found" or not rq.get("issue") or not run or st.get("end_wake") is not None:
+        return
+    req, agent = rq["issue"], None
+    try:
+        req_row = ctx.cli.get_issue(req)
+        run_row = ctx.rows.get(run) or ctx.cli.get_issue(run)
+        if is_hands_off(req_row) and run_row.get("parent_issue_id") == req_row.get("id"):
+            return _end_wake(ctx, st, "skipped", "agent-assigned; the Run issue is its sub-issue")
+        for rule in ctx.cli.list_wakeups(req):
+            if _wakes_on_end(rule, run, run_row.get("id")):
+                return _end_wake(ctx, st, "skipped", "rule %s already wakes on %s" % (rule.get("id"), run))
+        agent = next((r.get("agent_id") for r in ctx.cli.issue_runs(req) if r.get("id") == rq["task"]), None)
+        if agent:
+            made = ctx.cli.create_wakeup(req, run, WAKE_STATE, agent, WAKE_EXPIRES, WAKE_INSTRUCTION % run)
+            return _end_wake(ctx, st, "armed", "no sub-issue wake covers it",
+                             made.get("id") if isinstance(made, dict) else None)
+        why = "no agent id for task %s in issue runs %s" % (rq["task"], req)
+    except mc.PermanentError as e:          # NotFoundError included; Transient/Auth propagate, nothing recorded
+        why = (mc.redact(e, [ctx.cli.token]).splitlines() or [""])[0][:200]
+    st["end_wake"] = {"outcome": "failed", "why": why, "rule": None}
+    ctx.log.error("run %s: end-of-run wake on %s not armed: %s", st["key"], req, why)
+    note(ctx, st, WAKE_FAILED_NOTE % (req, why, req, run, agent or "<agent id>"))
+    ctx.notify("wake", "omega bridge: could not arm the end-of-run wake on %s, see Run issue %s" % (req, run))
+    state.save_run(ctx.paths, st)           # only after note() returned: a transient on the post retries it (D4)
+
+
 # ----- the poll -------------------------------------------------------------
 
 def poll_run(ctx, st):
@@ -638,6 +689,7 @@ def poll_run(ctx, st):
     refresh(ctx, st)
     if st["retired"]:
         return
+    ensure_end_wake(ctx, st)
     reconcile(ctx, st)
     apply_events(ctx, st)
     if st["retired"]:
