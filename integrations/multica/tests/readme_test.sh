@@ -73,7 +73,7 @@ test_readme_flags_match_install() {
   done < "$TMP/flags"
 }
 
-# Every --flag the README names exists in a help output (or is the core's --detach).
+# Every --flag the README names exists in a help output or in the CLI adapter that sends it (or is the core's --detach).
 test_readme_flags_exist() {
   sh "$M/install.sh" --help > "$TMP/ih" 2>&1
   sh "$M/uninstall.sh" --help > "$TMP/uh" 2>&1
@@ -82,7 +82,7 @@ test_readme_flags_exist() {
   if [ -s "$TMP/rflags" ]; then _pass "README names flags"; else _fail "README names no flags"; fi
   while IFS= read -r f; do
     TESTS_RUN=$((TESTS_RUN + 1))
-    if [ "$f" = "--detach" ] || grep -q -F -- "$f" "$TMP/ih" "$TMP/uh"; then _pass "flag exists: $f"
+    if [ "$f" = "--detach" ] || grep -q -F -- "$f" "$TMP/ih" "$TMP/uh" "$M/bridge/multica_cli.py"; then _pass "flag exists: $f"
     else _fail "README names a flag no script has: $f"; fi
   done < "$TMP/rflags"
 }
@@ -155,7 +155,21 @@ test_agent_instructions_adopted_line() {
   assert_contains "$M/agent-instructions.md" "^- For adopted stories, include the report's studio-adopt line in your summary\.$" "AC23"
 }
 
+test_agent_instructions_wake_line() {
+  assert_contains "$M/agent-instructions.md" "^- When you are woken because the sub-issues closed or the Run issue ended, read the Run issue's$" "#72 wake line"
+}
+
+test_readme_queue_section() {
+  TESTS_RUN=$((TESTS_RUN + 1))
+  q="$(grep -n -x -F -- "## Queue a run behind another" "$R" | sed -n 1p | cut -d: -f1)"
+  c="$(grep -n -x -F -- "## Commands" "$R" | sed -n 1p | cut -d: -f1)"
+  if [ -n "$q" ] && [ -n "$c" ] && [ "$q" -lt "$c" ]; then _pass "queue section before Commands"; else _fail "no queue section before Commands"; fi
+  assert_contains "$R" "--until-issue-state done" "queue recipe: start after the prior is done"
+  assert_contains "$R" "the bridge arms the end-of-run wake" "queue recipe: the bridge arms the wake"
+  assert_contains "$R" "Do not assign a queued kickoff" "queue recipe: never assign"
+}
+
 run_tests test_agent_instructions_adopted_line test_readme_sections test_readme_teaching_phrases test_readme_flags_match_install \
   test_readme_flags_exist test_readme_commands_match_code test_readme_status_table_matches_code \
   test_readme_deny_list_by_reference test_readme_known_risks test_readme_p5_text_matches_install \
-  test_readme_names_every_linked_command
+  test_readme_names_every_linked_command test_agent_instructions_wake_line test_readme_queue_section

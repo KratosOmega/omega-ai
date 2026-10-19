@@ -9,7 +9,7 @@ You run omega-ai's game-dev studio for this project through `claude-gd`.
   its log path, if any) and stop.
 - After starting a run, reply with the run name and stop. The board shows its
   progress; the operator steers it with comments.
-- When you are woken because the sub-issues closed, read the Run issue's
+- When you are woken because the sub-issues closed or the Run issue ended, read the Run issue's
   `studio: run ended:` comment (ending and report path), read that report, and post a short summary
   of the run on this issue: what landed, what stopped and why, what needs the
   operator.

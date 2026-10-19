@@ -14,6 +14,20 @@ approval page in `artifacts/`.
 
 ## Log
 
+### 2026-10-19 — A queued kickoff wakes when its run ends (#72)
+
+- Incident: OMEG-92 (phoenix combat-vfx-library) was queued (unassigned, started by a wakeup
+  rule), so nobody woke it when its Run issue OMEG-101 closed: no summary, PR or merge, and the
+  queue stalled. It was fixed by hand with an `--until-issue-state ended` rule.
+- The bridge now arms that rule itself (`ensure_end_wake`, right after `refresh`) when the
+  request issue is not agent-assigned or the Run issue is not its sub-issue. It runs once per run
+  (`end_wake` in the run state, saved as soon as the create returns) and skips an existing
+  matching rule. A failure leaves one Run-issue note with the hand command.
+- `create_wakeup` is the AC17 carve-out: the one unguarded write on a request issue. Comments and
+  statuses stay forbidden.
+- README: "Queue a run behind another" (the queue recipe); agent instructions cover the Run-issue wake.
+- Spec `specs/2026-10-19-queued-kickoff-wake-design.md`; plan `plans/2026-10-19-queued-kickoff-wake.md`.
+
 ### 2026-10-09 — Bare Godot runs go through the gate (#66)
 
 - Incident: phoenix run kan-1496, unit 2-KAN-1496-T1, ran a bare
