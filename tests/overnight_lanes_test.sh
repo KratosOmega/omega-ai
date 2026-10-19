@@ -2421,12 +2421,13 @@ test_lanes_detach_child_refusal_surfaces() {
 test_lanes_detach_timeout_lock_held_points_at_status() {
   lanes_fixture dtl integration A:-
   printf 'hang\n' > "$SCEN/A"
-  export STUDIO_OVERNIGHT_DETACH_STATUS_CMD=false STUDIO_OVERNIGHT_DETACH_WAIT_SECONDS=10
+  # A 30 s cap: the real child must take its lock inside it (at load, 10 s was close).
+  export STUDIO_OVERNIGHT_DETACH_STATUS_CMD=false STUDIO_OVERNIGHT_DETACH_WAIT_SECONDS=30
   st=0; ( cd "$P" && sh "$RUNNER" start --detach "$MFP" ) > "$TMP/dtl.out" 2>&1 || st=$?
   unset STUDIO_OVERNIGHT_DETACH_STATUS_CMD STUDIO_OVERNIGHT_DETACH_WAIT_SECONDS
   assert_eq 1 "$st" "a status timeout exits 1"
   assert_contains "$TMP/dtl.out" "is live" "a lock-holding child is reported live"
-  assert_contains "$TMP/dtl.out" "but did not answer status in 10 s — " "the message names the cap"
+  assert_contains "$TMP/dtl.out" "but did not answer status in 30 s — " "the message names the cap"
   assert_contains "$TMP/dtl.out" "/studio-overnight' stop" "and stop is named, by its absolute path"
   assert_contains "$TMP/dtl.out" "status --run demo, or .*/studio-overnight' stop --run demo$" "status and stop name the detached run (another run may be live)"
   assert_not_contains "$TMP/dtl.out" "run the plain command" "no plain start is offered"
@@ -2488,9 +2489,10 @@ test_lanes_detach_poll_keeps_budget() {
   assert_eq 1 "$st" "the window times out: status never answered"
   assert_contains "$TMP/dpk.out" "is live .* but did not answer status in 10 s — " "the is-live message names the cap"
   assert_eq 1 "$([ "$_el" -ge 10 ] && echo 1 || echo 0)" "the window still lasts 10 s at a 0.2 s poll (${_el}s)"
-  # A 1 s poll gives at most 11 status checks in a 10 s window; 0.2 s gives up to 50.
+  # A 1 s poll gives at most 11 status checks in a 10 s window, so 12 proves
+  # the 0.2 s poll (up to 50; at load each poll's forks cost 0.3-0.5 s more).
   _dpk_n="$(wc -l < "$TMP/dpk.count" | tr -d ' ')"
-  assert_eq 1 "$([ "$_dpk_n" -ge 15 ] && echo 1 || echo 0)" "the status check ran at the 0.2 s poll ($_dpk_n times): the knob survived --detach's STUDIO_* strip"
+  assert_eq 1 "$([ "$_dpk_n" -ge 12 ] && echo 1 || echo 0)" "the status check ran at the 0.2 s poll ($_dpk_n times): the knob survived --detach's STUDIO_* strip"
   detach_end_stand_in "$TMP/dpk.out"
 }
 test_lanes_detach_poll_rejects_bad_value() {
@@ -2533,6 +2535,24 @@ test_lanes_detach_lock_without_marker_not_started() {
   assert_not_contains "$TMP/dlm.out" "^detached:" "no success line"
   assert_contains "$TMP/dlm.out" "is live .* but did not answer status in 8 s — " "at the cap, the lock holder is reported live"
   detach_end_stand_in "$TMP/dlm.out"
+}
+# #70: the child is the runner's own and unreaped, so its exit shows as Z; an
+# empty `ps -o stat=` is a failed ps, not an exit, and the window polls again
+# (it used to wait on the live child, for the run's whole life).
+test_lanes_detach_empty_ps_stat_polls_again() {
+  lanes_fixture dps integration A:-
+  mkdir -p "$TMP/dpsbin"
+  printf '#!/bin/sh\ncase " $* " in *" stat= "*) exit 1 ;; esac\nexec %s "$@"\n' "$(command -v ps)" > "$TMP/dpsbin/ps"
+  chmod +x "$TMP/dpsbin/ps"
+  STUDIO_OVERNIGHT_DETACH_STATUS_CMD=true; STUDIO_OVERNIGHT_DETACH_WAIT_SECONDS=60
+  STUDIO_OVERNIGHT_DETACH_CHILD_CMD="$(detach_stand_in dps)"
+  export STUDIO_OVERNIGHT_DETACH_STATUS_CMD STUDIO_OVERNIGHT_DETACH_WAIT_SECONDS STUDIO_OVERNIGHT_DETACH_CHILD_CMD
+  st=0; ( cd "$P" && PATH="$TMP/dpsbin:$PATH" sh "$RUNNER" start --detach "$MFP" ) > "$TMP/dps.out" 2>&1 || st=$?
+  unset STUDIO_OVERNIGHT_DETACH_STATUS_CMD STUDIO_OVERNIGHT_DETACH_WAIT_SECONDS STUDIO_OVERNIGHT_DETACH_CHILD_CMD
+  assert_eq 0 "$st" "a ps that gives no stat is not an exit: the started child detaches"
+  assert_contains "$TMP/dps.out" "^detached: pid [0-9]*, log " "it prints the success line"
+  assert_not_contains "$TMP/dps.out" "did not start" "and no did-not-start message"
+  detach_end_stand_in "$TMP/dps.out"
 }
 test_lanes_detach_child_exit_fast_under_long_cap() {
   lanes_fixture dce integration A:-
@@ -4878,7 +4898,7 @@ run_tests test_stub_waitexist_and_run_token test_lanes_setup_preflight_refuses_l
   test_lanes_detach_strips_env test_lanes_detach_refusal_in_foreground test_lanes_detach_child_refusal_surfaces \
   test_lanes_detach_timeout_lock_held_points_at_status test_lanes_detach_timeout_no_lock_ends_child \
   test_lanes_detach_poll_keeps_budget test_lanes_detach_poll_rejects_bad_value \
-  test_lanes_detach_slow_child_takes_lock test_lanes_detach_lock_without_marker_not_started \
+  test_lanes_detach_slow_child_takes_lock test_lanes_detach_lock_without_marker_not_started test_lanes_detach_empty_ps_stat_polls_again \
   test_lanes_detach_child_exit_fast_under_long_cap test_lanes_detach_wait_rejects_bad_value \
   test_lanes_origin_attached test_lanes_origin_detach test_lanes_origin_detach_refused \
   test_lanes_help_modes test_lanes_left_gate_reaped test_lanes_timed_out_outcome test_lanes_heartbeat \

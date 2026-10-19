@@ -556,9 +556,9 @@ poll_knob STUDIO_OVERNIGHT_DETACH_POLL_SECONDS "${STUDIO_OVERNIGHT_DETACH_POLL_S
 # starts one and the strip cannot drop it. No leading zero (sh reads 010 as octal).
 case "${STUDIO_OVERNIGHT_DETACH_WAIT_SECONDS:-300}" in
   [1-9]|[1-9][0-9]|[1-9][0-9][0-9]|[1-9][0-9][0-9][0-9]) DETACH_WAIT="${STUDIO_OVERNIGHT_DETACH_WAIT_SECONDS:-300}" ;;
-  *) DETACH_WAIT=0 ;;
+  *) DETACH_WAIT="" ;;
 esac
-[ "$DETACH_WAIT" -ge 1 ] && [ "$DETACH_WAIT" -le 3600 ] \
+[ -n "$DETACH_WAIT" ] && [ "$DETACH_WAIT" -le 3600 ] \
   || { say "STUDIO_OVERNIGHT_DETACH_WAIT_SECONDS must be a whole number from 1 to 3600, got $STUDIO_OVERNIGHT_DETACH_WAIT_SECONDS"; exit 2; }
 
 START_DIR="$(sh "$STATE_BIN" root --work 2>/dev/null || true)"
@@ -1623,13 +1623,14 @@ story_units() {
 # cheap check, first); its run dir (the lock's run=) has manifest.path, which
 # lanes_run writes once acquire_run_lock has returned, so past every point
 # that can still lose the lock (take_lock, run_populate, mx_take,
-# lock_recheck: lock_lost exits 2), and a fresh run dir per start, so a
-# reused pid cannot pass; and `status` exits 0 for it. (The registry entry
-# comes earlier, but reg_write may fail without failing the run.) The window
-# waits up to DETACH_WAIT s of wall clock (300; #70: the child checks the
-# manifest again before it takes the lock, which on a large one takes tens of
-# seconds, and a false kill costs a new setup check); the child's exit (a
-# zombie counts) ends it on the next poll.
+# lock_recheck: lock_lost exits 2); and `status` exits 0 for it. Nothing
+# checks that the lock is the child's own rather than a stale one whose pid=
+# a reused pid happens to match (unlikely; as before #70). (The registry
+# entry comes earlier, but reg_write may fail without failing the run.) The
+# window waits up to DETACH_WAIT s of wall clock (300; #70: the child checks
+# the manifest again before it takes the lock, which on a large one takes
+# tens of seconds, and a false kill costs a new setup check); the child's
+# exit (a zombie counts) ends it on the next poll.
 detach_start() {
   _dm="$1"
   # Test hooks, read before the strip: a status check that never answers, and
@@ -1687,9 +1688,11 @@ detach_start() {
   _ddl=$(( $(date +%s) + DETACH_WAIT ))
   # Each poll, until the deadline: the child exited (did not start), or it is
   # started (the three checks in the header: detached); else poll again.
+  # Exited means kill -0 fails or ps says Z: the child is ours and unreaped,
+  # so an empty stat is a failed ps, not an exit (poll again).
   while [ "$(date +%s)" -lt "$_ddl" ]; do
     if kill -0 "$_dpid" 2>/dev/null \
-        && case "$(ps -o stat= -p "$_dpid" 2>/dev/null)" in Z*|'') false ;; *) true ;; esac; then
+        && case "$(ps -o stat= -p "$_dpid" 2>/dev/null)" in Z*) false ;; *) true ;; esac; then
       _drun=""; [ "$(lock_pid)" != "$_dpid" ] || _drun="$(sed -n 's/^run=//p' "$LOCK" 2>/dev/null | head -n 1)"
       if [ -n "$_drun" ] && [ -f "$_drun/manifest.path" ] \
           && { if [ -n "$_dhs" ]; then eval "$_dhs"; else sh "$SELF_ABS" status --run "$_dslug"; fi; } >/dev/null 2>&1; then
