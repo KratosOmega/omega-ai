@@ -69,7 +69,11 @@ checks above sets anything later code reads. Recheck this per check while implem
 ## Design
 
 1. **Fast ids (#57).** `ids_index SLUG D` builds, once per (STATE_ROOT, SLUG, D) in the calling
-   shell (shell variables, no file writes):
+   shell, and reused across one mf_check's per-story ids_check calls. The key is reset at mf_check
+   entry and in cmd_check_id, so every new mf_check or check-id rebuilds it. This is safe within
+   one start, because concurrent runs are re-checked under the mutex by lock_recheck. The index
+   lives in shell variables, with no file writes, and must be built in ids_check's own shell, not
+   inside `$(...)`. It holds:
    - the main ledger list;
    - the plan lines;
    - the integration ledger lists;
@@ -79,16 +83,31 @@ checks above sets anything later code reads. Recheck this per check while implem
    candidates reuse the index. Output is byte-identical to today's for every input.
 2. **One studio-state call per story.** mf_check takes the stage from the `show` output it already
    has (lanes:251), not from a second `get stage` (258). The same refusals and messages.
-3. **The window waits for the lock.** detach_start polls until the child **holds the run lock and
-   answers status** (success), or the child **exits** (the "did not start" path, unchanged), or a
-   cap passes. The cap defaults to 120 s. Test hook: `STUDIO_OVERNIGHT_DETACH_WAIT_SECONDS`, a whole
-   number from 1 to 3600, read before the strip like the other detach hooks. Any other value
-   refuses with exit 2. At the cap:
+3. **The window waits for the lock.** detach_start polls until one of three things happens:
+   - **Success:** the child holds the run lock (`lock_pid` = child, checked first, since it is
+     cheap), **and** a marker exists that is written only after every post-lock refusal point has
+     passed (take_lock → run_populate → mx_take → lock_recheck can each still lose the lock and exit
+     2), **and** status answers. The marker is e.g. the registry entry or `$RUN_DIR/manifest.path`;
+     the implementer picks the earliest one written after all of those points and documents it.
+   - **The child exits:** the "did not start" path, unchanged. A zombie counts as exited
+     (`ps -o stat=` Z), as in runs_lock_live.
+   - **The deadline passes:** a wall-clock deadline (`date +%s`), not a loop-tick count.
+
+   The cap defaults to 300 s, because a false kill costs a new 15-20 min setup check. Test hook:
+   `STUDIO_OVERNIGHT_DETACH_WAIT_SECONDS`, a whole number 1-3600 with no leading zero, read before
+   the strip like the other detach hooks. Any other value refuses with exit 2, before the child is
+   spawned. At the cap:
    - a child that holds the lock gets the existing "is live … but did not answer status in N s"
      message, with N being the cap, and exit 1;
    - otherwise the child's group is TERMed and KILLed with the existing "never took the lock and
      was ended" message, and exit 1.
-4. **Preflight token.** `STUDIO_OVERNIGHT_PREFLIGHT_CHECKED=<hex sha-256>` is computed by
+4. **Preflight token: DEFERRED (falsifier I3).** The profile's spawn log puts the skippable checks
+   at ~60-70 of 1,802 spawns, about 1 s. Two "skippable" checks read DEFAULT_BRANCH (lanes:177,
+   190/194), and git_version reads PATH, so all three are never skipped (I1, M1). A sound token also
+   has to hash and parse one snapshot of the manifest (I2). T4 runs only if the post-T1-T3
+   measurement of the child's pre-lock wall time at real load leaves the window tight. If it runs,
+   it uses the design below, amended by I1, I2 and M1.
+   Original design: `STUDIO_OVERNIGHT_PREFLIGHT_CHECKED=<hex sha-256>` is computed by
    `pf_token MANIFEST_ABS` (studio-overnight). It hashes:
    - the literal `omega-pf-v1`;
    - the manifest's absolute path;
