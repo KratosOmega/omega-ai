@@ -660,12 +660,20 @@ def ensure_end_wake(ctx, st):
                 return _end_wake(ctx, st, "skipped", "rule %s already wakes on %s" % (rule.get("id"), run))
         agent = next((r.get("agent_id") for r in ctx.cli.issue_runs(req) if r.get("id") == rq["task"]), None)
         if agent:
-            made = ctx.cli.create_wakeup(req, run, WAKE_STATE, agent, WAKE_EXPIRES, WAKE_INSTRUCTION % run)
+            try:
+                made = ctx.cli.create_wakeup(req, run, WAKE_STATE, agent, WAKE_EXPIRES, WAKE_INSTRUCTION % run)
+            except mc.PermanentError:       # the create may have landed with unreadable output: look once, never double-arm
+                landed = next((r for r in ctx.cli.list_wakeups(req) if _wakes_on_end(r, run, run_row.get("id"))), None)
+                if landed is None:
+                    raise
+                return _end_wake(ctx, st, "armed", "rule landed; create output unreadable", landed.get("id"))
             return _end_wake(ctx, st, "armed", "no sub-issue wake covers it",
                              made.get("id") if isinstance(made, dict) else None)
         why = "no agent id for task %s in issue runs %s" % (rq["task"], req)
     except mc.PermanentError as e:          # NotFoundError included; Transient/Auth propagate, nothing recorded
         why = (mc.redact(e, [ctx.cli.token]).splitlines() or [""])[0][:200]
+    except (AttributeError, TypeError, KeyError) as e:     # a malformed row must not stall this run's mirroring
+        why = "unexpected %s" % type(e).__name__
     st["end_wake"] = {"outcome": "failed", "why": why, "rule": None}
     ctx.log.error("run %s: end-of-run wake on %s not armed: %s", st["key"], req, why)
     note(ctx, st, WAKE_FAILED_NOTE % (req, why, req, run, agent or "<agent id>"))

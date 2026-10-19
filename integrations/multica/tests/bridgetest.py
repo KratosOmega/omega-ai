@@ -1,12 +1,14 @@
 """Shared test harness for the Multica bridge (#28): the stub board and BridgeCase."""
 from __future__ import annotations
 
+import atexit
 import importlib.machinery
 import importlib.util
 import json
 import logging
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -181,14 +183,22 @@ def ev(event: str, **fields) -> dict:
 _DUMMIES = []
 
 
+def _kill_group(p) -> None:
+    """Kill a dummy runner's whole process group (sh and its sleep child), then reap it."""
+    if p.returncode is None:          # unreaped: its pid cannot have been reused
+        try:
+            os.killpg(p.pid, signal.SIGKILL)
+        except OSError:               # ProcessLookupError: the group is gone already
+            pass
+    p.wait()
+
+
 def kill_dummies() -> None:
     while _DUMMIES:
-        p = _DUMMIES.pop()
-        try:
-            p.kill()
-        except OSError:
-            pass
-        p.wait()
+        _kill_group(_DUMMIES.pop())
+
+
+atexit.register(kill_dummies)         # an interrupted suite must not leave sleeps behind
 
 
 class Crash(BaseException):
@@ -220,7 +230,8 @@ class Run:
         self.registry = os.path.join(home, ".claude-gamedev", "runs")
         os.makedirs(self.registry, exist_ok=True)
         self._proc = subprocess.Popen(["sh", "-c", "sleep 600; :", "studio-overnight"],
-                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                      start_new_session=True)     # own group, so kill takes the sleep too
         _DUMMIES.append(self._proc)
         self.pid = self._proc.pid
         self.entry = os.path.join(self.registry, "%s-%d" % (basename, self.pid))
@@ -251,11 +262,7 @@ class Run:
             f.write(text + "ended=2026-10-03T23:00:00Z\n")
 
     def kill(self) -> None:
-        try:
-            self._proc.kill()
-        except OSError:
-            pass
-        self._proc.wait()
+        _kill_group(self._proc)
 
 
 def make_run(home, root, basename="overnight-20261003-2214", live=True, origin=None) -> Run:

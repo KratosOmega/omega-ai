@@ -163,9 +163,10 @@ To start a run only when another has finished, queue its kickoff instead of assi
    **unassigned**. Assigning an issue starts the agent at once. Do not assign a queued kickoff,
    not even later.
 2. Add a wakeup rule that starts it when the prior issue is done. The prior issue is the one whose
-   finishing should start this run, normally the kickoff issue of the run ahead. Get the agent id
-   from `multica agent list`:
-   `multica issue wakeup create <new> --until-issue <prior> --until-issue-state done --agent-id <agent id> --expires-in 336h --instruction "Start the overnight run this issue describes."`
+   finishing should start this run, normally the kickoff issue of the run ahead. The queued run
+   starts only when that issue is marked Done, so tell the prior kickoff's agent to mark it Done
+   after its post-run steps, or close it yourself. Get the agent id from `multica agent list`:
+   `multica issue wakeup create <new> --until-issue <prior> --until-issue-state done --agent-id <agent id> --mode once --expires-in 336h --instruction "Start the overnight run this issue describes."`
 
 When the queued run's Run issue exists, the bridge arms the end-of-run wake on the kickoff by
 itself: a once-only rule that wakes the agent when the Run issue ends (done or cancelled), so it
@@ -228,7 +229,7 @@ Rules that catch people out:
 
 - The Run issue goes In Progress when the run starts and Done when it ends, with
   the ending and the report path.
-- When the Run issue closes, the game-dev agent wakes once on the request issue and posts a short summary of the report. An agent-assigned request issue is woken by Multica when its last sub-issue closes. A queued (unassigned) one is woken by the rule the bridge arms (see [Queue a run behind another](#queue-a-run-behind-another)).
+- When the Run issue closes, the game-dev agent wakes once on the request issue and posts a short summary of the report. An agent-assigned request issue whose Run issue is its sub-issue is woken by Multica when its last sub-issue closes. Otherwise (a queued kickoff, or a Run issue that could not be made a sub-issue) it is woken by a once-only rule the bridge arms (see [Queue a run behind another](#queue-a-run-behind-another)).
 
 Hands-off: if you assign a mirrored issue to an agent, the bridge stops writing to
 it, because an agent-assigned issue wakes the agent on every comment. When you
@@ -264,8 +265,8 @@ listing the status changes and unit events it held back.
 - Agents run with `bypassPermissions` in the real workspace. They can change real files.
 - When run outside a git checkout, `studio-overnight deny-rules` drops the push-to-default rules,
   because there is no default branch to name. The rest of the deny list still applies.
-- Closing the Run issue of an agent-assigned request issue wakes the game-dev agent once on it. Reopening and closing it again wakes it again.
-- A queued kickoff is woken by a once-only rule. Reopening and closing its Run issue does not wake it again.
+- Closing the Run issue that is a sub-issue of an agent-assigned request issue wakes the game-dev agent once on it. Reopening and closing it again wakes it again.
+- A queued kickoff, or a request issue whose Run issue is not its sub-issue, is woken by a once-only rule. Reopening and closing its Run issue does not wake it again.
 - The bridge decides once whether to arm the wake. Assigning an armed kickoff later wakes it twice. Unassigning a skipped one leaves nothing to wake it. The fix is one `multica issue wakeup delete` or `wakeup create`.
 - A queued kickoff is found only by the task's workdir name. If that misses, the Run issue goes top level and nothing is armed.
 - A runner that dies with no clean end never closes its Run issue, so the rule never fires (as for an assigned kickoff).

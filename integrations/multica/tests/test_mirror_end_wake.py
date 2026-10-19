@@ -190,6 +190,38 @@ class EndWakeTest(MirrorCase):
         self.assertEqual(len(self.creates()), 1)
         self.assertEqual(len(self.fail_comments(req, run)), 1)
 
+    def test_create_landed_with_unreadable_output_is_armed(self):
+        req, run = self.start()
+        self.board.fault("issue wakeup create", exit=0, stdout="not json", count=1, apply=True)
+        self.poll()
+        ew = self.end_wake(run)
+        self.assertEqual(ew["outcome"], "armed")
+        self.assertEqual(ew["rule"], self.board.wakeups(req)[0]["id"])
+        self.assertEqual(len(self.board.wakeups(req)), 1)
+        self.assertEqual(self.fail_comments(req, run), [])
+        self.assertNotIn("wake", [k for k, _ in self.notes])
+        self.poll()
+        self.assertEqual(len(self.creates()), 1)
+
+    def test_malformed_row_fails_once_and_mirroring_goes_on(self):
+        req, run = self.start()
+        real = self.cli.get_issue
+        with mock.patch.object(self.cli, "get_issue", side_effect=lambda i: [] if i == req else real(i)):
+            self.poll()
+        ew = self.end_wake(run)
+        self.assertEqual((ew["outcome"], ew["why"]), ("failed", "unexpected AttributeError"))
+        self.assertEqual(len(self.fail_comments(req, run)), 1)
+        self.poll()
+        self.assertEqual(len(self.fail_comments(req, run)), 1)
+
+    def test_auth_error_propagates_and_records_nothing(self):
+        req, run = self.start()
+        self.board.fault("issue wakeup list", exit=1, stderr="401 unauthorized", count=1)
+        with self.assertRaises(mc.AuthError):
+            self.poll()
+        self.assertIsNone(self.end_wake(run))
+        self.assertEqual(self.creates(), [])
+
     def test_permanent_error_on_list_fails(self):
         req, run = self.start()
         self.board.fault("issue wakeup list", exit=1, stderr="Invalid request: nope", count=-1)

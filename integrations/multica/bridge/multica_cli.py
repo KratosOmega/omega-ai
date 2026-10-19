@@ -269,9 +269,9 @@ class Cli:
 
     def create_wakeup(self, issue: str, until_issue: str, state: str, agent_id: str, expires: str,
                       instruction: str) -> dict:
-        # The AC17 carve-out, deliberately without _guard: a wakeup rule is neither a comment nor a status, starts
-        # no run when created, and is the bridge's one write on a request issue.
-        # See docs/game-dev/specs/2026-10-19-queued-kickoff-wake-design.md.
+        """The AC17 carve-out, deliberately without _guard: a wakeup rule is neither a comment nor a status, starts
+        no run when created, and is the bridge's one write on a request issue.
+        See docs/game-dev/specs/2026-10-19-queued-kickoff-wake-design.md."""
         return self.call(["issue", "wakeup", "create", issue, "--until-issue", until_issue,
                           "--until-issue-state", state, "--agent-id", agent_id, "--mode", "once",
                           "--expires-in", expires, "--instruction", self._clean(instruction)])
