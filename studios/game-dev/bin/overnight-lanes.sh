@@ -162,6 +162,7 @@ mf_overlap_warn() {
 
 # mf_check — the manifest preflight: one refuse per failure (spec 806-815).
 mf_check() {
+  IDS_IX_KEY=""   # one ids index for this check's stories, built afresh (overnight-ids.sh)
   git_version_ok || refuse "git 2.38 or newer is required (git merge-tree --write-tree); found $(git --version 2>/dev/null)"
   printf '%s\n' "$MF_SLUG" | grep -Eq '^[A-Za-z0-9._-]+$' \
     || refuse "manifest: '# Run: <slug>' must name a slug of [A-Za-z0-9._-], got '$MF_SLUG'"
