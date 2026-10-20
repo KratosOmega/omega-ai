@@ -27,7 +27,8 @@
   - Wrap `stat`, `sysctl` and `/proc` reads.
   - awk must run under macOS awk (one-true-awk) and gawk. So no `{n}` intervals in awk regexes: spell them out.
 - **New files in `bin/`, `engines/*/` and `hooks/` are executable and parse under `sh -n`** (`tests/studio_test.sh:108-118` `test_bin_syntax`). `lib/common.sh:202` `install_entries` ships every child of `bin/`, so the sourced siblings ship with no installer change.
-- **A5: without the keys, behaviour is today's.** Every argv, stderr line, exit status and `gate.lock/` file stays as it is now. The exceptions are the appended `gate.times` fields and the new `gate.wantx/` entries, which are invisible and git-excluded.
+- **A5: without the keys, behaviour is today's.** With no config keys the argv and the observable behaviour are byte-identical, and `gate.lock/` gains only the `class`, `kind` and `wt` files (spec §7/§10 supersede "files unchanged"). The other exceptions are the appended `gate.times` fields and the new `gate.wantx/` entries, which are invisible and git-excluded.
+- **Spec errata:** see the "Errata (implementation)" note at the end of spec §13 (slot lane label, same-worktree GUT, `_gut_goes_main` names, scrub skips node checks).
 - **The config keys, verbatim:**
   - `"test_engine_args": "--fixed-fps 60"`
   - `"user_dir": "per-worktree"`
@@ -1022,7 +1023,7 @@ python3 -c 'import json,os,sys; p=".studio/config.json"; c=json.load(open(p)) if
     - `test_lanes_demoted_rerun_cannot_demote`: the rerun's env has no `STUDIO_GATE_DEMOTE` (the stub records `${STUDIO_GATE_DEMOTE:-none}`), so exactly two runs happen.
     - `test_lanes_short_cap_term_ignorer` (Review Focus 5):
       - `LANES_TRAP=1 LANES_SLEEP=30 STUDIO_GATE_SHORT_SECONDS=2`;
-      - the first child's pid (from its mark line, added as field 6 `$$`) is dead before the second `s` mark is written;
+      - the first child's pid (from its mark line, added as field 5 `$$` (`s tag lane nice pid demote pwd…`)) is dead before the second `s` mark is written;
       - exclusive, ruling `in (a) the KILL must land inside the 10-15 s straggler window`.
     - `test_lanes_demote_then_signal_no_rerun`: the stub touches demote and then sleeps. TERM the gate → exit 143, one run, and the demote file is removed.
   - In toolkit_test:

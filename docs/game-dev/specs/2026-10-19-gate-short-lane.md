@@ -865,6 +865,13 @@ The pointer-skills tests (`tests/pointer_skills_*`) that pin skill text are upda
        accounts for most short-eligible calls without an explanation in the PR;
      - the waits behind final gates are reported separately and are expected to be unchanged (A2).
 
+**Errata (implementation).** Where the built gate differs from the text above:
+
+- (a) Under §7 the slot is preferred, so the `gate.times` row of a short run beside an exclusive waiter or holder reads lane `short`.
+- (b) A GUT short from the shareable suite's own worktree waits for the suite, then takes the slot. `main:same-worktree` is therefore unreachable.
+- (c) The tests whose names end in `_gut_goes_main` now assert that the GUT short takes the slot. Their names are historical.
+- (d) §8 amendment: the gate's leak scrub runs after every run in an opted-in linked worktree, except a node check. A vitest, tsc or lint run is never scrubbed, because it never launches Godot, and a scrub could race a same-worktree Godot save.
+
 ## 14. Rollout
 
 1. Build and review in this worktree. The full repo gate `sh tests/run_all.sh` runs under `.git/heavy-suite.lock`.

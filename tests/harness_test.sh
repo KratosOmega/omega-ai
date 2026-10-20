@@ -480,7 +480,9 @@ guard_knobs_named() {
     for _k in "$@"; do case "$_tx" in *"$_k"*) ;; *) printf '%s: %s is not named\n' "$_lb" "$_k" ;; esac; done
   }
   _need "studio-setup header" "$(sed -n '1,40p' "$_bin/studio-setup")" STUDIO_SETUP_POLL_SECONDS
-  _need "studio-gate header" "$(sed -n '1,30p' "$_bin/studio-gate")" STUDIO_GATE_POLL_SECONDS STUDIO_GATE_SECONDS
+  _need "studio-gate header" "$(sed -n '1,30p' "$_bin/studio-gate")" STUDIO_GATE_POLL_SECONDS STUDIO_GATE_SECONDS STUDIO_GATE_SHORT_SECONDS
+  _need "gate-class.sh header" "$(sed -n '1,30p' "$_bin/gate-class.sh")" STUDIO_GATE_LOADAVG STUDIO_GATE_PHYS_CORES
+  _need "isolate.sh header" "$(sed -n '1,40p' "$REPO_ROOT/studios/game-dev/engines/godot/isolate.sh")" STUDIO_GODOT_USER_ROOT
   _need "studio-overnight --help" "$(sh "$_bin/studio-overnight" --help 2>&1)" \
     STUDIO_OVERNIGHT_REAP_POLL_SECONDS STUDIO_OVERNIGHT_DETACH_POLL_SECONDS \
     STUDIO_OVERNIGHT_IDLE_SECONDS STUDIO_OVERNIGHT_IDLE_POLL_SECONDS STUDIO_OVERNIGHT_DETACH_WAIT_SECONDS
