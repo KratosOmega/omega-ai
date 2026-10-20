@@ -92,6 +92,7 @@ sleep "${STUB_SLEEP:-0}"
 STUB
 chmod +x "$TMP/stub/godot"
 GODOT_STUB="$TMP/stub/godot"
+. "$REPO_ROOT/tests/gate_times_rows.sh"
 
 # fresh_project NAME — a project directory with project.godot; prints its path.
 fresh_project() {
@@ -287,7 +288,8 @@ test_test_file_misuse_exits_4() {
 test_test_file_through_gate() {
   P="$(fresh_project gated)"; with_gut "$P"; mkdir -p "$P/tests/unit" "$P/.studio"; : > "$P/tests/unit/a.gd"
   verb "$P" studio-test tests/unit/a.gd
-  assert_contains "$P/.studio/gate.times" '^[0-9]* studio-test-file [0-9]* 0$' "a positional file is a file run, timed as studio-test-file"
+  assert_eq 1 "$(gt_rows "$P/.studio/gate.times" studio-test-file 0)" "a positional file is a file run, timed as studio-test-file"
+  assert_contains "$P/.studio/gate.times" '^[0-9][0-9]* studio-test-file [0-9][0-9]* 0 [0-9][0-9]* [a-z][a-z:-]* [a-z][a-z]* [^ ][^ ]*$' "the row has all 8 fields"
   STUB_FAILS=1 verb "$P" studio-test --file tests/unit/a.gd
   assert_eq 1 "$(cat "$TMP/status")" "a failing test exits 1"
   assert_not_contains "$P/.studio/gate.times" ' studio-test [0-9]' "no full-suite line"
@@ -302,7 +304,8 @@ test_test_file_several_positionals() {
   verb "$P" studio-test tests/unit/a.gd ./tests/unit/b.gd
   assert_eq 0 "$(cat "$TMP/status")" "two existing files pass"
   assert_contains "$(last_log "$P")" "-gtest=res://tests/unit/a.gd,res://tests/unit/b.gd -gexit" "both run, in one -gtest="
-  assert_contains "$P/.studio/gate.times" '^[0-9]* studio-test-file [0-9]* 0$' "timed as studio-test-file"
+  assert_eq 1 "$(gt_rows "$P/.studio/gate.times" studio-test-file 0)" "timed as studio-test-file"
+  assert_contains "$P/.studio/gate.times" '^[0-9][0-9]* studio-test-file [0-9][0-9]* 0 [0-9][0-9]* [a-z][a-z:-]* [a-z][a-z]* [^ ][^ ]*$' "the row has all 8 fields"
   assert_not_contains "$P/.studio/gate.times" ' studio-test [0-9]' "no full-suite line"
   rm -f "$P"/.studio/reports/test-*.log
   verb "$P" studio-test tests/unit/a.gd tests/unit/nope.gd
@@ -1002,7 +1005,8 @@ test_gate_signal_waits_for_child_then_releases() {
   [ "$_alive" = yes ] && kill -KILL "$_cp" 2>/dev/null
   assert_eq no "$_alive" "TERM to studio-gate reaches the child"
   assert_missing "$GP/.studio/gate.lock" "the lock is gone once the child is"
-  assert_contains "$GP/.studio/gate.times" '^[0-9][0-9]* sig [0-9][0-9]* 143$' "a signalled run is logged too, with 128+n"
+  assert_eq 1 "$(gt_rows "$GP/.studio/gate.times" sig 143)" "a signalled run is logged too, with 128+n"
+  assert_contains "$GP/.studio/gate.times" '^[0-9][0-9]* sig [0-9][0-9]* 143 [0-9][0-9]* [a-z][a-z:-]* [a-z][a-z]* [^ ][^ ]*$' "the row has all 8 fields"
 }
 # Three contenders on a dead holder's lock. Each cmd marks "s <pid>" and
 # "e <pid>"; an s while another cmd is open means two ran at once. A slow `mv`
@@ -1064,7 +1068,8 @@ test_gate_unit_registration_and_times() {
   assert_eq 1 "$(wc -l < "$TMP/greg" | tr -d ' ')" "the gate registers one entry under the unit's tag"
   assert_eq "$(cat "$TMP/gself")" "$(cat "$TMP/gchild")" "the entry holds the command's pid"
   assert_missing "$GP/.studio/gate.units/run-1-3-finish" "the entry is removed when the gate ends"
-  assert_contains "$GP/.studio/gate.times" '^[0-9][0-9]* studio-test [0-9][0-9]* 0$' "gate.times gains the run's seconds and status"
+  assert_eq 1 "$(gt_rows "$GP/.studio/gate.times" studio-test 0)" "gate.times gains the run's seconds and status"
+  assert_contains "$GP/.studio/gate.times" '^[0-9][0-9]* studio-test [0-9][0-9]* 0 [0-9][0-9]* [a-z][a-z:-]* [a-z][a-z]* [^ ][^ ]*$' "the row has all 8 fields"
   assert_eq "" "$(git -C "$GP" status --porcelain --untracked-files=all | grep 'gate\.')" "the gate's files stay out of git"
   ( cd "$GP" && STUDIO_UNIT_TAG="../x" sh "$GATE" w -- true ) 2>/dev/null
   assert_missing "$GP/.studio/x" "an unsafe tag is ignored, never a path"
@@ -1085,7 +1090,8 @@ test_gate_times_window_per_who() {
   ( cd "$GP" && sh "$GATE" setup -- true ) >/dev/null 2>&1
   assert_eq 10 "$(grep -c ' studio-test ' "$GP/.studio/gate.times")" "every studio-test line is kept"
   assert_eq 50 "$(grep -c ' setup ' "$GP/.studio/gate.times")" "setup keeps its newest 50"
-  assert_contains "$GP/.studio/gate.times" '^[0-9][0-9]* setup [0-9][0-9]* 0$' "the new run is logged"
+  assert_eq 1 "$(gt_rows "$GP/.studio/gate.times" setup 0)" "the new run is logged"
+  assert_contains "$GP/.studio/gate.times" '^[0-9][0-9]* setup [0-9][0-9]* 0 [0-9][0-9]* [a-z][a-z:-]* [a-z][a-z]* [^ ][^ ]*$' "the row has all 8 fields"
   assert_not_contains "$GP/.studio/gate.times" '^11 setup ' "the oldest setup lines went"
 }
 
@@ -1107,7 +1113,8 @@ test_gate_run_cap_stops_a_long_run() {
   assert_eq 124 "$GC_ST" "a run past the cap exits 124"
   assert_eq 1 "$([ "$GC_SECS" -lt 8 ] && echo 1 || echo 0)" "stopped at the cap, not after 30 s"
   assert_contains "$TMP/gc.err" '^gate: t ran past 1 min — stopped$' "names who and the minutes"
-  assert_contains "$GP/.studio/gate.times" '^[0-9]* t [0-9]* 124$' "gate.times records 124"
+  assert_eq 1 "$(gt_rows "$GP/.studio/gate.times" t 124)" "gate.times records 124"
+  assert_contains "$GP/.studio/gate.times" '^[0-9][0-9]* t [0-9][0-9]* 124 [0-9][0-9]* [a-z][a-z:-]* [a-z][a-z]* [^ ][^ ]*$' "the row has all 8 fields"
   assert_missing "$GP/.studio/gate.lock" "the lock is released"
 }
 test_gate_run_cap_excludes_lock_wait() {
@@ -1144,7 +1151,10 @@ test_gate_run_cap_no_false_stop() {
   assert_eq hi "$_o" "its output"
   gate_capped 1 5 t true
   assert_eq 1 "$([ "$GC_SECS" -lt 3 ] && echo 1 || echo 0)" "the timer does not hold the caller ($GC_SECS s)"
-  assert_not_contains "$GP/.studio/gate.times" ' 124$' "no 124 recorded"
+  assert_eq 0 "$(gt_rows "$GP/.studio/gate.times" t 124)" "no 124 recorded"
+  assert_eq 1 "$(gt_rows "$GP/.studio/gate.times" t 3)" "the run's own row"
+  assert_eq 1 "$(gt_rows "$GP/.studio/gate.times" t 0)" "the capped true run's row"
+  assert_contains "$GP/.studio/gate.times" '^[0-9][0-9]* t [0-9][0-9]* 3 [0-9][0-9]* [a-z][a-z:-]* [a-z][a-z]* [^ ][^ ]*$' "the row has all 8 fields"
   assert_not_contains "$TMP/gc.err" 'ran past' "no stop message"
 }
 # Final review m2: leading zeros are decimal, not an octal arithmetic error
@@ -1165,7 +1175,8 @@ test_gate_run_cap_production_seconds() {
   ( cd "$GP" && STUDIO_GATE_MINUTES=1 sh "$TMP/cap6bin/studio-gate" prodcap -- sleep 2 ) 2> "$TMP/gp.err" || _st=$?
   assert_eq 0 "$_st" "a 2 s run under a 1 min cap, no seconds seam, exits 0"
   assert_not_contains "$TMP/gp.err" 'ran past' "no stop message"
-  assert_contains "$GP/.studio/gate.times" '^[0-9]* prodcap [0-9]* 0$' "gate.times records rc 0"
+  assert_eq 1 "$(gt_rows "$GP/.studio/gate.times" prodcap 0)" "gate.times records rc 0"
+  assert_contains "$GP/.studio/gate.times" '^[0-9][0-9]* prodcap [0-9][0-9]* 0 [0-9][0-9]* [a-z][a-z:-]* [a-z][a-z]* [^ ][^ ]*$' "the row has all 8 fields"
   # Absence wait: the timer polls once a second; 2 s is the ceiling.
   _i=0; while [ "$(cap_procs prodcap)" != 0 ] && [ "$_i" -lt 20 ]; do sleep 0.1; _i=$((_i + 1)); done
   assert_eq 0 "$(cap_procs prodcap)" "no timer outlives the gate"

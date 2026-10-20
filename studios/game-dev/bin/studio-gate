@@ -25,10 +25,13 @@
 # holding, so a gate a session left in the background can never hold the
 # lock into the next unit.
 #
-# Gate times: every command that ran appends `<epoch> <who> <seconds> <rc>`
-# (rc 128+n when a signal ended it) to STATE_ROOT/.studio/gate.times (the
-# newest 50 lines per `who` are kept); studio-overnight's preflight checks the slowest
-# recent studio-test against session_minutes.
+# Gate times: every command that ran appends
+# `<epoch> <who> <seconds> <rc> <wait s> <lane> <class> <unit|->` (rc 128+n
+# when a signal ended it) to STATE_ROOT/.studio/gate.times; gate-times.sh
+# keeps the newest 50 rows per who or any row younger than 14 days, at most
+# 20000 lines, rewriting under the reclaim mutex when it can be had in ~5 s
+# (else unlocked). studio-overnight's preflight checks the slowest recent
+# studio-test against session_minutes.
 #
 # Run cap (#59 R1): STUDIO_GATE_MINUTES (a whole number; unset, empty or 0 =
 # no cap) stops a run that goes past it: TERM to the process group, KILL after
@@ -229,6 +232,7 @@ trap 'on_signal 130' INT
 trap 'on_signal 143' TERM
 trap 'on_signal 129' HUP
 
+T_REQ="$(date +%s)"
 waited=0
 until try_take; do
   if [ $((waited % (60 * GATE_TPS))) -eq 0 ]; then
@@ -237,6 +241,7 @@ until try_take; do
   waited=$((waited + 1))
   sleep "$GATE_POLL"
 done
+WAIT_S=$(( $(date +%s) - T_REQ ))
 
 # `set -m` makes the child lead its own process group (pgid == its pid), so
 # a forwarded signal reaches everything it started, and its signal
@@ -299,13 +304,8 @@ CHILD=""
 # A signalled run (a reaper, a session cap) is logged too, with 128+n: its
 # seconds are a lower bound, and the overruns are what the preflight's
 # session_minutes check most needs to see.
-_times="$ROOT/.studio/gate.times"
-{ [ -f "$_times" ] && cat "$_times"
-  printf '%s %s %s %s\n' "$(date +%s)" "$WHO" "$(( $(date +%s) - T0 ))" "${SIGSTATUS:-$rc}"
-} | awk '{ w[NR] = $2; l[NR] = $0 }
-    END { for (i = NR; i >= 1; i--) keep[i] = (++c[w[i]] <= 50); for (i = 1; i <= NR; i++) if (keep[i]) print l[i] }' \
-  > "$_times.$$" 2>/dev/null && mv -f "$_times.$$" "$_times" 2>/dev/null
-rm -f "$_times.$$"
+. "$SELF_DIR/gate-times.sh"
+gate_times_append "$ROOT/.studio/gate.times" "$(date +%s)" "$WHO" "$(( $(date +%s) - T0 ))" "${SIGSTATUS:-$rc}" "$WAIT_S" main exclusive "${TAG:--}"
 release
 if [ -n "$SIGSTATUS" ]; then exit "$SIGSTATUS"; fi
 exit "$rc"

@@ -1033,6 +1033,27 @@ test_overnight_status() {
   assert_missing "$CALLS/wait.timeout" "no stub wait hit its ceiling"
 }
 
+# #71: a live short-lane slot holder (gate.short/pid) gets its own status line
+# after the main gate's; a dead one shows nothing (display only, kill -0).
+test_overnight_status_short_lane() {
+  fixture stsl; scenario "stage execute; task 1/2; cost 1.5" "waitexist $P/.studio/overnight.stop; task 2/2"
+  start_bg; wait_for "$CALLS/2.t0"
+  sleep 60 & _sp=$!
+  mkdir -p "$P/.studio/gate.short"
+  printf '%s\n' "$_sp" > "$P/.studio/gate.short/pid"; printf 'vitest\n' > "$P/.studio/gate.short/who"
+  date +%s > "$P/.studio/gate.short/since"; printf 'u1\n' > "$P/.studio/gate.short/unit"
+  ( cd "$P" && sh "$RUNNER" status ) > "$TMP/st.out"
+  assert_contains "$TMP/st.out" "^gate: free$" "status: the main gate line is unchanged"
+  assert_contains "$TMP/st.out" "^gate short lane: vitest (pid $_sp) for " "status: the live slot holder, after it"
+  assert_eq 1 "$(awk '/^gate: free$/ { g = NR } /^gate short lane:/ { s = NR } END { print (g && s == g + 1) ? 1 : 0 }' "$TMP/st.out")" "status: the slot line follows the gate line"
+  kill "$_sp" 2>/dev/null; wait "$_sp" 2>/dev/null
+  ( cd "$P" && sh "$RUNNER" status ) > "$TMP/st.out"
+  assert_contains "$TMP/st.out" "^gate: free$" "status: the gate line with a dead slot pid"
+  assert_not_contains "$TMP/st.out" "gate short lane" "status: no slot line when its pid is dead"
+  ( cd "$P" && sh "$RUNNER" stop ) >/dev/null; bg_status
+  assert_missing "$CALLS/wait.timeout" "no stub wait hit its ceiling"
+}
+
 test_overnight_check_unit() {
   fixture chk
   ( cd "$P" && sh "$STATE_BIN" set stage execute && sh "$STATE_BIN" set task 1/2 \
@@ -2643,7 +2664,7 @@ run_tests test_overnight_setup_preflight_single test_overnight_help_setup_prefli
   test_overnight_report_done test_overnight_report_not_done test_overnight_preflight_env_warns_not_blocks \
   test_overnight_report_anchors test_overnight_resume_quote test_overnight_label_t1 \
   test_overnight_session_seconds_refused test_overnight_claim_without_run_dir \
-  test_overnight_report_runner_error test_overnight_crash_resume test_overnight_status \
+  test_overnight_report_runner_error test_overnight_crash_resume test_overnight_status test_overnight_status_short_lane \
   test_overnight_timeout test_overnight_kill_after_grace \
   test_overnight_reap_poll_keeps_budget test_overnight_reap_poll_rejects_bad_value \
   test_overnight_stop_file test_overnight_sigterm test_overnight_sigint test_overnight_sighup \
