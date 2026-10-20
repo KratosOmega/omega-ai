@@ -400,8 +400,20 @@ run_once() {
 }
 
 # ---- leak scrub (T10) ----
-# gate_scrub — after each attempt, before its row is written.
-gate_scrub() { :; }
+# gate_scrub — O7: after every run in an opted-in linked worktree (isolate
+# decides), except a node short check, remove the lanes lines project.godot
+# gained and fail a passing run (exit 1; a failing status is kept).
+gate_scrub() {
+  [ "$CLS" = short ] && [ "$KIND" = node ] && return 0
+  ( cd "$WT" 2>/dev/null && sh "$SELF_DIR/studio-dispatch" --has isolate ) || return 0
+  _gs_out="$(cd "$WT" && sh "$SELF_DIR/studio-dispatch" isolate --scrub 2>/dev/null)"; _gs_rc=$?
+  case "$_gs_rc" in
+    0) return 0 ;;
+    3) printf 'gate: project.godot gained the per-worktree user:// setting (%s) — removed; this run is not trusted\n' "$_gs_out" >&2 ;;
+    *) printf 'gate: the project.godot leak check failed (isolate --scrub exit %s) — this run is not trusted\n' "$_gs_rc" >&2 ;;
+  esac
+  [ "$ROW_RC" != 0 ] || ROW_RC=1
+}
 
 # row_lane — the row's lane: short, main:demoted, main:<the refusal at
 # acquisition> for a short caller in the main lane (spaces as -), main:off for a

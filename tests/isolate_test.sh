@@ -362,6 +362,77 @@ test_cfg_parity() {
   assert_eq "no" "$([ -z "$a" ] && echo yes || echo no)" "the block is not empty"
 }
 
+# ---- leak scrub in the gate (T10) ----
+GATE="$BIN/studio-gate"
+LEAK='printf "config/use_custom_user_dir=true\nconfig/custom_user_dir_name=\"StubGame-lanes-0badf00d/x\"\n" >> project.godot'
+LEAKMSG='gate: project.godot gained the per-worktree user:// setting (config/use_custom_user_dir, config/custom_user_dir_name) — removed; this run is not trusted'
+# gs_run DIR CMD — the exclusive form in DIR; $TMP/gs.err gets stderr, rc in $rc.
+gs_run() {
+  _gd="$1"; shift
+  rc=0; ( cd "$_gd" && STUDIO_GATE_LOADAVG=0 OMEGA_STUDIO_ROOT="${GS_ROOT:-$STUDIO}" STUDIO_GODOT_USER_ROOT="$UR" sh "$GATE" x -- sh -c "$1" ) > /dev/null 2> "$TMP/gs.err" || rc=$?
+}
+
+test_gate_scrub_removes_and_fails() {
+  UR="$TMP/ud-gs1"; R="$(iso_repo gs1)"; W="$(iso_wt "$R" gs1-wt)"
+  gs_run "$W" "$LEAK"
+  assert_eq 1 "$rc" "a leak with a passing command exits 1"
+  assert_eq "$LEAKMSG" "$(cat "$TMP/gs.err")" "the exact copy"
+  assert_eq "" "$(git -C "$W" diff -- project.godot)" "the lines are removed"
+  _sr="$(cd "$W" && sh "$BIN/studio-state" root 2>/dev/null)"
+  assert_eq "1" "$(tail -n 1 "$_sr/.studio/gate.times" 2>/dev/null | awk '{ print $4 }')" "the row rc is 1"
+}
+
+test_gate_scrub_keeps_failing_status() {
+  UR="$TMP/ud-gs2"; R="$(iso_repo gs2)"; W="$(iso_wt "$R" gs2-wt)"
+  gs_run "$W" "$LEAK; exit 5"
+  assert_eq 5 "$rc" "a failing status is kept"
+  assert_eq "" "$(git -C "$W" diff -- project.godot)" "and the lines are removed"
+}
+
+test_gate_scrub_leaves_head_keys() {
+  UR="$TMP/ud-gs3"; R="$(iso_repo gs3)"
+  ( cd "$R" && printf '%s\n%s\n' "$USE" "$NAMELINE" >> project.godot && git add project.godot && g commit -q -m keys )
+  W="$(iso_wt "$R" gs3-wt)"
+  gs_run "$W" 'true'
+  assert_eq 0 "$rc" "HEAD has both lines: exit 0"
+  assert_eq "" "$(git -C "$W" diff -- project.godot)" "untouched"
+  assert_eq "" "$(cat "$TMP/gs.err")" "and no message"
+}
+
+test_gate_scrub_lane_off_and_main_untouched() {
+  UR="$TMP/ud-gs4"; R="$(iso_repo gs4)"; W="$(iso_wt "$R" gs4-wt nokey)"
+  gs_run "$W" "$LEAK"
+  assert_eq 0 "$rc" "no user_dir key: exit 0"
+  assert_contains "$W/project.godot" "$USE" "lines kept"
+  mkdir -p "$R/.studio"; printf '{"engine": "godot4", "user_dir": "per-worktree"}\n' > "$R/.studio/config.json"
+  gs_run "$R" "$LEAK"
+  assert_eq 0 "$rc" "the main checkout: exit 0"
+  assert_contains "$R/project.godot" "$USE" "and its lines are kept"
+}
+
+test_gate_scrub_skips_node_short() {
+  UR="$TMP/ud-gs5"; R="$(iso_repo gs5)"; W="$(iso_wt "$R" gs5-wt)"
+  printf '{"engine": "godot4", "user_dir": "per-worktree", "gate_short_lane": "on"}\n' > "$W/.studio/config.json"
+  mkdir -p "$W/web-tools/node_modules/.bin" "$W/web-tools/tests"
+  printf 'test("a", () => {})\n' > "$W/web-tools/tests/a.test.ts"
+  printf '#!/bin/sh\ncd .. && %s\n' "$LEAK" > "$W/web-tools/node_modules/.bin/vitest"
+  chmod +x "$W/web-tools/node_modules/.bin/vitest"
+  rc=0; ( cd "$W/web-tools" && STUDIO_GATE_LOADAVG=0 OMEGA_STUDIO_ROOT="$STUDIO" STUDIO_GODOT_USER_ROOT="$UR" \
+      sh "$GATE" vitest -- node_modules/.bin/vitest run --minWorkers=1 --maxWorkers=2 tests/a.test.ts ) > /dev/null 2> "$TMP/gs.err" || rc=$?
+  assert_eq 0 "$rc" "a node short check is not scrubbed: exit 0"
+  assert_contains "$W/project.godot" "$USE" "the lines remain (the commit guard covers it)"
+}
+
+test_gate_scrub_error_fails_closed() {
+  UR="$TMP/ud-gs6"; R="$(iso_repo gs6)"; W="$(iso_wt "$R" gs6-wt)"
+  SS="$TMP/gs-stub-studio"; mkdir -p "$SS/engines/godot"
+  printf '{"engine": "godot4"}\n' > "$SS/studio.json"
+  printf '#!/bin/sh\ncase "${1:-}" in --scrub) exit 1 ;; *) exit 0 ;; esac\n' > "$SS/engines/godot/isolate.sh"
+  GS_ROOT="$SS" gs_run "$W" 'true'
+  assert_eq 1 "$rc" "a scrub error fails closed"
+  assert_eq "gate: the project.godot leak check failed (isolate --scrub exit 1) — this run is not trusted" "$(cat "$TMP/gs.err")" "with the exact copy"
+}
+
 # exclusive-scan: test_isolate_sweep_dead_old_only out (static) no clock; mtimes are set with touch -t
 # exclusive-scan: test_isolate_sweep_daily_stamp out (static) no clock; mtimes are set with touch -t
 run_tests test_isolate_writes_in_opted_linked_worktree test_isolate_never_in_main_checkout \
@@ -371,4 +442,6 @@ run_tests test_isolate_writes_in_opted_linked_worktree test_isolate_never_in_mai
   test_isolate_sweep_daily_stamp test_isolate_sweep_paths_with_spaces test_isolate_hash_keys_the_clone \
   test_isolate_start_scrub test_isolate_scrub_modes test_isolate_leaks_lists \
   test_isolate_user_root_production_default test_dispatch_has_verb test_studio_test_calls_isolate test_cfg_parity \
-  test_isolate_scrub_subdir_projects test_isolate_exclude_with_spaces test_studio_test_stderr_unchanged_when_not_opted
+  test_isolate_scrub_subdir_projects test_isolate_exclude_with_spaces test_studio_test_stderr_unchanged_when_not_opted \
+  test_gate_scrub_removes_and_fails test_gate_scrub_keeps_failing_status test_gate_scrub_leaves_head_keys \
+  test_gate_scrub_lane_off_and_main_untouched test_gate_scrub_skips_node_short test_gate_scrub_error_fails_closed
