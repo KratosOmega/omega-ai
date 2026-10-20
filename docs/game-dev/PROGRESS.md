@@ -14,6 +14,32 @@ approval page in `artifacts/`.
 
 ## Log
 
+### 2026-10-20 — Short checks no longer wait behind a whole-suite run (#71)
+
+- Incident, measured over 14 days of phoenix overnight runs: 191 of 3187 short gate calls waited
+  behind a long hold, 4317 min in all, 66% of gate queue time. The gate ran one command at a time.
+- Three opt-in keys (none set means argv and behaviour match main):
+  - `test_engine_args: "--fixed-fps 60"`: GUT tests stop depending on CPU load (~2x faster).
+  - `gate_short_lane: "on"`: one whitelisted short check may run beside a shareable whole-suite run.
+  - `user_dir: "per-worktree"`: `isolate.sh` writes an untracked `override.cfg`, so worktrees stop sharing user://.
+- One short slot, admitted under the mutex by the fail-closed `bin/gate-class.sh` plus a load check.
+  It never runs beside an exclusive holder, a waiting exclusive blocks new entries, and the slot
+  has a 5-min cap, after which the check is re-run once in the main lane.
+- The gate scrubs a leaked user_dir setting from `project.godot` and fails the run (sticky across
+  a re-run); `hooks/lanes-guard.sh` refuses a commit carrying it.
+- Synthetic bench (`tests/probes/gate_lane_bench.sh`, 180 s hold): short wait p50 170 s to 0 s.
+- Fixed the dash `kill --` test helper (four #70 detach tests failed under dash). Follow-up #78:
+  two load-flaky lanes tests.
+- Spec `specs/2026-10-19-gate-short-lane.md`; plan `plans/2026-10-19-gate-short-lane.md`.
+- Installed 2026-10-20 at d99a31e together with #70/#57/#72 (PR #77). The Multica bridge was re-installed (ensure_end_wake live), and the `omega phoenix` agent instructions were refreshed with `agent update`. 
+- Manual acceptance §13.3 passed 2026-10-20 in a throwaway Godot 4.6 project:
+  - concurrent `--file` runs kept separate user:// values;
+  - 120 physics frames took 17 ms with fixed FPS vs 1884 ms without;
+  - the leak was scrubbed and failed the run, and lanes-guard denied the commit;
+  - the slot took a short check beside a shareable suite with 0 s wait, and waited behind an exclusive holder.
+  Editor-mode launches still create an empty `app_userdata/<name>/objectdb_snapshots/` (README known limits).
+  Open: §13.4-13.5 (the no-new-flaky-reds check and the isolated full gate in phoenix) and §13.6-13.7 (the live wait measure after the first runs).
+
 ### 2026-10-19 — `start --detach` survives a large manifest; fast id checks (#70, #57)
 
 - Incident: every `start --detach` of phoenix combat-vfx-library (7 stories, 132 units) was

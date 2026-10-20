@@ -188,6 +188,9 @@ stories as parallel lanes of dependency chains:
   - A shareable suite's own import runs beside the slot.
   - The common exclude hides a developer's untracked `override.cfg` in the main
     checkout from `git status`.
+  - Godot 4.6 editor-mode launches (`--import`, `-e`) still create an empty
+    `app_userdata/<name>/objectdb_snapshots/` despite `override.cfg`; GUT runs
+    do not.
   - Linux physical-core detection without `core id` in `/proc/cpuinfo` is
     unverified; it fails closed.
   - A demoted re-run holds the main lane as class `short`, so a new short
