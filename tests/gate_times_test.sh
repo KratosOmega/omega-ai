@@ -63,12 +63,14 @@ test_gate_times_wait_recorded() {
   _w=$!
   wait_file "$TMP/w.err" 'gate: waiting'
   assert_contains "$TMP/w.err" '^gate: waiting for h ' "the waiter queues behind the holder"
-  sleep 2
+  sleep 3
   touch "$TMP/h.go"
   wait "$_h"; wait "$_w"
   _ww="$(gt_row "$F" w | awk '{ print $5 }')"; _hw="$(gt_row "$F" h | awk '{ print $5 }')"
-  assert_eq 1 "$([ "${_ww:-0}" -ge 2 ] && echo 1 || echo 0)" "the waiter's row records its wait of 2 s or more ($_ww)"
-  assert_eq 1 "$({ [ "$_hw" = 0 ] || [ "$_hw" = 1 ]; } && echo 1 || echo 0)" "the holder's row records no wait ($_hw)"
+  assert_eq 1 "$([ "${_ww:-0}" -ge 3 ] && echo 1 || echo 0)" "the waiter's row records its wait of 3 s or more ($_ww)"
+  # Final review I2c: one uncontended admission can pass 1 s under the full
+  # gate's load, so the holder's wait is bounded by the waiter's, not by 0 or 1.
+  assert_eq 1 "$([ "${_hw:-99}" -lt "${_ww:-0}" ] && echo 1 || echo 0)" "the holder's row records less wait than the waiter's ($_hw < $_ww)"
 }
 
 test_gate_times_keeps_4_field_rows() {

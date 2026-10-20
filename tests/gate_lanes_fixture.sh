@@ -37,6 +37,8 @@
 #   LANES_DEMOTE=REASON  in the slot (STUDIO_GATE_DEMOTE set): write REASON to the
 #                        demote file and exit 1
 #   LANES_DEMOTE_SLEEP=N with LANES_DEMOTE: sleep N s after writing it, then exit 1
+#   LANES_LEAK=1         in the slot (STUDIO_GATE_LANE=short): leave a leak, which the
+#                        stub isolate.sh's next --scrub reports (exit 3) and clears
 
 lanes_stub_text() {
   cat <<'STUB'
@@ -46,6 +48,7 @@ lanes_stub_text() {
 _t="${LANES_TAG:-t}"
 printf 's %s %s %s %s %s %s\n' "$_t" "${STUDIO_GATE_LANE:--}" "$(ps -o nice= -p $$ | tr -d ' ')" "$$" "${STUDIO_GATE_DEMOTE:-none}" "$(pwd -P)" >> "$LANES_MARKS"
 [ -z "${LANES_NEST:-}" ] || sh "$LANES_GATE" inner -- true
+[ -z "${LANES_LEAK:-}" ] || [ "${STUDIO_GATE_LANE:-}" != short ] || : > "$LANES_HOLD_DIR/leaked"
 if [ -n "${LANES_DEMOTE:-}" ] && [ -n "${STUDIO_GATE_DEMOTE:-}" ]; then
   printf '%s\n' "$LANES_DEMOTE" > "$STUDIO_GATE_DEMOTE"
   [ -z "${LANES_DEMOTE_SLEEP:-}" ] || sleep "$LANES_DEMOTE_SLEEP"
@@ -67,14 +70,14 @@ lanes_init() {
   lanes_stub_text > "$LS/engines/godot/test.sh"
   chmod +x "$LS/engines/godot/test.sh"
   LANES_STUB="$LS/engines/godot/test.sh"
-  printf '#!/bin/sh\ncase "${1:-}" in --check) [ -f override.cfg ] ;; *) exit 0 ;; esac\n' > "$LS/engines/godot/isolate.sh"
+  printf '#!/bin/sh\ncase "${1:-}" in --check) [ -f override.cfg ] ;;\n  --scrub) [ -f "$LANES_HOLD_DIR/leaked" ] || exit 0; rm -f "$LANES_HOLD_DIR/leaked"; echo config/use_custom_user_dir; exit 3 ;;\n  *) exit 0 ;; esac\n' > "$LS/engines/godot/isolate.sh"
   chmod +x "$LS/engines/godot/isolate.sh"
   LANES_MARKS="$TMP/lanes-marks"; : > "$LANES_MARKS"
   LANES_HOLD_DIR="$TMP/lanes-holds"; rm -f "$LANES_HOLD_DIR"/*
   LANES_GATE="$BIN/studio-gate"
   unset STUDIO_START_DIR STUDIO_GATE_HELD STUDIO_GATE_LANE STUDIO_GATE_DEMOTE STUDIO_UNIT_TAG \
         STUDIO_GATE_MINUTES STUDIO_GATE_SECONDS STUDIO_GATE_SHORT_SECONDS \
-        LANES_TAG LANES_SLEEP LANES_HOLD LANES_RC LANES_TRAP LANES_NEST LANES_DEMOTE LANES_DEMOTE_SLEEP
+        LANES_TAG LANES_SLEEP LANES_HOLD LANES_RC LANES_TRAP LANES_NEST LANES_DEMOTE LANES_DEMOTE_SLEEP LANES_LEAK
   OMEGA_STUDIO_ROOT="$LS"; STUDIO_GATE_POLL_SECONDS=0.1; STUDIO_GATE_LOADAVG=0; STUDIO_GATE_PHYS_CORES=4
   export OMEGA_STUDIO_ROOT STUDIO_GATE_POLL_SECONDS STUDIO_GATE_LOADAVG STUDIO_GATE_PHYS_CORES \
          LANES_MARKS LANES_HOLD_DIR LANES_GATE LANES_STUB

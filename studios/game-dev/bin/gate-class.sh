@@ -229,12 +229,15 @@ gate_load1() {
   printf '%s\n' "$_gl_v"
 }
 
-# gate_load_ok — prints <load>/<threshold> (? for an unreadable side). Returns 0
-# iff both are readable and load < threshold (t = 2 x physical cores).
+# gate_load_ok [CORES] — prints <load>/<threshold> (? for an unreadable side).
+# Returns 0 iff both are readable and load < threshold (t = 2 x physical cores).
+# CORES, when given, is the core count already read (gate_phys_cores' output,
+# empty when unreadable): studio-gate reads it once, not on every poll (§7).
 gate_load_ok() {
   _go_l="$(gate_load1)" || _go_l="?"
   _go_t="?"
-  if _go_c="$(gate_phys_cores)"; then _go_t=$((_go_c * 2)); fi
+  if [ "$#" -ge 1 ]; then _go_c="$1"; else _go_c="$(gate_phys_cores)" || _go_c=""; fi
+  case "$_go_c" in ''|*[!0-9]*|0|0[0-9]*) ;; *) _go_t=$((_go_c * 2)) ;; esac
   printf '%s/%s\n' "$_go_l" "$_go_t"
   [ "$_go_l" != "?" ] && [ "$_go_t" != "?" ] || return 1
   awk -v l="$_go_l" -v t="$_go_t" 'BEGIN { exit !(l + 0 < t + 0) }'

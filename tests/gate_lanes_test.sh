@@ -35,7 +35,7 @@ starts() { awk -v t="$1" '$1 == "s" && $2 == t { n++ } END { print n + 0 }' "$LA
 # gone PID — true once PID is no longer a live process.
 gone() { ! kill -0 "$1" 2>/dev/null; }
 
-# exclusive-scan: test_lanes_beside_shareable out (d) order only: the short completes while the suite holds on its file
+# exclusive-scan: test_lanes_beside_shareable out (d) order only: the short completes while the suite holds on its file; the 10 s wait bound is far above one admission under load
 test_lanes_beside_shareable() {
   lanes_repo beside; A="$(lanes_wt A)"; B="$(lanes_wt B)"
   lanes_suite suite "$A"; lanes_wait_mark '^s suite '
@@ -44,7 +44,7 @@ test_lanes_beside_shareable() {
   assert_eq yes "$(lanes_overlap suite short)" "the short ran beside the suite"
   assert_eq "short short" "$(row67 studio-test-file)" "the short's row has lane short, class short"
   _w="$(gt_row "$(gtf)" studio-test-file | awk '{ print $5 }')"
-  assert_eq 1 "$([ "${_w:-99}" -le 3 ] && echo 1 || echo 0)" "the short waited 3 s or less ($_w)"
+  assert_eq 1 "$([ "${_w:-99}" -le 10 ] && echo 1 || echo 0)" "the short waited 10 s or less, not for the suite ($_w)"
   lanes_go suite
   assert_eq 0 "$(lanes_done suite)" "the suite exits 0"
   assert_eq "main shareable" "$(row67 studio-test)" "the suite's row has class shareable"
@@ -350,7 +350,7 @@ test_lanes_unit_registration_in_slot() {
   assert_missing "$LR/.studio/gate.units/u1/$_gp" "the registration is removed"
 }
 
-# exclusive-scan: test_lanes_waiting_messages in (a) the reason is printed on the first poll, within 2 s
+# exclusive-scan: test_lanes_waiting_messages in (a) the reason is printed on the first poll, within 10 s (the next tick is at 60 s)
 test_lanes_waiting_messages() {
   lanes_repo wmsg; A="$(lanes_wt A)"; B="$(lanes_wt B)"
   lanes_suite suite "$A"; lanes_wait_mark '^s suite '
@@ -359,18 +359,18 @@ test_lanes_waiting_messages() {
   lanes_bg l99 "$B" -- env STUDIO_GATE_LOADAVG=99 sh "$BIN/studio-test" --file tests/unit/a.gd
   lanes_wait_err l99 'short lane: load'
   _el=$(( $(date +%s) - _t0 ))
-  assert_eq 1 "$([ "$_el" -le 2 ] && echo 1 || echo 0)" "the reason is printed on the first poll, before any 60 s tick ($_el s)"
+  assert_eq 1 "$([ "$_el" -le 10 ] && echo 1 || echo 0)" "the reason is printed on the first poll, before any 60 s tick ($_el s)"
   assert_contains "$TMP/err.l99" '^gate: waiting for [^ ]* (pid [0-9]*' "the line's prefix is unchanged"
   lanes_go suite
   assert_eq "0 0" "$(lanes_done suite) $(lanes_done l99)" "both exit 0"
   lanes_vitest v "$B"; lanes_wait_mark '^s v short '
   _vp="$(cat "$TMP/pid.v" 2>/dev/null)"
   lanes_go x1; lanes_x x1 "$LR"
-  lanes_wait_err x1 '^gate: waiting'
+  lanes_wait_err x1 'short lane\)$'
   assert_contains "$TMP/err.x1" "^gate: waiting for vitest (pid $_vp, short lane)\$" "an exclusive caller blocked only by the slot names the slot's holder"
   printf '%s\n' "$(( $(date +%s) - 400 ))" > "$LR/.studio/gate.short/since"
   lanes_go x2; lanes_x x2 "$LR"
-  lanes_wait_err x2 '^gate: waiting'
+  lanes_wait_err x2 'stuck\?\)$'
   assert_contains "$TMP/err.x2" "^gate: waiting for vitest (pid $_vp, short lane) (short lane past its cap — stuck?)\$" "a live slot holder past its cap + 60 s is flagged"
   lanes_go v
   assert_eq "0 0 0" "$(lanes_done v) $(lanes_done x1) $(lanes_done x2)" "all exit 0"
@@ -500,30 +500,35 @@ demotes() { ls "$LR/.studio" 2>/dev/null | grep -c '^gate\.short\.demote\.'; }
 # gut_bg TAG DIR [VAR=VAL…] — a GUT short (lanes_gut) with VAR=VAL… in its env.
 gut_bg() { _gb_t="$1"; _gb_d="$2"; shift 2; lanes_bg "$_gb_t" "$_gb_d" -- env "$@" sh "$BIN/studio-test" --file tests/unit/a.gd; }
 
-# exclusive-scan: test_lanes_short_cap_reruns_in_main in (a) a 2 s cap must fire on a 5 s run
+# Final review I2: a niced slot child can be TERMed by the cap before its first
+# mark under load, so these assert the property (no slot re-run; one main run;
+# the rows), never a start count that depends on how fast the stub started.
+# exclusive-scan: test_lanes_short_cap_reruns_in_main in (a) a 4 s cap must fire on a 12 s run
 test_lanes_short_cap_reruns_in_main() {
   lanes_repo scap; A="$(lanes_wt A)"; B="$(lanes_wt B)"
   lanes_suite suite "$A"; lanes_wait_mark '^s suite '
-  capv v "$B" STUDIO_GATE_SHORT_SECONDS=2 LANES_SLEEP=5 LANES_RC=3
+  capv v "$B" STUDIO_GATE_SHORT_SECONDS=4 LANES_SLEEP=12 LANES_RC=3
   lanes_wait_err v "^gate: vitest ran past the short lane's 5 min — stopped; running it again in the main lane\$"
   # Preflight F22: the re-run waits for the main lane, so the suite is released only now.
   lanes_go suite
   assert_eq 3 "$(lanes_done v)" "the exit status is the main-lane re-run's"
   assert_eq 0 "$(lanes_done suite)" "the suite exits 0"
-  assert_eq 2 "$(starts v)" "the command ran twice"
-  assert_eq "short main" "$(markn v 1 3) $(markn v 2 3)" "first in the slot, then in the main lane"
+  _sm="$(grep -c '^s v short ' "$LANES_MARKS")"
+  assert_eq 1 "$(grep -c '^s v main ' "$LANES_MARKS")" "exactly one main-lane run"
+  assert_eq 1 "$([ "$_sm" -le 1 ] && echo 1 || echo 0)" "at most one slot attempt ($_sm)"
+  [ "$_sm" = 0 ] || assert_eq "short main" "$(markn v 1 3) $(markn v 2 3)" "first in the slot, then in the main lane"
   assert_eq "124 short short
 3 main:demoted short" "$(rows vitest)" "rows: the capped attempt (124, short), then the re-run (main:demoted)"
   assert_not_contains "$TMP/err.v" 'ran past [0-9]* min' "no run-cap stop line"
 }
 
-# exclusive-scan: test_lanes_short_cap_under_run_cap_is_124 in (a) a 1 s run cap must fire on a 5 s run before the 2 s short cap
+# exclusive-scan: test_lanes_short_cap_under_run_cap_is_124 in (a) a 3 s run cap must fire on a 15 s run before the 6 s short cap
 test_lanes_short_cap_under_run_cap_is_124() {
   lanes_repo rcap; A="$(lanes_wt A)"; B="$(lanes_wt B)"
   lanes_suite suite "$A"; lanes_wait_mark '^s suite '
-  capv v "$B" STUDIO_GATE_MINUTES=1 STUDIO_GATE_SECONDS=1 STUDIO_GATE_SHORT_SECONDS=2 LANES_SLEEP=5
+  capv v "$B" STUDIO_GATE_MINUTES=1 STUDIO_GATE_SECONDS=3 STUDIO_GATE_SHORT_SECONDS=6 LANES_SLEEP=15
   assert_eq 124 "$(lanes_done v)" "the run cap binds (STUDIO_GATE_MINUTES <= 5): 124, as today"
-  assert_eq 1 "$(starts v)" "no re-run"
+  assert_eq 0 "$(grep -c '^s v main ' "$LANES_MARKS")" "no re-run in the main lane"
   assert_eq "124 short short" "$(rows vitest)" "one row: 124 in the slot"
   assert_contains "$TMP/err.v" '^gate: vitest ran past 1 min — stopped$' "today's run-cap line"
   assert_not_contains "$TMP/err.v" 'main lane' "no hand-off line"
@@ -599,10 +604,11 @@ EOF
 # exclusive-scan: test_lanes_short_cap_term_ignorer in (a) the KILL must land inside the 10-15 s straggler window
 test_lanes_short_cap_term_ignorer() {
   lanes_repo trapc; B="$(lanes_wt B)"
-  capv t "$B" LANES_TRAP=1 LANES_SLEEP=30 STUDIO_GATE_SHORT_SECONDS=2
+  # The 6 s cap leaves the niced stub time to mark and ignore TERM under load (final review I2).
+  capv t "$B" LANES_TRAP=1 LANES_SLEEP=30 STUDIO_GATE_SHORT_SECONDS=6
   lanes_wait_mark '^s t short '
   _p1="$(markn t 1 5)"
-  # Review Focus 5: the re-run's mark comes after the 2 s cap and the 10 s KILL.
+  # Review Focus 5: the re-run's mark comes after the 6 s cap and the 10 s KILL.
   lanes_wait_mark '^s t main '
   _alive=no; kill -0 "$_p1" 2>/dev/null && _alive=yes
   assert_eq no "$_alive" "the TERM-ignoring slot child is KILLed before the main-lane re-run starts"
@@ -629,8 +635,144 @@ test_lanes_demote_then_signal_no_rerun() {
   assert_not_contains "$TMP/err.g" 'needs the main lane' "no hand-off line"
 }
 
+# ---- final review fixes (I1, I3, M1-M4, T9) ----
+
+# polling TAG — true once TAG's gate has a sleep child: it is in its wait loop.
+polling() { _pl_p="$(cat "$TMP/pid.$1" 2>/dev/null)"; [ -n "$_pl_p" ] && pgrep -P "$_pl_p" -x sleep >/dev/null 2>&1; }
+
+# I1: a live mutex owner at an exclusive caller's first polls; once it is gone,
+# the first line printed names the slot's holder, never a blank one.
+# exclusive-scan: test_lanes_busy_mutex_first_poll_names_slot_holder out (d) event waits only: the waiter's sleep child, then its line
+test_lanes_busy_mutex_first_poll_names_slot_holder() {
+  lanes_repo bmx; B="$(lanes_wt B)"
+  lanes_vitest v "$B"; lanes_wait_mark '^s v short '
+  _vp="$(cat "$TMP/pid.v" 2>/dev/null)"
+  sleep 60 & _sp=$!
+  ln -s "$_sp" "$LR/.studio/gate.lock.mutex"
+  lanes_go x; lanes_x x "$LR"
+  _lanes_poll polling x
+  assert_eq "" "$(cat "$TMP/err.x" 2>/dev/null)" "nothing is printed while every poll finds the mutex busy"
+  rm -f "$LR/.studio/gate.lock.mutex"
+  lanes_wait_err x 'short lane\)$'
+  assert_eq "gate: waiting for vitest (pid $_vp, short lane)" "$(head -n 1 "$TMP/err.x")" "the first line names the slot's holder"
+  lanes_go v
+  assert_eq "0 0" "$(lanes_done v) $(lanes_done x)" "both exit 0"
+  kill "$_sp" 2>/dev/null; wait "$_sp" 2>/dev/null
+}
+
+# M3: a lane dir naming the caller's own pid (a SIGKILLed gate's, reused) while
+# it holds nothing is stale: the caller never waits on itself.
+# exclusive-scan: test_lanes_own_pid_lane_is_stale out (d) event waits only
+test_lanes_own_pid_lane_is_stale() {
+  lanes_repo ownpid
+  for _l in gate.lock gate.short; do
+    mkdir -p "$LR/.studio/$_l"; printf 'ghost\n' > "$LR/.studio/$_l/who"
+    lanes_go "o$_l"
+    lanes_bg "o$_l" "$LR" -- sh -c 'printf "%s\n" "$$" > "$1/pid"; shift; exec "$@"' x "$LR/.studio/$_l" \
+      sh "$LANES_GATE" x -- sh -c 'exec sh "$0"' "$LANES_STUB"
+    assert_eq 0 "$(lanes_done "o$_l")" "a $_l naming the caller's own pid is reclaimed: the run exits 0"
+    assert_eq main "$(mark "o$_l" 3)" "and runs in the main lane ($_l)"
+    assert_missing "$LR/.studio/$_l" "the lane is released ($_l)"
+  done
+}
+
+# M2: a demote file left under the gate's pid (a SIGKILLed gate's) never turns
+# a passing slot run into a re-run.
+# exclusive-scan: test_lanes_stale_own_demote_file_ignored out (d) event waits only
+test_lanes_stale_own_demote_file_ignored() {
+  lanes_repo sdem; B="$(lanes_wt B)"
+  lanes_go v
+  lanes_bg v "$B/web-tools" -- sh -c 'printf "stale\n" > "$1.$$"; shift; exec "$@"' x "$LR/.studio/gate.short.demote" \
+    sh "$LANES_GATE" vitest -- node_modules/.bin/vitest run --minWorkers=1 --maxWorkers=2 tests/a.test.ts
+  assert_eq 0 "$(lanes_done v)" "the slot run exits 0"
+  assert_eq "1 short" "$(starts v) $(mark v 3)" "one run, in the slot: no re-run"
+  assert_not_contains "$TMP/err.v" 'needs the main lane' "no hand-off line"
+  assert_eq "0 short short" "$(rows vitest)" "one row"
+  assert_eq 0 "$(demotes)" "no demote file is left"
+}
+
+# M1: a TERM landing after a demoting slot run ended (the gate.times mutex
+# wait) keeps the exit 128+n and prints no re-run line.
+# exclusive-scan: test_lanes_late_signal_no_rerun_line in (b) the TERM must land inside the ~5 s post-command mutex wait
+test_lanes_late_signal_no_rerun_line() {
+  lanes_repo lsig; B="$(lanes_wt B)"
+  sleep 60 & _sp=$!
+  cat > "$B/web-tools/node_modules/.bin/vitest" <<'STUB'
+#!/bin/sh
+printf 's %s %s\n' "${LANES_TAG:-t}" "${STUDIO_GATE_LANE:--}" >> "$LANES_MARKS"
+[ -n "${STUDIO_GATE_DEMOTE:-}" ] || exit 0
+printf 'import\n' > "$STUDIO_GATE_DEMOTE"
+ln -s "$LATE_SP" "$LATE_MX"
+echo $$ > "$LATE_CP"
+exit 1
+STUB
+  # Its own cpid file: test_lanes_signal_after_command_keeps_rc leaves late.cpid in this TMP.
+  rm -f "$TMP/lsig.cpid"
+  capv d "$B" LATE_SP="$_sp" LATE_MX="$LR/.studio/gate.lock.mutex" LATE_CP="$TMP/lsig.cpid"
+  lanes_wait_file "$TMP/lsig.cpid"
+  lanes_wait_mark '^s d short'
+  _lanes_poll gone "$(cat "$TMP/lsig.cpid")"
+  sleep 1
+  _gp="$(cat "$TMP/pid.d" 2>/dev/null)"
+  _alive=no; kill -0 "$_gp" 2>/dev/null && _alive=yes
+  assert_eq yes "$_alive" "the gate is still in its post-command mutex wait"
+  kill -TERM "$_gp"
+  assert_eq 143 "$(lanes_done d)" "a TERM after the demoting run ended exits 143"
+  assert_not_contains "$TMP/err.d" 'needs the main lane' "no re-run line is printed"
+  assert_eq 1 "$(starts d)" "no re-run"
+  assert_eq "1 short short" "$(rows vitest)" "the slot run's row is kept"
+  rm -f "$LR/.studio/gate.lock.mutex"
+  kill "$_sp" 2>/dev/null; wait "$_sp" 2>/dev/null
+}
+
+# I3: a leak in the slot attempt is sticky: the demoted re-run passes, yet the
+# gate exits 1 and the re-run's row records 1 (fail closed, spec §8).
+# exclusive-scan: test_lanes_leak_sticky_across_demote out (d) event waits only
+test_lanes_leak_sticky_across_demote() {
+  lanes_repo leak; B="$(lanes_wt B)"
+  lanes_go g
+  gut_bg g "$B" LANES_DEMOTE=import LANES_LEAK=1
+  assert_eq 1 "$(lanes_done g)" "a leaked slot attempt fails the gate although the re-run passed"
+  assert_eq "short main" "$(markn g 1 3) $(markn g 2 3)" "first in the slot, then in the main lane"
+  assert_contains "$TMP/err.g" '^gate: project.godot gained the per-worktree user:// setting (config/use_custom_user_dir) — removed; this run is not trusted$' "the leak is named"
+  assert_eq "1 short short
+1 main:demoted short" "$(rows studio-test-file)" "rows: the leaked attempt, then the re-run with 1"
+}
+
+# M4: the physical core count is a static fact (§7), read once per gate, not per poll.
+# exclusive-scan: test_lanes_phys_cores_read_once out (d) event waits on the waiting line; the 2 s pause only lets polls repeat
+test_lanes_phys_cores_read_once() {
+  lanes_repo cores; A="$(lanes_wt A)"; B="$(lanes_wt B)"
+  mkdir -p "$TMP/fakebin"
+  printf '#!/bin/sh\necho Darwin\n' > "$TMP/fakebin/uname"
+  printf '#!/bin/sh\ncase "$*" in *hw.physicalcpu*) echo x >> "%s"; echo 4 ;; *) exec /usr/sbin/sysctl "$@" ;; esac\n' "$TMP/cores.log" > "$TMP/fakebin/sysctl"
+  chmod +x "$TMP/fakebin/uname" "$TMP/fakebin/sysctl"; rm -f "$TMP/cores.log"
+  lanes_suite suite "$A"; lanes_wait_mark '^s suite '
+  lanes_go c
+  lanes_bg c "$B" -- env -u STUDIO_GATE_PHYS_CORES PATH="$TMP/fakebin:$PATH" STUDIO_GATE_LOADAVG=99 sh "$BIN/studio-test" --file tests/unit/a.gd
+  lanes_wait_err c 'short lane: load'
+  assert_contains "$TMP/err.c" '; short lane: load 99/8$' "the stub's count is read (4 cores: 99/8)"
+  sleep 2
+  lanes_go suite
+  assert_eq "0 0" "$(lanes_done suite) $(lanes_done c)" "both exit 0"
+  assert_eq 1 "$(grep -c '' "$TMP/cores.log" 2>/dev/null)" "the core count is read once, not on every poll"
+}
+
+# T9 / claim 7's edge: a run cap equal to the slot's cap binds: 124, no re-run.
+# exclusive-scan: test_lanes_short_cap_equal_run_cap_is_124 in (a) a 4 s run cap must fire on a 15 s run
+test_lanes_short_cap_equal_run_cap_is_124() {
+  lanes_repo eqcap; B="$(lanes_wt B)"
+  capv v "$B" STUDIO_GATE_MINUTES=5 STUDIO_GATE_SECONDS=4 STUDIO_GATE_SHORT_SECONDS=4 LANES_SLEEP=15
+  assert_eq 124 "$(lanes_done v)" "CAP_SECS == SHORT_SECS: the run cap binds, 124"
+  assert_eq 0 "$(grep -c '^s v main ' "$LANES_MARKS")" "no re-run in the main lane"
+  assert_eq "124 short short" "$(rows vitest)" "one row: 124 in the slot"
+  assert_contains "$TMP/err.v" '^gate: vitest ran past 5 min — stopped$' "today's run-cap line"
+  assert_not_contains "$TMP/err.v" 'main lane' "no hand-off line"
+}
+
 TESTS_EXCLUSIVE="test_lanes_waiting_messages test_lanes_signal_after_command_keeps_rc \
-  test_lanes_short_cap_reruns_in_main test_lanes_short_cap_under_run_cap_is_124 test_lanes_short_cap_term_ignorer"
+  test_lanes_short_cap_reruns_in_main test_lanes_short_cap_under_run_cap_is_124 test_lanes_short_cap_term_ignorer \
+  test_lanes_late_signal_no_rerun_line test_lanes_short_cap_equal_run_cap_is_124"
 run_tests test_lanes_beside_shareable test_lanes_never_beside_exclusive test_lanes_drain_and_no_starvation \
   test_lanes_three_way_never_overlaps_exclusive test_lanes_same_worktree_gut_goes_main \
   test_lanes_node_beside_suite_same_worktree test_lanes_second_node_same_worktree_waits \
@@ -643,4 +785,7 @@ run_tests test_lanes_beside_shareable test_lanes_never_beside_exclusive test_lan
   test_lanes_signal_after_command_keeps_rc \
   test_lanes_short_cap_reruns_in_main test_lanes_short_cap_under_run_cap_is_124 test_lanes_short_cap_production_default \
   test_lanes_demote_reruns_once test_lanes_demoted_rerun_cannot_demote test_lanes_demote_empty_file_no_reason \
-  test_lanes_short_cap_term_ignorer test_lanes_demote_then_signal_no_rerun
+  test_lanes_short_cap_term_ignorer test_lanes_demote_then_signal_no_rerun \
+  test_lanes_busy_mutex_first_poll_names_slot_holder test_lanes_own_pid_lane_is_stale \
+  test_lanes_stale_own_demote_file_ignored test_lanes_late_signal_no_rerun_line test_lanes_leak_sticky_across_demote \
+  test_lanes_phys_cores_read_once test_lanes_short_cap_equal_run_cap_is_124

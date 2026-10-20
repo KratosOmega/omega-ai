@@ -35,6 +35,7 @@ case "${1:-}" in
      fi ;;
 esac
 # Per-worktree user:// (#71): the adapter may isolate it; its status never blocks the run.
+# It only writes the override.cfg: the project.godot scrubs are studio-gate's, under the lane.
 sh "$(dirname "$0")/studio-dispatch" --has isolate && sh "$(dirname "$0")/studio-dispatch" isolate
 case "${1:-}" in
   --file|--file=*)

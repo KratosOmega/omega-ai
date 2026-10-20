@@ -127,11 +127,16 @@ WT="$(gate_wt)"
 LANE_ON=0; [ "$(studio_cfg gate_short_lane)" = on ] && LANE_ON=1
 CLS="$(gate_effective "$ARGV_CLS" "$LANE_ON")"
 ISO=1; MODE=main
+PHYS=""
 if [ "$CLS" = short ]; then
   MODE=any
   if [ "$KIND" = godot ]; then sh "$SELF_DIR/studio-dispatch" isolate --check >/dev/null 2>&1 || ISO=0; fi
+  PHYS="$(gate_phys_cores)" || PHYS=""      # the load rule's core count, read once (M4)
 fi
-OWNED=0; OWN_DIR=""; LANE=""; REASON=""; LAST_REASON=""; DEMOTED=0
+# The leak scrubs (T10) apply to a non-node run whose adapter has isolate.
+HAS_ISO=0
+if [ "$KIND" != node ] && ( cd "$WT" 2>/dev/null && sh "$SELF_DIR/studio-dispatch" --has isolate ); then HAS_ISO=1; fi
+OWNED=0; OWN_DIR=""; LANE=""; REASON=""; LAST_REASON=""; DEMOTED=0; LEAKED=0
 BLK_WHO=""; BLK_PID=""; BLK_NOTE=""; BLK_STUCK=""
 
 HAVE_MUTEX=0
@@ -173,13 +178,20 @@ mutex_drop() {
 
 # try_admit — one attempt, under the mutex (§7 Admission). 0: we hold LANE
 # (main|short) in OWN_DIR. 1: not admitted; REASON is a short caller's refusal
-# and BLK_* name what the waiting line reports. The mutex now guards the main
-# lane, the slot, gate.wantx/ and the gate.times rewrite.
+# and BLK_* name what the waiting line reports. 2: the mutex was busy and
+# nothing was evaluated (REASON and BLK_* keep the last evaluated poll's). The
+# mutex now guards the main lane, the slot, gate.wantx/ and the gate.times
+# rewrite. A lane naming our own pid while we hold nothing is a dead gate's
+# whose pid we reuse (after a SIGKILL): stale, or we would wait on ourselves.
 try_admit() {
-  mutex_take || return 1
+  mutex_take || return 2
   BLK_WHO=""; BLK_PID=""; BLK_NOTE=""; BLK_STUCK=""; REASON=""
-  if [ -d "$LOCK" ]; then _h="$(rd "$LOCK" pid)"; if [ -z "$_h" ] || ! alive "$_h"; then rm -rf "$LOCK"; fi; fi
-  if [ -d "$SLOT" ]; then _h="$(rd "$SLOT" pid)"; if [ -z "$_h" ] || ! live_gate "$_h"; then rm -rf "$SLOT"; fi; fi
+  if [ -d "$LOCK" ]; then _h="$(rd "$LOCK" pid)"
+    if [ -z "$_h" ] || { [ "$_h" = "$$" ] && [ "$OWNED" = 0 ]; } || ! alive "$_h"; then rm -rf "$LOCK"; fi
+  fi
+  if [ -d "$SLOT" ]; then _h="$(rd "$SLOT" pid)"
+    if [ -z "$_h" ] || { [ "$_h" = "$$" ] && [ "$OWNED" = 0 ]; } || ! live_gate "$_h"; then rm -rf "$SLOT"; fi
+  fi
   _xw=""
   for _f in "$WANTX"/* "$ROOT/.studio"/gate.short.demote.*; do
     [ -f "$_f" ] || continue
@@ -206,7 +218,7 @@ try_admit() {
       elif [ -n "$_mp" ] && [ "$_mc" != shareable ] && [ "$_mc" != short ]; then REASON="beside $_mc"
       elif [ "$_same" = 1 ]; then REASON="same worktree"
       elif [ -n "$_sp" ]; then REASON="slot busy"
-      elif ! _ld="$(gate_load_ok)"; then REASON="load $_ld"
+      elif ! _ld="$(gate_load_ok "$PHYS")"; then REASON="load $_ld"
       else _lane=short; fi
     fi
     if [ -z "$_lane" ] && [ -z "$_mp" ] && [ "$_same" = 0 ] && [ -z "$_xw" ]; then _lane=main; fi
@@ -345,14 +357,15 @@ lane_after_run() {
     _la_dm=1
     _la_why="$(head -n 1 "$DEMOTE" 2>/dev/null | tr -cd 'A-Za-z0-9 ._:/-' | cut -c1-80)"; rm -f "$DEMOTE"
   fi
+  # A late signal (LATE_SIG) ends the gate in place of the re-run: no re-run line.
   if [ "$SHORT_CAPPED" = 1 ] && [ "$SIGSTATUS" = 124 ]; then
-    printf "gate: %s ran past the short lane's 5 min — stopped; running it again in the main lane\n" "$WHO" >&2
+    [ -n "$LATE_SIG" ] || printf "gate: %s ran past the short lane's 5 min — stopped; running it again in the main lane\n" "$WHO" >&2
     return 0
   fi
   [ -z "$SIGSTATUS" ] || return 1
   [ "$_la_dm" = 1 ] || return 1
   [ -n "$_la_why" ] || _la_why="no reason given"
-  printf 'gate: %s needs the main lane (%s) — waiting for it\n' "$WHO" "$_la_why" >&2
+  [ -n "$LATE_SIG" ] || printf 'gate: %s needs the main lane (%s) — waiting for it\n' "$WHO" "$_la_why" >&2
   return 0
 }
 
@@ -369,6 +382,9 @@ run_once() {
   RUNNING=1
   { set -m; } 2>/dev/null
   T0="$(date +%s)"
+  # A demote file under our pid is only ever this attempt's (M2: not a dead
+  # gate's whose pid we reuse).
+  [ "$LANE" != short ] || rm -f "$DEMOTE"
   if [ "$LANE" = short ]; then
     STUDIO_GATE_HELD="$$" STUDIO_GATE_LANE=short STUDIO_GATE_DEMOTE="$DEMOTE" nice -n 10 "$@" &
   else
@@ -434,16 +450,29 @@ run_once() {
 # kept). A node command never launches Godot, and Godot beside Godot in one
 # worktree is refused at admission, so a scrub never overlaps a live Godot's
 # save() of project.godot (spec 8 amendment: "except a node check").
+# A leak is sticky (LEAKED): a demoted re-run that passes still exits 1, as it
+# ran against the project.godot the attempt's save() rewrote.
 gate_scrub() {
-  [ "$KIND" = node ] && return 0
-  ( cd "$WT" 2>/dev/null && sh "$SELF_DIR/studio-dispatch" --has isolate ) || return 0
+  [ "$HAS_ISO" = 1 ] || return 0
   _gs_out="$(cd "$WT" && sh "$SELF_DIR/studio-dispatch" isolate --scrub 2>/dev/null)"; _gs_rc=$?
   case "$_gs_rc" in
     0) return 0 ;;
     3) printf 'gate: project.godot gained the per-worktree user:// setting (%s) — removed; this run is not trusted\n' "$_gs_out" >&2 ;;
     *) printf 'gate: the project.godot leak check failed (isolate --scrub exit %s) — this run is not trusted\n' "$_gs_rc" >&2 ;;
   esac
-  [ "$ROW_RC" != 0 ] || ROW_RC=1
+  LEAKED=1
+}
+# gate_prescrub — the start scrub, under the lane: after admission and before
+# the command (it was studio-test's, before the gate, where it could rewrite
+# project.godot beside a live Godot). Lines an earlier run left are removed and
+# announced; this run is never failed for them.
+gate_prescrub() {
+  [ "$HAS_ISO" = 1 ] || return 0
+  _gp_out="$(cd "$WT" && sh "$SELF_DIR/studio-dispatch" isolate --scrub 2>/dev/null)"; _gp_rc=$?
+  if [ "$_gp_rc" = 3 ]; then
+    printf 'studio-test: project.godot carried the per-worktree user:// setting (%s) — removed before the run\n' "$_gp_out" >&2
+  fi
+  return 0
 }
 
 # row_lane — the row's lane: short, main:demoted, main:<the refusal at
@@ -458,12 +487,23 @@ row_lane() {
 }
 
 # The wait: every poll re-evaluates admission. The 60 s line keeps its prefix;
-# a refused short caller's reason is printed on its first refusal.
+# a refused short caller's reason is printed on its first refusal. A busy-mutex
+# poll (try_admit 2) evaluates nothing and prints nothing: the first line comes
+# from the first evaluated poll (I1). After 60 s of busy polls only (a stuck
+# mutex owner) the line is printed anyway, naming the main lock's holder.
 while :; do
-  T_REQ="$(date +%s)"; waited=0; SAID=0
-  until try_admit; do
+  T_REQ="$(date +%s)"; waited=0; SAID=0; EVALD=0
+  BLK_WHO=""; BLK_PID=""; BLK_NOTE=""; BLK_STUCK=""; REASON=""
+  while :; do
+    try_admit; _ta=$?
+    [ "$_ta" != 0 ] || break
+    if [ "$_ta" = 2 ] && [ "$EVALD" = 0 ] && [ "$waited" -lt $((60 * GATE_TPS)) ]; then
+      waited=$((waited + 1)); sleep "$GATE_POLL"; continue
+    fi
+    _first=0; [ "$EVALD" = 1 ] || _first=1
+    EVALD=1
     [ -z "$REASON" ] || LAST_REASON="$REASON"
-    if [ $((waited % (60 * GATE_TPS))) -eq 0 ] || { [ -n "$REASON" ] && [ "$SAID" = 0 ]; }; then
+    if [ "$_first" = 1 ] || [ $((waited % (60 * GATE_TPS))) -eq 0 ] || { [ -n "$REASON" ] && [ "$SAID" = 0 ]; }; then
       [ -n "$BLK_PID$BLK_WHO" ] || { BLK_WHO="$(rd "$LOCK" who)"; BLK_PID="$(lock_pid)"; }
       printf 'gate: waiting for %s (pid %s%s)%s%s\n' "$BLK_WHO" "$BLK_PID" "$BLK_NOTE" "$BLK_STUCK" \
         "${REASON:+; short lane: $REASON}" >&2
@@ -475,9 +515,11 @@ while :; do
   # poll that admitted it.
   [ "$LANE" = short ] || [ "$CLS" != short ] || [ "$DEMOTED" = 1 ] || LAST_REASON="$REASON"
   WAIT_S=$(( $(date +%s) - T_REQ ))
+  gate_prescrub
   run_once "$@"
   ROW_RC="${SIGSTATUS:-$rc}"
   gate_scrub
+  [ "$LEAKED" = 0 ] || [ "$ROW_RC" != 0 ] || ROW_RC=1
   # A signalled run (a reaper, a session cap) is logged too, with 128+n: its
   # seconds are a lower bound, and the overruns are what the preflight's
   # session_minutes check most needs to see.

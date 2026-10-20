@@ -1,7 +1,6 @@
 #!/bin/sh
 # gate-times.sh — sourced by studio-gate (not run on its own): the gate.times
-# writer (#71 R6, D9). The sourcing script defines mutex_take / mutex_drop and
-# HAVE_MUTEX (studio-gate's reclaim mutex); this file only calls them.
+# writer (#71 R6, D9).
 #
 # gate_times_append FILE EPOCH WHO HOLD RC WAIT LANE CLASS UNIT — append one row and
 # keep (D9) the newest 50 rows per who OR any row younger than 14 days, then the

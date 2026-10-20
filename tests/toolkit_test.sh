@@ -879,9 +879,11 @@ test_test_engine_args_reach_godot() {
   assert_contains "$(last_log "$P")" "$want" "the whole suite gets --fixed-fps 60 after --headless"
   ea_config "$P" '{"engine": "godot4", "test_engine_args": "--fixed-fps 60"}'
   verb "$P" studio-test tests/unit
+  assert_eq "0" "$(cat "$TMP/status")" "the directory run exits 0"
   assert_contains "$(last_log "$P")" "$want" "a directory run gets them too"
   ea_config "$P" '{"engine": "godot4", "test_engine_args": "--fixed-fps 60"}'
   verb "$P" studio-test --file tests/unit/a.gd
+  assert_eq "0" "$(cat "$TMP/status")" "the --file run exits 0"
   assert_contains "$(last_log "$P")" "$want" "a --file run gets them too"
 }
 

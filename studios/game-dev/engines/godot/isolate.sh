@@ -5,8 +5,9 @@
 # .studio/config.json says "user_dir": "per-worktree", an untracked, git-excluded
 # override.cfg points user:// at <project>-lanes-<h8>/<worktree id> instead.
 #
-#   isolate.sh           ensure the override.cfg, scrub project.godot, sweep dead dirs
-#                        (daily); always exit 0
+#   isolate.sh           ensure the override.cfg, sweep dead dirs (daily); always exit 0.
+#                        It never scrubs: studio-gate runs --scrub under the lane,
+#                        before and after the command
 #   isolate.sh --check   0 when isolation is in effect, 1 otherwise; writes nothing
 #   isolate.sh --scrub   remove the lanes lines a run put in project.godot that HEAD
 #                        lacks: 0 clean or n/a · 3 removed (stdout: the keys) · 1 error
@@ -81,7 +82,9 @@ keys_of() { sed 's/=.*//' | awk '!s[$0]++' | paste -sd, - | sed 's/,/, /g'; }
 # (a file not in HEAD is skipped).
 do_scrub() {
   is_opted && load_git || return 0
-  _is_hf="$(mktemp "${TMPDIR:-/tmp}/isolate-head.XXXXXX")" || return 1
+  # Temp files live in this worktree's git dir: never TMPDIR, which may name a
+  # missing dir (final review M6), and never the work tree (git status).
+  _is_hf="$(mktemp "$_is_gd/isolate-head.XXXXXX")" || return 1
   _is_nf="$_is_hf.new"; _is_ks="$_is_hf.keys"; _is_ls="$_is_hf.list"; : > "$_is_ks"
   _is_err=0
   git -c core.quotePath=false ls-files -- project.godot '*/project.godot' > "$_is_ls" 2>/dev/null
@@ -91,6 +94,7 @@ do_scrub() {
     _is_rm="$(lanes_awk list "$_is_hf" "$_is_p")"
     [ -n "$_is_rm" ] || continue
     # temp file beside it, then mv: an interrupt never leaves project.godot half-written
+    _is_tp=""
     if lanes_awk filter "$_is_hf" "$_is_p" > "$_is_nf" && _is_tp="$(mktemp "$_is_p.XXXXXX")" \
         && cp -p "$_is_p" "$_is_tp" && cat "$_is_nf" > "$_is_tp" && mv -f "$_is_tp" "$_is_p"; then
       printf '%s\n' "$_is_rm" >> "$_is_ks"
@@ -170,10 +174,8 @@ do_ensure() {
     if [ -s "$_is_ex" ] && [ -n "$(tail -c 1 "$_is_ex")" ]; then printf '\n' >> "$_is_ex"; fi
     printf '%s\n' "$_is_rel/override.cfg" >> "$_is_ex"
   fi
-  _is_keys="$(do_scrub)"; _is_rc=$?
-  if [ "$_is_rc" = 3 ]; then
-    printf 'studio-test: project.godot carried the per-worktree user:// setting (%s) — removed before the run\n' "$_is_keys" >&2
-  fi
+  # The start scrub is studio-gate's, under the lane (final review I4): here,
+  # before the gate, it could rewrite project.godot beside a live Godot.
   do_sweep "$_is_proj" "$_is_h8"
   return 0
 }
@@ -183,7 +185,8 @@ do_leaks() {
   _is_d="${1:-}"
   [ -n "$_is_d" ] && git -C "$_is_d" rev-parse --git-dir >/dev/null 2>&1 || return 1
   _is_list="$(git -C "$_is_d" -c core.quotePath=false ls-files -- project.godot '*/project.godot' 2>/dev/null)" || return 1
-  _is_hf="$(mktemp "${TMPDIR:-/tmp}/isolate-leak.XXXXXX")" || return 1
+  _is_ld="$(git -C "$_is_d" rev-parse --path-format=absolute --git-dir 2>/dev/null)" || return 1
+  _is_hf="$(mktemp "$_is_ld/isolate-leak.XXXXXX")" || return 1
   _is_cf="$_is_hf.cur"; _is_of="$_is_hf.out"; : > "$_is_of"
   printf '%s\n' "$_is_list" | while IFS= read -r _is_p; do
     [ -n "$_is_p" ] || continue

@@ -205,13 +205,36 @@ test_isolate_hash_keys_the_clone() {
   assert_eq "yes" "$([ -d "$LB/dead-old" ] && echo yes)" "clone A's sweep leaves clone B's lanes dir alone"
 }
 
+# Final review I4: the start scrub runs under the gate's lane
+# (test_gate_start_scrub_under_the_lane), never in ensure, which runs before the
+# gate and could rewrite project.godot beside a live Godot in the same worktree.
 test_isolate_start_scrub() {
   UR="$TMP/ud-scrub"; R="$(iso_repo sscrub)"; W="$(iso_wt "$R" sscrub-wt)"
   printf '%s\n%s\n' "$USE" "$NAMELINE" >> "$W/project.godot"
   iso "$W" 2> "$TMP/err"; rc=$?
   assert_eq 0 "$rc" "ensure exits 0"
-  assert_eq "" "$(git -C "$W" diff --stat -- project.godot)" "project.godot is back to HEAD"
-  assert_contains "$TMP/err" "studio-test: project.godot carried the per-worktree user:// setting (config/use_custom_user_dir, config/custom_user_dir_name) — removed before the run" "the removal is announced"
+  assert_contains "$W/project.godot" "$USE" "ensure leaves project.godot alone: the start scrub is the gate's"
+  assert_eq "" "$(cat "$TMP/err")" "and says nothing"
+  assert_file "$W/override.cfg" "ensure still writes the override.cfg"
+}
+
+# Final review M6: a TMPDIR naming a missing dir (it happened on 10-08) never
+# fails a scrub or a leak check: the temp files live in the git dir.
+test_isolate_scrub_missing_tmpdir() {
+  UR="$TMP/ud-notmp"; R="$(iso_repo notmp)"; W="$(iso_wt "$R" notmp-wt)"
+  printf '%s\n%s\n' "$USE" "$NAMELINE" >> "$W/project.godot"
+  out="$(export TMPDIR="$TMP/no-such-dir"; iso "$W" --scrub)"; rc=$?
+  assert_eq 3 "$rc" "a missing TMPDIR: the scrub still removes (exit 3)"
+  assert_eq "config/use_custom_user_dir, config/custom_user_dir_name" "$out" "and lists the keys"
+  assert_eq "" "$(git -C "$W" diff -- project.godot)" "project.godot is back to HEAD"
+  assert_eq 0 "$(ls -A "$(git -C "$W" rev-parse --path-format=absolute --git-dir)" | grep -c '^isolate-')" "no temp file is left in the git dir"
+  R2="$(iso_repo notmp2)"
+  printf '%s\n' "$NAMELINE" >> "$R2/project.godot"; git -C "$R2" add project.godot
+  out="$(export TMPDIR="$TMP/no-such-dir"; iso "$TMP" --leaks "$R2")"; rc=$?
+  assert_eq 3 "$rc" "a missing TMPDIR: the leak check still finds the leak (exit 3)"
+  assert_eq "project.godot: config/custom_user_dir_name" "$out" "and names it"
+  assert_eq 0 "$(ls -A "$(git -C "$R2" rev-parse --path-format=absolute --git-dir)" | grep -c '^isolate-')" "no temp file is left in the git dir"
+  assert_missing "$TMP/no-such-dir" "the missing TMPDIR is not created"
 }
 
 test_isolate_scrub_modes() {
@@ -372,6 +395,29 @@ gs_run() {
   rc=0; ( cd "$_gd" && STUDIO_GATE_LOADAVG=0 OMEGA_STUDIO_ROOT="${GS_ROOT:-$STUDIO}" STUDIO_GODOT_USER_ROOT="$UR" sh "$GATE" x -- sh -c "$1" ) > /dev/null 2> "$TMP/gs.err" || rc=$?
 }
 
+# Final review I4: lines left before the run are removed under the lane, after
+# admission and before the command, and do not fail it; a node run is not scrubbed.
+test_gate_start_scrub_under_the_lane() {
+  UR="$TMP/ud-gss"; R="$(iso_repo gss)"; W="$(iso_wt "$R" gss-wt)"
+  printf '%s\n%s\n' "$USE" "$NAMELINE" >> "$W/project.godot"
+  gs_run "$W" "grep -c custom_user_dir project.godot > '$TMP/gss.seen'; true"
+  assert_eq 0 "$rc" "lines left before the run do not fail it"
+  assert_eq 0 "$(cat "$TMP/gss.seen" 2>/dev/null)" "they are removed before the command runs"
+  assert_eq "studio-test: project.godot carried the per-worktree user:// setting (config/use_custom_user_dir, config/custom_user_dir_name) — removed before the run" \
+    "$(cat "$TMP/gs.err")" "the removal is announced with today's copy"
+  assert_eq "" "$(git -C "$W" diff -- project.godot)" "project.godot is back to HEAD"
+  mkdir -p "$W/web-tools/node_modules/.bin" "$W/web-tools/tests"
+  printf 'test("a", () => {})\n' > "$W/web-tools/tests/a.test.ts"
+  printf '#!/bin/sh\ngrep -c custom_user_dir ../project.godot > "%s"; exit 0\n' "$TMP/gss.node" > "$W/web-tools/node_modules/.bin/vitest"
+  chmod +x "$W/web-tools/node_modules/.bin/vitest"
+  printf '%s\n' "$USE" >> "$W/project.godot"
+  rc=0; ( cd "$W/web-tools" && STUDIO_GATE_LOADAVG=0 OMEGA_STUDIO_ROOT="$STUDIO" STUDIO_GODOT_USER_ROOT="$UR" \
+      sh "$GATE" vitest -- node_modules/.bin/vitest run --minWorkers=1 --maxWorkers=2 tests/a.test.ts ) > /dev/null 2> "$TMP/gs.err" || rc=$?
+  assert_eq 0 "$rc" "a node run exits 0"
+  assert_eq 1 "$(cat "$TMP/gss.node" 2>/dev/null)" "a node run is not scrubbed before it runs"
+  assert_eq "" "$(cat "$TMP/gs.err")" "and nothing is said"
+}
+
 test_gate_scrub_removes_and_fails() {
   UR="$TMP/ud-gs1"; R="$(iso_repo gs1)"; W="$(iso_wt "$R" gs1-wt)"
   gs_run "$W" "$LEAK"
@@ -395,7 +441,7 @@ test_gate_scrub_keeps_failing_status() {
 # gs_ended CMD ENV… — a leaking CMD ended by the cap (124) or TERM (143): still scrubbed, rc kept.
 test_gate_scrub_signal_and_cap_ended() {
   UR="$TMP/ud-gs7"; R="$(iso_repo gs7)"; W="$(iso_wt "$R" gs7-wt)"
-  rc=0; ( cd "$W" && STUDIO_GATE_MINUTES=1 STUDIO_GATE_SECONDS=1 STUDIO_GATE_LOADAVG=0 OMEGA_STUDIO_ROOT="$STUDIO" STUDIO_GODOT_USER_ROOT="$UR" \
+  rc=0; ( cd "$W" && STUDIO_GATE_MINUTES=1 STUDIO_GATE_SECONDS=6 STUDIO_GATE_LOADAVG=0 OMEGA_STUDIO_ROOT="$STUDIO" STUDIO_GODOT_USER_ROOT="$UR" \
       sh "$GATE" x -- sh -c "$LEAK; sleep 30" ) > /dev/null 2> "$TMP/gs.err" || rc=$?
   assert_eq 124 "$rc" "a cap-ended run keeps 124"
   assert_eq "" "$(git -C "$W" diff -- project.godot)" "and its lines are removed"
@@ -405,10 +451,10 @@ test_gate_scrub_signal_and_cap_ended() {
   ( cd "$W" && STUDIO_GATE_LOADAVG=0 OMEGA_STUDIO_ROOT="$STUDIO" STUDIO_GODOT_USER_ROOT="$UR" \
       sh -c 'echo $$ > "$0"; exec "$@"' "$TMP/gs8.pid" sh "$GATE" x -- sh -c "$LEAK; sleep 30" > /dev/null 2> "$TMP/gs.err"; echo $? > "$TMP/gs8.rc" ) &
   _i=0
-  while [ "$_i" -lt 100 ] && ! grep -q "$USE" "$W/project.godot" 2>/dev/null; do sleep 0.1; _i=$((_i + 1)); done
+  while [ "$_i" -lt 300 ] && ! grep -q "$USE" "$W/project.godot" 2>/dev/null; do sleep 0.1; _i=$((_i + 1)); done
   kill -TERM "$(cat "$TMP/gs8.pid")" 2>/dev/null
   _i=0
-  while [ "$_i" -lt 150 ] && [ ! -s "$TMP/gs8.rc" ]; do sleep 0.1; _i=$((_i + 1)); done
+  while [ "$_i" -lt 300 ] && [ ! -s "$TMP/gs8.rc" ]; do sleep 0.1; _i=$((_i + 1)); done
   assert_eq 143 "$(cat "$TMP/gs8.rc" 2>/dev/null)" "a TERM-ended run keeps 143"
   assert_eq "" "$(git -C "$W" diff -- project.godot)" "and its lines are removed"
 }
@@ -471,7 +517,7 @@ test_gate_scrub_error_fails_closed() {
   assert_eq "gate: the project.godot leak check failed (isolate --scrub exit 1) — this run is not trusted" "$(cat "$TMP/gs.err")" "with the exact copy"
 }
 
-# exclusive-scan: test_gate_scrub_signal_and_cap_ended out (static) 1 s cap and event polls on a file, no load-bound timing
+# exclusive-scan: test_gate_scrub_signal_and_cap_ended out (static) a 6 s cap on a 30 s run (the leak is written long before it) and 30 s event polls on a file, no load-bound timing
 # exclusive-scan: test_isolate_sweep_dead_old_only out (static) no clock; mtimes are set with touch -t
 # exclusive-scan: test_isolate_sweep_daily_stamp out (static) no clock; mtimes are set with touch -t
 run_tests test_isolate_writes_in_opted_linked_worktree test_isolate_never_in_main_checkout \
@@ -484,4 +530,5 @@ run_tests test_isolate_writes_in_opted_linked_worktree test_isolate_never_in_mai
   test_isolate_scrub_subdir_projects test_isolate_exclude_with_spaces test_studio_test_stderr_unchanged_when_not_opted \
   test_gate_scrub_removes_and_fails test_gate_scrub_keeps_failing_status test_gate_scrub_leaves_head_keys \
   test_gate_scrub_lane_off_and_main_untouched test_gate_scrub_skips_node_short test_gate_scrub_error_fails_closed \
-  test_gate_scrub_signal_and_cap_ended test_gate_scrub_skips_node_not_short
+  test_gate_scrub_signal_and_cap_ended test_gate_scrub_skips_node_not_short \
+  test_isolate_scrub_missing_tmpdir test_gate_start_scrub_under_the_lane
