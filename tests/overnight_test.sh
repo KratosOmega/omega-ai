@@ -1046,6 +1046,17 @@ test_overnight_status_short_lane() {
   assert_contains "$TMP/st.out" "^gate: free$" "status: the main gate line is unchanged"
   assert_contains "$TMP/st.out" "^gate short lane: vitest (pid $_sp) for " "status: the live slot holder, after it"
   assert_eq 1 "$(awk '/^gate: free$/ { g = NR } /^gate short lane:/ { s = NR } END { print (g && s == g + 1) ? 1 : 0 }' "$TMP/st.out")" "status: the slot line follows the gate line"
+  # Main lock held too: `, unit` suffix, the RUN_DIR prefix stripped from either tag.
+  sleep 60 & _mp=$!; _rd="$(basename "$(last_run_dir)")"
+  mkdir -p "$P/.studio/gate.lock"
+  printf '%s\n' "$_mp" > "$P/.studio/gate.lock/pid"; printf 'studio-test\n' > "$P/.studio/gate.lock/who"
+  date +%s > "$P/.studio/gate.lock/since"; printf '%s-T2\n' "$_rd" > "$P/.studio/gate.lock/unit"
+  printf '%s-T3\n' "$_rd" > "$P/.studio/gate.short/unit"
+  ( cd "$P" && sh "$RUNNER" status ) > "$TMP/st.out"
+  assert_contains "$TMP/st.out" "^gate: studio-test (pid $_mp) for [0-9]*[sm], unit T2$" "status: the main holder, its tag stripped of the run dir"
+  assert_contains "$TMP/st.out" "^gate short lane: vitest (pid $_sp) for [0-9]*[sm], unit T3$" "status: the slot holder, its tag stripped too"
+  assert_eq 1 "$(awk '/^gate: studio-test/ { g = NR } /^gate short lane:/ { s = NR } END { print (g && s == g + 1) ? 1 : 0 }' "$TMP/st.out")" "status: both held, the slot line follows the main line"
+  kill "$_mp" 2>/dev/null; wait "$_mp" 2>/dev/null; rm -rf "$P/.studio/gate.lock"
   kill "$_sp" 2>/dev/null; wait "$_sp" 2>/dev/null
   ( cd "$P" && sh "$RUNNER" status ) > "$TMP/st.out"
   assert_contains "$TMP/st.out" "^gate: free$" "status: the gate line with a dead slot pid"

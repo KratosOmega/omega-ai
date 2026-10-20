@@ -96,6 +96,11 @@ test_autopilot_contract() {
     printf '%s\n' '{"merge_command": "./merge.sh", "overnight": {"session_minutes": 90}}' > "$_pf/.studio/config.json"
     ( cd "$_pf" && python3 -c 'import json,sys; p=".studio/config.json"; c=json.load(open(p)); c.setdefault("overnight", {})["max_lanes"]=int(sys.argv[1]); open(p,"w").write(json.dumps(c, indent=2)+"\n")' 2 )
     if cmp -s "$_pf/c.json" "$_pf/.studio/config.json"; then _pass "(c) off equals the pre-#71 one-liner's output (#71 A5)"; else _fail "(c) off equals the pre-#71 one-liner's output (#71 A5)"; fi
+    # M9: on keeps values the project already has (setdefault), and adds the rest.
+    printf '%s\n' '{"test_engine_args": "--fixed-fps 30", "user_dir": "shared"}' > "$_pf/.studio/config.json"
+    ( cd "$_pf" && python3 -c "$_prog" 2 on )
+    _got="$(python3 -c 'import json,sys; c=json.load(open(sys.argv[1])); print(c["test_engine_args"], c["user_dir"], c["gate_short_lane"], c["overnight"]["max_lanes"])' "$_pf/.studio/config.json")"
+    assert_eq "--fixed-fps 30 shared on 2" "$_got" "(e) on keeps existing test_engine_args and user_dir (#71 M9)"
     rm -f "$_pf/.studio/config.json"
     ( cd "$_pf" && python3 -c "$_prog" 0 on )
     _got="$(python3 -c 'import json,sys; c=json.load(open(sys.argv[1])); print(c["overnight"]["max_lanes"], c["gate_short_lane"], c["user_dir"], c["test_engine_args"])' "$_pf/.studio/config.json")"

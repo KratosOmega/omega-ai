@@ -624,7 +624,7 @@ test_short_lane_unit_rule_text() {
   P="$REPO_ROOT/studios/game-dev/skills/plan/SKILL.md"
   A="$REPO_ROOT/studios/game-dev/agents/gameplay-programmer.md"
   for lit in 'runs `studio-test --file` on every test file the task created or changed' \
-    'calls of up to three files each take the short lane' \
+    'calls of up to three files are short-lane eligible' \
     "when the task's \`Verify:\` includes \`suite\`" \
     '`suite` — the implementer also runs the whole suite' \
     'studio-gate vitest -- npx vitest run --minWorkers=1 --maxWorkers=2' \

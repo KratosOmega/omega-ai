@@ -1151,6 +1151,7 @@ lg_fix() {
   mkdir -p "$LGW/.studio"; printf '{"engine": "godot4", "user_dir": "per-worktree"}\n' > "$LGW/.studio/config.json"
   printf '.studio/\n' >> "$(git -C "$LGW" rev-parse --path-format=absolute --git-common-dir)/info/exclude"
   ( cd "$LGW" && STUDIO_GODOT_USER_ROOT="$TMP/lg-ud" OMEGA_STUDIO_ROOT="$STUDIO_DIR" sh "$STUDIO_DIR/engines/godot/isolate.sh" ) >/dev/null 2>&1
+  assert_file "$LGW/override.cfg" "lg_fix: isolate.sh wrote the override.cfg ($1)"
 }
 test_lanes_guard_registered() {
   assert_file "$LANES_GUARD" "lanes-guard.sh exists"

@@ -188,6 +188,10 @@ stories as parallel lanes of dependency chains:
   - A shareable suite's own import runs beside the slot.
   - The common exclude hides a developer's untracked `override.cfg` in the main
     checkout from `git status`.
+  - Linux physical-core detection without `core id` in `/proc/cpuinfo` is
+    unverified; it fails closed.
+  - A demoted re-run holds the main lane as class `short`, so a new short
+    check may take the slot beside it.
   - A SIGKILLed gate leaves its child's process group running, and the lane is
     then reclaimed beside it. Clean up with `kill -TERM -<pgid>` of the orphaned
     child group.

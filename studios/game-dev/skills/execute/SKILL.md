@@ -396,7 +396,7 @@ kind listed binds the implementer:
   framework (`tests` in `.studio/config.json`, default GUT). Before
   reporting, the implementer
   runs `studio-test --file` on every test file the task created or changed
-  (calls of up to three files each take the short lane) and pastes each
+  (calls of up to three files are short-lane eligible: they take the slot when the lane is on and admission passes) and pastes each
   summary line. The whole suite (`studio-test`) runs at the finish gate, or
   before reporting when the task's `Verify:` includes `suite`. Exit 2 (no
   engine binary) or 3 (GUT not installed) stops the task: report it to the

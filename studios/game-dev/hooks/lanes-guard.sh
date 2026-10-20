@@ -10,6 +10,9 @@
 # is a target, its dir the cwd, cd-ed and -C-adjusted. Each target's repo top
 # level is checked.
 #
+# By design it also denies when an unstaged working-tree project.godot carries
+# the lanes lines (the commit may take them with `-a`), not only a staged one.
+#
 # Exit 0 on every path and print nothing to allow: unparseable input, a missing
 # isolate.sh, or any error never blocks a call. No jq, no python, no lib/.
 trap 'exit 0' EXIT
