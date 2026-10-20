@@ -31,7 +31,14 @@ approval page in `artifacts/`.
 - Fixed the dash `kill --` test helper (four #70 detach tests failed under dash). Follow-up #78:
   two load-flaky lanes tests.
 - Spec `specs/2026-10-19-gate-short-lane.md`; plan `plans/2026-10-19-gate-short-lane.md`.
-- Installed 2026-10-20 at d99a31e together with #70/#57/#72 (PR #77). The Multica bridge was re-installed (ensure_end_wake live), and the `omega phoenix` agent instructions were refreshed with `agent update`. Open: manual acceptance §13.3-13.7 (throwaway-Godot probes, the no-new-flaky-reds check in phoenix, and the live wait measure after the first runs).
+- Installed 2026-10-20 at d99a31e together with #70/#57/#72 (PR #77). The Multica bridge was re-installed (ensure_end_wake live), and the `omega phoenix` agent instructions were refreshed with `agent update`. 
+- Manual acceptance §13.3 passed 2026-10-20 in a throwaway Godot 4.6 project:
+  - concurrent `--file` runs kept separate user:// values;
+  - 120 physics frames took 17 ms with fixed FPS vs 1884 ms without;
+  - the leak was scrubbed and failed the run, and lanes-guard denied the commit;
+  - the slot took a short check beside a shareable suite with 0 s wait, and waited behind an exclusive holder.
+  Editor-mode launches still create an empty `app_userdata/<name>/objectdb_snapshots/` (README known limits).
+  Open: §13.4-13.5 (the no-new-flaky-reds check and the isolated full gate in phoenix) and §13.6-13.7 (the live wait measure after the first runs).
 
 ### 2026-10-19 — `start --detach` survives a large manifest; fast id checks (#70, #57)
 
