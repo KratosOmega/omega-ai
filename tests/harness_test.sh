@@ -483,7 +483,7 @@ guard_knobs_named() {
   _need "studio-gate header" "$(sed -n '1,30p' "$_bin/studio-gate")" STUDIO_GATE_POLL_SECONDS STUDIO_GATE_SECONDS
   _need "studio-overnight --help" "$(sh "$_bin/studio-overnight" --help 2>&1)" \
     STUDIO_OVERNIGHT_REAP_POLL_SECONDS STUDIO_OVERNIGHT_DETACH_POLL_SECONDS \
-    STUDIO_OVERNIGHT_IDLE_SECONDS STUDIO_OVERNIGHT_IDLE_POLL_SECONDS
+    STUDIO_OVERNIGHT_IDLE_SECONDS STUDIO_OVERNIGHT_IDLE_POLL_SECONDS STUDIO_OVERNIGHT_DETACH_WAIT_SECONDS
   _need "overnight-lanes.sh" "$(cat "$_bin/overnight-lanes.sh")" STUDIO_OVERNIGHT_REAP_POLL_SECONDS
   _need "assert.sh header" "$(sed -n '1,30p' "$REPO_ROOT/tests/assert.sh")" TEST_PHASE TEST_SHARD TEST_TIMING_LOG
   _need "run_all.sh header" "$(sed -n '1,30p' "$REPO_ROOT/tests/run_all.sh")" TEST_JOBS TEST_SUITES TEST_LOG_DIR \

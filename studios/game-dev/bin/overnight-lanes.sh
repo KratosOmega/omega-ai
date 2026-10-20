@@ -162,6 +162,7 @@ mf_overlap_warn() {
 
 # mf_check — the manifest preflight: one refuse per failure (spec 806-815).
 mf_check() {
+  IDS_IX_KEY=""   # one ids index for this check's stories, built afresh (overnight-ids.sh)
   git_version_ok || refuse "git 2.38 or newer is required (git merge-tree --write-tree); found $(git --version 2>/dev/null)"
   printf '%s\n' "$MF_SLUG" | grep -Eq '^[A-Za-z0-9._-]+$' \
     || refuse "manifest: '# Run: <slug>' must name a slug of [A-Za-z0-9._-], got '$MF_SLUG'"
@@ -255,7 +256,9 @@ EOF_MC
       esac
       printf '%s\n' "$_show" | grep -qx -- "- [0-9-]* Decisions swept $_id" \
         || refuse "$_id: no 'Decisions swept $_id' ledger line (run the question sweep)"
-      _stg="$(story_state "$_id" get stage 2>/dev/null)"
+      # #70: the stage is `show`'s own header line (get stage reads the same
+      # first `stage: ` line of the story file): one studio-state call, not two.
+      _stg="$(printf '%s\n' "$_show" | sed -n 's/^stage: //p' | head -n 1)"
       case "$_stg" in
         plan|execute) ;;
         # The shipped line is ledgered in the story's own checkout (its

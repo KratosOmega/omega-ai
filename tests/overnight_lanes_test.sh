@@ -2421,11 +2421,13 @@ test_lanes_detach_child_refusal_surfaces() {
 test_lanes_detach_timeout_lock_held_points_at_status() {
   lanes_fixture dtl integration A:-
   printf 'hang\n' > "$SCEN/A"
-  export STUDIO_OVERNIGHT_DETACH_STATUS_CMD=false
+  # A 30 s cap: the real child must take its lock inside it (at load, 10 s was close).
+  export STUDIO_OVERNIGHT_DETACH_STATUS_CMD=false STUDIO_OVERNIGHT_DETACH_WAIT_SECONDS=30
   st=0; ( cd "$P" && sh "$RUNNER" start --detach "$MFP" ) > "$TMP/dtl.out" 2>&1 || st=$?
-  unset STUDIO_OVERNIGHT_DETACH_STATUS_CMD
+  unset STUDIO_OVERNIGHT_DETACH_STATUS_CMD STUDIO_OVERNIGHT_DETACH_WAIT_SECONDS
   assert_eq 1 "$st" "a status timeout exits 1"
   assert_contains "$TMP/dtl.out" "is live" "a lock-holding child is reported live"
+  assert_contains "$TMP/dtl.out" "but did not answer status in 30 s — " "the message names the cap"
   assert_contains "$TMP/dtl.out" "/studio-overnight' stop" "and stop is named, by its absolute path"
   assert_contains "$TMP/dtl.out" "status --run demo, or .*/studio-overnight' stop --run demo$" "status and stop name the detached run (another run may be live)"
   assert_not_contains "$TMP/dtl.out" "run the plain command" "no plain start is offered"
@@ -2437,31 +2439,61 @@ test_lanes_detach_timeout_lock_held_points_at_status() {
 }
 test_lanes_detach_timeout_no_lock_ends_child() {
   lanes_fixture dtn integration A:-
-  export STUDIO_OVERNIGHT_DETACH_STATUS_CMD=false
+  export STUDIO_OVERNIGHT_DETACH_STATUS_CMD=false STUDIO_OVERNIGHT_DETACH_WAIT_SECONDS=10
   export STUDIO_OVERNIGHT_DETACH_CHILD_CMD="'$TMP/bin/msleep' 301 & '$TMP/bin/msleep' 301"
   st=0; ( cd "$P" && sh "$RUNNER" start --detach "$MFP" ) > "$TMP/dtn.out" 2>&1 || st=$?
-  unset STUDIO_OVERNIGHT_DETACH_STATUS_CMD STUDIO_OVERNIGHT_DETACH_CHILD_CMD
+  unset STUDIO_OVERNIGHT_DETACH_STATUS_CMD STUDIO_OVERNIGHT_DETACH_CHILD_CMD STUDIO_OVERNIGHT_DETACH_WAIT_SECONDS
   assert_eq 1 "$st" "a status timeout exits 1"
   assert_contains "$TMP/dtn.out" "never took the lock" "the message says the child was ended"
   assert_contains "$TMP/dtn.out" "start " "and the plain command is printed"
   wait_for '[ -z "$(pgrep -f "$TMP/bin/msleep 301\$")" ]' 1
   assert_eq 0 "$(pgrep -f "$TMP/bin/msleep 301\$" | wc -l | tr -d ' ')" "no child survives"
 }
+# detach_stand_in KEY [DELAY] — shell text for a stand-in detached child (#70):
+# after DELAY s (default none) it writes the run lock in take_lock's format
+# with its own pid (\$\$ of the setsid'd `sh -c`, the pid detach waits on) and
+# run=$TMP/KEY-run, then the started marker (manifest.path) unless KEY-run is
+# to stay unstarted ($DSI_NO_MARKER=1), then holds both for 121 s and removes
+# its lock. The text names studio-overnight, so lock_live counts it live.
+detach_stand_in() {
+  _dsi_lk="$P/.studio/runs/demo"; _dsi_m=": > '$TMP/$1-run/manifest.path'"
+  [ "${DSI_NO_MARKER:-0}" = 0 ] || _dsi_m=":"
+  printf '%s' ": studio-overnight stand-in; ${2:+'$TMP/bin/msleep' $2; }mkdir -p '$_dsi_lk' '$TMP/$1-run'
+printf 'pid=%s\\nrun=%s\\nstarted=%s\\nstart=%s\\n' \$\$ '$TMP/$1-run' \"\$(date -u +%Y-%m-%dT%H:%M:%SZ)\" '$P' > '$_dsi_lk/lock'
+$_dsi_m; '$TMP/bin/msleep' 121; rm -f '$_dsi_lk/lock'"
+}
+# detach_end_stand_in OUT — end the stand-in named by OUT's "pid N," (its whole
+# group: setsid made it the leader), drop its lock, and wait out its sleepers;
+# detach_stop's `stop` cannot end a hand-written child.
+detach_end_stand_in() {
+  _desi_p="$(sed -n 's/.*pid \([0-9][0-9]*\),.*/\1/p' "$1" | head -n 1)"
+  [ -z "$_desi_p" ] || kill -TERM -- "-$_desi_p" 2>/dev/null || true
+  rm -f "$P/.studio/runs/demo/lock"
+  wait_for "[ -z \"\$(pgrep -f '$TMP/bin/msleep (15|121)\$')\" ]" 20
+  assert_eq 0 "$(pgrep -f "$TMP/bin/msleep (15|121)\$" | wc -l | tr -d ' ')" "no stand-in survives"
+}
 test_lanes_detach_poll_keeps_budget() {
   lanes_fixture dpk integration A:-
   : > "$TMP/dpk.count"
+  # The stand-in is started at once, so every poll runs the status check, which never answers.
   STUDIO_OVERNIGHT_DETACH_POLL_SECONDS=0.2
   STUDIO_OVERNIGHT_DETACH_STATUS_CMD="echo x >> '$TMP/dpk.count'; false"
-  STUDIO_OVERNIGHT_DETACH_CHILD_CMD="'$TMP/bin/msleep' 309"
-  export STUDIO_OVERNIGHT_DETACH_POLL_SECONDS STUDIO_OVERNIGHT_DETACH_STATUS_CMD STUDIO_OVERNIGHT_DETACH_CHILD_CMD
+  STUDIO_OVERNIGHT_DETACH_CHILD_CMD="$(detach_stand_in dpk)"; STUDIO_OVERNIGHT_DETACH_WAIT_SECONDS=10
+  export STUDIO_OVERNIGHT_DETACH_POLL_SECONDS STUDIO_OVERNIGHT_DETACH_STATUS_CMD STUDIO_OVERNIGHT_DETACH_CHILD_CMD \
+    STUDIO_OVERNIGHT_DETACH_WAIT_SECONDS
   _t0=$(date +%s); st=0
   ( cd "$P" && sh "$RUNNER" start --detach "$MFP" ) > "$TMP/dpk.out" 2>&1 || st=$?
   _el=$(( $(date +%s) - _t0 ))
-  unset STUDIO_OVERNIGHT_DETACH_POLL_SECONDS STUDIO_OVERNIGHT_DETACH_STATUS_CMD STUDIO_OVERNIGHT_DETACH_CHILD_CMD
-  assert_eq 1 "$st" "the window times out: the child never took the lock"
-  assert_contains "$TMP/dpk.out" "never took the lock" "the no-lock message"
+  unset STUDIO_OVERNIGHT_DETACH_POLL_SECONDS STUDIO_OVERNIGHT_DETACH_STATUS_CMD STUDIO_OVERNIGHT_DETACH_CHILD_CMD \
+    STUDIO_OVERNIGHT_DETACH_WAIT_SECONDS
+  assert_eq 1 "$st" "the window times out: status never answered"
+  assert_contains "$TMP/dpk.out" "is live .* but did not answer status in 10 s — " "the is-live message names the cap"
   assert_eq 1 "$([ "$_el" -ge 10 ] && echo 1 || echo 0)" "the window still lasts 10 s at a 0.2 s poll (${_el}s)"
-  assert_eq 50 "$(wc -l < "$TMP/dpk.count" | tr -d ' ')" "the status check ran 10 s x 5 ticks: the knob survived --detach's STUDIO_* strip"
+  # A 1 s poll gives at most 11 status checks in a 10 s window, so 12 proves
+  # the 0.2 s poll (up to 50; at load each poll's forks cost 0.3-0.5 s more).
+  _dpk_n="$(wc -l < "$TMP/dpk.count" | tr -d ' ')"
+  assert_eq 1 "$([ "$_dpk_n" -ge 12 ] && echo 1 || echo 0)" "the status check ran at the 0.2 s poll ($_dpk_n times): the knob survived --detach's STUDIO_* strip"
+  detach_end_stand_in "$TMP/dpk.out"
 }
 test_lanes_detach_poll_rejects_bad_value() {
   lanes_fixture dpb integration A:-
@@ -2471,6 +2503,80 @@ test_lanes_detach_poll_rejects_bad_value() {
   assert_contains "$TMP/dpb.out" "studio-overnight: STUDIO_OVERNIGHT_DETACH_POLL_SECONDS must be 1, 0.5, 0.2 or 0.1, got 1.0" "the refusal names the knob and the value"
   assert_missing "$P/.studio/runs/demo/lock" "no run lock was taken"
   assert_not_contains "$TMP/dpb.out" "detached:" "nothing was detached"
+}
+# #70: the window waits for the lock. The stand-in takes the run lock only
+# after 15 s, as a large manifest's checks make the real child do.
+test_lanes_detach_slow_child_takes_lock() {
+  lanes_fixture dsc integration A:-
+  STUDIO_OVERNIGHT_DETACH_STATUS_CMD=true; STUDIO_OVERNIGHT_DETACH_WAIT_SECONDS=60
+  STUDIO_OVERNIGHT_DETACH_CHILD_CMD="$(detach_stand_in dsc 15)"
+  export STUDIO_OVERNIGHT_DETACH_STATUS_CMD STUDIO_OVERNIGHT_DETACH_WAIT_SECONDS STUDIO_OVERNIGHT_DETACH_CHILD_CMD
+  _t0=$(date +%s); st=0
+  ( cd "$P" && sh "$RUNNER" start --detach "$MFP" ) > "$TMP/dsc.out" 2>&1 || st=$?
+  _el=$(( $(date +%s) - _t0 ))
+  unset STUDIO_OVERNIGHT_DETACH_STATUS_CMD STUDIO_OVERNIGHT_DETACH_WAIT_SECONDS STUDIO_OVERNIGHT_DETACH_CHILD_CMD
+  assert_eq 0 "$st" "a child that takes the lock after 15 s detaches"
+  assert_contains "$TMP/dsc.out" "^detached: pid [0-9]*, log " "it prints the pid and the log"
+  assert_eq "pid=$(sed -n 's/^detached: pid \([0-9]*\),.*/\1/p' "$TMP/dsc.out")" "$(grep '^pid=' "$P/.studio/runs/demo/lock" 2>/dev/null)" "the detached pid holds the lock"
+  assert_eq 1 "$([ "$_el" -ge 15 ] && echo 1 || echo 0)" "detach waited for the lock past the old 10 s window (${_el}s)"
+  assert_eq 1 "$([ -L "$TMP/dsc-run/runner.log" ] && echo 1 || echo 0)" "the lock's run dir links runner.log"
+  detach_end_stand_in "$TMP/dsc.out"
+}
+# The lock alone is not a start (#70 I5): until the run dir has manifest.path,
+# the child can still lose its lock (lock_recheck), so status is not asked.
+test_lanes_detach_lock_without_marker_not_started() {
+  lanes_fixture dlm integration A:-
+  STUDIO_OVERNIGHT_DETACH_STATUS_CMD=true; STUDIO_OVERNIGHT_DETACH_WAIT_SECONDS=8
+  STUDIO_OVERNIGHT_DETACH_CHILD_CMD="$(DSI_NO_MARKER=1 detach_stand_in dlm)"
+  export STUDIO_OVERNIGHT_DETACH_STATUS_CMD STUDIO_OVERNIGHT_DETACH_WAIT_SECONDS STUDIO_OVERNIGHT_DETACH_CHILD_CMD
+  st=0; ( cd "$P" && sh "$RUNNER" start --detach "$MFP" ) > "$TMP/dlm.out" 2>&1 || st=$?
+  unset STUDIO_OVERNIGHT_DETACH_STATUS_CMD STUDIO_OVERNIGHT_DETACH_WAIT_SECONDS STUDIO_OVERNIGHT_DETACH_CHILD_CMD
+  assert_eq 1 "$st" "a lock with no started marker is not a start, though status answers"
+  assert_not_contains "$TMP/dlm.out" "^detached:" "no success line"
+  assert_contains "$TMP/dlm.out" "is live .* but did not answer status in 8 s — " "at the cap, the lock holder is reported live"
+  detach_end_stand_in "$TMP/dlm.out"
+}
+# #70: the child is the runner's own and unreaped, so its exit shows as Z; an
+# empty `ps -o stat=` is a failed ps, not an exit, and the window polls again
+# (it used to wait on the live child, for the run's whole life).
+test_lanes_detach_empty_ps_stat_polls_again() {
+  lanes_fixture dps integration A:-
+  mkdir -p "$TMP/dpsbin"
+  printf '#!/bin/sh\ncase " $* " in *" stat= "*) exit 1 ;; esac\nexec %s "$@"\n' "$(command -v ps)" > "$TMP/dpsbin/ps"
+  chmod +x "$TMP/dpsbin/ps"
+  STUDIO_OVERNIGHT_DETACH_STATUS_CMD=true; STUDIO_OVERNIGHT_DETACH_WAIT_SECONDS=60
+  STUDIO_OVERNIGHT_DETACH_CHILD_CMD="$(detach_stand_in dps)"
+  export STUDIO_OVERNIGHT_DETACH_STATUS_CMD STUDIO_OVERNIGHT_DETACH_WAIT_SECONDS STUDIO_OVERNIGHT_DETACH_CHILD_CMD
+  st=0; ( cd "$P" && PATH="$TMP/dpsbin:$PATH" sh "$RUNNER" start --detach "$MFP" ) > "$TMP/dps.out" 2>&1 || st=$?
+  unset STUDIO_OVERNIGHT_DETACH_STATUS_CMD STUDIO_OVERNIGHT_DETACH_WAIT_SECONDS STUDIO_OVERNIGHT_DETACH_CHILD_CMD
+  assert_eq 0 "$st" "a ps that gives no stat is not an exit: the started child detaches"
+  assert_contains "$TMP/dps.out" "^detached: pid [0-9]*, log " "it prints the success line"
+  assert_not_contains "$TMP/dps.out" "did not start" "and no did-not-start message"
+  detach_end_stand_in "$TMP/dps.out"
+}
+test_lanes_detach_child_exit_fast_under_long_cap() {
+  lanes_fixture dce integration A:-
+  export STUDIO_OVERNIGHT_DETACH_CHILD_CMD="exit 3"
+  _t0=$(date +%s); st=0
+  ( cd "$P" && sh "$RUNNER" start --detach "$MFP" ) > "$TMP/dce.out" 2>&1 || st=$?
+  _el=$(( $(date +%s) - _t0 ))
+  unset STUDIO_OVERNIGHT_DETACH_CHILD_CMD
+  assert_eq 3 "$st" "the child's exit status is detach's"
+  assert_contains "$TMP/dce.out" "the detached run did not start" "the did-not-start message"
+  assert_eq 1 "$([ "$_el" -lt 60 ] && echo 1 || echo 0)" "the exit ends the 300 s window on the next poll: the whole start is under 60 s (${_el}s)"
+  assert_not_contains "$TMP/dce.out" "^detached:" "and prints no success line"
+}
+test_lanes_detach_wait_rejects_bad_value() {
+  lanes_fixture dwb integration A:-
+  for _dwv in 0 08 abc 3601; do
+    st=0
+    ( cd "$P" && STUDIO_OVERNIGHT_DETACH_WAIT_SECONDS="$_dwv" sh "$RUNNER" start --detach "$MFP" ) > "$TMP/dwb.out" 2>&1 || st=$?
+    assert_eq 2 "$st" "a detach wait of '$_dwv' exits 2"
+    assert_contains "$TMP/dwb.out" "^studio-overnight: STUDIO_OVERNIGHT_DETACH_WAIT_SECONDS must be a whole number from 1 to 3600, got $_dwv$" "the refusal names the knob and '$_dwv'"
+    assert_not_contains "$TMP/dwb.out" "detached:" "nothing was detached for '$_dwv'"
+  done
+  assert_missing "$P/.studio/runs/demo/lock" "no run lock was taken"
+  assert_eq "" "$(ls "$P/.studio/reports" 2>/dev/null | grep '^overnight-demo-detached-')" "no detached child log: no child was started"
 }
 test_lanes_origin_attached() {
   lanes_fixture ora integration A:-
@@ -4696,6 +4802,7 @@ FAKEGIT
 # exclusive-scan: test_lanes_direct_merge_timeout_after_merge_lands in (d) a spec seed: the hung merge must outlast a session limit of a few seconds
 # exclusive-scan: test_lanes_direct_merge_timeout_term_ignored in (d) a spec seed: the TERM-ignoring merge must be cut by a session limit of a few seconds plus a short grace
 # exclusive-scan: test_lanes_report_on_lane_crash out (d) the grace value is no window: the test kills the lane and its session itself, then waits on the runner with a ceiling of a minute
+# exclusive-scan: test_lanes_detach_child_exit_fast_under_long_cap out (a) the 60 s bound only tells the child's exit from the 300 s cap: the child exits at once, the window ends on the next 0.2 s poll, and the foreground checks take seconds even under load
 # exclusive-scan: test_lanes_detach_poll_rejects_bad_value out (d) a false hit: the flagged value is the one the runner refuses at start, before any clock runs
 # exclusive-scan: test_lanes_timed_out_outcome out (d) the stub session hangs until killed, so any session limit ends it and a late start cannot flip the outcome; it is in the real-clock list
 # exclusive-scan: test_lanes_heartbeat in (d) a spec seed: a one-second heartbeat must show while a short session still runs
@@ -4740,11 +4847,13 @@ TESTS_FINAL="test_lanes_no_orphans"
 TESTS_REAL_CLOCK="test_lanes_sync_repair_stops test_lanes_timed_out_outcome \
   test_lanes_slot_cap_two_across_runs test_lanes_gate_never_overlaps \
   test_lanes_left_gate_reaped test_lanes_land_conflict_one_repair \
-  test_lanes_detach_timeout_lock_held_points_at_status test_lanes_wait_deps_default_poll"
+  test_lanes_detach_timeout_lock_held_points_at_status test_lanes_wait_deps_default_poll \
+  test_lanes_detach_slow_child_takes_lock"
 before_each() {
   rw_kill
   unset STUDIO_SETUP_POLL_SECONDS STUDIO_GATE_POLL_SECONDS \
-        STUDIO_OVERNIGHT_REAP_POLL_SECONDS STUDIO_OVERNIGHT_DETACH_POLL_SECONDS STUDIO_OVERNIGHT_POLL_SECONDS
+        STUDIO_OVERNIGHT_REAP_POLL_SECONDS STUDIO_OVERNIGHT_DETACH_POLL_SECONDS STUDIO_OVERNIGHT_POLL_SECONDS \
+        STUDIO_OVERNIGHT_DETACH_WAIT_SECONDS
   is_real_clock && return 0
   STUDIO_SETUP_POLL_SECONDS=0.2; STUDIO_GATE_POLL_SECONDS=0.2
   STUDIO_OVERNIGHT_REAP_POLL_SECONDS=0.2; STUDIO_OVERNIGHT_DETACH_POLL_SECONDS=0.2
@@ -4789,6 +4898,8 @@ run_tests test_stub_waitexist_and_run_token test_lanes_setup_preflight_refuses_l
   test_lanes_detach_strips_env test_lanes_detach_refusal_in_foreground test_lanes_detach_child_refusal_surfaces \
   test_lanes_detach_timeout_lock_held_points_at_status test_lanes_detach_timeout_no_lock_ends_child \
   test_lanes_detach_poll_keeps_budget test_lanes_detach_poll_rejects_bad_value \
+  test_lanes_detach_slow_child_takes_lock test_lanes_detach_lock_without_marker_not_started test_lanes_detach_empty_ps_stat_polls_again \
+  test_lanes_detach_child_exit_fast_under_long_cap test_lanes_detach_wait_rejects_bad_value \
   test_lanes_origin_attached test_lanes_origin_detach test_lanes_origin_detach_refused \
   test_lanes_help_modes test_lanes_left_gate_reaped test_lanes_timed_out_outcome test_lanes_heartbeat \
   test_lanes_activity_verb test_lanes_status_anywhere test_lanes_status_ended_partial test_lanes_watch \

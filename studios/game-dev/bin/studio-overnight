@@ -307,8 +307,10 @@ usage: $SELF_ABS start [--dry-run | --detach] [<manifest>] | status [--run <slug
                      CLAUDECODE, CLAUDE_*, AI_AGENT, OMEGA_* or STUDIO_* is
                      removed (the test hooks below included);
                      CLAUDE_CONFIG_DIR and PATH stay. Exit 0 printing
-                     "detached: pid <p>, log <path>" once status answers
-                     within 10 s; else it prints the plain command.
+                     "detached: pid <p>, log <path>" once the runner holds
+                     the run lock and status answers (it waits up to 300 s;
+                     a runner that exits ends the wait); else it prints the
+                     plain command.
   deny-rules [--dir <path>]
                      print the deny rules a unit would get for the project at
                      <path> (default: here), one per line; notes on stderr for
@@ -517,7 +519,12 @@ Test hooks (tests only; never set them for a real run; --detach strips them):
                      session or gate is given its grace: 1 (default), 0.5,
                      0.2 or 0.1; the grace stays in seconds
   STUDIO_OVERNIGHT_DETACH_POLL_SECONDS — test hook: the poll of --detach's
-                     10 s status window: 1 (default), 0.5, 0.2 or 0.1
+                     status window: 1 (default), 0.5, 0.2 or 0.1
+  STUDIO_OVERNIGHT_DETACH_WAIT_SECONDS — test hook: --detach's window, the
+                     whole seconds it waits for the runner to hold the run
+                     lock and answer status: 1-3600, no leading zero
+                     (default 300), else every verb refuses (read before
+                     the strip)
   STUDIO_ENV_FIXTURE — test hook: a directory of canned outputs studio-env reads
                      in place of uname, sysctl, /proc, nproc, df, pmset and ps
   activity --open-gate <unit.jsonl> — test hook verb: prints "gate" when an
@@ -543,7 +550,16 @@ poll_knob() {
   esac
 }
 poll_knob STUDIO_OVERNIGHT_REAP_POLL_SECONDS "${STUDIO_OVERNIGHT_REAP_POLL_SECONDS:-}"; REAP_POLL=$_pk_poll; REAP_TPS=$_pk_tps
-poll_knob STUDIO_OVERNIGHT_DETACH_POLL_SECONDS "${STUDIO_OVERNIGHT_DETACH_POLL_SECONDS:-}"; DETACH_POLL=$_pk_poll; DETACH_TPS=$_pk_tps
+poll_knob STUDIO_OVERNIGHT_DETACH_POLL_SECONDS "${STUDIO_OVERNIGHT_DETACH_POLL_SECONDS:-}"; DETACH_POLL=$_pk_poll
+# --detach's window in whole seconds (#70): the wall-clock cap on the wait for the
+# child to start. Read here too, before any child is spawned, so a bad value never
+# starts one and the strip cannot drop it. No leading zero (sh reads 010 as octal).
+case "${STUDIO_OVERNIGHT_DETACH_WAIT_SECONDS:-300}" in
+  [1-9]|[1-9][0-9]|[1-9][0-9][0-9]|[1-9][0-9][0-9][0-9]) DETACH_WAIT="${STUDIO_OVERNIGHT_DETACH_WAIT_SECONDS:-300}" ;;
+  *) DETACH_WAIT="" ;;
+esac
+[ -n "$DETACH_WAIT" ] && [ "$DETACH_WAIT" -le 3600 ] \
+  || { say "STUDIO_OVERNIGHT_DETACH_WAIT_SECONDS must be a whole number from 1 to 3600, got $STUDIO_OVERNIGHT_DETACH_WAIT_SECONDS"; exit 2; }
 
 START_DIR="$(sh "$STATE_BIN" root --work 2>/dev/null || true)"
 STATE_ROOT="$(sh "$STATE_BIN" root 2>/dev/null || true)"
@@ -1603,7 +1619,18 @@ story_units() {
 # this script re-execs itself in its own session (perl setsid), stdin
 # /dev/null, output to a log, with every CLAUDECODE, CLAUDE_*, AI_AGENT,
 # OMEGA_* and STUDIO_* variable removed (CLAUDE_CONFIG_DIR kept). Success
-# only when `status` exits 0 for that child within 10 s.
+# only when three things hold for that child: it holds the run lock (pid=, the
+# cheap check, first); its run dir (the lock's run=) has manifest.path, which
+# lanes_run writes once acquire_run_lock has returned, so past every point
+# that can still lose the lock (take_lock, run_populate, mx_take,
+# lock_recheck: lock_lost exits 2); and `status` exits 0 for it. Nothing
+# checks that the lock is the child's own rather than a stale one whose pid=
+# a reused pid happens to match (unlikely; as before #70). (The registry
+# entry comes earlier, but reg_write may fail without failing the run.) The
+# window waits up to DETACH_WAIT s of wall clock (300; #70: the child checks
+# the manifest again before it takes the lock, which on a large one takes
+# tens of seconds, and a false kill costs a new setup check); the child's
+# exit (a zombie counts) ends it on the next poll.
 detach_start() {
   _dm="$1"
   # Test hooks, read before the strip: a status check that never answers, and
@@ -1658,12 +1685,18 @@ detach_start() {
     nohup env ${RUN_ORIGIN:+"STUDIO_RUN_ORIGIN=$RUN_ORIGIN"} ${_dck:+"STUDIO_OVERNIGHT_SETUP_CHECKED=$_dck"} perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV' sh "$SELF_ABS" start "$_dm" </dev/null >"$_dlog" 2>&1 &
   fi
   _dpid=$!
-  _di=0
-  while [ "$_di" -lt $((10 * DETACH_TPS)) ]; do
-    if kill -0 "$_dpid" 2>/dev/null; then
-      if { if [ -n "$_dhs" ]; then eval "$_dhs"; else sh "$SELF_ABS" status --run "$_dslug"; fi; } >/dev/null 2>&1 && [ "$(lock_pid)" = "$_dpid" ]; then
-        _drun="$(sed -n 's/^run=//p' "$LOCK" 2>/dev/null | head -n 1)"
-        [ -z "$_drun" ] || ln -sf "$_dlog" "$_drun/runner.log" 2>/dev/null || true
+  _ddl=$(( $(date +%s) + DETACH_WAIT ))
+  # Each poll, until the deadline: the child exited (did not start), or it is
+  # started (the three checks in the header: detached); else poll again.
+  # Exited means kill -0 fails or ps says Z: the child is ours and unreaped,
+  # so an empty stat is a failed ps, not an exit (poll again).
+  while [ "$(date +%s)" -lt "$_ddl" ]; do
+    if kill -0 "$_dpid" 2>/dev/null \
+        && case "$(ps -o stat= -p "$_dpid" 2>/dev/null)" in Z*) false ;; *) true ;; esac; then
+      _drun=""; [ "$(lock_pid)" != "$_dpid" ] || _drun="$(sed -n 's/^run=//p' "$LOCK" 2>/dev/null | head -n 1)"
+      if [ -n "$_drun" ] && [ -f "$_drun/manifest.path" ] \
+          && { if [ -n "$_dhs" ]; then eval "$_dhs"; else sh "$SELF_ABS" status --run "$_dslug"; fi; } >/dev/null 2>&1; then
+        ln -sf "$_dlog" "$_drun/runner.log" 2>/dev/null || true
         echo "detached: pid $_dpid, log $_dlog"
         echo "watch: $(sq "$SELF_ABS") watch --run $_dslug · status: $(sq "$SELF_ABS") status --run $_dslug (from the project; plain status from anywhere)"
         return 0
@@ -1675,11 +1708,11 @@ detach_start() {
       [ "$_drc" -ne 0 ] || _drc=1
       return "$_drc"
     fi
-    sleep "$DETACH_POLL"; _di=$((_di + 1))
+    sleep "$DETACH_POLL"
   done
   if lock_live && [ "$(lock_pid)" = "$_dpid" ]; then
     # The child holds the run lock: the run is live, only status was slow.
-    say "the detached run is live (pid $_dpid, log $_dlog) but did not answer status in 10 s — $(sq "$SELF_ABS") status --run $_dslug, or $(sq "$SELF_ABS") stop --run $_dslug"
+    say "the detached run is live (pid $_dpid, log $_dlog) but did not answer status in ${DETACH_WAIT} s — $(sq "$SELF_ABS") status --run $_dslug, or $(sq "$SELF_ABS") stop --run $_dslug"
     return 1
   fi
   # No lock: end the child's process group (setsid made it the group leader).

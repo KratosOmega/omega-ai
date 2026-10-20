@@ -130,7 +130,7 @@ def new_run_state(key: str, entry: dict, now: float) -> dict:
         "key": key, "pid": entry["pid"], "started": entry.get("started"), "origin": origin,
         "root": entry["root"], "run_dir": entry["run"], "adopted_at": now,
         "request": {"state": "pending" if task else "none", "task": task, "issue": None, "since": now},
-        "run_issue": None, "mode": None,
+        "run_issue": None, "mode": None, "end_wake": None,
         "stories": {}, "story_desc": {}, "story_failed": [], "story_recreated": [],
         "offset": 0, "pending": None,
         "intended": {}, "last_set": {}, "hands_off": [], "held_back": {},

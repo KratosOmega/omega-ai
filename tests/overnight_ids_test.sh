@@ -293,6 +293,115 @@ test_ids_defaults_need_listed_row() {                # Review Focus 5
   assert_eq 1 "$IS_STATUS" "taken"
   assert_eq "studio-overnight: pick an unused id: the ticket, or <run slug>-S<n>" "$(tail -n 1 "$IS_ERR")" "a manifest that does not list the id gives no defaults (no ticket, no slug)"
 }
+# ids_shell SCRIPT — SCRIPT run in one shell that sourced overnight-ids.sh
+# the way mf_check has it (START_DIR = STATE_ROOT = $P), with emit printing
+# each line: stdout and stderr in IS_OUT.
+ids_shell() {
+  IS_OUT="$TMP/ids-shell.out"
+  ( SELF_DIR="$BIN"; START_DIR="$P"; STATE_ROOT="$P"
+    . "$BIN/overnight-runs.sh"; . "$BIN/overnight-ids.sh"
+    emit() { printf '%s\n' "$1"; }
+    eval "$1" ) > "$IS_OUT" 2>&1 < /dev/null
+}
+# #70 (#57): one manifest whose ids are taken by three different sources;
+# mf_check's per-story loop, in one shell, gives each its own lines.
+test_ids_multi_source_manifest() {
+  pre_stale "$TMP/pre-ms"
+  ids_fixture tms "$TMP/pre-ms" 'S1|KAN-1|-' 'S2|KAN-2|-' 'S3|KAN-3|-'
+  push_ledger tms integration/other S2 '- 2026-10-01 shipped S2-b'
+  mkdir -p "$P/.studio/runs/old"; printf 'S3\told-b\tS3\t-\t-\t\n' > "$P/.studio/runs/old/rows.tsv"
+  printf 'S1\tS1-b\tKAN-1\t-\t-\t\nS2\tS2-b\tKAN-2\t-\t-\t\nS3\tS3-b\tKAN-3\t-\t-\t\n' > "$TMP/ms.rows"
+  ids_shell 'for _s in 1 2 3; do ids_check "S$_s" "KAN-$_s" demo - main "$TMP/ms.rows" emit "S$_s-b"; echo "rc=$?"; done'
+  assert_eq "story id 'S1' is taken: origin/main:.studio/ledger/S1.md belongs to another story (plan $OLD_PLAN, shipped KAN-1499-mob-composer)
+story id 'S1' is taken: origin/main:$OLD_PLAN says 'Story: S1'
+use 'KAN-1' instead
+rc=1
+story id 'S2' is taken: origin/integration/other:.studio/ledger/S2.md belongs to run other's integration branch
+use 'KAN-2' instead
+rc=1
+story id 'S3' is taken: run old (record .studio/runs/old) lists it
+use 'KAN-3' instead
+rc=1" "$(cat "$IS_OUT")" "each id names its own source, in rule order, then its suggestion"
+  run_ids check-id S2
+  assert_eq "studio-overnight: story id 'S2' is taken: origin/integration/other:.studio/ledger/S2.md belongs to run other's integration branch
+studio-overnight: use 'KAN-2' instead" "$(cat "$IS_ERR")" "check-id gives the same lines"
+}
+# #70 (#57): a suggestion candidate held by a run record (a row on another
+# branch, then a landed line) is skipped like one held by a ledger.
+test_ids_suggest_skips_record_taken_candidate() {
+  pre_stale "$TMP/pre-sr"
+  ids_fixture tsr "$TMP/pre-sr" 'S1|KAN-5|-'
+  _rr="$P/.studio/runs"
+  mkdir -p "$_rr/old" "$_rr/older.20261001T000000Z"
+  printf 'kan-5\tKAN-5-b\tKAN-5\t-\t-\t\n' > "$_rr/old/rows.tsv"
+  printf 'KAN-5-2\tintegration/older\tabc\t1\n' > "$_rr/older.20261001T000000Z/landed.tsv"
+  run_ids check-id S1
+  assert_eq 1 "$IS_STATUS" "taken"
+  assert_eq "studio-overnight: use 'KAN-5-3' instead" "$(tail -n 1 "$IS_ERR")" "skips a candidate in a record's rows (-) and one in an archived record's landed.tsv (-2)"
+  rm -rf "$_rr/old" "$_rr/older.20261001T000000Z"
+  run_ids check-id S1
+  assert_eq "studio-overnight: use 'KAN-5' instead" "$(tail -n 1 "$IS_ERR")" "without the records the ticket itself is free"
+}
+# #70: one mf_check's stories share an ids index; each new check rebuilds it.
+# After the key reset mf_check and cmd_check_id make, a run record written
+# since the previous check is seen (and a removed one is gone); so is it by
+# a new check-id.
+test_ids_index_rebuilt_per_check() {
+  ids_fixture tnr - 'S1|-|-'
+  ids_shell 'ids_check S1 - demo - main /dev/null emit S1-b; echo "rc=$?"
+    mkdir -p "$P/.studio/runs/old"; printf "S1\told-b\tS1\t-\t-\t\n" > "$P/.studio/runs/old/rows.tsv"
+    IDS_IX_KEY=""; ids_check S1 - demo - main /dev/null emit S1-b; echo "rc=$?"
+    rm -rf "$P/.studio/runs/old"
+    IDS_IX_KEY=""; ids_check S1 - demo - main /dev/null emit S1-b; echo "rc=$?"'
+  assert_eq "rc=0
+story id 'S1' is taken: run old (record .studio/runs/old) lists it
+use 'demo-S1' instead
+rc=1
+rc=0" "$(cat "$IS_OUT")" "free, then taken by the new record, then free again"
+  run_ids check-id S1
+  assert_eq 0 "$IS_STATUS" "check-id: free"
+  mkdir -p "$P/.studio/runs/old"; printf 'S1\told-b\tS1\t-\t-\t\n' > "$P/.studio/runs/old/rows.tsv"
+  run_ids check-id S1
+  assert_eq 1 "$IS_STATUS" "the next check-id sees the new record"
+}
+# #70: within one check (no key reset) the index is reused: a record written
+# between two ids_check calls in the same shell is not seen by the second.
+test_ids_index_reused_within_check() {
+  ids_fixture tru - 'S1|-|-'
+  ids_shell 'ids_check S1 - demo - main /dev/null emit S1-b; echo "rc=$?"
+    mkdir -p "$P/.studio/runs/old"; printf "S1\told-b\tS1\t-\t-\t\n" > "$P/.studio/runs/old/rows.tsv"
+    ids_check S1 - demo - main /dev/null emit S1-b; echo "rc=$?"'
+  assert_eq "rc=0
+rc=0" "$(cat "$IS_OUT")" "the second check reuses the first one's index: the new record is not read"
+  run_ids check-id S1
+  assert_eq 1 "$IS_STATUS" "a new check-id reads it"
+}
+# #70: records are never pruned, so their list must not ride awk's argv:
+# past ARG_MAX (1 MiB on macOS) the exec failed and every record-held id
+# looked free. 800 records with 250-character names (rows.tsv and landed.tsv
+# each: over 1.2 MB as argv); the one that holds S1 sorts last. An awk on
+# PATH that logs its argc shows the list reaches awk on stdin, on any OS.
+test_ids_index_many_records() {
+  ids_fixture tmr - 'S1|-|-'
+  _rr="$P/.studio/runs"; mkdir -p "$_rr/zz" "$TMP/spy"
+  ( cd "$_rr" && awk 'BEGIN { p = sprintf("%245s", ""); gsub(/ /, "x", p)
+      for (i = 1; i <= 800; i++) print "r" i "-" p }' | xargs mkdir )
+  for _d in "$_rr"/r*/; do
+    printf 'X1\tx-b\n' > "${_d}rows.tsv"; printf 'X2\tintegration/x\tabc\t1\n' > "${_d}landed.tsv"
+  done
+  printf 'S1\told-b\n' > "$_rr/zz/rows.tsv"
+  printf '#!/bin/sh\necho "$#" >> "%s"\nexec %s "$@"\n' "$TMP/spy/argc" "$(command -v awk)" > "$TMP/spy/awk"
+  chmod +x "$TMP/spy/awk"; : > "$TMP/spy/argc"
+  ids_shell 'PATH="$TMP/spy:$PATH"; ids_reasons S1 - demo main S1-b; echo "rc=$?"
+    printf "%s\n" "$_ix_all" | grep -c "^row	x1	x-b	run r[0-9]*-x* (record \.studio/runs/r[0-9]*-x*) lists it\$"'
+  assert_eq "run zz (record .studio/runs/zz) lists it
+rc=0
+800" "$(cat "$IS_OUT")" "the last record's id is taken, every record is indexed, nothing on stderr"
+  assert_eq "" "$(awk '$1 > 8' "$TMP/spy/argc")" "no awk's argc grows with the records"
+  run_ids check-id S1
+  assert_eq 1 "$IS_STATUS" "check-id: taken"
+  assert_contains "$IS_ERR" "story id 'S1' is taken: run zz (record \.studio/runs/zz) lists it\$" "names the record"
+}
 test_ids_usage() {                                   # spec test 15
   ids_fixture t15 - 'S1|-|-'
   run_ids check-id 'S 1'
@@ -320,4 +429,5 @@ test_ids_docs() {                                    # R5
 # exclusive-scan: test_ids_slug_dash_and_readonly out (a) "under .studio" is a path in an assertion message, not a time bound; check-id reads refs and files only
 run_tests test_ids_main_ledger_taken test_ids_main_plan_only test_ids_run_branch_plan_not_checked \
   test_ids_own_ledger test_ids_integration_branches test_ids_integration_inherits_main test_ids_plan_case_and_color test_ids_default_ref_missing test_ids_slug_dash_and_readonly test_ids_run_records test_ids_carried_over_branch test_ids_defaults_any_case test_ids_case_insensitive \
-  test_ids_suggestion test_ids_defaults_need_listed_row test_ids_usage test_ids_docs
+  test_ids_suggestion test_ids_defaults_need_listed_row test_ids_multi_source_manifest test_ids_suggest_skips_record_taken_candidate \
+  test_ids_index_rebuilt_per_check test_ids_index_reused_within_check test_ids_index_many_records test_ids_usage test_ids_docs
