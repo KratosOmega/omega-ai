@@ -1,6 +1,7 @@
 #!/bin/sh
 # studio-gate <who> -- <cmd> [args...] — run <cmd> holding the project's one
 # gate lock, so at most one test or gate run happens at a time.
+# studio-gate --classify -- <cmd…> — print the class the gate would give <cmd> (no lock).
 #
 # Test hooks (tests only; never set them for a real run):
 #   STUDIO_GATE_POLL_SECONDS (1, 0.5, 0.2 or 0.1; default 1) — the lock
@@ -40,6 +41,18 @@
 # With no .studio/ project there is nothing to protect: the command just runs.
 
 SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
+. "$SELF_DIR/gate-class.sh"
+GC_DISPATCH="$(gc_resolve "$SELF_DIR/studio-dispatch")"
+if [ "${1:-}" = --classify ]; then
+  if [ "$#" -lt 3 ] || [ "$2" != "--" ]; then
+    printf 'usage: studio-gate --classify -- <cmd> [args...]\n' >&2; exit 2
+  fi
+  shift 2
+  _ca="$(gate_classify "$@")"; _cl=0; [ "$(studio_cfg gate_short_lane)" = on ] && _cl=1
+  printf '%s %s lane=%s wt=%s argv=%s\n' "$(gate_effective "${_ca% *}" "$_cl")" "${_ca#* }" \
+    "$([ "$_cl" = 1 ] && echo on || echo off)" "$(gate_wt)" "${_ca% *}"
+  exit 0
+fi
 
 if [ "$#" -lt 3 ] || [ "$2" != "--" ]; then
   printf 'usage: studio-gate <who> -- <cmd> [args...]\n' >&2
