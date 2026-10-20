@@ -14,6 +14,29 @@ approval page in `artifacts/`.
 
 ## Log
 
+### 2026-10-19 — `start --detach` survives a large manifest; fast id checks (#70, #57)
+
+- Incident: every `start --detach` of phoenix combat-vfx-library (7 stories, 132 units) was
+  killed. The detached child spent ~21 s in its checks before taking the run lock, and the
+  parent allowed it 10 s. Each attempt also cost a ~15 min worktree_setup check first.
+- Profile: no check was quadratic in stories or units. `ids_check` cost stories × (run records
+  + integration refs), and both of those grow with every run.
+  - `ids_index`: one index per mf_check, one awk per id; records reach awk on stdin.
+  - ids_check went from 8.9 s to 1.0 s, and mf_load + mf_check from 14.2 s to 6.0 s CPU (fetch
+    stubbed, load ~4).
+  - The output is byte-identical on 117 phoenix and 896 edge cases.
+  - mf_check reads the stage from the `show` output it already captured.
+- `--detach` now waits on a wall-clock deadline, 300 s by default
+  (`STUDIO_OVERNIGHT_DETACH_WAIT_SECONDS`, test hook). Success requires, in this order:
+  - the child holds the lock;
+  - `$run/manifest.path` exists (written after lock_recheck);
+  - status answers.
+  A child that exits, or is a zombie, ends the wait at once.
+- The preflight token was dropped. A sound token skips only checks worth ~1 s; the ids, conflict,
+  remote and studio-state checks must re-run in the child. Tracked in #74. Follow-ups: #73
+  (direct mode + SETUP_CHECKED) and #76 (a load-sensitive progress test, red on main too).
+- Spec `specs/2026-10-19-detach-lock-window.md`; plan `plans/2026-10-19-detach-lock-window.md`.
+
 ### 2026-10-19 — A queued kickoff wakes when its run ends (#72)
 
 - Incident: OMEG-92 (phoenix combat-vfx-library) was queued (unassigned, started by a wakeup
