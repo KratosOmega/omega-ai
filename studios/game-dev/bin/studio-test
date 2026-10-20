@@ -34,6 +34,8 @@ case "${1:-}" in
        shift "$_ft_n"
      fi ;;
 esac
+# Per-worktree user:// (#71): the adapter may isolate it; its status never blocks the run.
+sh "$(dirname "$0")/studio-dispatch" --has isolate && sh "$(dirname "$0")/studio-dispatch" isolate
 case "${1:-}" in
   --file|--file=*)
     _ft_rp="$(pwd -P)"; _ft_rl="$PWD"; _ft_list=""
