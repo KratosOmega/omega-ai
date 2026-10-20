@@ -32,7 +32,7 @@ iso_repo() {
 # iso_wt REPO NAME [nokey] — a linked worktree; its config opts in unless nokey.
 iso_wt() {
   W="$TMP/$2"
-  g -C "$1" worktree add -q -b "br-$2" "$W" >/dev/null 2>&1
+  g -C "$1" worktree add -q -b "br-$(printf %s "$2" | tr -c A-Za-z0-9 _)" "$W" >/dev/null 2>&1
   mkdir -p "$W/.studio"
   [ "${3:-}" = nokey ] || printf '{"engine": "godot4", "user_dir": "per-worktree"}\n' > "$W/.studio/config.json"
   printf '.studio/\n' >> "$(git -C "$W" rev-parse --path-format=absolute --git-common-dir)/info/exclude"
@@ -179,11 +179,13 @@ test_isolate_sweep_daily_stamp() {
 
 test_isolate_sweep_paths_with_spaces() {
   UR="$TMP/App Support"; R="$(iso_repo spaces)"; W="$(iso_wt "$R" spaces-wt)"
+  mkdir -p "$TMP/App"; : > "$TMP/App/keep"
   mk_lanes "$W"
   iso "$W"
   assert_file "$W/override.cfg" "the write works"
   assert_missing "$LD/dead-old" "the sweep works under a spaced root"
   assert_file "$LD/f" "nothing else under the root changes"
+  assert_file "$TMP/App/keep" "a word-split rm would have taken the sibling sentinel"
   assert_eq "yes" "$([ -d "$TMP/ln-target" ] && echo yes)" "nothing outside it changes"
 }
 
@@ -261,8 +263,55 @@ test_isolate_leaks_lists() {
   printf '%s\nx\n' "$MARKER" > "$R2/override.cfg"
   iso "$TMP" --leaks "$R2" >/dev/null; rc=$?
   assert_eq 0 "$rc" "lines HEAD has are not leaks"
+  # a project.godot new to HEAD (staged), then a repo with no commits at all
+  R3="$(iso_repo leaks3)"
+  mkdir -p "$R3/game"; printf '[application]\nconfig/name="G"\n%s\n' "$NAMELINE" > "$R3/game/project.godot"
+  git -C "$R3" add game/project.godot
+  out="$(iso "$TMP" --leaks "$R3")"; rc=$?
+  assert_eq 3 "$rc" "a staged project.godot new to HEAD is a leak"
+  assert_eq "game/project.godot: config/custom_user_dir_name" "$out" "and names its path"
+  mkdir -p "$TMP/leaks4"; git -C "$TMP/leaks4" init -q -b main
+  printf '[application]\n%s\n' "$NAMELINE" > "$TMP/leaks4/project.godot"; git -C "$TMP/leaks4" add project.godot
+  iso "$TMP" --leaks "$TMP/leaks4" >/dev/null; rc=$?
+  assert_eq 3 "$rc" "a repo with no commits: a staged name line is a leak"
   iso "$TMP" --leaks "$TMP/not-a-repo" >/dev/null 2>&1; rc=$?
   assert_eq 1 "$rc" "a non-repo is an error"
+}
+
+test_isolate_scrub_subdir_projects() {
+  UR="$TMP/ud-subscrub"; R="$(iso_repo subscrub)"
+  mkdir -p "$R/game"; printf '[application]\nconfig/name="G"\n' > "$R/game/project.godot"
+  ( cd "$R" && git add game/project.godot && g commit -q -m game ) >/dev/null 2>&1
+  W="$(iso_wt "$R" subscrub-wt)"
+  printf '%s\n%s\n' "$USE" "$NAMELINE" >> "$W/game/project.godot"
+  printf '%s\n' "$USE" >> "$W/project.godot"
+  out="$(iso "$W" --scrub)"; rc=$?
+  assert_eq 3 "$rc" "a subdir project is scrubbed too: exit 3"
+  assert_eq "config/use_custom_user_dir, config/custom_user_dir_name" "$out" "the keys of both files, once each"
+  assert_eq "" "$(git -C "$W" status --porcelain -- project.godot game/project.godot)" "both files are back to HEAD"
+  iso "$W" --scrub >/dev/null; rc=$?
+  assert_eq 0 "$rc" "a second scrub finds nothing"
+}
+
+test_isolate_exclude_with_spaces() {
+  UR="$TMP/ud-exsp"; R="$(iso_repo exsp)"; W="$(iso_wt "$R" "exsp wt")"
+  mkdir -p "$W/my game"; cp "$W/project.godot" "$W/my game/project.godot"
+  iso "$W"; iso "$W/my game"
+  assert_file "$W/override.cfg" "a worktree path with a space works"
+  assert_file "$W/my game/override.cfg" "and a project dir with a space"
+  assert_status 0 "the top override.cfg is ignored" -- git -C "$W" check-ignore -q override.cfg
+  assert_status 0 "the spaced project's override.cfg is ignored" -- git -C "$W" check-ignore -q "my game/override.cfg"
+  assert_contains "$(git -C "$W" rev-parse --path-format=absolute --git-common-dir)/info/exclude" '^/my game/override.cfg$' "the exclude line holds the spaced path"
+}
+
+test_studio_test_stderr_unchanged_when_not_opted() {
+  UR="$TMP/ud-a5"; R="$(iso_repo a5)"; W="$(iso_wt "$R" a5-wt nokey)"
+  mkdir -p "$TMP/a5-plain"; cp "$W/project.godot" "$TMP/a5-plain/project.godot"
+  ( cd "$W" && STUDIO_GODOT_USER_ROOT="$UR" OMEGA_STUDIO_ROOT="$STUDIO" sh "$BIN/studio-test" ) > "$TMP/a5.out1" 2> "$TMP/a5.err1"; rc1=$?
+  ( cd "$TMP/a5-plain" && STUDIO_GODOT_USER_ROOT="$UR" OMEGA_STUDIO_ROOT="$STUDIO" sh "$BIN/studio-test" ) > "$TMP/a5.out2" 2> "$TMP/a5.err2"; rc2=$?
+  assert_eq "$rc2" "$rc1" "same exit status as a plain project"
+  assert_eq "$(cat "$TMP/a5.err2")" "$(cat "$TMP/a5.err1")" "and equal to a plain project's"
+  assert_missing "$W/override.cfg" "no file written"
 }
 
 test_isolate_user_root_production_default() {
@@ -321,4 +370,5 @@ run_tests test_isolate_writes_in_opted_linked_worktree test_isolate_never_in_mai
   test_isolate_check test_isolate_check_refuses_unknown_platform test_isolate_sweep_dead_old_only \
   test_isolate_sweep_daily_stamp test_isolate_sweep_paths_with_spaces test_isolate_hash_keys_the_clone \
   test_isolate_start_scrub test_isolate_scrub_modes test_isolate_leaks_lists \
-  test_isolate_user_root_production_default test_dispatch_has_verb test_studio_test_calls_isolate test_cfg_parity
+  test_isolate_user_root_production_default test_dispatch_has_verb test_studio_test_calls_isolate test_cfg_parity \
+  test_isolate_scrub_subdir_projects test_isolate_exclude_with_spaces test_studio_test_stderr_unchanged_when_not_opted

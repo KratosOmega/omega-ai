@@ -60,32 +60,47 @@ user_root() {
 # is_ours FILE — a regular file whose line 1 is the marker.
 is_ours() { [ -f "$1" ] && [ ! -L "$1" ] && [ "$(head -n 1 "$1")" = "$MARKER" ]; }
 
-# removed_lines CURRENT HEADFILE [all|name] — CURRENT's lanes lines HEAD lacks.
-removed_lines() {
-  awk -v use="$LANES_USE_RE" -v nm="$LANES_NAME_RE" -v which="${3:-all}" '
-    NR == FNR { head[$0] = 1; next }
-    !($0 in head) && ((which == "all" && $0 ~ use) || $0 ~ nm) { print }
-  ' "$2" "$1"
+# lanes_awk list|filter HEADFILE CURRENT [all|name] — one predicate for both: a CURRENT line
+# is "ours" when HEAD lacks it and it matches the name pattern (or, with `all`, the use
+# pattern too). list prints those lines; filter prints the rest. FILENAME == ARGV[1]
+# (not NR == FNR) so an empty HEAD file still counts as the first file.
+lanes_awk() {
+  awk -v mode="$1" -v use="$LANES_USE_RE" -v nm="$LANES_NAME_RE" -v which="${4:-all}" '
+    FILENAME == ARGV[1] { head[$0] = 1; next }
+    {
+      ours = !($0 in head) && ((which == "all" && $0 ~ use) || $0 ~ nm)
+      if (mode == "list" ? ours : !ours) print
+    }
+  ' "$2" "$3"
 }
 
 # keys_of — stdin lines to the unique `, `-joined keys.
 keys_of() { sed 's/=.*//' | awk '!s[$0]++' | paste -sd, - | sed 's/,/, /g'; }
 
+# do_scrub — every tracked project.godot under cwd loses the lanes lines HEAD lacks
+# (a file not in HEAD is skipped).
 do_scrub() {
   is_opted && load_git || return 0
-  [ -f project.godot ] || return 0
   _is_hf="$(mktemp "${TMPDIR:-/tmp}/isolate-head.XXXXXX")" || return 1
-  if ! git show HEAD:./project.godot > "$_is_hf" 2>/dev/null; then rm -f "$_is_hf"; return 0; fi
-  _is_rm="$(removed_lines project.godot "$_is_hf")"
-  if [ -z "$_is_rm" ]; then rm -f "$_is_hf"; return 0; fi
-  _is_nf="$(mktemp "${TMPDIR:-/tmp}/isolate-new.XXXXXX")" || { rm -f "$_is_hf"; return 1; }
-  awk -v use="$LANES_USE_RE" -v nm="$LANES_NAME_RE" '
-    NR == FNR { head[$0] = 1; next }
-    !($0 in head) && ($0 ~ use || $0 ~ nm) { next }
-    { print }
-  ' "$_is_hf" project.godot > "$_is_nf" && cat "$_is_nf" > project.godot || { rm -f "$_is_hf" "$_is_nf"; return 1; }
-  rm -f "$_is_hf" "$_is_nf"
-  printf '%s\n' "$_is_rm" | keys_of
+  _is_nf="$_is_hf.new"; _is_ks="$_is_hf.keys"; _is_ls="$_is_hf.list"; : > "$_is_ks"
+  _is_err=0
+  git -c core.quotePath=false ls-files -- project.godot '*/project.godot' > "$_is_ls" 2>/dev/null
+  while IFS= read -r _is_p; do
+    [ -n "$_is_p" ] && [ -f "$_is_p" ] || continue
+    git show "HEAD:./$_is_p" > "$_is_hf" 2>/dev/null || continue
+    _is_rm="$(lanes_awk list "$_is_hf" "$_is_p")"
+    [ -n "$_is_rm" ] || continue
+    if lanes_awk filter "$_is_hf" "$_is_p" > "$_is_nf" && cat "$_is_nf" > "$_is_p"; then
+      printf '%s\n' "$_is_rm" >> "$_is_ks"
+    else
+      _is_err=1
+    fi
+  done < "$_is_ls"
+  _is_keys="$(keys_of < "$_is_ks")"
+  rm -f "$_is_hf" "$_is_nf" "$_is_ks" "$_is_ls"
+  [ "$_is_err" = 0 ] || return 1
+  [ -n "$_is_keys" ] || return 0
+  printf '%s\n' "$_is_keys"
   return 3
 }
 
@@ -139,7 +154,9 @@ do_ensure() {
   _is_name="$_is_proj-lanes-$_is_h8/$(basename "$_is_gd")"
   if ! expected "$_is_name" | cmp -s - override.cfg 2>/dev/null; then
     _is_tmp="override.cfg.tmp.$$"
-    expected "$_is_name" > "$_is_tmp" && mv -f "$_is_tmp" override.cfg || { rm -f "$_is_tmp"; return 0; }
+    trap 'rm -f "$_is_tmp"; exit 1' HUP INT TERM
+    expected "$_is_name" > "$_is_tmp" && mv -f "$_is_tmp" override.cfg || { rm -f "$_is_tmp"; trap - HUP INT TERM; return 0; }
+    trap - HUP INT TERM
   fi
   # Exclude it (once) in the shared info/exclude.
   _is_top="$(git rev-parse --show-toplevel 2>/dev/null)"
@@ -163,7 +180,7 @@ do_ensure() {
 do_leaks() {
   _is_d="${1:-}"
   [ -n "$_is_d" ] && git -C "$_is_d" rev-parse --git-dir >/dev/null 2>&1 || return 1
-  _is_list="$(git -C "$_is_d" ls-files -- project.godot '*/project.godot' 2>/dev/null)" || return 1
+  _is_list="$(git -C "$_is_d" -c core.quotePath=false ls-files -- project.godot '*/project.godot' 2>/dev/null)" || return 1
   _is_hf="$(mktemp "${TMPDIR:-/tmp}/isolate-leak.XXXXXX")" || return 1
   _is_cf="$_is_hf.cur"; _is_of="$_is_hf.out"; : > "$_is_of"
   printf '%s\n' "$_is_list" | while IFS= read -r _is_p; do
@@ -173,7 +190,7 @@ do_leaks() {
     { git -C "$_is_d" show ":$_is_p" 2>/dev/null; cat "$_is_d/$_is_p" 2>/dev/null; } > "$_is_cf"
     case "$_is_p" in */*) _is_od="${_is_p%/*}/" ;; *) _is_od="" ;; esac
     if is_ours "$_is_d/${_is_od}override.cfg"; then _is_w=all; else _is_w=name; fi
-    _is_k="$(removed_lines "$_is_cf" "$_is_hf" "$_is_w" | keys_of)"
+    _is_k="$(lanes_awk list "$_is_hf" "$_is_cf" "$_is_w" | keys_of)"
     if [ -n "$_is_k" ]; then printf '%s: %s\n' "$_is_p" "$_is_k" >> "$_is_of"; fi
   done
   _is_out="$(cat "$_is_of")"
