@@ -1126,6 +1126,104 @@ test_worktree_guard_off_outside_stories() {
   done
 }
 
+# ---- #71 T11: the commit guard (lanes-guard.sh) ----
+LANES_GUARD="$STUDIO_DIR/hooks/lanes-guard.sh"
+LG_NAME='config/custom_user_dir_name="Foo-lanes-0badf00d/wt"'
+LG_USE='config/use_custom_user_dir=true'
+# lg_in CWD CMD — a PreToolUse Bash call (CMD is already JSON-escaped).
+lg_in() {
+  printf '{"session_id":"s","cwd":"%s","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"%s"}}\n' "$1" "$2"
+}
+# lanes_guard INPUT_JSON — run the commit guard; asserts exit 0; stdout in $TMP/ap.out.
+lanes_guard() {
+  printf '%s\n' "$1" > "$TMP/lg.in"; _lst=0
+  sh "$LANES_GUARD" < "$TMP/lg.in" > "$TMP/ap.out" 2> "$TMP/ap.err" || _lst=$?
+  assert_eq 0 "$_lst" "the commit guard exits 0"
+}
+# lg_fix NAME — LGR a repo with a committed project.godot; LGW an opted-in linked
+# worktree of it (a path with a space; the override.cfg is written by the real isolate.sh).
+lg_fix() {
+  LGR="$TMP/lg-r-$1"; LGW="$TMP/lg $1 w"
+  mkdir -p "$LGR"
+  ( cd "$LGR" && git init -q -b main . && printf '[application]\nconfig/name="Stub Game"\n' > project.godot \
+      && git add project.godot && g commit -q -m init ) >/dev/null 2>&1
+  git -C "$LGR" worktree add -q -b "lg-$1" "$LGW" >/dev/null 2>&1
+  mkdir -p "$LGW/.studio"; printf '{"engine": "godot4", "user_dir": "per-worktree"}\n' > "$LGW/.studio/config.json"
+  printf '.studio/\n' >> "$(git -C "$LGW" rev-parse --path-format=absolute --git-common-dir)/info/exclude"
+  ( cd "$LGW" && STUDIO_GODOT_USER_ROOT="$TMP/lg-ud" OMEGA_STUDIO_ROOT="$STUDIO_DIR" sh "$STUDIO_DIR/engines/godot/isolate.sh" ) >/dev/null 2>&1
+}
+test_lanes_guard_registered() {
+  assert_file "$LANES_GUARD" "lanes-guard.sh exists"
+  assert_contains "$STUDIO_DIR/hooks/hooks.json" 'CLAUDE_PLUGIN_ROOT}/hooks/lanes-guard.sh' "hooks.json runs it from the plugin root"
+  if command -v jq >/dev/null 2>&1; then
+    assert_eq Bash "$(jq -r '.hooks.PreToolUse[] | select(.hooks[0].command | contains("lanes-guard")) | .matcher' "$STUDIO_DIR/hooks/hooks.json")" "on Bash"
+  fi
+}
+test_lanes_guard_denies_commit_with_lanes_line() {
+  lg_fix deny
+  printf '%s\n' "$LG_NAME" >> "$LGW/project.godot"; git -C "$LGW" add project.godot
+  lanes_guard "$(lg_in "$LGW" 'git commit -m x')"
+  assert_denied "a staged lanes name line"
+  assert_contains "$TMP/ap.out" 'isolate --scrub' "the reason names isolate --scrub"
+  assert_contains "$TMP/ap.out" 'refused a commit: project.godot gains the per-worktree user:// setting (config/custom_user_dir_name) that HEAD lacks' "the copy"
+}
+test_lanes_guard_git_C_and_cd_forms() {
+  lg_fix forms
+  printf '%s\n%s\n' "$LG_USE" "$LG_NAME" >> "$LGW/project.godot"; git -C "$LGW" add project.godot
+  lanes_guard "$(lg_in "$TMP" "git -C \\\"$LGW\\\" commit -m x")"
+  assert_denied "git -C <wt> commit"
+  lanes_guard "$(lg_in "$TMP" "cd \\\"$LGW\\\" && git commit -m x")"
+  assert_denied "cd <wt> && git commit"
+  lanes_guard "$(lg_in "$TMP" "git -C \\\"$LGW\\\" -c user.name=t --no-pager commit -m x")"
+  assert_denied "-c and --no-pager before commit"
+  lanes_guard "$(lg_in "$TMP" "git -C \\\"$LGR\\\" commit -m x")"
+  assert_allowed "the main checkout is clean"
+}
+test_lanes_guard_working_tree_am() {
+  lg_fix am
+  printf '%s\n' "$LG_NAME" >> "$LGW/project.godot"
+  lanes_guard "$(lg_in "$LGW" 'git commit -am x')"
+  assert_denied "the line only in the working tree, commit -am"
+}
+test_lanes_guard_allows_clean_and_head_keys() {
+  lg_fix clean
+  lanes_guard "$(lg_in "$LGW" 'git commit -m x')"
+  assert_allowed "no lanes line"
+  printf '%s\n%s\n' "$LG_USE" "$LG_NAME" >> "$LGW/project.godot"; git -C "$LGW" add project.godot
+  g -C "$LGW" commit -q -m keys >/dev/null 2>&1
+  lanes_guard "$(lg_in "$LGW" 'git commit -m x')"
+  assert_allowed "the lines committed in HEAD"
+}
+test_lanes_guard_ignores_other_commands() {
+  lg_fix other
+  printf '%s\n' "$LG_NAME" >> "$LGW/project.godot"; git -C "$LGW" add project.godot
+  for c in 'git status' 'echo commit' 'git log --grep commit' 'echo git commit' 'git log -- commit'; do
+    lanes_guard "$(lg_in "$LGW" "$c")"
+    assert_allowed "no verdict: $c"
+  done
+}
+test_lanes_guard_malformed_input() {
+  lanes_guard ''; assert_allowed "empty input"
+  lanes_guard '{'; assert_allowed "a lone brace"
+  lanes_guard '{"tool_name":"Bash","tool_input":{"command":"git commit'; assert_allowed "a cut call"
+  lg_fix bad
+  printf '%s\n' "$LG_NAME" >> "$LGW/project.godot"; git -C "$LGW" add project.godot
+  lanes_guard '{"cwd":"'"$LGW"'","tool_name":"Write","tool_input":{"command":"git commit -m x"}}'
+  assert_allowed "a non-Bash tool"
+}
+test_lanes_guard_message_is_valid_json() {
+  lg_fix json
+  printf '%s\n' "$LG_NAME" >> "$LGW/project.godot"; git -C "$LGW" add project.godot
+  lanes_guard "$(lg_in "$LGW" 'git commit -m \"a \\\"q\\\" b\"')"
+  assert_denied "a commit message with quotes"
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if json_ok "$TMP/ap.out"; then _pass "valid JSON"; else _fail "valid JSON"; fi
+  lanes_guard "$(lg_in "$TMP" "git -C \\\"$LGW\\\" commit -m x")"
+  assert_denied "a worktree path with a space"
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if json_ok "$TMP/ap.out"; then _pass "valid JSON (spaced path)"; else _fail "valid JSON (spaced path)"; fi
+}
+
 # exclusive-scan: test_inbox_hook_silent_outside_units in (a, c) asserts the hook returns inside a 1 s ceiling with a writer holding the fifo open
 # exclusive-scan: test_godot_guard_variables_wrappers_and_speed out (static) the name says speed, but it asserts only the guard's verdicts; no clock
 # exclusive-scan: test_worktree_guard_registered out (static) reads hooks.json; no clock
@@ -1133,7 +1231,8 @@ test_worktree_guard_off_outside_stories() {
 # exclusive-scan: test_worktree_guard_names_the_story_worktree out (static) verdicts only; no clock
 # exclusive-scan: test_worktree_guard_off_outside_stories out (static) verdicts only; no clock
 TESTS_EXCLUSIVE="test_inbox_hook_silent_outside_units"
-run_tests test_worktree_guard_registered test_worktree_guard_denies_bare_calls_in_story test_worktree_guard_names_the_story_worktree test_worktree_guard_off_outside_stories test_godot_guard_registered test_godot_guard_denies_headless_boot test_godot_guard_denies_hand_built_gut \
+run_tests test_lanes_guard_registered test_lanes_guard_denies_commit_with_lanes_line test_lanes_guard_git_C_and_cd_forms test_lanes_guard_working_tree_am test_lanes_guard_allows_clean_and_head_keys test_lanes_guard_ignores_other_commands test_lanes_guard_malformed_input test_lanes_guard_message_is_valid_json \
+  test_worktree_guard_registered test_worktree_guard_denies_bare_calls_in_story test_worktree_guard_names_the_story_worktree test_worktree_guard_off_outside_stories test_godot_guard_registered test_godot_guard_denies_headless_boot test_godot_guard_denies_hand_built_gut \
   test_godot_guard_allows test_godot_guard_skips_heredocs_and_comments test_godot_guard_single_quotes test_godot_guard_variables_wrappers_and_speed test_godot_guard_never_blocks_on_bad_input \
   test_godot_guard_refuses_script_import test_godot_guard_redirections test_godot_guard_message_is_valid_json test_godot_guard_missing_detector_allows \
   test_session_start_stage_per_checkout test_session_start_take_hint \
