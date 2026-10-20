@@ -619,6 +619,28 @@ test_execute_command_caps_text() {
   done
   assert_eq 2 "$(grep -c 'worktree-guard.sh' "$E")" "both EnterWorktree path: places name the hook"
 }
+test_short_lane_unit_rule_text() {
+  E="$REPO_ROOT/studios/game-dev/skills/execute/SKILL.md"
+  P="$REPO_ROOT/studios/game-dev/skills/plan/SKILL.md"
+  A="$REPO_ROOT/studios/game-dev/agents/gameplay-programmer.md"
+  for lit in 'runs `studio-test --file` on every test file the task created or changed' \
+    'calls of up to three files are short-lane eligible' \
+    "when the task's \`Verify:\` includes \`suite\`" \
+    '`suite` — the implementer also runs the whole suite' \
+    'studio-gate vitest -- npx vitest run --minWorkers=1 --maxWorkers=2' \
+    'never `sh -c` inside it' "the implementers ran each task's touched tests"; do
+    assert_contains "$E" "$lit" "execute says: $lit"
+  done
+  assert_not_contains "$E" 'runs `studio-test` and pastes its summary' "the old whole-suite unit rule is gone"
+  for lit in '`suite` — the task changes a seam whose effects reach tests it does not touch' \
+    "Without \`suite\`, a task's tests are the files it touches" 'targeted vitest as'; do
+    assert_contains "$P" "$lit" "plan says: $lit"
+  done
+  for lit in 'Run `studio-test --file` on every test file the task touched' \
+    "run the whole suite only when \`Verify:\` includes \`suite\`"; do
+    assert_contains "$A" "$lit" "gameplay-programmer says: $lit"
+  done
+}
 test_agent_gameplay_programmer_file_runs() {
   A="$REPO_ROOT/studios/game-dev/agents/gameplay-programmer.md"
   for lit in 'studio-test --file <test file>' 'Never build a Godot or GUT command by hand' \
@@ -838,6 +860,6 @@ run_tests test_plugin_manifests test_skill_frontmatter test_agent_frontmatter \
   test_review_contract test_on_demand_skills_keep_stage test_playtest_contract test_retro_contract \
   test_skill_review_playtest_ask_candidates test_skill_retro_resolves_story \
   test_no_ship_references test_superpowers_requires_referenced test_no_last_playtest_callers \
-  test_execute_one_contract test_router_overnight_lock test_execute_lanes test_execute_lane_gate_foreground test_execute_command_caps_text test_docs_59_wording test_agent_gameplay_programmer_file_runs test_execute_land_and_progress test_execute_gate_repair test_execute_operator_messages test_execute_adopt test_final_wave_contracts \
+  test_execute_one_contract test_router_overnight_lock test_execute_lanes test_execute_lane_gate_foreground test_execute_command_caps_text test_docs_59_wording test_agent_gameplay_programmer_file_runs test_short_lane_unit_rule_text test_execute_land_and_progress test_execute_gate_repair test_execute_operator_messages test_execute_adopt test_final_wave_contracts \
   test_plan_brainstorm_lanes test_execute_sync_repair_form test_execute_peers_brief_rule test_plan_brainstorm_slug_form test_plan_brainstorm_check_id \
   test_sdd_script_references test_execute_task_brief_rewritten test_plan_gated_godot_forms

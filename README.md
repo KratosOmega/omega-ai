@@ -148,7 +148,53 @@ stories as parallel lanes of dependency chains:
   timed-out gate) are never repaired.
 - One gate lock per project (`.studio/gate.lock`): `studio-test`, `studio-run`,
   the merge command and the final gate take it, so only one test or gate run
-  happens at a time across all lanes.
+  happens at a time across all lanes. With no config keys that is the whole
+  story. A project can opt in to a **short slot** beside that main lane
+  (`.studio/gate.short`): one niced run, killed after 5 min
+  (`STUDIO_GATE_SHORT_SECONDS`), may share the project with a whole-suite
+  `studio-test`. Only a short check enters it, by an argv whitelist:
+  `studio-test --file` with 1-3 files, vitest on explicit files with
+  `--minWorkers=1` and one `--maxWorkers=1|2`, `tsc --noEmit`, and `eslint` on
+  explicit files. Everything else is exclusive. Nothing ever runs beside an
+  exclusive holder or an exclusive waiter (a waiting exclusive caller closes the
+  slot until it has run), and the slot is refused when the machine's load is
+  at or above twice the physical core count. A refused short check waits in
+  the main lane. `studio-gate --classify -- <cmd>` prints the class the gate
+  would give a command (no lock taken). Three `.studio/config.json` keys switch
+  it on: `test_engine_args` (engine args `studio-test` passes, e.g.
+  `--fixed-fps 60`), `gate_short_lane` (`"on"`) and `user_dir`
+  (`"per-worktree"`). The autopilot merges all three into the run branch's
+  config at run setup, so a run started after install gets them; live runs keep
+  today's behaviour.
+- Per-worktree `user://` (`user_dir`): in an opted-in linked worktree
+  `engines/godot/isolate.sh` writes an untracked, excluded `override.cfg`
+  pointing Godot's `user://` at its own folder, so lanes in different worktrees
+  do not share one. After every Godot run there (except a node check) the gate
+  scrubs the lines a run leaked into `project.godot` and exits 1 naming them;
+  the `lanes-guard.sh` PreToolUse hook denies a commit that would carry them.
+- Each `.studio/gate.times` row is
+  `<epoch> <who> <seconds> <rc> <wait s> <lane> <class> <unit|->`; `lane` is
+  `main`, `short` or `main:<reason>`. Rows are kept if among the newest 50 per
+  `who` or younger than 14 days, at most 20000 lines. Old 4-field rows still read.
+- Known limits of the short lane:
+  - The gate classifies the command line, not the environment or the test
+    content. A vitest file that starts a server in-process, a GUT file that
+    `OS.execute`s a child Godot, or a node test that spawns real Godot through an
+    env var such as `AI_RUNNER_SMOKE` can reach the slot and is not scrubbed
+    (`lanes-guard.sh` still blocks a commit of the leaked lines). `nice`, the
+    5-min cap and the load gate bound them.
+  - A waiting shareable suite is not first-in-first-out: a waiting exclusive
+    caller goes first and the slot admits nobody new meanwhile.
+  - A shareable suite's own import runs beside the slot.
+  - The common exclude hides a developer's untracked `override.cfg` in the main
+    checkout from `git status`.
+  - Linux physical-core detection without `core id` in `/proc/cpuinfo` is
+    unverified; it fails closed.
+  - A demoted re-run holds the main lane as class `short`, so a new short
+    check may take the slot beside it.
+  - A SIGKILLed gate leaves its child's process group running, and the lane is
+    then reclaimed beside it. Clean up with `kill -TERM -<pgid>` of the orphaned
+    child group.
 - Sessions run `studio-test` and `studio-run` as foreground Bash calls. Every
   session gets three caps from `session_minutes` (S): a Bash call with no
   timeout is cut at `min(45, S/3)` min (`BASH_DEFAULT_TIMEOUT_MS`), a call may
@@ -398,5 +444,7 @@ Writing a suite (`tests/assert.sh` has the full contract):
   floor when a suite grows.
 - Test-only knobs (`STUDIO_SETUP_TIMEOUT_SECONDS`, `STUDIO_SETUP_POLL_SECONDS`,
   `STUDIO_GATE_POLL_SECONDS`, `STUDIO_OVERNIGHT_REAP_POLL_SECONDS`,
-  `STUDIO_OVERNIGHT_DETACH_POLL_SECONDS`) shrink waits in tests; production keeps its
+  `STUDIO_OVERNIGHT_DETACH_POLL_SECONDS`, `STUDIO_GATE_SHORT_SECONDS`,
+  `STUDIO_GATE_LOADAVG`, `STUDIO_GATE_PHYS_CORES`, `STUDIO_GODOT_USER_ROOT`)
+  shrink waits or fake the machine in tests; production keeps its
   defaults.

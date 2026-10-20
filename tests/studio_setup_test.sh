@@ -4,6 +4,7 @@
 set -u
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 . "$REPO_ROOT/tests/assert.sh"
+. "$REPO_ROOT/tests/gate_times_rows.sh"
 SETUP="$REPO_ROOT/studios/game-dev/bin/studio-setup"
 GATE="$REPO_ROOT/studios/game-dev/bin/studio-gate"
 STATE_BIN="$REPO_ROOT/studios/game-dev/bin/studio-state"
@@ -61,7 +62,8 @@ test_setup_runs_under_lock_and_logs() {
   assert_eq setup "$(cat "$P/who.txt")" "it ran holding the gate lock as setup"
   assert_eq 1 "$(ls "$P"/.studio/reports/setup-*.log | wc -l | tr -d ' ')" "one setup log"
   assert_contains "$P/.studio/reports/.gitignore" '^\*$' "reports are git-ignored"
-  assert_contains "$P/.studio/gate.times" ' setup [0-9][0-9]* 0$' "gate.times has the setup line"
+  assert_eq 1 "$(gt_rows "$P/.studio/gate.times" setup 0)" "gate.times has the setup line"
+  assert_contains "$P/.studio/gate.times" '^[0-9][0-9]* setup [0-9][0-9]* 0 [0-9][0-9]* [a-z][a-z:-]* [a-z][a-z]* [^ ][^ ]*$' "the row has all 8 fields"
 }
 test_setup_marker_skip_and_rerun() {
   proj mk '{ "worktree_setup": "echo ran >> ran.txt" }'
@@ -120,7 +122,8 @@ test_setup_gate_green_and_red() {
   setup "$P" gate
   assert_eq 0 "$SU_STATUS" "green gate_command exits 0"
   assert_contains "$TMP/su.out" '^gate_command: green — log \.studio/reports/gate-[0-9-]*\.log$' "names the log"
-  assert_contains "$P/.studio/gate.times" ' gate [0-9][0-9]* 0$' "runs as who=gate"
+  assert_eq 1 "$(gt_rows "$P/.studio/gate.times" gate 0)" "runs as who=gate"
+  assert_contains "$P/.studio/gate.times" '^[0-9][0-9]* gate [0-9][0-9]* 0 [0-9][0-9]* [a-z][a-z:-]* [a-z][a-z]* [^ ][^ ]*$' "the row has all 8 fields"
   proj gr '{ "gate_command": "echo FAIL one; exit 3" }'
   setup "$P" gate
   assert_eq 3 "$SU_STATUS" "red exits with the command's status"

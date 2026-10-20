@@ -84,8 +84,9 @@ the self-review. Two studio rules override its defaults:
   - A step that runs Godot writes the gated form: a script or import run as
     `studio-gate godot -- <Godot command>` (e.g.
     `studio-gate godot -- Godot --headless --path . --script res://tools/x.gd`),
-    tests as `studio-test` or `studio-test --file <test file>`, the game as
-    `studio-run`. Never a bare Godot script/import run (`-s`, `--script`,
+    tests as `studio-test` or `studio-test --file <test file>`, targeted vitest as
+    `cd <node dir> && studio-gate vitest -- npx vitest run --minWorkers=1 --maxWorkers=2 <file>…`,
+    the game as `studio-run`. Never a bare Godot script/import run (`-s`, `--script`,
     `--import`): the studio's hook refuses it, and `studio-brief validate`
     fails the plan on it (§6).
 - Invoked with an id (`/game-dev:plan <id>`), the plan header gains the line
@@ -133,6 +134,11 @@ implementer. It is one kind or several joined with `+` (`unit+playtest`):
   looks like. Use it for snappiness, readability, timing, camera behaviour.
 - `visual` — the user looks at it; no automated check. Use it for art
   placement, UI layout, particle look.
+- `suite` — the task changes a seam whose effects reach tests it does not touch
+  (an autoload, a shared base script, the GUT config or its hooks, project
+  settings, an importer's output): the implementer runs the whole suite
+  before reporting. Without `suite`, a task's tests are the files it touches;
+  the whole suite runs at the finish gate.
 
 A task that introduces or changes a tunable value (a cooldown, a window, a
 speed, a curve) always includes `unit`: the number is tested, the feel is

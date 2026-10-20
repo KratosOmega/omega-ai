@@ -14,6 +14,10 @@
 #       test file (--file). Prints
 #       "studio-test: N passed, M failed", then the failing test names. JUnit
 #       XML and the engine log are written to .studio/reports/test-<stamp>.{xml,log}.
+#
+# Config (.studio/config.json, else $STUDIO_START_DIR's): "test_engine_args" —
+# flat string of engine flags put after --headless; allowlisted to
+# `--fixed-fps <1-1000>`, anything else exits 1 (#71). Not used for the import.
 set -u
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -32,6 +36,27 @@ if [ ! -f "$PROJECT/addons/gut/gut_cmdln.gd" ]; then
   sed -n 's/^Install: //p' "$HERE/GUIDE.md" >&2
   exit 3
 fi
+
+# #71 R1: the project's engine args (`test_engine_args`, a flat string), checked
+# against an allowlist (O11): only `--fixed-fps <1-1000>`. Exit 1, never 2.
+. "$HERE/cfg.sh"
+_ta_v="$(studio_cfg test_engine_args)"; ENGINE_ARGS=""
+_ta_bad() { printf 'studio-test: test_engine_args in .studio/config.json: %s — got %s\n' "$1" "$_ta_v" >&2; exit 1; }
+case "$_ta_v" in *[!A-Za-z0-9\ ._=:,/-]*) _ta_bad "only letters, digits, spaces and ._=:,/- are allowed" ;; esac
+set -f; _ta_want=0
+for _ta_w in $_ta_v; do
+  if [ "$_ta_want" = 1 ]; then
+    case "$_ta_w" in ''|*[!0-9]*) _ta_bad "--fixed-fps needs a whole number from 1 to 1000" ;; esac
+    [ "${#_ta_w}" -le 4 ] && [ "$_ta_w" -ge 1 ] && [ "$_ta_w" -le 1000 ] || _ta_bad "--fixed-fps needs a whole number from 1 to 1000"
+    _ta_want=0; ENGINE_ARGS="$ENGINE_ARGS --fixed-fps $_ta_w"; continue
+  fi
+  case "$_ta_w" in
+    --fixed-fps) _ta_want=1 ;;
+    *) _ta_bad "$_ta_w is not an allowed flag (allowed: --fixed-fps <N>)" ;;
+  esac
+done
+set +f
+[ "$_ta_want" = 0 ] || _ta_bad "--fixed-fps needs a whole number from 1 to 1000"
 
 # The project's own GUT config: res://.gutconfig.json (GUT's default), else
 # res://tests/.gutconfig.json. It carries the project's pre/post-run hooks —
@@ -86,11 +111,26 @@ log="$PROJECT/.studio/reports/test-$stamp.log"
 # branch that adds assets with their .import files) is imported first; an
 # import that fails stops here rather than minutes into the suite (import.sh).
 . "$HERE/import.sh"
+# #71 §7: an import does not belong beside a suite, so in the short slot it is
+# handed to the main lane: write `import` to $STUDIO_GATE_DEMOTE and exit 1;
+# the gate re-runs us there. Only for the live gate the path names (it ends in
+# .$STUDIO_GATE_HELD), so a stale lane env outside a gate never skips a run,
+# and a lost hand-off is red (exit 1), never green.
+case "${STUDIO_GATE_HELD:-}" in ''|*[!0-9]*) _dm_held="" ;; *) _dm_held="$STUDIO_GATE_HELD" ;; esac
+if [ "${STUDIO_GATE_LANE:-}" = short ] && [ -n "$_dm_held" ] && [ -n "${STUDIO_GATE_DEMOTE:-}" ] \
+   && [ "${STUDIO_GATE_DEMOTE:-}" != "${STUDIO_GATE_DEMOTE%".$_dm_held"}" ] \
+   && kill -0 "$_dm_held" 2>/dev/null && import_needed "$PROJECT"; then
+  printf 'import\n' > "$STUDIO_GATE_DEMOTE"
+  echo "studio-test: the import cache needs an import — handing this run to the main lane" >&2
+  exit 1
+fi
 ensure_import "$GODOT" "$PROJECT" "$log" studio-test || exit 1
 
-"$GODOT" --headless --path "$PROJECT" -s addons/gut/gut_cmdln.gd \
+set -f   # ENGINE_ARGS is validated words; no globbing, none when empty
+"$GODOT" --headless $ENGINE_ARGS --path "$PROJECT" -s addons/gut/gut_cmdln.gd \
   "$@" -gexit "-gjunit_xml_file=res://$xml_rel" >> "$log" 2>&1
 engine_status=$?
+set +f
 
 # A Godot crash prints "handle_crash: Program crashed with signal N"; GUT prints
 # each test script's res:// path on a line of its own as it starts it (an inner

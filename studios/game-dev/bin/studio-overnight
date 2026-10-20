@@ -1146,14 +1146,27 @@ unit_now_line() {
 }
 # gate_line [RUN_DIR] — the gate lock: `gate: free`, or `gate: <who> (pid
 # <p>) for <elapsed>[, unit <tag>]` (the tag shortened to `<lane>-<unit>` when
-# it is RUN_DIR's).
+# it is RUN_DIR's). Then, while the short-lane slot holder (gate.short/pid)
+# is alive (kill -0; display only), `gate short lane: <who> (pid <p>) for
+# <elapsed>[, unit <tag>]` (#71).
 gate_line() {
   _gl="$STATE_ROOT/.studio/gate.lock"; _gl_p="$(cat "$_gl/pid" 2>/dev/null)"
-  if [ -z "$_gl_p" ] || ! kill -0 "$_gl_p" 2>/dev/null; then echo "gate: free"; return 0; fi
-  _gl_u="$(cat "$_gl/unit" 2>/dev/null)"; _gl_t="$(cat "$_gl/since" 2>/dev/null)"
-  [ -z "${1:-}" ] || _gl_u="${_gl_u#"$(basename "$1")"-}"
-  printf 'gate: %s (pid %s)%s%s\n' "$(cat "$_gl/who" 2>/dev/null)" "$_gl_p" \
-    "${_gl_t:+ for $(elapsed_since "$_gl_t")}" "${_gl_u:+, unit $_gl_u}"
+  if [ -z "$_gl_p" ] || ! kill -0 "$_gl_p" 2>/dev/null; then
+    echo "gate: free"
+  else
+    _gl_u="$(cat "$_gl/unit" 2>/dev/null)"; _gl_t="$(cat "$_gl/since" 2>/dev/null)"
+    [ -z "${1:-}" ] || _gl_u="${_gl_u#"$(basename "$1")"-}"
+    printf 'gate: %s (pid %s)%s%s\n' "$(cat "$_gl/who" 2>/dev/null)" "$_gl_p" \
+      "${_gl_t:+ for $(elapsed_since "$_gl_t")}" "${_gl_u:+, unit $_gl_u}"
+  fi
+  _gs="$STATE_ROOT/.studio/gate.short"; _gs_p="$(cat "$_gs/pid" 2>/dev/null)"
+  if [ -n "$_gs_p" ] && kill -0 "$_gs_p" 2>/dev/null; then
+    _gs_u="$(cat "$_gs/unit" 2>/dev/null)"; _gs_t="$(cat "$_gs/since" 2>/dev/null)"
+    [ -z "${1:-}" ] || _gs_u="${_gs_u#"$(basename "$1")"-}"
+    printf 'gate short lane: %s (pid %s)%s%s\n' "$(cat "$_gs/who" 2>/dev/null)" "$_gs_p" \
+      "${_gs_t:+ for $(elapsed_since "$_gs_t")}" "${_gs_u:+, unit $_gs_u}"
+  fi
+  return 0
 }
 # heartbeat_start — while the unit's session (CPID) runs: every
 # STUDIO_OVERNIGHT_HEARTBEAT_SECONDS (default 60) one line on the runner's

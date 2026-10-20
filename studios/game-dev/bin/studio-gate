@@ -1,33 +1,44 @@
 #!/bin/sh
 # studio-gate <who> -- <cmd> [args...] — run <cmd> holding the project's one
 # gate lock, so at most one test or gate run happens at a time.
+# studio-gate --classify -- <cmd…> — print the class the gate would give <cmd> (no lock).
 #
 # Test hooks (tests only; never set them for a real run):
 #   STUDIO_GATE_POLL_SECONDS (1, 0.5, 0.2 or 0.1; default 1) — the lock
 #     wait's poll; the waiting message stays every 60 s.
 #   STUDIO_GATE_SECONDS (default: STUDIO_GATE_MINUTES x 60) — the run cap in
 #     seconds; it applies only while STUDIO_GATE_MINUTES caps the run.
+#   STUDIO_GATE_SHORT_SECONDS (default 300) — the short slot's cap in seconds
+#     (a non-digit value reads as 300).
 #
-# Lock: STATE_ROOT/.studio/gate.lock/ (mkdir), holding `pid` (this script's
-# $$) and `who`. The command runs as a child, leading its own process group,
-# with STUDIO_GATE_HELD=<this pid> in its environment only; a nested
-# studio-gate that sees STUDIO_GATE_HELD naming the live holder execs the
-# command without locking. A lock whose pid is dead (or that has no pid) is
-# reclaimed under the reclaim mutex below. The lock dir also holds `unit`
-# (STUDIO_UNIT_TAG, empty outside an overnight unit) and `since` (epoch s).
+# Lanes (#71 R3), all under STATE_ROOT/.studio/ and changed only under the
+# reclaim mutex (a live owner's release excepted). The main lane gate.lock/
+# (mkdir) holds `pid` (this script's $$), `who`, `unit` (STUDIO_UNIT_TAG, empty
+# outside a unit), `since` (epoch s), `class` (shareable|short|exclusive),
+# `kind` (godot|node) and `wt` (the caller's worktree). The one short slot
+# gate.short/ holds the same files with class short; only a short check
+# (--classify prints the class) with the lane on (`gate_short_lane`) takes it,
+# niced, beside a shareable suite. A waiting exclusive caller registers
+# gate.wantx/<pid> (`<since> <who>`), so the slot admits nobody new until it
+# has run (D5). A dead or pidless holder is reclaimed; a slot holder or wantx
+# entry whose live pid is not a studio-gate is stale too (D10); a main holder
+# with no `class` counts as exclusive (D11). The command runs as a child
+# leading its own process group, with STUDIO_GATE_HELD=<this pid> and
+# STUDIO_GATE_LANE=main|short (in the slot also STUDIO_GATE_DEMOTE=<file>) in
+# its environment only; a nested studio-gate that sees STUDIO_GATE_HELD naming
+# the live holder of either lane execs the command without locking.
+# Overnight units: with STUDIO_UNIT_TAG set, this script registers as
+# .studio/gate.units/<tag>/<its pid> (its child's pid once the command runs)
+# and removes the entry on exit; the runner ends every gate still registered
+# when the unit ends, waiting or holding, in either lane.
 #
-# Overnight units: with STUDIO_UNIT_TAG set (the runner exports it into
-# each unit's session), this script registers itself as
-# STATE_ROOT/.studio/gate.units/<tag>/<its pid>, holding its child's pid once
-# the command runs, and removes the entry on exit. When the unit ends, the
-# runner ends every gate still registered under the unit's tag, waiting or
-# holding, so a gate a session left in the background can never hold the
-# lock into the next unit.
-#
-# Gate times: every command that ran appends `<epoch> <who> <seconds> <rc>`
-# (rc 128+n when a signal ended it) to STATE_ROOT/.studio/gate.times (the
-# newest 50 lines per `who` are kept); studio-overnight's preflight checks the slowest
-# recent studio-test against session_minutes.
+# Gate times: every command that ran appends
+# `<epoch> <who> <seconds> <rc> <wait s> <lane> <class> <unit|->` (rc 128+n
+# when a signal ended it) to STATE_ROOT/.studio/gate.times; gate-times.sh
+# keeps the newest 50 rows per who or any row younger than 14 days, at most
+# 20000 lines, rewriting under the reclaim mutex when it can be had in ~5 s
+# (else unlocked). studio-overnight's preflight checks the slowest recent
+# studio-test against session_minutes.
 #
 # Run cap (#59 R1): STUDIO_GATE_MINUTES (a whole number; unset, empty or 0 =
 # no cap) stops a run that goes past it: TERM to the process group, KILL after
@@ -35,11 +46,25 @@
 # in gate.times. The timer starts once the lock is held (waiting does not
 # count). Who `setup` is exempt (worktree_setup has its own timer). A nested
 # gate execs before any timer, so re-entry adds no second one.
-# Exit: the command's status · 2 usage · 128+n when TERM/INT/HUP ended it ·
-# 124 when STUDIO_GATE_MINUTES stopped the run.
+# Exit: the command's status · 2 usage · 128+n when TERM/INT/HUP ended it (one
+# landing after the command ended keeps its status and row) · 124 when
+# STUDIO_GATE_MINUTES stopped the run.
 # With no .studio/ project there is nothing to protect: the command just runs.
 
 SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
+. "$SELF_DIR/gate-class.sh"
+. "$SELF_DIR/gate-times.sh"
+GC_DISPATCH="$(gc_resolve "$SELF_DIR/studio-dispatch")"
+if [ "${1:-}" = --classify ]; then
+  if [ "$#" -lt 3 ] || [ "$2" != "--" ]; then
+    printf 'usage: studio-gate --classify -- <cmd> [args...]\n' >&2; exit 2
+  fi
+  shift 2
+  _ca="$(gate_classify "$@")"; _cl=0; [ "$(studio_cfg gate_short_lane)" = on ] && _cl=1
+  printf '%s %s lane=%s wt=%s argv=%s\n' "$(gate_effective "${_ca% *}" "$_cl")" "${_ca#* }" \
+    "$([ "$_cl" = 1 ] && echo on || echo off)" "$(gate_wt)" "${_ca% *}"
+  exit 0
+fi
 
 if [ "$#" -lt 3 ] || [ "$2" != "--" ]; then
   printf 'usage: studio-gate <who> -- <cmd> [args...]\n' >&2
@@ -60,6 +85,9 @@ if [ -z "$ROOT" ] || [ ! -d "$ROOT/.studio" ]; then
 fi
 LOCK="$ROOT/.studio/gate.lock"
 MUTEX="$LOCK.mutex"
+SLOT="$ROOT/.studio/gate.short"
+WANTX="$ROOT/.studio/gate.wantx"
+DEMOTE="$ROOT/.studio/gate.short.demote.$$"
 
 # The gate's files (.studio/gate.lock, .mutex, .times, .units) are runtime
 # state: keep them out of git through the repository's info/exclude, which
@@ -74,17 +102,50 @@ esac
 
 alive() { [ -n "$1" ] && kill -0 "$1" 2>/dev/null; }
 lock_pid() { cat "$LOCK/pid" 2>/dev/null; }
+rd() { cat "$1/$2" 2>/dev/null; }
+# live_gate PID — D10: alive and its ps args name a studio-gate script, so a
+# reused pid never wedges the slot. An empty ps read counts as live: a failed
+# read must never reclaim a live holder. The match is on the whole line, so a
+# script path that holds a space still counts (preflight F16).
+live_gate() {
+  alive "$1" || return 1
+  _lg="$(ps -o args= -p "$1" 2>/dev/null)"
+  [ -n "$_lg" ] || return 0
+  case " $_lg " in *"/studio-gate "*|*" studio-gate "*) return 0 ;; esac
+  return 1
+}
 
-# Re-entry: the caller already holds the lock through us.
-if [ -n "${STUDIO_GATE_HELD:-}" ] && [ "$(lock_pid)" = "$STUDIO_GATE_HELD" ] && alive "$STUDIO_GATE_HELD"; then
+# Re-entry: the caller holds either lane through us.
+if [ -n "${STUDIO_GATE_HELD:-}" ] && alive "$STUDIO_GATE_HELD" \
+   && { [ "$(lock_pid)" = "$STUDIO_GATE_HELD" ] || [ "$(rd "$SLOT" pid)" = "$STUDIO_GATE_HELD" ]; }; then
   exec "$@"
 fi
 
-OWNED=0
+# Static facts (§7): computed once, never per poll.
+_gc="$(gate_classify "$@")"; ARGV_CLS="${_gc% *}"; KIND="${_gc#* }"
+WT="$(gate_wt)"
+LANE_ON=0; [ "$(studio_cfg gate_short_lane)" = on ] && LANE_ON=1
+CLS="$(gate_effective "$ARGV_CLS" "$LANE_ON")"
+ISO=1; MODE=main
+PHYS=""
+if [ "$CLS" = short ]; then
+  MODE=any
+  if [ "$KIND" = godot ]; then sh "$SELF_DIR/studio-dispatch" isolate --check >/dev/null 2>&1 || ISO=0; fi
+  PHYS="$(gate_phys_cores)" || PHYS=""      # the load rule's core count, read once (M4)
+fi
+# The leak scrubs (T10) apply to a non-node run whose adapter has isolate.
+HAS_ISO=0
+if [ "$KIND" != node ] && ( cd "$WT" 2>/dev/null && sh "$SELF_DIR/studio-dispatch" --has isolate ); then HAS_ISO=1; fi
+OWNED=0; OWN_DIR=""; LANE=""; REASON=""; LAST_REASON=""; DEMOTED=0; LEAKED=0
+BLK_WHO=""; BLK_PID=""; BLK_NOTE=""; BLK_STUCK=""
+
 HAVE_MUTEX=0
 RUNNING=0
 CHILD=""
 SIGSTATUS=""
+# POST=1 from the command's end to the exit: a signal then is deferred (LATE_SIG)
+# so the command's status and its row are kept.
+POST=0; LATE_SIG=""; HOLD_S=0; ROW_RC=0
 
 # ---- Reclaim mutex -------------------------------------------------------
 # Every change to the lock dir except its live owner's own release happens
@@ -115,34 +176,86 @@ mutex_drop() {
   HAVE_MUTEX=0
 }
 
-# One attempt: under the mutex, clear a dead or pidless holder's lock, then
-# try to take it. Returns 0 when we hold the lock.
-try_take() {
-  mutex_take || return 1
-  if [ -d "$LOCK" ]; then
-    _h="$(lock_pid)"
-    if [ -z "$_h" ] || ! alive "$_h"; then rm -rf "$LOCK"; fi
+# try_admit — one attempt, under the mutex (§7 Admission). 0: we hold LANE
+# (main|short) in OWN_DIR. 1: not admitted; REASON is a short caller's refusal
+# and BLK_* name what the waiting line reports. 2: the mutex was busy and
+# nothing was evaluated (REASON and BLK_* keep the last evaluated poll's). The
+# mutex now guards the main lane, the slot, gate.wantx/ and the gate.times
+# rewrite. A lane naming our own pid while we hold nothing is a dead gate's
+# whose pid we reuse (after a SIGKILL): stale, or we would wait on ourselves.
+try_admit() {
+  mutex_take || return 2
+  BLK_WHO=""; BLK_PID=""; BLK_NOTE=""; BLK_STUCK=""; REASON=""
+  if [ -d "$LOCK" ]; then _h="$(rd "$LOCK" pid)"
+    if [ -z "$_h" ] || { [ "$_h" = "$$" ] && [ "$OWNED" = 0 ]; } || ! alive "$_h"; then rm -rf "$LOCK"; fi
   fi
-  _took=1
-  if mkdir "$LOCK" 2>/dev/null; then
-    OWNED=1
-    printf '%s\n' "$$" > "$LOCK/pid"
-    printf '%s\n' "$WHO" > "$LOCK/who"
-    printf '%s\n' "$TAG" > "$LOCK/unit"
-    date +%s > "$LOCK/since"
-    _took=0
+  if [ -d "$SLOT" ]; then _h="$(rd "$SLOT" pid)"
+    if [ -z "$_h" ] || { [ "$_h" = "$$" ] && [ "$OWNED" = 0 ]; } || ! live_gate "$_h"; then rm -rf "$SLOT"; fi
   fi
-  mutex_drop
-  return "$_took"
+  _xw=""
+  for _f in "$WANTX"/* "$ROOT/.studio"/gate.short.demote.*; do
+    [ -f "$_f" ] || continue
+    case "$_f" in "$WANTX"/*) _p="${_f##*/}" ;; *) _p="${_f##*.}" ;; esac
+    [ "$_p" = "$$" ] && continue
+    if ! live_gate "$_p"; then rm -f "$_f"
+    elif [ -z "$_xw" ]; then case "$_f" in "$WANTX"/*) _xw="$_p" ;; esac; fi
+  done
+  _mp="$(rd "$LOCK" pid)"; _sp="$(rd "$SLOT" pid)"; _mc=""; _same=0
+  if [ -n "$_mp" ]; then
+    _mc="$(rd "$LOCK" class)"; _mc="${_mc:-exclusive}"            # D11
+    [ "$(rd "$LOCK" wt)" != "$WT" ] || [ "$(rd "$LOCK" kind)" != "$KIND" ] || _same=1
+  fi
+  if [ -n "$_sp" ]; then
+    [ "$(rd "$SLOT" wt)" != "$WT" ] || [ "$(rd "$SLOT" kind)" != "$KIND" ] || _same=1
+  fi
+  _lane=""
+  if [ "$CLS" = exclusive ]; then
+    [ -n "$_mp" ] || [ -n "$_sp" ] || _lane=main
+  else
+    if [ "$MODE" = any ]; then
+      if [ "$ISO" = 0 ]; then REASON=iso
+      elif [ -n "$_xw" ]; then REASON="exclusive waiting"
+      elif [ -n "$_mp" ] && [ "$_mc" != shareable ] && [ "$_mc" != short ]; then REASON="beside $_mc"
+      elif [ "$_same" = 1 ]; then REASON="same worktree"
+      elif [ -n "$_sp" ]; then REASON="slot busy"
+      elif ! _ld="$(gate_load_ok "$PHYS")"; then REASON="load $_ld"
+      else _lane=short; fi
+    fi
+    if [ -z "$_lane" ] && [ -z "$_mp" ] && [ "$_same" = 0 ] && [ -z "$_xw" ]; then _lane=main; fi
+  fi
+  if [ -n "$_lane" ]; then
+    if [ "$_lane" = main ]; then _d="$LOCK"; else _d="$SLOT"; fi
+    if mkdir "$_d" 2>/dev/null; then
+      printf '%s\n' "$$" > "$_d/pid"; printf '%s\n' "$WHO" > "$_d/who"; printf '%s\n' "$TAG" > "$_d/unit"
+      if [ "$_lane" = short ]; then echo short; else printf '%s\n' "$CLS"; fi > "$_d/class"
+      printf '%s\n' "$KIND" > "$_d/kind"; printf '%s\n' "$WT" > "$_d/wt"; date +%s > "$_d/since"
+      OWNED=1; OWN_DIR="$_d"; LANE="$_lane"; rm -f "$WANTX/$$"
+      mutex_drop; return 0
+    fi
+  fi
+  if [ "$CLS" = exclusive ] && [ ! -f "$WANTX/$$" ]; then
+    mkdir -p "$WANTX" 2>/dev/null && printf '%s %s\n' "$(date +%s)" "$WHO" > "$WANTX/$$"
+  fi
+  if [ -n "$_mp" ]; then BLK_WHO="$(rd "$LOCK" who)"; BLK_PID="$_mp"
+  elif [ -n "$_sp" ]; then BLK_WHO="$(rd "$SLOT" who)"; BLK_PID="$_sp"; BLK_NOTE=", short lane"
+    _ss="$(rd "$SLOT" since)"
+    case "$_ss" in ''|*[!0-9]*) ;; *) [ $(( $(date +%s) - _ss )) -le $((SHORT_SECS + 60)) ] \
+      || BLK_STUCK=" (short lane past its cap — stuck?)" ;; esac
+  elif [ -n "$_xw" ]; then BLK_WHO="$(cut -d' ' -f2- "$WANTX/$_xw" 2>/dev/null)"; BLK_PID="$_xw"; BLK_NOTE=", reserved"
+  fi
+  mutex_drop; return 1
 }
-
-release() {
-  [ -z "${TIMER:-}" ] || kill "$TIMER" 2>/dev/null
+# lane_release — give back our lane (a rename aside, as before #71).
+lane_release() {
+  [ -z "${TIMER:-}" ] || kill "$TIMER" 2>/dev/null; TIMER=""
   mutex_drop
-  if [ "$OWNED" = 1 ] && [ "$(lock_pid)" = "$$" ]; then
-    mv "$LOCK" "$LOCK.gone.$$" 2>/dev/null && rm -rf "$LOCK.gone.$$"
+  if [ "$OWNED" = 1 ] && [ -n "$OWN_DIR" ] && [ "$(rd "$OWN_DIR" pid)" = "$$" ]; then
+    mv "$OWN_DIR" "$OWN_DIR.gone.$$" 2>/dev/null && rm -rf "$OWN_DIR.gone.$$"
   fi
-  OWNED=0
+  OWNED=0; OWN_DIR=""
+}
+release() {
+  lane_release; rm -f "$WANTX/$$" "$DEMOTE" "$ROOT/.studio/gate.times.$$"
   if [ -n "$REG" ]; then rm -f "$REG/$$"; rmdir "$REG" 2>/dev/null; fi
 }
 
@@ -183,12 +296,16 @@ targets_alive() {
 # Once it runs, TERM goes to all of TARGETS (an engine the command runs in
 # the foreground included), and the lock is kept until they are gone.
 # ${CHILD:-$!} covers a signal landing between the launch and CHILD=$!.
+# After the command ended (POST=1: the row, the release) a signal is deferred
+# to LATE_SIG: the command's status and its row are kept, and no re-run starts.
 on_signal() {
-  SIGSTATUS="$1"
   if [ "$RUNNING" = 1 ]; then
+    SIGSTATUS="$1"
     _c="${CHILD:-$!}"
     if [ -z "$TARGETS" ] && [ -n "$_c" ]; then TARGETS="$(targets "$_c")"; fi
     if [ -n "$TARGETS" ]; then kill -TERM $TARGETS 2>/dev/null; fi
+  elif [ "$POST" = 1 ]; then
+    LATE_SIG="${LATE_SIG:-$1}"
   else
     exit "$1"
   fi
@@ -209,90 +326,211 @@ case "${STUDIO_GATE_MINUTES:-}" in
        case "$CAP_SECS" in ''|*[!0-9]*) CAP_SECS="" ;; *) CAP_SECS="$(decimal "$CAP_SECS")" ;; esac
      fi ;;
 esac
-on_cap() { if [ "$RUNNING" = 1 ] && alive "$CHILD"; then CAPPED=1; on_signal 124; fi; }
-[ -z "$CAP_SECS" ] || trap on_cap ALRM
+# The slot's cap in seconds (§7 Caps): min(this, the run cap) binds a slot run.
+case "${STUDIO_GATE_SHORT_SECONDS:-300}" in ''|*[!0-9]*) SHORT_SECS=300 ;; *) SHORT_SECS="$(decimal "${STUDIO_GATE_SHORT_SECONDS:-300}")" ;; esac
+ATT_SECS=""; ATT_SHORT=0; SHORT_CAPPED=0
+on_cap() { if [ "$RUNNING" = 1 ] && alive "$CHILD"; then if [ "$ATT_SHORT" = 1 ]; then SHORT_CAPPED=1; else CAPPED=1; fi; on_signal 124; fi; }
 trap release EXIT
 trap 'on_signal 130' INT
 trap 'on_signal 143' TERM
 trap 'on_signal 129' HUP
 
-waited=0
-until try_take; do
-  if [ $((waited % (60 * GATE_TPS))) -eq 0 ]; then
-    printf 'gate: waiting for %s (pid %s)\n' "$(cat "$LOCK/who" 2>/dev/null)" "$(lock_pid)" >&2
+# ---- short cap and demote (T9) ----
+# lane_cap — this attempt's cap: ATT_SECS (seconds, empty for none) and
+# ATT_SHORT (1 when the slot's cap is the binding one). In the slot the 5-min
+# cap binds unless the run cap is no longer (STUDIO_GATE_MINUTES <= 5): then
+# 124 and no re-run, as today (D4).
+lane_cap() {
+  ATT_SECS="$CAP_SECS"; ATT_SHORT=0
+  if [ "$LANE" = short ] && { [ -z "$CAP_SECS" ] || [ "$CAP_SECS" -gt "$SHORT_SECS" ]; }; then
+    ATT_SECS="$SHORT_SECS"; ATT_SHORT=1
   fi
-  waited=$((waited + 1))
-  sleep "$GATE_POLL"
-done
+}
+# lane_after_run — 0 when this slot attempt is re-run once in the main lane:
+# the short cap stopped it, or the child asked through $STUDIO_GATE_DEMOTE
+# (its first line, filtered, is the reason; an empty file is "no reason
+# given"). The file is removed either way. A signal (128+n) is never re-run.
+lane_after_run() {
+  [ "$LANE" = short ] || return 1
+  _la_dm=0; _la_why=""
+  if [ -f "$DEMOTE" ]; then
+    _la_dm=1
+    _la_why="$(head -n 1 "$DEMOTE" 2>/dev/null | tr -cd 'A-Za-z0-9 ._:/-' | cut -c1-80)"; rm -f "$DEMOTE"
+  fi
+  # A late signal (LATE_SIG) ends the gate in place of the re-run: no re-run line.
+  if [ "$SHORT_CAPPED" = 1 ] && [ "$SIGSTATUS" = 124 ]; then
+    [ -n "$LATE_SIG" ] || printf "gate: %s ran past the short lane's 5 min — stopped; running it again in the main lane\n" "$WHO" >&2
+    return 0
+  fi
+  [ -z "$SIGSTATUS" ] || return 1
+  [ "$_la_dm" = 1 ] || return 1
+  [ -n "$_la_why" ] || _la_why="no reason given"
+  [ -n "$LATE_SIG" ] || printf 'gate: %s needs the main lane (%s) — waiting for it\n' "$WHO" "$_la_why" >&2
+  return 0
+}
 
-# `set -m` makes the child lead its own process group (pgid == its pid), so
-# a forwarded signal reaches everything it started, and its signal
-# dispositions are not the ignored SIGINT of a plain background job.
-RUNNING=1
-{ set -m; } 2>/dev/null
-T0="$(date +%s)"
-STUDIO_GATE_HELD="$$" "$@" &
-CHILD=$!
-set +m
-# The timer polls once a second and exits as soon as the gate is gone, so it
-# can neither outlive the gate (signalling a reused pid) nor hold it: the
-# gate never waits for it. Deadlines are wall-clock, so the polls' own cost
-# does not stretch the cap.
-# A gate SIGKILLed by a parent that never reaps it stays a zombie, so
-# `kill -0 $$` still succeeds; the timer is reparented then, so it also
-# exits once its parent is no longer the gate. Its own pid (`$$` in a
-# subshell is the gate's; bash 3.2 has no BASHPID) is the parent of its
-# first background sleep.
-if [ -n "$CAP_SECS" ]; then
-  ( # A failed ps read (empty) never ends the timer: the cap must not fail open.
-    gate_here() {
-      kill -0 $$ 2>/dev/null || return 1
-      [ -n "$_me" ] || return 0
-      _pp="$(ps -o ppid= -p "$_me" 2>/dev/null | tr -d ' ')"
-      [ -z "$_pp" ] || [ "$_pp" = "$$" ]
-    }
-    _end=$(( $(date +%s) + CAP_SECS ))
-    sleep 1 & _k=$!; _me="$(ps -o ppid= -p "$_k" 2>/dev/null | tr -d ' ')"; wait "$_k"
-    gate_here || exit 0
-    while [ "$(date +%s)" -lt "$_end" ]; do sleep 1; gate_here || exit 0; done
-    kill -ALRM $$ 2>/dev/null || exit 0
-    _end=$(( $(date +%s) + 10 ))
-    while [ "$(date +%s)" -lt "$_end" ]; do sleep 1; gate_here || exit 0; done
-    kill -KILL $(targets "$CHILD") 2>/dev/null
-  ) > /dev/null 2>&1 &
-  TIMER=$!
-fi
-[ -z "$REG" ] || printf '%s\n' "$CHILD" > "$REG/$$"
-rc=0
-while :; do
-  wait "$CHILD"
-  rc=$?
-  alive "$CHILD" || break
-done
-if [ -n "$TIMER" ]; then kill "$TIMER" 2>/dev/null; TIMER=""; fi
-if [ -n "$TARGETS" ]; then
-  # Hold the lock until the targets are gone: KILL stragglers after ~10 s
-  # and stop waiting after ~15 s so a stuck process cannot wedge the gate.
-  _n=0
-  while targets_alive && [ "$_n" -lt 15 ]; do
-    if [ "$_n" -eq 10 ]; then kill -KILL $TARGETS 2>/dev/null; fi
-    _n=$((_n + 1))
-    sleep 1
+# run_once CMD… — one attempt in the lane we hold. Sets rc, SIGSTATUS, CAPPED,
+# SHORT_CAPPED and HOLD_S (the attempt's seconds, stragglers included).
+run_once() {
+  rc=0; SIGSTATUS=""; CAPPED=0; SHORT_CAPPED=0; TARGETS=""; TIMER=""
+  lane_cap
+  [ -z "$ATT_SECS" ] || trap on_cap ALRM
+  # `set -m` makes the child lead its own process group (pgid == its pid), so
+  # a forwarded signal reaches everything it started, and its signal
+  # dispositions are not the ignored SIGINT of a plain background job. A slot
+  # run is niced (O9); the main lane never is (D6).
+  RUNNING=1
+  { set -m; } 2>/dev/null
+  T0="$(date +%s)"
+  # A demote file under our pid is only ever this attempt's (M2: not a dead
+  # gate's whose pid we reuse).
+  [ "$LANE" != short ] || rm -f "$DEMOTE"
+  if [ "$LANE" = short ]; then
+    STUDIO_GATE_HELD="$$" STUDIO_GATE_LANE=short STUDIO_GATE_DEMOTE="$DEMOTE" nice -n 10 "$@" &
+  else
+    STUDIO_GATE_HELD="$$" STUDIO_GATE_LANE=main "$@" &
+  fi
+  CHILD=$!
+  set +m
+  # The timer polls once a second and exits as soon as the gate is gone, so it
+  # can neither outlive the gate (signalling a reused pid) nor hold it: the
+  # gate never waits for it. Deadlines are wall-clock, so the polls' own cost
+  # does not stretch the cap.
+  # A gate SIGKILLed by a parent that never reaps it stays a zombie, so
+  # `kill -0 $$` still succeeds; the timer is reparented then, so it also
+  # exits once its parent is no longer the gate. Its own pid (`$$` in a
+  # subshell is the gate's; bash 3.2 has no BASHPID) is the parent of its
+  # first background sleep.
+  if [ -n "$ATT_SECS" ]; then
+    ( # A failed ps read (empty) never ends the timer: the cap must not fail open.
+      gate_here() {
+        kill -0 $$ 2>/dev/null || return 1
+        [ -n "$_me" ] || return 0
+        _pp="$(ps -o ppid= -p "$_me" 2>/dev/null | tr -d ' ')"
+        [ -z "$_pp" ] || [ "$_pp" = "$$" ]
+      }
+      _end=$(( $(date +%s) + ATT_SECS ))
+      sleep 1 & _k=$!; _me="$(ps -o ppid= -p "$_k" 2>/dev/null | tr -d ' ')"; wait "$_k"
+      gate_here || exit 0
+      while [ "$(date +%s)" -lt "$_end" ]; do sleep 1; gate_here || exit 0; done
+      kill -ALRM $$ 2>/dev/null || exit 0
+      _end=$(( $(date +%s) + 10 ))
+      while [ "$(date +%s)" -lt "$_end" ]; do sleep 1; gate_here || exit 0; done
+      kill -KILL $(targets "$CHILD") 2>/dev/null
+    ) > /dev/null 2>&1 &
+    TIMER=$!
+  fi
+  [ -z "$REG" ] || printf '%s\n' "$CHILD" > "$REG/$$"
+  while :; do
+    wait "$CHILD"
+    rc=$?
+    alive "$CHILD" || break
   done
-fi
-[ "$CAPPED" = 0 ] || printf 'gate: %s ran past %s min — stopped\n' "$WHO" "$CAP_MIN" >&2
-RUNNING=0
-CHILD=""
-# A signalled run (a reaper, a session cap) is logged too, with 128+n: its
-# seconds are a lower bound, and the overruns are what the preflight's
-# session_minutes check most needs to see.
-_times="$ROOT/.studio/gate.times"
-{ [ -f "$_times" ] && cat "$_times"
-  printf '%s %s %s %s\n' "$(date +%s)" "$WHO" "$(( $(date +%s) - T0 ))" "${SIGSTATUS:-$rc}"
-} | awk '{ w[NR] = $2; l[NR] = $0 }
-    END { for (i = NR; i >= 1; i--) keep[i] = (++c[w[i]] <= 50); for (i = 1; i <= NR; i++) if (keep[i]) print l[i] }' \
-  > "$_times.$$" 2>/dev/null && mv -f "$_times.$$" "$_times" 2>/dev/null
-rm -f "$_times.$$"
+  if [ -n "$TIMER" ]; then kill "$TIMER" 2>/dev/null; TIMER=""; fi
+  if [ -n "$TARGETS" ]; then
+    # Hold the lane until the targets are gone: KILL stragglers after ~10 s
+    # and stop waiting after ~15 s so a stuck process cannot wedge the gate.
+    _n=0
+    while targets_alive && [ "$_n" -lt 15 ]; do
+      if [ "$_n" -eq 10 ]; then kill -KILL $TARGETS 2>/dev/null; fi
+      _n=$((_n + 1))
+      sleep 1
+    done
+  fi
+  [ "$CAPPED" = 0 ] || printf 'gate: %s ran past %s min — stopped\n' "$WHO" "$CAP_MIN" >&2
+  POST=1; RUNNING=0
+  CHILD=""
+  HOLD_S=$(( $(date +%s) - T0 ))
+}
+
+# ---- leak scrub (T10) ----
+# gate_scrub — O7: after every run in an opted-in linked worktree (isolate
+# decides), except a node check (either class), remove the lanes lines
+# project.godot gained and fail a passing run (exit 1; a failing status is
+# kept). A node command never launches Godot, and Godot beside Godot in one
+# worktree is refused at admission, so a scrub never overlaps a live Godot's
+# save() of project.godot (spec 8 amendment: "except a node check").
+# A leak is sticky (LEAKED): a demoted re-run that passes still exits 1, as it
+# ran against the project.godot the attempt's save() rewrote.
+gate_scrub() {
+  [ "$HAS_ISO" = 1 ] || return 0
+  _gs_out="$(cd "$WT" && sh "$SELF_DIR/studio-dispatch" isolate --scrub 2>/dev/null)"; _gs_rc=$?
+  case "$_gs_rc" in
+    0) return 0 ;;
+    3) printf 'gate: project.godot gained the per-worktree user:// setting (%s) — removed; this run is not trusted\n' "$_gs_out" >&2 ;;
+    *) printf 'gate: the project.godot leak check failed (isolate --scrub exit %s) — this run is not trusted\n' "$_gs_rc" >&2 ;;
+  esac
+  LEAKED=1
+}
+# gate_prescrub — the start scrub, under the lane: after admission and before
+# the command (it was studio-test's, before the gate, where it could rewrite
+# project.godot beside a live Godot). Lines an earlier run left are removed and
+# announced; this run is never failed for them.
+gate_prescrub() {
+  [ "$HAS_ISO" = 1 ] || return 0
+  _gp_out="$(cd "$WT" && sh "$SELF_DIR/studio-dispatch" isolate --scrub 2>/dev/null)"; _gp_rc=$?
+  if [ "$_gp_rc" = 3 ]; then
+    printf 'studio-test: project.godot carried the per-worktree user:// setting (%s) — removed before the run\n' "$_gp_out" >&2
+  fi
+  return 0
+}
+
+# row_lane — the row's lane: short, main:demoted, main:<the refusal at
+# acquisition> for a short caller in the main lane (spaces as -), main:off for a
+# short check with the lane off, else main.
+row_lane() {
+  if [ "$LANE" = short ]; then echo short
+  elif [ "$DEMOTED" = 1 ]; then echo main:demoted
+  elif [ "$CLS" = short ]; then printf 'main:%s\n' "$(printf '%s' "$LAST_REASON" | sed 's/ [0-9?].*//; s/ /-/g')"
+  elif [ "$ARGV_CLS" = short ]; then echo main:off
+  else echo main; fi
+}
+
+# The wait: every poll re-evaluates admission. The 60 s line keeps its prefix;
+# a refused short caller's reason is printed on its first refusal. A busy-mutex
+# poll (try_admit 2) evaluates nothing and prints nothing: the first line comes
+# from the first evaluated poll (I1). After 60 s of busy polls only (a stuck
+# mutex owner) the line is printed anyway, naming the main lock's holder.
+while :; do
+  T_REQ="$(date +%s)"; waited=0; SAID=0; EVALD=0
+  BLK_WHO=""; BLK_PID=""; BLK_NOTE=""; BLK_STUCK=""; REASON=""
+  while :; do
+    try_admit; _ta=$?
+    [ "$_ta" != 0 ] || break
+    if [ "$_ta" = 2 ] && [ "$EVALD" = 0 ] && [ "$waited" -lt $((60 * GATE_TPS)) ]; then
+      waited=$((waited + 1)); sleep "$GATE_POLL"; continue
+    fi
+    _first=0; [ "$EVALD" = 1 ] || _first=1
+    EVALD=1
+    [ -z "$REASON" ] || LAST_REASON="$REASON"
+    if [ "$_first" = 1 ] || [ $((waited % (60 * GATE_TPS))) -eq 0 ] || { [ -n "$REASON" ] && [ "$SAID" = 0 ]; }; then
+      [ -n "$BLK_PID$BLK_WHO" ] || { BLK_WHO="$(rd "$LOCK" who)"; BLK_PID="$(lock_pid)"; }
+      printf 'gate: waiting for %s (pid %s%s)%s%s\n' "$BLK_WHO" "$BLK_PID" "$BLK_NOTE" "$BLK_STUCK" \
+        "${REASON:+; short lane: $REASON}" >&2
+      [ -z "$REASON" ] || SAID=1
+    fi
+    waited=$((waited + 1)); sleep "$GATE_POLL"
+  done
+  # Preflight F11: a short caller in the main lane records the refusal of the
+  # poll that admitted it.
+  [ "$LANE" = short ] || [ "$CLS" != short ] || [ "$DEMOTED" = 1 ] || LAST_REASON="$REASON"
+  WAIT_S=$(( $(date +%s) - T_REQ ))
+  gate_prescrub
+  run_once "$@"
+  ROW_RC="${SIGSTATUS:-$rc}"
+  gate_scrub
+  [ "$LEAKED" = 0 ] || [ "$ROW_RC" != 0 ] || ROW_RC=1
+  # A signalled run (a reaper, a session cap) is logged too, with 128+n: its
+  # seconds are a lower bound, and the overruns are what the preflight's
+  # session_minutes check most needs to see.
+  gate_times_append "$ROOT/.studio/gate.times" "$(date +%s)" "$WHO" "$HOLD_S" "$ROW_RC" "$WAIT_S" \
+    "$(row_lane)" "$([ "$LANE" = short ] && echo short || echo "$CLS")" "${TAG:--}"
+  if [ "$DEMOTED" = 0 ] && lane_after_run; then
+    lane_release; DEMOTED=1; MODE=main; POST=0
+    [ -z "$LATE_SIG" ] || exit "$LATE_SIG"
+    continue
+  fi
+  break
+done
 release
-if [ -n "$SIGSTATUS" ]; then exit "$SIGSTATUS"; fi
-exit "$rc"
+exit "$ROW_RC"

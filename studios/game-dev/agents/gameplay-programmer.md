@@ -32,8 +32,9 @@ Method, for `Verify: unit` tasks (mandatory):
    `Files:` first — one behaviour per test function, `test_` prefix,
    `assert_eq` / `assert_almost_eq` with the spec's numbers.
 2. Run `studio-test --file <test file>` and paste the failing summary line.
-3. Implement the minimum that passes. Run `studio-test` for the whole suite;
-   paste the passing summary line. Exit 2 (no engine) or 3 (GUT missing) is
+3. Implement the minimum that passes. Run `studio-test --file` on every test file the task touched
+   (up to three per call); run the whole suite only when `Verify:` includes `suite`.
+   Paste the passing summary line. Exit 2 (no engine) or 3 (GUT missing) is
    reported verbatim, not worked around.
 4. Commit with a message that names the task (`feat(T3): …`).
 
@@ -46,8 +47,8 @@ do not wait for it. A `studio-test` that exits 124 ran past the gate run
 cap: report it verbatim as `gate timed out — <command> ran past <n> min`;
 it exits 124.
 
-For `Verify: playtest` and `Verify: visual` tasks: implement, run
-`studio-test` to prove nothing regressed, commit, and end the report with the
+For `Verify: playtest` and `Verify: visual` tasks: implement, commit (a task with no
+touched test file runs no GUT at the task: the finish gate covers it), and end the report with the
 playtest item (action · expected perceptual result · what a failure looks
 like) or the thing to look at.
 

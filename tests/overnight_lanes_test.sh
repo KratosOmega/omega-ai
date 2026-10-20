@@ -2467,7 +2467,8 @@ $_dsi_m; '$TMP/bin/msleep' 121; rm -f '$_dsi_lk/lock'"
 # detach_stop's `stop` cannot end a hand-written child.
 detach_end_stand_in() {
   _desi_p="$(sed -n 's/.*pid \([0-9][0-9]*\),.*/\1/p' "$1" | head -n 1)"
-  [ -z "$_desi_p" ] || kill -TERM -- "-$_desi_p" 2>/dev/null || true
+  # No `--`: dash's kill builtin reads it as a pid ("Illegal number: -").
+  [ -z "$_desi_p" ] || kill -TERM "-$_desi_p" 2>/dev/null || true
   rm -f "$P/.studio/runs/demo/lock"
   wait_for "[ -z \"\$(pgrep -f '$TMP/bin/msleep (15|121)\$')\" ]" 20
   assert_eq 0 "$(pgrep -f "$TMP/bin/msleep (15|121)\$" | wc -l | tr -d ' ')" "no stand-in survives"
@@ -2849,6 +2850,11 @@ test_lanes_gate_room_warning() {
   printf '1 gate 600 0\n' > "$P/.studio/gate.times"
   run_lanes start --dry-run "$MFP"
   assert_not_contains "$LS_ERR" "warning: the slowest" "a 10-minute gate_command alone fits"
+  # #71 R6: 8-field rows mixed with 4-field ones read the same ($2 who, $3 seconds).
+  printf '1 studio-test 3000 0 12 main shareable -\n2 gate 2400 0\n' > "$P/.studio/gate.times"
+  run_lanes start --dry-run "$MFP"
+  assert_contains "$LS_ERR" "the slowest of the last 10 studio-test runs plus the slowest of the last 10 gate_command runs took 90 min" "an 8-field row reads as the 4-field one"
+  assert_contains "$LS_ERR" "at least 118" "the minimum is the same"
 }
 # gate.times tolerates a non-integer duration: it is skipped, not fatal.
 test_lanes_gate_times_non_integer() {

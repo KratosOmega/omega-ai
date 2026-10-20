@@ -10,10 +10,15 @@
 # name with trailing version digits removed (godot4 -> godot).
 #
 # Self-contained on purpose: in copy mode bin/ ships without lib/common.sh.
+# studio-dispatch --has VERB — exit 0 when the engine's adapter VERB.sh exists,
+# 1 otherwise; silent on every path (#71).
 # Exit: 2 when the root, the engine, or the adapter is missing.
 set -u
 
+has=0
+if [ "${1:-}" = --has ]; then has=1; shift; fi
 verb="${1:-}"
+[ "$has" = 0 ] || [ -n "$verb" ] || exit 1
 [ -n "$verb" ] || { echo "usage: studio-dispatch VERB [ARGS...]" >&2; exit 2; }
 shift
 
@@ -36,6 +41,7 @@ if [ -z "$root" ]; then
   root="$(cd "$(dirname "$self")/.." && pwd -P)"
 fi
 if [ ! -f "$root/studio.json" ]; then
+  [ "$has" = 0 ] || exit 1
   echo "studio-$verb: no studio at '$root' — set OMEGA_STUDIO_ROOT to the studio directory (the claude-gd shim does this)" >&2
   exit 2
 fi
@@ -43,6 +49,7 @@ fi
 engine="$(field .studio/config.json engine)"
 [ -n "$engine" ] || engine="$(field "$root/studio.json" engine)"
 if [ -z "$engine" ]; then
+  [ "$has" = 0 ] || exit 1
   echo "studio-$verb: no engine configured in .studio/config.json or studio.json" >&2
   exit 2
 fi
@@ -50,8 +57,10 @@ fi
 dir="$(printf '%s' "$engine" | sed 's/[0-9]*$//')"
 adapter="$root/engines/$dir/$verb.sh"
 if [ ! -f "$adapter" ]; then
+  [ "$has" = 0 ] || exit 1
   echo "studio-$verb: no adapter for engine $engine at engines/$dir/$verb.sh" >&2
   exit 2
 fi
 
+[ "$has" = 0 ] || exit 0
 exec sh "$adapter" "$@"

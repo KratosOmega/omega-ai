@@ -380,7 +380,10 @@ verbatim (§0, The gate runs in the foreground): "run `studio-test` and
 Every implementer and fixer brief also carries: "run one test file with
 `studio-test --file <test file>`; never build a Godot or GUT command by
 hand; run a Godot script or import as `studio-gate godot -- <command>`; pass `timeout` only on gate-routed commands; a gate-routed command
-that exits 124 is `Stop: gate timed out`".
+that exits 124 is `Stop: gate timed out`; a targeted vitest runs as
+`cd <node dir> && studio-gate vitest -- npx vitest run --minWorkers=1 --maxWorkers=2 <file>…`,
+tsc as `cd <node dir> && studio-gate tsc -- npx tsc --noEmit` — the `cd` outside the gate,
+never `sh -c` inside it; the whole suite runs only when `Verify:` includes `suite`".
 
 ## 3. Verify rules (both modes)
 
@@ -391,14 +394,20 @@ kind listed binds the implementer:
   the test named in `Files:` is written and seen to fail before the
   implementation, then passes. The test framework is the project's test
   framework (`tests` in `.studio/config.json`, default GUT). Before
-  reporting, the implementer runs `studio-test` and pastes its summary
-  line. Exit 2 (no engine binary) or 3 (GUT not installed) stops the task:
-  report it to the user with the printed hint; do not work around it.
+  reporting, the implementer
+  runs `studio-test --file` on every test file the task created or changed
+  (calls of up to three files are short-lane eligible: they take the slot when the lane is on and admission passes) and pastes each
+  summary line. The whole suite (`studio-test`) runs at the finish gate, or
+  before reporting when the task's `Verify:` includes `suite`. Exit 2 (no
+  engine binary) or 3 (GUT not installed) stops the task: report it to the
+  user with the printed hint; do not work around it.
 - `playtest` — the implementer's report ends with the playtest item the task
   defined (action, expected perceptual result, what a failure looks like).
   Record it with `studio-state ledger "T<n> Playtest item: <text>"`.
 - `visual` — the implementer reports what to look at and where. Record it as
   `studio-state ledger "T<n> Visual: <text>"`.
+- `suite` — the implementer also runs the whole suite (`studio-test`) before
+  reporting and pastes its summary line.
 
 A task that introduces or changes a tunable value (a cooldown, a window, a
 speed, a curve) always includes `unit`: the number is tested, the feel is
@@ -459,8 +468,9 @@ This overrides `superpowers:subagent-driven-development`'s fix loop (rounds 1–
    - the file:line slices each finding cites (the cited line ± 20 lines);
    - the task text and the spec sections it cites;
    - "fix these findings only; one commit, subject `fix(T<n>): <summary>`;
-     run the task's tests — the `Verify: unit` test files the task names,
-     then `studio-test` — and paste the summary line before handing back";
+     run the task's tests — `studio-test --file` on the test files the
+     task and the fix touched, then `studio-test` only when the task's
+     `Verify:` includes `suite` — and paste the summary line before handing back";
    - under a lane, §2's foreground `studio-test` line;
 3. **Re-review** — one scoped dispatch of `game-dev:reviewer` over the fix
    commit's range (its review package), with the findings list — happens
@@ -489,7 +499,7 @@ the last task's review. Under `--one`, see §8: a task unit never starts it.
 
 1. Run `studio-test` and `studio-lint` fresh; keep both outputs.
    Under a lane, §5 step 1 is skipped (no fresh `studio-test` or
-   `studio-lint`): the implementers ran the tests per task, and the finish
+   `studio-lint`): the implementers ran each task's touched tests, and the finish
    gate covers the fix wave.
 2. Build the verify-prior-fixes list from the scopes reserved for fix
    commits. With `<merge-base>` = `git merge-base <base> HEAD`, run
@@ -520,8 +530,8 @@ the last task's review. Under `--one`, see §8: a task unit never starts it.
      gate checks — line length, docs budgets, any check under `tests/` —
      whatever its severity, is never ruled `leave`, deferred or parked;
    - the `studio-test` and `studio-lint` output from step 1. Under a lane, in place of that output, the brief says
-     "step 1 skipped under a lane: no fresh test run; each task's tests
-     ran in its implementer, and the finish gate runs the full gate after
+     "step 1 skipped under a lane: no fresh test run; each task's touched
+     tests ran in its implementer, and the finish gate runs the full gate after
      the fix wave" — nothing is run to produce it;
    - "review only — do not fix".
 4. Ledger:

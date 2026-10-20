@@ -12,7 +12,7 @@ STUDIO="$REPO_ROOT/studios/game-dev"
 BIN="$STUDIO/bin"
 # Physical path: the adapter scripts resolve the project with pwd -P, so
 # assertions that quote $TMP must use the same spelling (/var -> /private/var on macOS).
-unset STUDIO_GATE_POLL_SECONDS STUDIO_SETUP_POLL_SECONDS
+unset STUDIO_GATE_POLL_SECONDS STUDIO_SETUP_POLL_SECONDS STUDIO_START_DIR STUDIO_GATE_HELD STUDIO_GATE_LANE STUDIO_GATE_DEMOTE STUDIO_UNIT_TAG STUDIO_GATE_MINUTES STUDIO_GATE_SECONDS
 mk_tmp toolkit
 trap 'rm_tmp "$TMP"' EXIT
 
@@ -92,6 +92,7 @@ sleep "${STUB_SLEEP:-0}"
 STUB
 chmod +x "$TMP/stub/godot"
 GODOT_STUB="$TMP/stub/godot"
+. "$REPO_ROOT/tests/gate_times_rows.sh"
 
 # fresh_project NAME — a project directory with project.godot; prints its path.
 fresh_project() {
@@ -287,7 +288,8 @@ test_test_file_misuse_exits_4() {
 test_test_file_through_gate() {
   P="$(fresh_project gated)"; with_gut "$P"; mkdir -p "$P/tests/unit" "$P/.studio"; : > "$P/tests/unit/a.gd"
   verb "$P" studio-test tests/unit/a.gd
-  assert_contains "$P/.studio/gate.times" '^[0-9]* studio-test-file [0-9]* 0$' "a positional file is a file run, timed as studio-test-file"
+  assert_eq 1 "$(gt_rows "$P/.studio/gate.times" studio-test-file 0)" "a positional file is a file run, timed as studio-test-file"
+  assert_contains "$P/.studio/gate.times" '^[0-9][0-9]* studio-test-file [0-9][0-9]* 0 [0-9][0-9]* [a-z][a-z:-]* [a-z][a-z]* [^ ][^ ]*$' "the row has all 8 fields"
   STUB_FAILS=1 verb "$P" studio-test --file tests/unit/a.gd
   assert_eq 1 "$(cat "$TMP/status")" "a failing test exits 1"
   assert_not_contains "$P/.studio/gate.times" ' studio-test [0-9]' "no full-suite line"
@@ -302,7 +304,8 @@ test_test_file_several_positionals() {
   verb "$P" studio-test tests/unit/a.gd ./tests/unit/b.gd
   assert_eq 0 "$(cat "$TMP/status")" "two existing files pass"
   assert_contains "$(last_log "$P")" "-gtest=res://tests/unit/a.gd,res://tests/unit/b.gd -gexit" "both run, in one -gtest="
-  assert_contains "$P/.studio/gate.times" '^[0-9]* studio-test-file [0-9]* 0$' "timed as studio-test-file"
+  assert_eq 1 "$(gt_rows "$P/.studio/gate.times" studio-test-file 0)" "timed as studio-test-file"
+  assert_contains "$P/.studio/gate.times" '^[0-9][0-9]* studio-test-file [0-9][0-9]* 0 [0-9][0-9]* [a-z][a-z:-]* [a-z][a-z]* [^ ][^ ]*$' "the row has all 8 fields"
   assert_not_contains "$P/.studio/gate.times" ' studio-test [0-9]' "no full-suite line"
   rm -f "$P"/.studio/reports/test-*.log
   verb "$P" studio-test tests/unit/a.gd tests/unit/nope.gd
@@ -790,6 +793,197 @@ test_lint_with_no_scripts_is_clean() {
   assert_contains "$TMP/out" "no .gd files" "and says so"
 }
 
+# #71 §7 (T9): in the short slot an import is handed to the main lane: test.sh
+# writes `import` to $STUDIO_GATE_DEMOTE and exits 1, but only when that path
+# ends in .$STUDIO_GATE_HELD and the pid is alive (Review Focus 3).
+# lane_test DIR HELD [DEMOTE] — test.sh in DIR as a slot child of HELD (DEMOTE
+# unset when not given); output in $TMP/out, status in $status.
+lane_test() {
+  status=0
+  ( cd "$1" && if [ -n "${3:-}" ]; then STUDIO_GATE_DEMOTE="$3"; export STUDIO_GATE_DEMOTE; fi
+    GODOT_PATH="$GODOT_STUB" STUDIO_GATE_HELD="$2" STUDIO_GATE_LANE=short sh "$STUDIO/engines/godot/test.sh" ) \
+    > "$TMP/out" 2>&1 || status=$?
+}
+# lane_logs DIR — every engine log of DIR, in $TMP/lane.log.
+lane_logs() { : > "$TMP/lane.log"; cat "$1"/.studio/reports/test-*.log >> "$TMP/lane.log" 2>/dev/null; }
+
+test_test_demotes_an_import_in_the_short_lane() {
+  P="$(fresh_project lane-demote)"
+  with_gut "$P"
+  sleep 30 & _g=$!
+  lane_test "$P" "$_g" "$TMP/d.$_g"
+  assert_eq "1" "$status" "an import needed in the slot exits 1: a lost hand-off is red"
+  assert_eq "import" "$(cat "$TMP/d.$_g" 2>/dev/null)" "the demote file holds the reason"
+  assert_contains "$TMP/out" '^studio-test: the import cache needs an import — handing this run to the main lane$' "the hand-off is announced"
+  lane_logs "$P"
+  assert_not_contains "$TMP/lane.log" '\-\-import' "no import runs in the slot"
+  assert_missing "$P/.godot" "the cache is left for the main lane"
+  # A complete cache needs no import: the slot just runs.
+  P="$(fresh_project lane-complete)"
+  with_gut "$P"
+  mkdir -p "$P/.godot"
+  lane_test "$P" "$_g" "$TMP/c.$_g"
+  kill "$_g" 2>/dev/null; wait "$_g" 2>/dev/null
+  assert_eq "0" "$status" "a complete cache in the slot runs the tests"
+  assert_missing "$TMP/c.$_g" "and writes no demote file"
+  assert_contains "$(last_log "$P")" '^stub godot args: --headless --path .* -gexit ' "the suite ran"
+}
+
+test_test_stale_demote_env_imports() {
+  sh -c 'exit 0' & _dead=$!; wait "$_dead"
+  sleep 30 & _g=$!
+  # a dead STUDIO_GATE_HELD, the path ending in its pid
+  P="$(fresh_project lane-dead)"; with_gut "$P"
+  lane_test "$P" "$_dead" "$TMP/s1.$_dead"
+  assert_eq "0" "$status" "a dead gate pid: the run imports and passes"
+  lane_logs "$P"
+  assert_contains "$TMP/lane.log" "^stub godot args: --headless --path $P --import$" "it imports as usual"
+  assert_missing "$TMP/s1.$_dead" "no demote file is written"
+  # a live pid that the path does not end in
+  P="$(fresh_project lane-suffix)"; with_gut "$P"
+  lane_test "$P" "$_g" "$TMP/s2.$_g.x"
+  assert_eq "0" "$status" "a demote path for another gate: the run imports and passes"
+  lane_logs "$P"
+  assert_contains "$TMP/lane.log" "^stub godot args: --headless --path $P --import$" "it imports as usual"
+  assert_missing "$TMP/s2.$_g.x" "no demote file is written"
+  # preflight C6: no STUDIO_GATE_DEMOTE at all (set -u)
+  P="$(fresh_project lane-unset)"; with_gut "$P"
+  lane_test "$P" "$_g"
+  kill "$_g" 2>/dev/null; wait "$_g" 2>/dev/null
+  assert_eq "0" "$status" "STUDIO_GATE_DEMOTE unset: the run imports and passes, never exit 2"
+  lane_logs "$P"
+  assert_contains "$TMP/lane.log" "^stub godot args: --headless --path $P --import$" "it imports as usual"
+}
+
+# ---- #71 R1: the project's engine args (test_engine_args) ----
+
+# ea_config DIR JSON — DIR's .studio/config.json, fresh reports.
+ea_config() {
+  mkdir -p "$1/.studio"
+  printf '%s\n' "$2" > "$1/.studio/config.json"
+  rm -rf "$1/.studio/reports"
+}
+
+# ea_args_lines DIR — every "stub godot args" line the project's test logs hold.
+ea_args_lines() { cat "$1"/.studio/reports/test-*.log 2>/dev/null | grep '^stub godot args:'; }
+
+test_test_engine_args_reach_godot() {
+  P="$(fresh_project ea-reach)"
+  with_gut "$P"
+  mkdir -p "$P/.godot" "$P/tests/unit"
+  : > "$P/tests/unit/a.gd"
+  want='^stub godot args: --headless --fixed-fps 60 --path [^ ]* -s addons/gut/gut_cmdln.gd '
+  ea_config "$P" '{"engine": "godot4", "test_engine_args": "--fixed-fps 60"}'
+  verb "$P" studio-test
+  assert_eq "0" "$(cat "$TMP/status")" "the whole suite runs with the project's args"
+  assert_contains "$(last_log "$P")" "$want" "the whole suite gets --fixed-fps 60 after --headless"
+  ea_config "$P" '{"engine": "godot4", "test_engine_args": "--fixed-fps 60"}'
+  verb "$P" studio-test tests/unit
+  assert_eq "0" "$(cat "$TMP/status")" "the directory run exits 0"
+  assert_contains "$(last_log "$P")" "$want" "a directory run gets them too"
+  ea_config "$P" '{"engine": "godot4", "test_engine_args": "--fixed-fps 60"}'
+  verb "$P" studio-test --file tests/unit/a.gd
+  assert_eq "0" "$(cat "$TMP/status")" "the --file run exits 0"
+  assert_contains "$(last_log "$P")" "$want" "a --file run gets them too"
+}
+
+test_test_engine_args_absent_is_golden() {
+  P="$(fresh_project ea-golden)"
+  with_gut "$P"
+  mkdir -p "$P/.godot" "$P/tests/unit"
+  with_gutconfig "$P" tests/.gutconfig.json '["res://tests/unit"]'
+  golden='^stub godot args: --headless --path [^ ]* -s addons/gut/gut_cmdln.gd -gconfig=res://tests/.gutconfig.json -gexit -gjunit_xml_file=res://\.studio/reports/test-[0-9-]*\.xml$'
+  verb "$P" studio-test
+  assert_contains "$(last_log "$P")" "$golden" "no key: the argv is today's, byte for byte"
+  ea_config "$P" '{"engine": "godot4", "test_engine_args": ""}'
+  verb "$P" studio-test
+  assert_eq "0" "$(cat "$TMP/status")" "an empty key runs"
+  assert_contains "$(last_log "$P")" "$golden" "an empty key: the argv is today's, byte for byte"
+}
+
+test_test_engine_args_refuses_bad_chars() {
+  P="$(fresh_project ea-chars)"
+  with_gut "$P"
+  mkdir -p "$P/.godot"
+  for _ea_json in '{"test_engine_args": "--fixed-fps 60;x"}' \
+                  '{"test_engine_args": "--fixed-fps \"60\""}' \
+                  "$(printf '{"test_engine_args": "--fixed-fps\t60"}')"; do
+    ea_config "$P" "$_ea_json"
+    verb "$P" studio-test
+    assert_eq "1" "$(cat "$TMP/status")" "a bad character exits 1: $_ea_json"
+    assert_contains "$TMP/out" '^studio-test: test_engine_args in \.studio/config\.json: .* — got ' "the refusal names the key and the value"
+    assert_eq "" "$(ea_args_lines "$P")" "Godot never started: $_ea_json"
+  done
+}
+
+test_test_engine_args_allowlist() {
+  P="$(fresh_project ea-allow)"
+  with_gut "$P"
+  mkdir -p "$P/.godot"
+  for _ea_v in '--fixed-fps 60' '--fixed-fps 1000'; do
+    ea_config "$P" "{\"test_engine_args\": \"$_ea_v\"}"
+    verb "$P" studio-test
+    assert_eq "0" "$(cat "$TMP/status")" "allowed: $_ea_v"
+    assert_contains "$(last_log "$P")" "^stub godot args: --headless $_ea_v --path " "passed through: $_ea_v"
+  done
+  for _ea_v in '--fixed-fps' '--fixed-fps 0' '--fixed-fps 1001' '--fixed-fps abc' '--fixed-fps=60' '-s x' \
+               '--path /tmp' '--main-pack x' '--scene x' '--quit-after 1' '--write-movie x' '--log-file x' 'res://x.tscn'; do
+    ea_config "$P" "{\"test_engine_args\": \"$_ea_v\"}"
+    verb "$P" studio-test
+    assert_eq "1" "$(cat "$TMP/status")" "refused with exit 1: $_ea_v"
+    assert_contains "$TMP/out" '^studio-test: test_engine_args in \.studio/config\.json: ' "names the key: $_ea_v"
+    assert_eq "" "$(ea_args_lines "$P")" "Godot never started: $_ea_v"
+  done
+}
+
+test_test_engine_args_odd_spacing() {
+  P="$(fresh_project ea-spacing)"
+  with_gut "$P"
+  mkdir -p "$P/.godot"
+  ea_config "$P" '{"test_engine_args" : "  --fixed-fps   60 "}'
+  verb "$P" studio-test
+  assert_eq "0" "$(cat "$TMP/status")" "odd spacing around the key and inside the value runs"
+  assert_contains "$(last_log "$P")" '^stub godot args: --headless --fixed-fps 60 --path ' "the words are single-spaced in the argv"
+}
+
+test_test_engine_args_run_fallback() {
+  P="$(fresh_project ea-fallback)"
+  with_gut "$P"
+  mkdir -p "$P/.godot" "$TMP/run/.studio"
+  printf '{"test_engine_args": "--fixed-fps 30"}\n' > "$TMP/run/.studio/config.json"
+  export STUDIO_START_DIR="$TMP/run"
+  ea_config "$P" '{"engine": "godot4"}'
+  verb "$P" studio-test
+  assert_contains "$(last_log "$P")" '^stub godot args: --headless --fixed-fps 30 --path ' "a project without the key takes the run's"
+  ea_config "$P" '{"test_engine_args": "--fixed-fps 60"}'
+  verb "$P" studio-test
+  assert_contains "$(last_log "$P")" '^stub godot args: --headless --fixed-fps 60 --path ' "the project's own key wins over the run's"
+  unset STUDIO_START_DIR
+}
+
+test_test_engine_args_not_for_import() {
+  P="$(fresh_project ea-import)"
+  with_gut "$P"
+  ea_config "$P" '{"test_engine_args": "--fixed-fps 60"}'
+  verb "$P" studio-test
+  assert_eq "0" "$(cat "$TMP/status")" "an import then a suite runs"
+  assert_contains "$(last_log "$P")" "^stub godot args: --headless --path $P --import$" "the import argv carries no engine args"
+  assert_contains "$(last_log "$P")" '^stub godot args: --headless --fixed-fps 60 --path .* -gexit ' "the suite still does"
+}
+
+test_test_config_keys_still_read() {
+  P="$(fresh_project ea-keys)"
+  with_gut "$P"
+  mkdir -p "$P/.godot"
+  ea_config "$P" '{"engine": "godot4", "tests": "gut", "test_engine_args": "--fixed-fps 60"}'
+  verb "$P" studio-test
+  assert_eq "0" "$(cat "$TMP/status")" "the run passes with the engine and tests keys beside it"
+  assert_contains "$(last_log "$P")" '^stub godot args: --headless --fixed-fps 60 --path ' "the engine args arrive"
+  rm -rf "$P/.studio/reports"
+  verb "$P" studio-dispatch test
+  assert_eq "0" "$(cat "$TMP/status")" "studio-dispatch still finds the godot adapter from the engine key"
+}
+
 # ---- studio-gate: one test or gate run at a time per project ----
 GATE="$BIN/studio-gate"
 gate_proj() { GP="$TMP/gate-$1"; mkdir -p "$GP"; ( cd "$GP" && git init -q -b main && git -c user.name=t -c user.email=t@t commit -q --allow-empty -m i && sh "$BIN/studio-state" init ) >/dev/null 2>&1; }
@@ -875,7 +1069,8 @@ test_gate_signal_waits_for_child_then_releases() {
   [ "$_alive" = yes ] && kill -KILL "$_cp" 2>/dev/null
   assert_eq no "$_alive" "TERM to studio-gate reaches the child"
   assert_missing "$GP/.studio/gate.lock" "the lock is gone once the child is"
-  assert_contains "$GP/.studio/gate.times" '^[0-9][0-9]* sig [0-9][0-9]* 143$' "a signalled run is logged too, with 128+n"
+  assert_eq 1 "$(gt_rows "$GP/.studio/gate.times" sig 143)" "a signalled run is logged too, with 128+n"
+  assert_contains "$GP/.studio/gate.times" '^[0-9][0-9]* sig [0-9][0-9]* 143 [0-9][0-9]* [a-z][a-z:-]* [a-z][a-z]* [^ ][^ ]*$' "the row has all 8 fields"
 }
 # Three contenders on a dead holder's lock. Each cmd marks "s <pid>" and
 # "e <pid>"; an s while another cmd is open means two ran at once. A slow `mv`
@@ -937,7 +1132,8 @@ test_gate_unit_registration_and_times() {
   assert_eq 1 "$(wc -l < "$TMP/greg" | tr -d ' ')" "the gate registers one entry under the unit's tag"
   assert_eq "$(cat "$TMP/gself")" "$(cat "$TMP/gchild")" "the entry holds the command's pid"
   assert_missing "$GP/.studio/gate.units/run-1-3-finish" "the entry is removed when the gate ends"
-  assert_contains "$GP/.studio/gate.times" '^[0-9][0-9]* studio-test [0-9][0-9]* 0$' "gate.times gains the run's seconds and status"
+  assert_eq 1 "$(gt_rows "$GP/.studio/gate.times" studio-test 0)" "gate.times gains the run's seconds and status"
+  assert_contains "$GP/.studio/gate.times" '^[0-9][0-9]* studio-test [0-9][0-9]* 0 [0-9][0-9]* [a-z][a-z:-]* [a-z][a-z]* [^ ][^ ]*$' "the row has all 8 fields"
   assert_eq "" "$(git -C "$GP" status --porcelain --untracked-files=all | grep 'gate\.')" "the gate's files stay out of git"
   ( cd "$GP" && STUDIO_UNIT_TAG="../x" sh "$GATE" w -- true ) 2>/dev/null
   assert_missing "$GP/.studio/x" "an unsafe tag is ignored, never a path"
@@ -958,7 +1154,8 @@ test_gate_times_window_per_who() {
   ( cd "$GP" && sh "$GATE" setup -- true ) >/dev/null 2>&1
   assert_eq 10 "$(grep -c ' studio-test ' "$GP/.studio/gate.times")" "every studio-test line is kept"
   assert_eq 50 "$(grep -c ' setup ' "$GP/.studio/gate.times")" "setup keeps its newest 50"
-  assert_contains "$GP/.studio/gate.times" '^[0-9][0-9]* setup [0-9][0-9]* 0$' "the new run is logged"
+  assert_eq 1 "$(gt_rows "$GP/.studio/gate.times" setup 0)" "the new run is logged"
+  assert_contains "$GP/.studio/gate.times" '^[0-9][0-9]* setup [0-9][0-9]* 0 [0-9][0-9]* [a-z][a-z:-]* [a-z][a-z]* [^ ][^ ]*$' "the row has all 8 fields"
   assert_not_contains "$GP/.studio/gate.times" '^11 setup ' "the oldest setup lines went"
 }
 
@@ -980,7 +1177,8 @@ test_gate_run_cap_stops_a_long_run() {
   assert_eq 124 "$GC_ST" "a run past the cap exits 124"
   assert_eq 1 "$([ "$GC_SECS" -lt 8 ] && echo 1 || echo 0)" "stopped at the cap, not after 30 s"
   assert_contains "$TMP/gc.err" '^gate: t ran past 1 min — stopped$' "names who and the minutes"
-  assert_contains "$GP/.studio/gate.times" '^[0-9]* t [0-9]* 124$' "gate.times records 124"
+  assert_eq 1 "$(gt_rows "$GP/.studio/gate.times" t 124)" "gate.times records 124"
+  assert_contains "$GP/.studio/gate.times" '^[0-9][0-9]* t [0-9][0-9]* 124 [0-9][0-9]* [a-z][a-z:-]* [a-z][a-z]* [^ ][^ ]*$' "the row has all 8 fields"
   assert_missing "$GP/.studio/gate.lock" "the lock is released"
 }
 test_gate_run_cap_excludes_lock_wait() {
@@ -1017,7 +1215,10 @@ test_gate_run_cap_no_false_stop() {
   assert_eq hi "$_o" "its output"
   gate_capped 1 5 t true
   assert_eq 1 "$([ "$GC_SECS" -lt 3 ] && echo 1 || echo 0)" "the timer does not hold the caller ($GC_SECS s)"
-  assert_not_contains "$GP/.studio/gate.times" ' 124$' "no 124 recorded"
+  assert_eq 0 "$(gt_rows "$GP/.studio/gate.times" t 124)" "no 124 recorded"
+  assert_eq 1 "$(gt_rows "$GP/.studio/gate.times" t 3)" "the run's own row"
+  assert_eq 1 "$(gt_rows "$GP/.studio/gate.times" t 0)" "the capped true run's row"
+  assert_contains "$GP/.studio/gate.times" '^[0-9][0-9]* t [0-9][0-9]* 3 [0-9][0-9]* [a-z][a-z:-]* [a-z][a-z]* [^ ][^ ]*$' "the row has all 8 fields"
   assert_not_contains "$TMP/gc.err" 'ran past' "no stop message"
 }
 # Final review m2: leading zeros are decimal, not an octal arithmetic error
@@ -1038,7 +1239,8 @@ test_gate_run_cap_production_seconds() {
   ( cd "$GP" && STUDIO_GATE_MINUTES=1 sh "$TMP/cap6bin/studio-gate" prodcap -- sleep 2 ) 2> "$TMP/gp.err" || _st=$?
   assert_eq 0 "$_st" "a 2 s run under a 1 min cap, no seconds seam, exits 0"
   assert_not_contains "$TMP/gp.err" 'ran past' "no stop message"
-  assert_contains "$GP/.studio/gate.times" '^[0-9]* prodcap [0-9]* 0$' "gate.times records rc 0"
+  assert_eq 1 "$(gt_rows "$GP/.studio/gate.times" prodcap 0)" "gate.times records rc 0"
+  assert_contains "$GP/.studio/gate.times" '^[0-9][0-9]* prodcap [0-9][0-9]* 0 [0-9][0-9]* [a-z][a-z:-]* [a-z][a-z]* [^ ][^ ]*$' "the row has all 8 fields"
   # Absence wait: the timer polls once a second; 2 s is the ceiling.
   _i=0; while [ "$(cap_procs prodcap)" != 0 ] && [ "$_i" -lt 20 ]; do sleep 0.1; _i=$((_i + 1)); done
   assert_eq 0 "$(cap_procs prodcap)" "no timer outlives the gate"
@@ -1155,4 +1357,8 @@ run_tests test_gate_run_cap_stops_a_long_run test_gate_run_cap_excludes_lock_wai
   test_run_terminates_a_long_process test_run_rejects_bad_options \
   test_run_traps_signals_to_avoid_orphaning_the_child test_run_imports_when_dot_godot_is_absent \
   test_lint_needs_a_project test_lint_exits_3_without_gdtoolkit test_lint_runs_both_tools_over_gd_files \
-  test_lint_reports_findings test_lint_with_no_scripts_is_clean
+  test_lint_reports_findings test_lint_with_no_scripts_is_clean \
+  test_test_engine_args_reach_godot test_test_engine_args_absent_is_golden test_test_engine_args_refuses_bad_chars \
+  test_test_engine_args_allowlist test_test_engine_args_odd_spacing test_test_engine_args_run_fallback \
+  test_test_engine_args_not_for_import test_test_config_keys_still_read \
+  test_test_demotes_an_import_in_the_short_lane test_test_stale_demote_env_imports
