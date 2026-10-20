@@ -41,8 +41,10 @@ gate_wt() {
 # gc_resolve PATH — PATH with every symlink resolved (studio-dispatch's loop),
 # its directory in physical form. Prints nothing when the directory is gone.
 gc_resolve() {
-  _gr_s="$1"
+  _gr_s="$1"; _gr_n=0
   while [ -L "$_gr_s" ]; do
+    _gr_n=$((_gr_n + 1))
+    [ "$_gr_n" -le 40 ] || return 0
     _gr_l="$(readlink "$_gr_s")"
     case "$_gr_l" in
       /*) _gr_s="$_gr_l" ;;
@@ -84,11 +86,8 @@ _gc_godot() {
     4)
       [ "$3" = --file ] || return 0
       case "$4" in
-        ''|,*|*,|*,,*) return 0 ;;
+        ''|,*|*,|*,,*|*,*,*,*) return 0 ;;
       esac
-      _gg_c="$(printf '%s' "$4" | tr -dc ',' | wc -c)"
-      _gg_c=$((_gg_c + 0))
-      [ "$_gg_c" -le 2 ] || return 0
       echo short ;;
   esac
   return 0

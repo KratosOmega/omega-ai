@@ -79,6 +79,31 @@ test_classify_dispatch_identity() {
   gcx "$GR" "exclusive godot" "a missing dispatch" sh "$TMP/none/studio-dispatch" test --file tests/unit/a.gd
 }
 
+test_classify_symlink_cycle_is_bounded() {
+  gc_repo cyc
+  mkdir -p "$TMP/cy"
+  ln -s "$TMP/cy/b" "$TMP/cy/a"
+  ln -s "$TMP/cy/a" "$TMP/cy/b"
+  gcx "$GR" "exclusive godot" "a 2-link cycle returns exclusive" sh "$TMP/cy/a" test --file tests/unit/a.gd
+}
+
+test_classify_non_utf8_list_four_entries() {
+  gc_repo nonu
+  _bad="$(printf 'tests/unit/\377.gd')"
+  gcx "$GR" "exclusive godot" "four entries with a non-UTF-8 byte" sh "$D" test --file "$_bad,tests/unit/a.gd,tests/unit/b.gd,tests/unit/c.gd"
+  gcx "$GR" "short godot" "three entries with a non-UTF-8 byte" sh "$D" test --file "$_bad,tests/unit/a.gd,tests/unit/b.gd"
+}
+
+test_classify_godot_who_and_spaced_paths() {
+  gc_repo who
+  gcx "$GR" "exclusive godot" "a studio-gate godot -- command is exclusive" godot --headless --path . -s x.gd
+  mkdir -p "$TMP/sp ace/bin"
+  ln -s "$D" "$TMP/sp ace/bin/studio-dispatch"
+  gc_repo "sp ace"
+  gcx "$GR" "short godot" "a spaced dispatch symlink and worktree" sh "$TMP/sp ace/bin/studio-dispatch" test --file tests/unit/a.gd
+  assert_contains "$TMP/gc.out" " wt=$(cd "$GR" && pwd -P) " "wt keeps the space"
+}
+
 test_classify_vitest_forms() {
   gc_repo vit
   W="$GR/web-tools"
@@ -262,6 +287,7 @@ test_classify_usage() {
 }
 
 run_tests test_classify_gut_file_runs test_classify_whole_suite_and_dir test_classify_dispatch_identity \
+  test_classify_symlink_cycle_is_bounded test_classify_non_utf8_list_four_entries test_classify_godot_who_and_spaced_paths \
   test_classify_vitest_forms test_classify_vitest_near_misses test_classify_tsc_forms test_classify_eslint_forms \
   test_classify_everything_else_is_exclusive test_classify_reads_lane_from_toplevel test_classify_run_fallback \
   test_classify_minified_config test_load_threshold_from_physical_cores test_load_unreadable_refuses \
