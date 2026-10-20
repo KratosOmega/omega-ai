@@ -44,21 +44,21 @@ table() {
   cat <<'EOF'
 # suite                      shards  floor
 overnight_lanes_test         8       1186
-overnight_test               4       1138
-gate_lanes_test              1       194
-isolate_test                 1       115
-toolkit_test                 1       349
+overnight_test               4       1141
+gate_lanes_test              1       226
+isolate_test                 1       131
+toolkit_test                 1       351
 studio_adopt_test            1       306
 overnight_ids_test           1       77
 gate_times_test              1       22
 install_test                 1       475
 studio_setup_test            1       61
-hook_test                    1       623
+hook_test                    1       630
 run_all_test                 1       98
 studio_test                  1       741
 state_test                   1       245
 gate_class_test              1       102
-omega_test                   1       527
+omega_test                   1       528
 run_affected_test            1       34
 harness_test                 1       115
 state_move_test              1       244
