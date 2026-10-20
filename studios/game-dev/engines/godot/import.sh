@@ -64,6 +64,23 @@ import_class_cache_missing() {
     '^class_name ' "$1" 2>/dev/null
 }
 
+# import_needed PROJECT — 0 when ensure_import would import: no .godot/, a
+# missing product, or no class cache (#71: test.sh asks before it hands an
+# import in the short lane to the main lane). The one source of that decision:
+# ensure_import calls it too. It leaves _imiss (missing products; empty with no
+# .godot/), _icls (1: no class cache), _in_rc (its status) and _in_memo
+# (PROJECT): the next ensure_import on PROJECT reuses them once rather than
+# scanning again (the scan takes 2–3 s on a 5k-asset project).
+import_needed() {
+  _in_memo="$1"; _imiss=""; _icls=0; _in_rc=0
+  if [ -d "$1/.godot" ]; then
+    _imiss="$(import_missing "$1" | wc -l | tr -d ' ')"
+    import_class_cache_missing "$1" && _icls=1
+    [ "$_imiss" -ne 0 ] || [ "$_icls" -ne 0 ] || _in_rc=1
+  fi
+  return "$_in_rc"
+}
+
 # ensure_import GODOT PROJECT LOG VERB — import when the cache is incomplete,
 # then check again. Returns 1 (after printing why) when the import exits
 # non-zero; the engine must not run on that cache. An import that exits 0 but
@@ -72,12 +89,10 @@ import_class_cache_missing() {
 # then is mostly what it will never produce, and stopping would fail every run.
 ensure_import() {
   _ig="$1"; _ip="$2"; _il="$3"; _iv="$4"
+  [ "${_in_memo:-}" = "$_ip" ] || import_needed "$_ip"
+  _in_memo=""
+  [ "$_in_rc" = 0 ] || return 0
   if [ -d "$_ip/.godot" ]; then
-    _imiss="$(import_missing "$_ip" | wc -l | tr -d ' ')"
-    _icls=0; import_class_cache_missing "$_ip" && _icls=1
-    if [ "$_imiss" -eq 0 ] && [ "$_icls" -eq 0 ]; then
-      return 0
-    fi
     if [ "$_imiss" -eq 0 ]; then _iwhy="no class cache"
     elif [ "$_icls" -eq 1 ]; then _iwhy="$_imiss missing, no class cache"
     else _iwhy="$_imiss missing"

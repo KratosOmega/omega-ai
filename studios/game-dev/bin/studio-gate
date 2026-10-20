@@ -8,6 +8,8 @@
 #     wait's poll; the waiting message stays every 60 s.
 #   STUDIO_GATE_SECONDS (default: STUDIO_GATE_MINUTES x 60) — the run cap in
 #     seconds; it applies only while STUDIO_GATE_MINUTES caps the run.
+#   STUDIO_GATE_SHORT_SECONDS (default 300) — the short slot's cap in seconds
+#     (a non-digit value reads as 300).
 #
 # Lanes (#71 R3), all under STATE_ROOT/.studio/ and changed only under the
 # reclaim mutex (a live owner's release excepted). The main lane gate.lock/
@@ -313,7 +315,7 @@ case "${STUDIO_GATE_MINUTES:-}" in
      fi ;;
 esac
 # The slot's cap in seconds (§7 Caps): min(this, the run cap) binds a slot run.
-SHORT_SECS=300
+case "${STUDIO_GATE_SHORT_SECONDS:-300}" in ''|*[!0-9]*) SHORT_SECS=300 ;; *) SHORT_SECS="$(decimal "${STUDIO_GATE_SHORT_SECONDS:-300}")" ;; esac
 ATT_SECS=""; ATT_SHORT=0; SHORT_CAPPED=0
 on_cap() { if [ "$RUNNING" = 1 ] && alive "$CHILD"; then if [ "$ATT_SHORT" = 1 ]; then SHORT_CAPPED=1; else CAPPED=1; fi; on_signal 124; fi; }
 trap release EXIT
@@ -323,10 +325,36 @@ trap 'on_signal 129' HUP
 
 # ---- short cap and demote (T9) ----
 # lane_cap — this attempt's cap: ATT_SECS (seconds, empty for none) and
-# ATT_SHORT (1 when the slot's cap is the binding one).
-# lane_after_run — 0 when the attempt must run again, in the main lane.
-lane_cap() { ATT_SECS="$CAP_SECS"; ATT_SHORT=0; }
-lane_after_run() { return 1; }
+# ATT_SHORT (1 when the slot's cap is the binding one). In the slot the 5-min
+# cap binds unless the run cap is no longer (STUDIO_GATE_MINUTES <= 5): then
+# 124 and no re-run, as today (D4).
+lane_cap() {
+  ATT_SECS="$CAP_SECS"; ATT_SHORT=0
+  if [ "$LANE" = short ] && { [ -z "$CAP_SECS" ] || [ "$CAP_SECS" -gt "$SHORT_SECS" ]; }; then
+    ATT_SECS="$SHORT_SECS"; ATT_SHORT=1
+  fi
+}
+# lane_after_run — 0 when this slot attempt is re-run once in the main lane:
+# the short cap stopped it, or the child asked through $STUDIO_GATE_DEMOTE
+# (its first line, filtered, is the reason; an empty file is "no reason
+# given"). The file is removed either way. A signal (128+n) is never re-run.
+lane_after_run() {
+  [ "$LANE" = short ] || return 1
+  _la_dm=0; _la_why=""
+  if [ -f "$DEMOTE" ]; then
+    _la_dm=1
+    _la_why="$(head -n 1 "$DEMOTE" 2>/dev/null | tr -cd 'A-Za-z0-9 ._:/-' | cut -c1-80)"; rm -f "$DEMOTE"
+  fi
+  if [ "$SHORT_CAPPED" = 1 ] && [ "$SIGSTATUS" = 124 ]; then
+    printf "gate: %s ran past the short lane's 5 min — stopped; running it again in the main lane\n" "$WHO" >&2
+    return 0
+  fi
+  [ -z "$SIGSTATUS" ] || return 1
+  [ "$_la_dm" = 1 ] || return 1
+  [ -n "$_la_why" ] || _la_why="no reason given"
+  printf 'gate: %s needs the main lane (%s) — waiting for it\n' "$WHO" "$_la_why" >&2
+  return 0
+}
 
 # run_once CMD… — one attempt in the lane we hold. Sets rc, SIGSTATUS, CAPPED,
 # SHORT_CAPPED and HOLD_S (the attempt's seconds, stragglers included).

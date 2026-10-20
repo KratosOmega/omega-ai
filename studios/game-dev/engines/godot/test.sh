@@ -111,6 +111,19 @@ log="$PROJECT/.studio/reports/test-$stamp.log"
 # branch that adds assets with their .import files) is imported first; an
 # import that fails stops here rather than minutes into the suite (import.sh).
 . "$HERE/import.sh"
+# #71 §7: an import does not belong beside a suite, so in the short slot it is
+# handed to the main lane: write `import` to $STUDIO_GATE_DEMOTE and exit 1;
+# the gate re-runs us there. Only for the live gate the path names (it ends in
+# .$STUDIO_GATE_HELD), so a stale lane env outside a gate never skips a run,
+# and a lost hand-off is red (exit 1), never green.
+case "${STUDIO_GATE_HELD:-}" in ''|*[!0-9]*) _dm_held="" ;; *) _dm_held="$STUDIO_GATE_HELD" ;; esac
+if [ "${STUDIO_GATE_LANE:-}" = short ] && [ -n "$_dm_held" ] && [ -n "${STUDIO_GATE_DEMOTE:-}" ] \
+   && [ "${STUDIO_GATE_DEMOTE:-}" != "${STUDIO_GATE_DEMOTE%".$_dm_held"}" ] \
+   && kill -0 "$_dm_held" 2>/dev/null && import_needed "$PROJECT"; then
+  printf 'import\n' > "$STUDIO_GATE_DEMOTE"
+  echo "studio-test: the import cache needs an import — handing this run to the main lane" >&2
+  exit 1
+fi
 ensure_import "$GODOT" "$PROJECT" "$log" studio-test || exit 1
 
 set -f   # ENGINE_ARGS is validated words; no globbing, none when empty

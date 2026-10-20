@@ -793,6 +793,68 @@ test_lint_with_no_scripts_is_clean() {
   assert_contains "$TMP/out" "no .gd files" "and says so"
 }
 
+# #71 §7 (T9): in the short slot an import is handed to the main lane: test.sh
+# writes `import` to $STUDIO_GATE_DEMOTE and exits 1, but only when that path
+# ends in .$STUDIO_GATE_HELD and the pid is alive (Review Focus 3).
+# lane_test DIR HELD [DEMOTE] — test.sh in DIR as a slot child of HELD (DEMOTE
+# unset when not given); output in $TMP/out, status in $status.
+lane_test() {
+  status=0
+  ( cd "$1" && if [ -n "${3:-}" ]; then STUDIO_GATE_DEMOTE="$3"; export STUDIO_GATE_DEMOTE; fi
+    GODOT_PATH="$GODOT_STUB" STUDIO_GATE_HELD="$2" STUDIO_GATE_LANE=short sh "$STUDIO/engines/godot/test.sh" ) \
+    > "$TMP/out" 2>&1 || status=$?
+}
+# lane_logs DIR — every engine log of DIR, in $TMP/lane.log.
+lane_logs() { : > "$TMP/lane.log"; cat "$1"/.studio/reports/test-*.log >> "$TMP/lane.log" 2>/dev/null; }
+
+test_test_demotes_an_import_in_the_short_lane() {
+  P="$(fresh_project lane-demote)"
+  with_gut "$P"
+  sleep 30 & _g=$!
+  lane_test "$P" "$_g" "$TMP/d.$_g"
+  assert_eq "1" "$status" "an import needed in the slot exits 1: a lost hand-off is red"
+  assert_eq "import" "$(cat "$TMP/d.$_g" 2>/dev/null)" "the demote file holds the reason"
+  assert_contains "$TMP/out" '^studio-test: the import cache needs an import — handing this run to the main lane$' "the hand-off is announced"
+  lane_logs "$P"
+  assert_not_contains "$TMP/lane.log" '\-\-import' "no import runs in the slot"
+  assert_missing "$P/.godot" "the cache is left for the main lane"
+  # A complete cache needs no import: the slot just runs.
+  P="$(fresh_project lane-complete)"
+  with_gut "$P"
+  mkdir -p "$P/.godot"
+  lane_test "$P" "$_g" "$TMP/c.$_g"
+  kill "$_g" 2>/dev/null; wait "$_g" 2>/dev/null
+  assert_eq "0" "$status" "a complete cache in the slot runs the tests"
+  assert_missing "$TMP/c.$_g" "and writes no demote file"
+  assert_contains "$(last_log "$P")" '^stub godot args: --headless --path .* -gexit ' "the suite ran"
+}
+
+test_test_stale_demote_env_imports() {
+  sh -c 'exit 0' & _dead=$!; wait "$_dead"
+  sleep 30 & _g=$!
+  # a dead STUDIO_GATE_HELD, the path ending in its pid
+  P="$(fresh_project lane-dead)"; with_gut "$P"
+  lane_test "$P" "$_dead" "$TMP/s1.$_dead"
+  assert_eq "0" "$status" "a dead gate pid: the run imports and passes"
+  lane_logs "$P"
+  assert_contains "$TMP/lane.log" "^stub godot args: --headless --path $P --import$" "it imports as usual"
+  assert_missing "$TMP/s1.$_dead" "no demote file is written"
+  # a live pid that the path does not end in
+  P="$(fresh_project lane-suffix)"; with_gut "$P"
+  lane_test "$P" "$_g" "$TMP/s2.$_g.x"
+  assert_eq "0" "$status" "a demote path for another gate: the run imports and passes"
+  lane_logs "$P"
+  assert_contains "$TMP/lane.log" "^stub godot args: --headless --path $P --import$" "it imports as usual"
+  assert_missing "$TMP/s2.$_g.x" "no demote file is written"
+  # preflight C6: no STUDIO_GATE_DEMOTE at all (set -u)
+  P="$(fresh_project lane-unset)"; with_gut "$P"
+  lane_test "$P" "$_g"
+  kill "$_g" 2>/dev/null; wait "$_g" 2>/dev/null
+  assert_eq "0" "$status" "STUDIO_GATE_DEMOTE unset: the run imports and passes, never exit 2"
+  lane_logs "$P"
+  assert_contains "$TMP/lane.log" "^stub godot args: --headless --path $P --import$" "it imports as usual"
+}
+
 # ---- #71 R1: the project's engine args (test_engine_args) ----
 
 # ea_config DIR JSON — DIR's .studio/config.json, fresh reports.
@@ -1296,4 +1358,5 @@ run_tests test_gate_run_cap_stops_a_long_run test_gate_run_cap_excludes_lock_wai
   test_lint_reports_findings test_lint_with_no_scripts_is_clean \
   test_test_engine_args_reach_godot test_test_engine_args_absent_is_golden test_test_engine_args_refuses_bad_chars \
   test_test_engine_args_allowlist test_test_engine_args_odd_spacing test_test_engine_args_run_fallback \
-  test_test_engine_args_not_for_import test_test_config_keys_still_read
+  test_test_engine_args_not_for_import test_test_config_keys_still_read \
+  test_test_demotes_an_import_in_the_short_lane test_test_stale_demote_env_imports
