@@ -65,6 +65,44 @@ test_autopilot_contract() {
   assert_contains "$S" 'python3 -c' "max_lanes is merged into config.json (I3)"
   assert_contains "$S" 'every other key is kept' "the merge preserves merge_command (I3)"
   assert_contains "$S" 'an integer from 0 to 8' "max_lanes uses the runner's range (I3)"
+  # #71 T5: the autopilot merges the three short-lane keys.
+  assert_contains "$S" 'one .AskUserQuestion. with two questions' "the question keeps its two questions (#71)"
+  assert_contains "$S" 'three for a .godot4. project' "a godot4 project gets a third question (#71)"
+  assert_contains "$S" 'short lane' "the short-lane question is named (#71)"
+  assert_contains "$S" '"gate_short_lane": "on"' "on writes gate_short_lane (#71)"
+  assert_contains "$S" '"user_dir": "per-worktree"' "on writes user_dir (#71)"
+  assert_contains "$S" '"test_engine_args": "--fixed-fps 60"' "on writes test_engine_args (#71)"
+  assert_contains "$S" "' <n> <on|off>" "the one-liner takes the lane count and on|off (#71)"
+  assert_contains "$S" 'studio-gate vitest -- npx vitest run --minWorkers=1 --maxWorkers=2' "the targeted vitest form is a constraint (#71)"
+  if python3 -c 'import json' >/dev/null 2>&1; then
+    _pf="$TMP/ap-fx"; rm -rf "$_pf"; mkdir -p "$_pf/.studio"
+    _prog="$(sed -n "s/.*python3 -c '\([^']*\)' <n> <on|off>.*/\1/p" "$S" | head -n 1)"
+    if [ -n "$_prog" ]; then _pass "the one-liner program is extractable (#71)"; else _fail "the one-liner program is extractable (#71)"; fi
+    printf '%s\n' '{"merge_command": "./merge.sh", "overnight": {"session_minutes": 90}}' > "$_pf/.studio/config.json"
+    ( cd "$_pf" && python3 -c "$_prog" 2 on )
+    cp "$_pf/.studio/config.json" "$_pf/a.json"
+    _got="$(python3 -c 'import json,sys; c=json.load(open(sys.argv[1])); o=c["overnight"]; print(c["merge_command"], o["session_minutes"], o["max_lanes"], c["test_engine_args"], c["user_dir"], c["gate_short_lane"])' "$_pf/a.json")"
+    assert_eq "./merge.sh 90 2 --fixed-fps 60 per-worktree on" "$_got" "(a) on merges the keys and keeps the rest (#71)"
+    ( cd "$_pf" && python3 -c "$_prog" 2 on )
+    if cmp -s "$_pf/a.json" "$_pf/.studio/config.json"; then _pass "(b) on twice is byte-identical (#71)"; else _fail "(b) on twice is byte-identical (#71)"; fi
+    printf '%s\n' '{"merge_command": "./merge.sh", "overnight": {"session_minutes": 90}}' > "$_pf/.studio/config.json"
+    ( cd "$_pf" && python3 -c "$_prog" 2 off )
+    cp "$_pf/.studio/config.json" "$_pf/c.json"
+    ( cd "$_pf" && python3 -c "$_prog" 2 off )
+    if cmp -s "$_pf/c.json" "$_pf/.studio/config.json"; then _pass "(c) off twice is byte-identical (#71)"; else _fail "(c) off twice is byte-identical (#71)"; fi
+    _got="$(python3 -c 'import json,sys; c=json.load(open(sys.argv[1])); print(sorted(k for k in ("test_engine_args","user_dir","gate_short_lane") if k in c), c["overnight"]["max_lanes"])' "$_pf/c.json")"
+    assert_eq "[] 2" "$_got" "(c) off writes none of the three keys (#71)"
+    # A5: off equals the pre-#71 one-liner's output on the same input.
+    printf '%s\n' '{"merge_command": "./merge.sh", "overnight": {"session_minutes": 90}}' > "$_pf/.studio/config.json"
+    ( cd "$_pf" && python3 -c 'import json,sys; p=".studio/config.json"; c=json.load(open(p)); c.setdefault("overnight", {})["max_lanes"]=int(sys.argv[1]); open(p,"w").write(json.dumps(c, indent=2)+"\n")' 2 )
+    if cmp -s "$_pf/c.json" "$_pf/.studio/config.json"; then _pass "(c) off equals the pre-#71 one-liner's output (#71 A5)"; else _fail "(c) off equals the pre-#71 one-liner's output (#71 A5)"; fi
+    rm -f "$_pf/.studio/config.json"
+    ( cd "$_pf" && python3 -c "$_prog" 0 on )
+    _got="$(python3 -c 'import json,sys; c=json.load(open(sys.argv[1])); print(c["overnight"]["max_lanes"], c["gate_short_lane"], c["user_dir"], c["test_engine_args"])' "$_pf/.studio/config.json")"
+    assert_eq "0 on per-worktree --fixed-fps 60" "$_got" "(d) no file and 0 on writes the file and the keys (#71)"
+  else
+    _fail "python3 is needed for the autopilot merge"
+  fi
   assert_contains "$S" 'git add docs/runs/<slug>.md .studio/config.json' "config.json is committed on run/<slug> (I3)"
   assert_contains "$S" 'When .next. exits non-zero' "a failing next stops the loop"
   assert_contains "$S" 'git worktree add <path> run/<slug>. when the branch exists' "an existing run branch gets a worktree"
