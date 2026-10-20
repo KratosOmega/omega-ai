@@ -387,6 +387,43 @@ test_gate_scrub_keeps_failing_status() {
   gs_run "$W" "$LEAK; exit 5"
   assert_eq 5 "$rc" "a failing status is kept"
   assert_eq "" "$(git -C "$W" diff -- project.godot)" "and the lines are removed"
+  assert_eq "$LEAKMSG" "$(cat "$TMP/gs.err")" "with the stderr copy"
+  _sr="$(cd "$W" && sh "$BIN/studio-state" root 2>/dev/null)"
+  assert_eq "5" "$(tail -n 1 "$_sr/.studio/gate.times" 2>/dev/null | awk '{ print $4 }')" "and the row rc stays 5"
+}
+
+# gs_ended CMD ENV… — a leaking CMD ended by the cap (124) or TERM (143): still scrubbed, rc kept.
+test_gate_scrub_signal_and_cap_ended() {
+  UR="$TMP/ud-gs7"; R="$(iso_repo gs7)"; W="$(iso_wt "$R" gs7-wt)"
+  rc=0; ( cd "$W" && STUDIO_GATE_MINUTES=1 STUDIO_GATE_SECONDS=1 STUDIO_GATE_LOADAVG=0 OMEGA_STUDIO_ROOT="$STUDIO" STUDIO_GODOT_USER_ROOT="$UR" \
+      sh "$GATE" x -- sh -c "$LEAK; sleep 30" ) > /dev/null 2> "$TMP/gs.err" || rc=$?
+  assert_eq 124 "$rc" "a cap-ended run keeps 124"
+  assert_eq "" "$(git -C "$W" diff -- project.godot)" "and its lines are removed"
+  assert_contains "$TMP/gs.err" "this run is not trusted" "and the copy is said"
+  UR="$TMP/ud-gs8"; R="$(iso_repo gs8)"; W="$(iso_wt "$R" gs8-wt)"
+  rm -f "$TMP/gs8.pid"
+  ( cd "$W" && STUDIO_GATE_LOADAVG=0 OMEGA_STUDIO_ROOT="$STUDIO" STUDIO_GODOT_USER_ROOT="$UR" \
+      sh -c 'echo $$ > "$0"; exec "$@"' "$TMP/gs8.pid" sh "$GATE" x -- sh -c "$LEAK; sleep 30" > /dev/null 2> "$TMP/gs.err"; echo $? > "$TMP/gs8.rc" ) &
+  _i=0
+  while [ "$_i" -lt 100 ] && ! grep -q "$USE" "$W/project.godot" 2>/dev/null; do sleep 0.1; _i=$((_i + 1)); done
+  kill -TERM "$(cat "$TMP/gs8.pid")" 2>/dev/null
+  _i=0
+  while [ "$_i" -lt 150 ] && [ ! -s "$TMP/gs8.rc" ]; do sleep 0.1; _i=$((_i + 1)); done
+  assert_eq 143 "$(cat "$TMP/gs8.rc" 2>/dev/null)" "a TERM-ended run keeps 143"
+  assert_eq "" "$(git -C "$W" diff -- project.godot)" "and its lines are removed"
+}
+
+test_gate_scrub_skips_node_not_short() {
+  UR="$TMP/ud-gs9"; R="$(iso_repo gs9)"; W="$(iso_wt "$R" gs9-wt)"
+  mkdir -p "$W/web-tools/node_modules/.bin" "$W/web-tools/tests"
+  printf 'test("a", () => {})\n' > "$W/web-tools/tests/a.test.ts"
+  printf '#!/bin/sh\ncd .. && %s\n' "$LEAK" > "$W/web-tools/node_modules/.bin/vitest"
+  chmod +x "$W/web-tools/node_modules/.bin/vitest"
+  rc=0; ( cd "$W/web-tools" && STUDIO_GATE_LOADAVG=0 OMEGA_STUDIO_ROOT="$STUDIO" STUDIO_GODOT_USER_ROOT="$UR" \
+      sh "$GATE" vitest -- node_modules/.bin/vitest run --minWorkers=1 --maxWorkers=2 tests/a.test.ts ) > /dev/null 2> "$TMP/gs.err" || rc=$?
+  assert_eq 0 "$rc" "a node run in the main class (lane off) is not scrubbed: exit 0"
+  assert_contains "$W/project.godot" "$USE" "the lines remain"
+  assert_eq "" "$(cat "$TMP/gs.err")" "and nothing is said"
 }
 
 test_gate_scrub_leaves_head_keys() {
@@ -404,6 +441,7 @@ test_gate_scrub_lane_off_and_main_untouched() {
   gs_run "$W" "$LEAK"
   assert_eq 0 "$rc" "no user_dir key: exit 0"
   assert_contains "$W/project.godot" "$USE" "lines kept"
+  assert_eq "" "$(cat "$TMP/gs.err")" "and nothing is said (A5)"
   mkdir -p "$R/.studio"; printf '{"engine": "godot4", "user_dir": "per-worktree"}\n' > "$R/.studio/config.json"
   gs_run "$R" "$LEAK"
   assert_eq 0 "$rc" "the main checkout: exit 0"
@@ -433,6 +471,7 @@ test_gate_scrub_error_fails_closed() {
   assert_eq "gate: the project.godot leak check failed (isolate --scrub exit 1) — this run is not trusted" "$(cat "$TMP/gs.err")" "with the exact copy"
 }
 
+# exclusive-scan: test_gate_scrub_signal_and_cap_ended out (static) 1 s cap and event polls on a file, no load-bound timing
 # exclusive-scan: test_isolate_sweep_dead_old_only out (static) no clock; mtimes are set with touch -t
 # exclusive-scan: test_isolate_sweep_daily_stamp out (static) no clock; mtimes are set with touch -t
 run_tests test_isolate_writes_in_opted_linked_worktree test_isolate_never_in_main_checkout \
@@ -444,4 +483,5 @@ run_tests test_isolate_writes_in_opted_linked_worktree test_isolate_never_in_mai
   test_isolate_user_root_production_default test_dispatch_has_verb test_studio_test_calls_isolate test_cfg_parity \
   test_isolate_scrub_subdir_projects test_isolate_exclude_with_spaces test_studio_test_stderr_unchanged_when_not_opted \
   test_gate_scrub_removes_and_fails test_gate_scrub_keeps_failing_status test_gate_scrub_leaves_head_keys \
-  test_gate_scrub_lane_off_and_main_untouched test_gate_scrub_skips_node_short test_gate_scrub_error_fails_closed
+  test_gate_scrub_lane_off_and_main_untouched test_gate_scrub_skips_node_short test_gate_scrub_error_fails_closed \
+  test_gate_scrub_signal_and_cap_ended test_gate_scrub_skips_node_not_short

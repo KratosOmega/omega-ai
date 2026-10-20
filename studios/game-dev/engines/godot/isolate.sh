@@ -90,14 +90,16 @@ do_scrub() {
     git show "HEAD:./$_is_p" > "$_is_hf" 2>/dev/null || continue
     _is_rm="$(lanes_awk list "$_is_hf" "$_is_p")"
     [ -n "$_is_rm" ] || continue
-    if lanes_awk filter "$_is_hf" "$_is_p" > "$_is_nf" && cat "$_is_nf" > "$_is_p"; then
+    # temp file beside it, then mv: an interrupt never leaves project.godot half-written
+    if lanes_awk filter "$_is_hf" "$_is_p" > "$_is_nf" && _is_tp="$(mktemp "$_is_p.XXXXXX")" \
+        && cp -p "$_is_p" "$_is_tp" && cat "$_is_nf" > "$_is_tp" && mv -f "$_is_tp" "$_is_p"; then
       printf '%s\n' "$_is_rm" >> "$_is_ks"
     else
-      _is_err=1
+      _is_err=1; rm -f "${_is_tp:-}"
     fi
   done < "$_is_ls"
   _is_keys="$(keys_of < "$_is_ks")"
-  rm -f "$_is_hf" "$_is_nf" "$_is_ks" "$_is_ls"
+  rm -f "$_is_hf" "$_is_nf" "$_is_ks" "$_is_ls" "${_is_tp:-}"
   [ "$_is_err" = 0 ] || return 1
   [ -n "$_is_keys" ] || return 0
   printf '%s\n' "$_is_keys"

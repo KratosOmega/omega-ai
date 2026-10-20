@@ -401,10 +401,13 @@ run_once() {
 
 # ---- leak scrub (T10) ----
 # gate_scrub — O7: after every run in an opted-in linked worktree (isolate
-# decides), except a node short check, remove the lanes lines project.godot
-# gained and fail a passing run (exit 1; a failing status is kept).
+# decides), except a node check (either class), remove the lanes lines
+# project.godot gained and fail a passing run (exit 1; a failing status is
+# kept). A node command never launches Godot, and Godot beside Godot in one
+# worktree is refused at admission, so a scrub never overlaps a live Godot's
+# save() of project.godot (spec 8 amendment: "except a node check").
 gate_scrub() {
-  [ "$CLS" = short ] && [ "$KIND" = node ] && return 0
+  [ "$KIND" = node ] && return 0
   ( cd "$WT" 2>/dev/null && sh "$SELF_DIR/studio-dispatch" --has isolate ) || return 0
   _gs_out="$(cd "$WT" && sh "$SELF_DIR/studio-dispatch" isolate --scrub 2>/dev/null)"; _gs_rc=$?
   case "$_gs_rc" in
