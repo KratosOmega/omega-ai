@@ -165,11 +165,28 @@ Vertical slice first; polish, variants and content wait.
 
 ## 6. Self-review, then gate
 
+**Plan-time probes.** When the plan defines a measurement of engine or
+tool behaviour, and a later task pins numbers from it or branches on its
+result, run it now, before the approval stop:
+
+- Run it in the planning checkout, through the gated forms
+  (`studio-gate godot -- <Godot command>`, `studio-test --file <test file>`).
+- Put the result in the plan as a measured input: the command and its output.
+- Restore any tracked file the probe regenerates, or commit it as an input.
+- The execute-time task re-measures and must equal the plan's values (a
+  mismatch is a BLOCK); it never discovers them.
+- Where the plan models the behaviour, port the engine's own algorithm; do
+  not fit a formula.
+
+A probe that cannot run headless at plan time (it needs a window or the
+Godot MCP) stays a run task, and the plan states what happens for each
+possible outcome.
+
 Run the writing-plans self-review (spec coverage, placeholder scan, name
 consistency). Additionally check: every acceptance criterion in the spec maps
 to a task; every `Verify: unit` task names a test file; every
 `Verify: playtest` task states its playtest item; every task has
-a `Spec:` line and a `Review:` line. Then run `studio-brief validate <plan path>`
+a `Spec:` line and a `Review:` line; every plan-time probe has a measured-input block, or is a run task with every outcome stated. Then run `studio-brief validate <plan path>`
 and fix the plan until it exits 0: it checks every task's `Spec:` items (the
 file, the range, the heading) the way execute's brief will read them. It also fails on a bare Godot script/import run anywhere in the plan, naming the line and the gated form to write.
 
