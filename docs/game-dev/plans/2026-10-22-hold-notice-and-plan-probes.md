@@ -42,9 +42,9 @@ TESTS_ONLY="<names>" sh "$W/tests/studio_test.sh"     # then: dash "$W/tests/stu
 - Marker: `NOTICE_PREFIX = "studio: [notify only] "`, in `CLI` next to `PREFIX`. It is the only way a
   comment reaches the request issue.
 - Notify-only tail (exact): `Notify only: reply with one short line. Run no command; never resume, stop, say to or hold a story.`
-- Expiry test: `why` matches `r" \(held \d+h\d+m, no reply\)$"`. The runner's `hm()` prints `%dh%dm`.
+- Expiry test: `why` matches `r" \(held \d+h\d+m, no reply\)\Z"`. The runner's `hm()` prints `%dh%dm`.
 - Terminal commands use `--run <os.path.basename(st["run_dir"])>`. A slug works only inside a project.
-  The registry branch (`overnight-channel.sh:143`) matches the basename alone.
+  The registry branch (`overnight-channel.sh:149`) matches the basename alone.
 - Banner kind: `"notice:%s:%s" % (st["key"], st["pending"]["offset"])`, through `ctx.notify`.
 - State key `st["held"]`: a list of story ids. Every read is `st.get("held") or []`, because states
   saved before this change have no such key (AC12). Do not add it to `state.new_run_state`. That file
@@ -53,7 +53,7 @@ TESTS_ONLY="<names>" sh "$W/tests/studio_test.sh"     # then: dash "$W/tests/stu
 - Implementers commit only their own files: `git commit -m … -- <paths>`.
 - **#83 S5 overlap** (merges later, edits M `STATUS` :14-16, `MT/test_mirror_runs.py`:290-305, README
   :225 and `overnight-events.md`): do not edit those lines or that file. Our only edits in
-  `test_mirror_runs.py` are the assertion at :331 and the count at :547.
+  `test_mirror_runs.py` are the assertion at :334 and the count at :548.
 - No section of `PL` is renumbered (S5 cites §7).
 
 ## Review Focus
@@ -79,23 +79,24 @@ TESTS_ONLY="<names>" sh "$W/tests/studio_test.sh"     # then: dash "$W/tests/stu
 | Assumption (brief) | Verdict | Evidence |
 |---|---|---|
 | Expiry why ends `(held <h>m, no reply)` | **Corrected**: `(held <h>h<m>m, no reply)`, e.g. `(held 8h0m, no reply)` | `studio-overnight`:957 `hm()` `%dh%dm`; :982 |
-| Expiry is a `stopped` story_state in both modes | True. Lanes write `stopped <ENDING>`. Single-plan write_report writes `stopped <ending>`. state_event takes why from `"stopped "*` | `overnight-lanes.sh`:1158-1161; `studio-overnight`:1514-1518, :851-861 |
+| Expiry is a `stopped` story_state in both modes | True. Lanes write `stopped <ENDING>`. Single-plan write_report writes `stopped <ending>`. state_event takes why from `"stopped "*` | `overnight-lanes.sh`:1155-1158; `studio-overnight`:1514-1518, :851-861 |
 | No separate expiry event | True | `studio-overnight`:982 sets ENDING only |
 | Single-plan held already goes to the Run issue | True (`single` → `tgt="run"`, blocked is not terminal) | M:46-48, :63-66 |
 | Manifest Run issue gets nothing on hold | True | M:62-72 |
-| `--run` takes the full run name | **Refined**: inside a project the slug or the basename works. Outside a project, the registry branch matches only the basename, so the notice uses the basename | `overnight-channel.sh`:109-112, :143; `overnight-runs.sh`:54 |
+| `--run` takes the full run name | **Refined**: inside a project the slug or the basename works. Outside a project, the registry branch matches only the basename, so the notice uses the basename | `overnight-channel.sh`:109-112, :149; `overnight-runs.sh`:54 |
 | Verb syntax `say <story> --run <run> -- <text>` | True; chan_args takes options in any order; `-` is a positional | `overnight-channel.sh`:76-77, :85-98 |
 | Writes are once per event, survive restarts | True: `pending.writes` is fixed at first compute; `done[]` is saved after each write; offset after the event | M:480-492, :475-477 |
 | Bridge comments use the operator token, so they wake an assigned agent | True (probe 7) | spec 2026-10-03 :808-812; README:238-240 |
-| The kickoff notice wakes the kickoff agent | **Falsified for queued kickoffs**: a queued kickoff (#72) is **unassigned**, so a comment wakes no one. The design keeps the notice (a record, plus a wake when assigned) and states the limit. The operator must decide about waking queued kickoffs | spec 2026-10-19 :10-16; M:658-660 (`is_hands_off(req_row)`) |
+| The kickoff notice wakes the kickoff agent | **Falsified for queued kickoffs**: a queued kickoff (#72) is **unassigned**, so a comment wakes no one. The design keeps the notice (a record, plus a wake when assigned) and states the limit. The operator must decide about waking queued kickoffs | spec 2026-10-19 :10-16; M:656-657 (`is_hands_off(req_row)`) |
 | `agent-instructions.md` reaches the live agent | **Falsified**: install copies it only when it creates an agent ("exists — skipped"). The guard text therefore also goes in `agent-context.md`, which `omega-multica-agent` appends to every session | `integrations/multica/install.sh`:368-376; `bin/omega-multica-agent`:70-77; README:272 |
 | Who reads `multica-deny.txt` | `claude-multica` (mode 2) and `omega-multica-agent` (mode 3), both Multica agent runtimes. The operator's terminal (mode 1) does not. The new rules remove no operator verb | `bin/wrapper-lib.sh`:9, :17-30; README:13-14 |
-| Operator-only filter covers agent `/resume` | Partly. Agent `/stop` and agent `/hold` (with the operator's id) are pinned, but `/resume` and `/say` are not. T3 adds them | `MT/test_commands.py`:217-221, :506-510; `bridge/commands.py`:166-168 |
+| Operator-only filter covers agent `/resume` | Partly. Agent `/stop` and agent `/hold` (with the operator's id) are pinned, but `/resume` and `/say` are not. T3 adds them | `MT/test_commands.py`:217-221, :506-510; `bridge/commands.py`:139-141 |
 | `notify` is once per outage | True; `notified` resets on every ok poll. A per-event kind makes it per event | `bridge/service.py`:80-90, :139 |
 | Commands are never read on the request issue | True; only the Run and story issues are polled | `bridge/commands.py`:101-111 |
 | `run_all.sh` takes the heavy-suite lock | **False**: there is no lock code. Take it by hand | `tests/run_all.sh` (grep `lock`: only comments about jobs) |
 | Plan skill §6 starts at L166 and the approval stop is `Reply **approve**` | True (L166 heading, L181 stop, L168-172 self-review list) | `PL`:166-182 |
 | Existing tests are untouched by the new Run writes | **False**: measured, see *Measured inputs* | probe below |
+| Retried pending recomputes `superseded` identically | **Refuted** (spec falsifier 2026-10-22): lines appended between a failed poll and its retry can flip it; stored in pending instead (T2) | falsify-report.md §1 |
 
 ## Measured inputs
 
@@ -152,10 +153,10 @@ final review): T3, T4, T5. A final whole-branch Opus review and the full gate (b
 - `Cli.add_notice(self, ident: str, text: str) -> dict`: if `text` does not start with
   `NOTICE_PREFIX`, raise `ValueError`. Otherwise run `["issue","comment","add",ident,"--content-stdin"]`
   with `stdin=self._clean(text)`. It has **no** `_guard`. Its docstring names the carve-out and cites
-  the spec, as `create_wakeup`'s does (:270-273).
+  the spec, as `create_wakeup`'s does (:270-273). Also update `create_wakeup`'s docstring (multica_cli.py:272-273): it is no longer the bridge's only write on a request issue; `add_notice` is the other.
 - `notice.NOTICE_TAIL: str` (the exact tail in Global Constraints).
 - `notice.until_line(until: str) -> str`: `"Until <local> (<until> UTC); then it stops."`, or
-  `"Until <until>; then it stops."` when `state.parse_ts` raises `ValueError`/`TypeError`/`AttributeError`.
+  `"Until <until or ?>; then it stops."` when `state.parse_ts` raises `ValueError`/`TypeError`/`AttributeError`.
 - `notice.is_expiry(why) -> bool`: the regex from Global Constraints, on `str(why or "")`.
 - `notice.held_after(held: list, ev: dict) -> list`: a new list. For a `story_state` that is `held`, the
   story is added if absent. For any other state it is removed. A non-`story_state` event leaves the list
@@ -256,7 +257,9 @@ def test_add_notice_bypasses_guard_but_checks_marker(self):
 - [ ] **Step 3: Implement `N` and the two `CLI` additions** to the interfaces above. `N` imports
   `state` (for `parse_ts`) and `multica_cli` (for `NOTICE_PREFIX`), and nothing else from the bridge.
   It reads no files and makes no calls.
-- [ ] **Step 4: Run Step 2's command, then `sh "$W/integrations/multica/tests/run.sh"`.** Expected:
+- [ ] **Step 4: Run Step 2's command, then the Python suite only:
+  `( cd "$W/integrations/multica/tests" && PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 -m unittest discover -s . -p 'test_*.py' -t . )`
+  (T3/T4 sh tests may be mid red phase; the whole run.sh runs in the final gate).** Expected:
   `test_notice` OK, the suite green, and `test_cli.test_request_issue_writes_forbidden` unchanged.
 - [ ] **Step 5: Commit.** `git commit -m "feat(multica): notice texts and the notify-only CLI door (#85)" -- integrations/multica/bridge/notice.py integrations/multica/bridge/multica_cli.py integrations/multica/tests/test_notice.py`
 
@@ -266,8 +269,8 @@ def test_add_notice_bypasses_guard_but_checks_marker(self):
 
 **Touches:** `M` (`event_writes` story_state branch :62-72, plus a new `notice_writes` beside it;
 `post_notice` after `note()` :260-271; `_do_write` :386-391; `apply_events` :454-477; `_apply_one`
-:480-485), `MT/test_mirror_hold_notice.py` (create), and the existing-test assertion updates that
-Probe 1 predicts: `MT/test_mirror_runs.py` only at :331 and :547, and `MT/test_mirror_status.py` only at :394.
+:480-485; `_apply_one` skip loop :501-506), `MT/test_mirror_hold_notice.py` (create), and the existing-test assertion updates that
+Probe 1 predicts: `MT/test_mirror_runs.py` only at :334 and :548, and `MT/test_mirror_status.py` only at :394.
 
 **Interfaces:**
 - Consumes (T1): `notice.*`, `mc.NOTICE_PREFIX`, `Cli.add_notice`.
@@ -298,8 +301,15 @@ Probe 1 predicts: `MT/test_mirror_runs.py` only at :331 and :547, and `MT/test_m
     it to `event_writes` only when it builds a new `pending`. After `_apply_one` returns True:
     `st["held"] = notice.held_after(st.get("held") or [], ev)`, **except for a superseded hold**,
     which never joins the set. On `run_ended`, `st["held"] = []`. Both happen before the existing
-    offset save. A retried pending event recomputes `superseded` from the same, still-unread lines,
-    so it gets the same value.
+    offset save. `_apply_one` records the value in the new pending (`p["superseded"] = superseded`)
+    and the held-set step reads `st["pending"]["superseded"]` (before `st["pending"] = None`), never the
+    recomputed value: lines appended between a failed poll and its retry can turn a live hold superseded,
+    and its blocked/kickoff/banner writes are already fixed. Test: `test_superseded_flag_kept_across_retry`
+    (A held, fault the Run notice transient once, poll (raises); append A running; poll twice: Run
+    statuses `["in_progress","blocked","in_progress"]`).
+  - `_apply_one` skip loop: retry `w[0] in ("status", "kickoff", "banner")` not yet done (post_notice
+    already swallows PermanentError; notify cannot raise one). Test: `test_permanent_comment_failure_still_notifies`
+    (fault story `issue comment add` "Invalid request" count 3, A held, poll x3: `banners()` has 1, `kick(req)` has 1).
 
 - [ ] **Step 1: Write `MT/test_mirror_hold_notice.py` (failing).** `class HoldNoticeTest(MirrorCase)`.
   Its `setUp` sets `TZ=PST8PDT` the way T1 does. Its helper is `start(events=(), request=True,
@@ -317,29 +327,29 @@ Probe 1 predicts: `MT/test_mirror_runs.py` only at :331 and :547, and `MT/test_m
 | `test_two_holds_one_blocked_last_resume_unblocks` (AC2) | A held; B held; poll; A running; poll; B running; poll | Run statuses: one `blocked`; nothing new after the A resume; `in_progress` after the B resume. Two hold notices on the Run issue |
 | `test_run_end_while_held_ends_done` (AC3) | A held; run_ended; poll | Run statuses end `["blocked","done"]`, with no `in_progress` after `blocked`; the saved state (or the retired one) has `held == []` |
 | `test_kickoff_notice_once_per_hold_and_expiry` (AC4, AC7) | A held; poll; poll; A stopped why=X; poll | `kick(req)` == `[notice.kickoff_text(hold_body(...)), notice.kickoff_text(notice.expiry_body("A", X))]`; Run comments include `"studio: " + expiry_body("A", X)` |
-| `test_no_request_issue_no_kickoff_notice` (AC4) | `request=False`; A held; A stopped why=X; poll | no `issue comment add` whose argv[3] is outside the Run and story issues; `banners()` has 2 |
+| `test_no_request_issue_no_kickoff_notice` (AC4) | `request=False`; A held; poll; A stopped why=X; poll | no `issue comment add` whose argv[3] is outside the Run and story issues; `banners()` has 2 |
 | `test_request_issue_only_ever_gets_notices` (AC6) | A running; unit_started/ended; A held; A running; B held; B stopped why=X; message_queued; run_ended; poll after each | no `issue status` call with argv[2]==req; every `issue comment add` with argv[3]==req has stdin starting `studio: [notify only] ` (3 of them); `self.board.wakeups(req)` is what `ensure_end_wake` made (skipped for the assigned sub-issue case: `[]`) |
-| `test_operator_and_halt_stops_post_no_expiry_notice` (AC7) | A held; A stopped why="by operator"; B held; B stopped why="stopped by user (was held: w)"; poll | `kick(req)` holds only the two hold notices; `banners()` has 2 |
+| `test_operator_and_halt_stops_post_no_expiry_notice` (AC7) | A held; poll; A stopped why="by operator"; poll; B held; poll; B stopped why="stopped by user (was held: w)"; poll | `kick(req)` holds only the two hold notices; `banners()` has 2 |
 | `test_hold_notice_text_exact` (AC8) | A held why="stop: need art" until=U | the Run comment equals the spec's four lines (built by hand in the test, not by calling `notice`), with `--run overnight-20261003-2214` and A's real identifier |
 | `test_single_plan_adds_kickoff_and_banner_only` (AC9) | mode single; `-` running; `-` held; `-` landed; run_ended | Run statuses `["in_progress","blocked","done"]` (as in `test_single_plan_routes_to_run_issue`); Run comments contain no `the run is held:` line; `kick(req)` == `[kickoff_text(hold_body("-", …, RI, base))]`; `banners()` has 1 |
 | `test_banner_once_per_event_across_restart` (AC10) | A held; poll; then `self.ctx = state.Ctx(…same…)`, poll twice | `banners()` has 1, its kind `"notice:%s:%d" % (key, offset of the held line)`; `kick(req)` still has 1 |
 | `test_superseded_hold_no_kickoff_no_banner` (AC11) | A held; A running (one poll reads both) | `kick(req) == []`, `banners() == []`; Run statuses `["in_progress"]` only; the Run notice is posted. Second fixture: A held, B held, A running in one read: Run statuses gain exactly one `blocked`, and the kickoff has B's notice only |
 | `test_state_without_held_key_polls` (AC12) | poll once; `st.pop("held")` from the saved state; A held; poll | no exception; Run `blocked` |
-| `test_routed_story_notice_says_use_terminal` (RF4) | fault `issue create` for story A (as `test_mirror_runs.py`:700-715); A held | the Run comment contains `Multica: A has no issue — use the terminal.` |
+| `test_routed_story_notice_says_use_terminal` (RF4) | fault `issue create` for story A (as `test_mirror_runs.py`:700-715); A held | the Run comment contains `Multica: A has no issue — use the terminal.`; Run statuses include `blocked` (pins the AC12 change on purpose) |
 | `test_hands_off_run_issue_still_notifies_kickoff` (RF1) | `self.board.assign(RI, "agent", "ag-9")`; poll; A held; poll | no new comment on RI; `kick(req)` has 1; `banners()` has 1 |
 | `test_kickoff_notice_permanent_error_dropped` (RF3) | fault `issue comment add` exit 1 `Invalid request` only for argv[3]==req (the stub's `fault` match; read `bridgetest.Board.fault` :153-162); A held; poll | `offset` == file size after one poll; A's story comment posted; `banners()` has 1; an error is logged |
 
 - [ ] **Step 2: Run it.** `( cd "$W/integrations/multica/tests" && /usr/bin/python3 -m unittest test_mirror_hold_notice -v )`.
   Expected: FAIL (no run status / kickoff writes).
-- [ ] **Step 3: Implement the Interfaces block in `M`.** Add `from . import notice`. Leave `STATUS` (:14-16) untouched.
+- [ ] **Step 3: Implement the Interfaces block in `M`.** Import as `from . import notice, state, studio` (S5 merge). Leave `STATUS` (:14-16) untouched.
 - [ ] **Step 4: Run Step 2's command.** Expected: OK.
-- [ ] **Step 5: Run the whole suite** (`sh "$W/integrations/multica/tests/run.sh"`, in the background).
+- [ ] **Step 5: Run the Python suite only** (`( cd "$W/integrations/multica/tests" && PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 -m unittest discover -s . -p 'test_*.py' -t . )`, in the background; T3/T4 sh tests may be mid red phase, and the whole run.sh runs in the final gate).
   Expected: failures in **exactly** the tests listed in Probe 1, and in no others. Any other failure is
   a BLOCK.
 - [ ] **Step 6: Update those assertions.** These are the only edits allowed:
-  - `test_mirror_runs.py:331` (`test_event_mapping_rows`): filter the story's status calls with
+  - `test_mirror_runs.py:334` (`test_event_mapping_rows`): filter the story's status calls with
     `[(c[2], c[3]) for c in new_s if c[2] == row]`. Do not touch the rows table (:290-305, S5's).
-  - `test_mirror_runs.py:547` (`test_sanitizer_on_relayed_fields`): `2` → `3`. The Run-issue notice
+  - `test_mirror_runs.py:548` (`test_sanitizer_on_relayed_fields`): `2` → `3`. The Run-issue notice
     relays the bad why too. Keep the three `assertNotIn`s.
   - `test_mirror_status.py:394` (`test_timed_out_write_found_applied_counts_success`): the retry
     poll now also writes the Run issue's `blocked`. Assert
@@ -381,10 +391,10 @@ Probe 1 predicts: `MT/test_mirror_runs.py` only at :331 and :547, and `MT/test_m
   - `multica-deny.txt`: append a `# #85: …` comment line ("a woken agent never rules on a hold; the
     operator's terminal does not read this file"), then the five rules, in the order above.
   - `agent-context.md`: after the last line, add
-    `` - A comment starting `studio: [notify only]` is a notice for the operator: reply on that issue with one short line that repeats its first line, then stop. Run no command; never resume, stop, say to or hold a story. ``
+    `` - A comment starting `studio: [notify only]` is a notice for the operator: reply on that issue with one short line that repeats its first line without the `studio: [notify only] ` marker, then stop. Run no command; never resume, stop, say to or hold a story. ``
   - `agent-instructions.md`: the same bullet, before the last bullet (`- Never change the status …`).
     Do not rewrap the neighbouring lines: `readme_test.sh`:155-159 pins two of them.
-- [ ] **Step 4: Re-run Step 2's commands.** Then run the whole `wrappers_test.sh` and `readme_test.sh`. Expected: green.
+- [ ] **Step 4: Re-run Step 2's commands.** Then run the whole `wrappers_test.sh`; run `readme_test.sh` only after T4 has committed, or judge only the T3-named tests. Expected: green.
 - [ ] **Step 5: Commit** those five paths.
 
 ---
@@ -399,11 +409,11 @@ Probe 1 predicts: `MT/test_mirror_runs.py` only at :331 and :547, and `MT/test_m
   and `assert_contains "$SPEC" 'Exception (#85)'`. Define `SPEC` the way the file defines its other paths.
   Run `sh "$W/integrations/multica/tests/readme_test.sh"`. Expected: FAIL.
 - [ ] **Step 2: Edit the docs.**
-  - README step 3, **Steer (phone)** (:133-135). Add: "A hold also turns the Run issue Blocked and
+  - README step 3, **Steer (phone)** (:132-135). Add: "A hold also turns the Run issue Blocked and
     posts a notice there and on your request issue; the kickoff agent's one-line reply is what reaches
     your phone."
-  - README *What the board shows*: a bullet after the Run-issue status bullet (:228-229), not inside
-    the table. It names the notice contents, the `studio: [notify only]` marker, the macOS banner, and
+  - README *What the board shows*: a bullet after the Run-issue status bullet (:230-231), not inside
+    the table, and amend the bullet at :230 to say the Run issue also goes Blocked while any story is held (manifest runs). It names the notice contents, the `studio: [notify only]` marker, the macOS banner, and
     "An unassigned (queued) kickoff wakes no agent; the banner is then the only alert."
   - README Troubleshooting phone line (:257-258) and Known risks (:274): one clause each, pointing at
     the hold notice. Write no `Bash(` anywhere.
