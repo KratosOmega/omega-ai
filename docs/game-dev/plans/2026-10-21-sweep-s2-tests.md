@@ -45,26 +45,47 @@ The floor of a suite is its **floor count**. That is the sum, over the suite's l
 
 **Each story's LAST task:**
 
-1. Merge the latest `integration/backlog-2026-10-21` into the story branch.
+1. `git fetch`, then merge `origin/integration/backlog-2026-10-21` into the story branch (preflight fix: the origin ref, never a cached local one).
 2. Commit every code and test change. The counts file is keyed to HEAD plus the work tree's content, `tests/run_all.sh` aside.
-3. Run the affected suites through run_all:
+3. Run the affected suites through run_all, under sh and then under dash:
    ```sh
-   cd "$S" && TMPDIR="$S/tmp" TEST_SUITES="<suites>" sh "$WT/tests/run_all.sh"
+   cd "$S" && TMPDIR="$S/tmp" TEST_SUITES="<suites> harness_test" sh "$WT/tests/run_all.sh"
+   cd "$S" && TMPDIR="$S/tmp" TEST_SUITES="<suites> harness_test" TEST_SH=dash sh "$WT/tests/run_all.sh"
    ```
-   or `sh "$WT/tests/run_affected.sh" --base integration/backlog-2026-10-21`.
+   or `sh "$WT/tests/run_affected.sh" --base origin/integration/backlog-2026-10-21`, plus `TEST_SUITES=harness_test` if run_affected did not select it.
+   - `harness_test` is always in the list (preflight fix). Its exclusive-scan guard reads every suite's rulings, and run_affected selects it only when `tests/exclusive_scan.awk` changes.
    - Red **only** with `<s>: <n> assertions, floor <f> …` or `<s>: no floors row …` lines is expected.
-   - Any other red is a real failure: fix it first.
+   - Any other red is a real failure: fix it, commit, and start step 3 again.
 4. `sh "$WT/tests/run_all.sh" --update-floors`. It runs no suites, prints `<suite>: <old> → <new>` per change and exits 0.
    - It exits 2 for no counts file, `counts are from another tree — re-run the suites`, or a red suite.
+   - Any commit between step 3 and step 4 makes the counts "from another tree": re-run step 3 first (preflight fix).
 5. `git add tests/run_all.sh && git commit -m "test(run_all): floors for <story>"`.
 
 **Rules:**
 - Never hand-edit a floor.
-- On a floors-table merge conflict, take the integration side, then repeat steps 3–5. A hand-merge of counts is never correct.
+- On a floors-table merge conflict, take the integration branch's whole `tests/run_all.sh` (`git checkout origin/integration/backlog-2026-10-21 -- tests/run_all.sh`), then repeat steps 3–5. A hand-merge of counts is never correct (preflight fix).
+- On a `run_tests` list or rulings-block (`# exclusive-scan:`) conflict, keep both sides. Each story adds its names on its own new continuation line, never by editing the last line (preflight fix).
 - A new suite gets its row from `--update-floors` (shards 1). A deleted suite's row is deleted by hand: run_all exits 2 on `table names a missing suite`.
 - **The lock.** `sh tests/run_all.sh` takes `<git common dir>/heavy-suite.lock` itself, for full runs only. Never `mkdir` it by hand.
   - A session that still holds a hand-made lock runs `TEST_NO_LOCK=1 sh tests/run_all.sh`.
-  - Partial runs (`TEST_SUITES`), `TESTS_ONLY` runs (the lock keys on `TEST_SUITES` only) and `run_affected.sh` never take it.
+  - Partial runs (`TEST_SUITES`) and `run_affected.sh` never take it. The lock keys on `TEST_SUITES` only, so a `TESTS_ONLY` run without `TEST_SUITES` is a full run and does take it (preflight fix).
+  - No plan step says "under the lock" for a partial run: only full runs lock.
+
+**Build and merge order (preflight fix):** S2 → (S6, S4, S3 in parallel) → S1, after S4 → S5 → the shard rebalance.
+- S6, S4 and S3 build in parallel from the post-S2 integration branch and merge one at a time: S6, then S4, then S3.
+- S1 also builds from post-S2 (its `"$(cat <<'EOF'` golden needs Task 3's quote-aware scan) and merges after S4.
+- Each later merge redoes steps 1–5 on top of the stories already merged.
+- S6 merges before S5: S6 owns X:505 and R:100, and S5 edits only its regex lines, X:507 and R:102.
+- S5 goes last and unions the shared regions: T:328 and the T stub's action docs (with S1), and L:7 (with S3).
+
+### Merge notes (preflight fix)
+
+S2 merges first, so later stories rebase onto these regions:
+- **T stub header :84-88** (Task 7) sits inside S5's T:42-130 header edit. S5 edits only its own lines.
+- **T stub `waitafter` :366-368** (Task 7). S1 inserts its `push_ref` arm after :364; neither side reflows the other's lines.
+- **`tests/exclusive_scan.awk`** (Task 3). S1's `"$(cat <<'EOF'` golden and S3's quoted `<<EOF` strings depend on the quote-aware opener.
+- **`run_tests` lists** (T, AT, harness_test) and rulings tails. Later stories append; on a conflict, keep both sides.
+- **`tests/run_all.sh`.** S2's Task 11 seeds the floors; every later story takes the integration branch's whole file on a conflict and redoes steps 3–5.
 
 ## Review Focus
 
@@ -83,7 +104,7 @@ The floor of a suite is its **floor count**. That is the sum, over the suite's l
    - T1 `test_run_all_counts_file_written` checks its `RUN_ALL_TABLE` case: no file.
 5. **A release in a subshell, or a heredoc that blinds the scan.**
    - `lk_release` keys on `pid=$$`, and `$$` is the same in a subshell, so no `$(…)` or job may release the lock early. Test: T2 `test_run_all_lock_owner_format`: the owner exists in a parallel job and in an exclusive job, and is gone after the run.
-   - An unterminated `<<X` in the scan (from a quoted string) would silently skip the rest of the file. Test: T3 `test_exclusive_scan_heredoc_brace`: it emits a loud `H` row, and no real suite yields one.
+   - An unterminated `<<X` in the scan (from a quoted string) would silently skip the rest of the file. Test: T3 `test_exclusive_scan_heredoc_brace`: it emits a loud `H` row, and no real suite yields one. A `<<` inside quotes opens nothing; one inside `"$(…)"` still opens (preflight fix).
 
 ## Dependency waves
 
@@ -271,7 +292,7 @@ Counts file (written atomically: `$COUNTS.$$` then `mv`; body sorted):
         }' "$LOGDIR/floors.tsv" "$LOGDIR/summary.tsv" "$LOGDIR/timing.tsv" | sort
     }
     ```
-    `update_floors` runs before the `TEST_JOBS`/perl checks, from `case "${1:-}"` right after `table()`:
+    `update_floors` runs before the `TEST_JOBS`/perl checks, from `case "${1:-}"` right after `table()`. Define `counts_path`, `tree_id` and `update_floors` above that `case` (RA:82), since the dispatch calls them before the rest of the file is read (preflight fix):
     ```sh
     update_floors() {
       [ -z "${RUN_ALL_TABLE:-}" ] || die2 "--update-floors rewrites the built-in table; unset RUN_ALL_TABLE"
@@ -507,15 +528,20 @@ Counts file (written atomically: `$COUNTS.$$` then `mv`; body sorted):
   - `test_h`: `cat > x <<'EOF'`, then a column-0 `}`, then `EOF`, then `kill -TERM "$p"`, then `}`.
   - `test_i`: `<<-X` with tab-indented `}` and `X`, then `run --seconds 2`.
   - `test_j`: `<<Y` with `}` and `Y`, then `sleep 0.1`. This one is clean.
-  - `test_k`: `cat <<'NEVER'`, then `kill -INT "$p"`, then `}`, at EOF with no delimiter.
+  - `test_l` (preflight fix: the S1 golden form): `assert_eq "$(cat <<'EOF'`, then a column-0 `}`, then `EOF`, then `)" "$x" "golden"`, then `kill -TERM "$p"`, then `}`. A heredoc inside `"$(…)"` still opens, so the `}` is text and `b` is flagged.
+  - `test_m` (preflight fix: hook_test:1022's shape): `c='cat > n.md <<EOF\nx\nEOF'` and `c='cat > n.md <<\"EOF\"\nx'` (a `<<` inside single quotes), then `kill -INT "$p"`, then `}`. No heredoc opens, so `b` is flagged and the next test is still seen.
+  - `test_n` (preflight fix: studio_adopt_test:520's shape): `awk 'BEGIN { printf "data <<EOF\nn\nEOF\n" }' | cat` (a `<<` inside a single-quoted awk program), then `echo "a <<EOF b"` (inside double quotes), then `x=$((1<<2)); cat <<<"$x"`, then `kill -HUP "$p"`, then `}`. Nothing opens; `b` is flagged.
+  - `test_k`: `cat <<'NEVER'`, then `kill -INT "$p"`, then `}`, at EOF with no delimiter. It stays the last test in the file.
   ```sh
   test_exclusive_scan_heredoc_brace() {
     gen_scan_fixture3 "$TMP/scan3_test.sh"
-    assert_eq "test_h b|test_i d|test_k (unterminated heredoc NEVER) H" \
+    assert_eq "test_h b|test_i d|test_l b|test_m b|test_n b|test_k (unterminated heredoc NEVER) H" \
       "$(awk -f "$REPO_ROOT/tests/exclusive_scan.awk" "$TMP/scan3_test.sh" | awk -F'\t' '{ printf "%s%s %s", s, $2, $3; s = "|" }')" \
-      "a column-0 } inside a heredoc does not end the test; <<'X', <<X and <<-X bodies are skipped; an unterminated one is loud"
+      "a column-0 } inside a heredoc does not end the test; <<'X', <<X, <<-X and \"\$(cat <<'X'\" bodies are skipped; a quoted << opens nothing; an unterminated one is loud"
     assert_eq 0 "$(awk -f "$REPO_ROOT/tests/exclusive_scan.awk" "$REPO_ROOT"/tests/*_test.sh | grep -c 'unterminated heredoc')" \
       "no real suite has an unterminated heredoc"
+    assert_eq "" "$(awk -f "$REPO_ROOT/tests/exclusive_scan.awk" "$REPO_ROOT/tests/hook_test.sh" "$REPO_ROOT/tests/studio_adopt_test.sh" | awk -F'\t' '$3 == "H"')" \
+      "the quoted << at hook_test:1022 and studio_adopt_test:520 opens no heredoc (preflight fix)"
   }
   ```
 - [ ] **Step 2: Run, expect FAIL.** `harness_test.sh`, `TESTS_ONLY=test_exclusive_scan_heredoc_brace`.
@@ -526,15 +552,45 @@ Counts file (written atomically: `$COUNTS.$$` then `mv`; body sorted):
   # A heredoc body inside a test is text: skip it up to its delimiter line (<<-: leading tabs stripped).
   hd != "" { t = $0; if (hdt) sub(/^\t+/, "", t); if (t == hd) hd = ""; next }
   ```
+  - The opener is quote-aware (preflight fix). A plain regex match opens on the `<<EOF` inside hook_test:1022's single-quoted strings and studio_adopt_test:520's single-quoted awk program; each one then swallows the rest of its file (scratch probe at 09ff62a). Add, after `hd_open`:
+    ```awk
+    # hd_find(s): the first heredoc opener outside quotes, as "-X" (<<-) or "X"; "" if none.
+    # A quote nests through $( ): in "$(cat <<'EOF'" the << is in a command substitution, so it opens.
+    function hd_find(s,   i, c, n, st, top, r, d) {
+      n = length(s); st = "N"
+      for (i = 1; i <= n; i++) {
+        c = substr(s, i, 1); top = substr(st, length(st), 1)
+        if (top == "S") { if (c == "\047") st = substr(st, 1, length(st) - 1); continue }
+        if (c == "\\") { i++; continue }
+        if (top == "D") {
+          if (c == "\"") st = substr(st, 1, length(st) - 1)
+          else if (substr(s, i, 2) == "$(") { st = st "N"; i++ }
+          continue }
+        if (c == "\047") { st = st "S"; continue }
+        if (c == "\"") { st = st "D"; continue }
+        if (substr(s, i, 2) == "$(") { st = st "N"; i++; continue }
+        if (c == ")" && length(st) > 1) { st = substr(st, 1, length(st) - 1); continue }
+        if (c == "#" && (i == 1 || substr(s, i - 1, 1) ~ /[ \t;]/)) return ""
+        if (substr(s, i, 2) == "<<" && substr(s, i + 2, 1) != "<") {
+          r = substr(s, i + 2)
+          if (match(r, /^-?[ \t]*["\047]?[A-Za-z_][A-Za-z0-9_]*/)) {
+            d = substr(r, 1, RLENGTH); gsub(/[ \t"\047]/, "", d); return d }
+          i++ }
+      }
+      return ""
+    }
+    ```
+    The stack `st` holds N (unquoted, or inside `$(`), S (single quotes) and D (double quotes). Backticks are not tracked; no suite opens a heredoc inside one.
   - At the end of the main `{ … }` block, after the flags, add:
     ```awk
-    if (match(line, /<<-?[ \t]*["\047]?[A-Za-z_][A-Za-z0-9_]*/)) {
-      d = substr(line, RSTART + 2, RLENGTH - 2); hdt = (substr(d, 1, 1) == "-"); if (hdt) d = substr(d, 2)
-      gsub(/[ \t"\047]/, "", d); hd = d; hdname = name; hdl = FNR }
+    if ((d = hd_find(line)) != "") {
+      hdt = (substr(d, 1, 1) == "-"); if (hdt) d = substr(d, 2)
+      hd = d; hdname = name; hdl = FNR }
     ```
   - `END { flush(); hd_open() }`.
   - Update the header comment to name heredoc bodies and the `H` row.
-  - `$((1<<2))` is not an opener, because a digit follows `<<`.
+  - `$((1<<2))` is not an opener, because a digit follows `<<`. `<<<` (a here-string) is not one either.
+  - Probe result (scratch, read-only, 09ff62a): with `hd_find`, the real suites give 18 openers, all closed within 40 lines, no `H` row, and the same flag rows as today's scan. The plain regex gave `H` rows at hook_test:1022 and studio_adopt_test:520.
 - [ ] **Step 4: Run, expect PASS.**
   - Run `test_exclusive_scan_heredoc_brace`, `test_exclusive_scan_flags_fixture`, `test_exclusive_scan_ignores_comments_and_top_level` and `test_exclusive_scan_candidates_ruled`.
   - Lines after a heredoc that used to end a test early may now raise new flags in real suites. If the last test reports any, add a ruling in that suite for each one.
@@ -760,6 +816,7 @@ Checked at 1cfca7f (code identical to cfe29ff):
 | 25 | `git add -A` in the main checkout doesn't embed `.claude/worktrees/*` | holds | .gitignore:4 |
 | 26 | The run_affected hub arms are at :121-131 | holds | case :123-131 |
 | 27 | No caller passes arguments to run_all.sh | holds | run_affected execs it bare (:176, :180); grep of tests/studios/lib |
+| 28 | A regex `<<X` match finds only real heredoc openers (preflight) | **false** | hook_test:1022 (single-quoted `<<EOF`) and studio_adopt_test:520 (`<<EOF` in an awk '…' program) open and never close. S1 adds `"$(cat <<'EOF'`, which must open. **Fix:** T3's quote-aware `hd_find`, plus fixtures `test_l`/`test_m`/`test_n` |
 
 ## Manual acceptance
 

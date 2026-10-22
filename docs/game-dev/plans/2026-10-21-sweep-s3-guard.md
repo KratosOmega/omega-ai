@@ -470,7 +470,7 @@ T. `test_lanes_permission_route_note` gains a gate-repair stop case: `LANES_CONF
   - O:1090: "count it and keep the id of the first one". No apostrophe: the comment sits inside open_calls' single-quoted awk program (O:1076), so `one's` would end the quote.
   - `preflight`: first line after `FAILED=0`: `[ -f "$ALLOW_FILE" ] || say "allow file $ALLOW_FILE missing — units get no allow rules"`.
   - Help :468: "no file or no rules: no --allowedTools (a missing file is warned about at start and dry run)."
-  - L header :7: add `allow_rules` to the helper list.
+  - L header :7: add `allow_rules` to the helper list. S5 may add repair helper names to the same line later; it unions them with `allow_rules` (preflight fix).
   - `land_repair` header: "Each ending carries the unit's permission-route note (#66 R5)."
 - [ ] **Step 4: Run, expect PASS.** The same names, sh and dash. Then `TESTS_ONLY="test_overnight_help"` (OT:283) to show the help assertions still hold.
 - [ ] **Step 5: Commit** `overnight: empty denied command prints -, warn on a missing allow file, note-ending tests (#67)`.
@@ -481,13 +481,32 @@ T. `test_lanes_permission_route_note` gains a gate-repair stop case: `LANES_CONF
 
 **Files:** `tests/run_all.sh` (the floors table only), via S2's mechanism.
 
-- [ ] **Step 1:** `git fetch`, then merge the latest `integration/backlog-2026-10-21` (S2 and any S4/S6 already in) into the story branch. Resolve any floors-table conflict by taking the integration side. Never hand-merge counts.
-- [ ] **Step 2:** `sh tests/run_affected.sh --base integration/backlog-2026-10-21 --list`. Expect HT, BT, OT, T and studio_test (README/bin reverse refs) at least. Run each listed suite whole from `$SCR` under sh, then under dash, one background run at a time.
-- [ ] **Step 3:** `sh tests/run_all.sh --update-floors`, or the exact floor edit the S2 plan defines. Commit the table: `tests: floors for S3 guard (#60, #63, #67)`.
-- [ ] **Step 4:** The PR body (story → integration) holds:
+This task follows S2's "For other stories" recipe exactly (preflight fix: running the suites directly writes no counts file, so `--update-floors` would exit 2 or read stale counts).
+
+- [ ] **Step 1:** `git fetch`, then merge the latest `origin/integration/backlog-2026-10-21` (S2 and any S6/S4 already in) into the story branch. On a floors-table conflict, take the integration branch's whole `tests/run_all.sh` (`git checkout origin/integration/backlog-2026-10-21 -- tests/run_all.sh`). Never hand-merge counts. Resolve the other shared regions per **Merge notes** below.
+- [ ] **Step 2:** commit every code and test change. The tree must be clean before Step 3.
+- [ ] **Step 3:** `sh tests/run_affected.sh --base origin/integration/backlog-2026-10-21 --list`. Expect HT, BT, OT, T and studio_test (README/bin reverse refs) at least. Then run them through run_all, plus `harness_test` (its exclusive scan must see no `H` row from HT/BT's quoted `<<EOF`/`<<-X`/`<<Q\r`/`<<OPEN` strings), from `$SCR` as one background run at a time:
+  ```sh
+  cd "$SCR" && TMPDIR="$SCR/tmp" TEST_SUITES="<the listed suites> harness_test" sh "$WT/tests/run_all.sh"
+  cd "$SCR" && TMPDIR="$SCR/tmp" TEST_SUITES="<the listed suites> harness_test" TEST_SH=dash sh "$WT/tests/run_all.sh"
+  ```
+  - Red only with `floor` / `no floors row` lines is expected. Any other red is a real failure: fix it, commit, and redo Step 3.
+  - These are partial runs: they never take the heavy-suite lock.
+- [ ] **Step 4:** with no commit since Step 3's last run, `sh "$WT/tests/run_all.sh" --update-floors`. Any commit after the run means a re-run first. Then `git add tests/run_all.sh` and commit the table: `tests: floors for S3 guard (#60, #63, #67)`.
+- [ ] **Step 5:** The PR body (story → integration) holds:
   - the `$SCR/s3-latency.txt` median delta;
   - the falsified rows below, re-checked at the story's base;
   - "#63 item 3 and #67 closed by this story".
+
+### Merge notes (preflight fix)
+
+Shared regions with other stories, and how each merge resolves them:
+- **S2's exclusive scan.** HT/BT add strings with `<<EOF`, `<<-X`, `<<Q\r` and `<<OPEN` inside quotes. S2 Task 3's quote-aware opener ignores them; Task 7 runs `harness_test` to prove no `H` row appears. Build from post-S2 integration.
+- **L header :7.** S3 adds `allow_rules`; S5 merges later and unions its repair helper names onto the same line.
+- **O near :1084-1091.** S4 inserts functions before `gone()` and edits `val()` and the :1128 gate rule; S3 edits only the open_calls comment at :1091. Neither reflows the other's lines.
+- **`run_tests` lists and rulings tails** (HT, BT, OT, T). S1, S4 and S5 append here too. On a conflict, keep both sides; S3 adds its names on its own new continuation line.
+- **`tests/run_all.sh` floors.** On a conflict, take the integration branch's `run_all.sh`, then redo Task 7 Steps 3–4.
+- **Order.** S3 builds in parallel with S6 and S4 and merges after them (S2's build order).
 
 ---
 

@@ -75,6 +75,8 @@ pinned by a test added to the task named.
    ends `timed out`.
 4. **Quotes and escapes in the exemption split:** `;` inside single quotes, an escaped `\"` inside double
    quotes, a JSON `\n` as a separator, `bash -c '…'` followed one level. T3 fixture rows N5, N6, E6, E7.
+   A gate call inside `"$(…)"` or backticks is still a gate call; inside single quotes it is not
+   (preflight fix). T3 fixture rows E10-E12, N8.
 5. **The `val()` newline decode leaves list/denied output unchanged.** T3
    `test_overnight_idle_exemption_anchored` asserts `activity --open` prints a multi-line command as one
    line; `test_overnight_open_calls` and `test_overnight_denied_scan` stay green unchanged.
@@ -391,7 +393,7 @@ refused with `STUDIO_OVERNIGHT_WD_POLL_SECONDS must be a whole number of seconds
 (OT:2405-2433), its exclusive-scan line, `run_tests`.
 
 **Interfaces:** Consumes `cfull[i]`, the full Bash command (O:1112, O:1118). Produces awk `gate_cmd(s, d)`,
-`gate_seg(s, d)`, `words(s, w)`, `unq(x)`; gate mode prints `gate` iff `gate_cmd(cfull[i], 0)`. CLI
+`gate_seg(s, d)`, `words(s, w)`, `unq(x)`, `sub_end(s, i)` (preflight fix); gate mode prints `gate` iff `gate_cmd(cfull[i], 0)`. CLI
 unchanged: `studio-overnight activity --open-gate FILE`.
 
 **`val()`.** Decode `\n` → `"\n"` and `\t` → `"\t"` (today it decodes both to a space). Every print path
@@ -417,11 +419,34 @@ The newline must survive into `cfull` so that `gate_cmd` can split on it.
       if (inw) w[++n] = cur
       return n
     }
+    # sub_end(S, I): the index of the ) or backtick that closes the substitution opening at I ($( or a backtick).
+    function sub_end(s, i,   n, k, c, dp, q) {
+      n = length(s)
+      if (substr(s, i, 1) == "`") {
+        for (k = i + 1; k <= n; k++) { c = substr(s, k, 1); if (c == "\\") k++; else if (c == "`") return k }
+        return n }
+      dp = 1; q = ""
+      for (k = i + 2; k <= n; k++) {
+        c = substr(s, k, 1)
+        if (q != "") { if (c == q) q = ""; else if (q == "\"" && c == "\\") k++; continue }
+        if (c == "\\") { k++; continue }
+        if (c == "\047" || c == "\"") { q = c; continue }
+        if (c == "(") dp++
+        else if (c == ")" && --dp == 0) return k
+      }
+      return n
+    }
     # gate_cmd(S, D): 1 when a segment of S (split outside quotes at ; & | ( ) and newline) runs a gate verb.
-    function gate_cmd(s, d,   i, c, q, seg) {
+    # A command substitution, $(...) or backticks, bare or inside double quotes, runs its body: the body
+    # is followed one level down (D < 3) and stands as one plain word in the outer segment.
+    function gate_cmd(s, d,   i, c, q, seg, j, o) {
       q = ""; seg = ""
       for (i = 1; i <= length(s); i++) {
         c = substr(s, i, 1)
+        if (q != "\047" && (c == "`" || (c == "$" && substr(s, i + 1, 1) == "("))) {
+          o = (c == "`") ? 1 : 2; j = sub_end(s, i)
+          if (d < 3 && gate_cmd(substr(s, i + o, j - i - o), d + 1)) return 1
+          seg = seg "S"; i = j; continue }
         if (q != "") { seg = seg c; if (c == q) q = ""; else if (q == "\"" && c == "\\") seg = seg substr(s, ++i, 1); continue }
         if (c == "\\") { seg = seg c substr(s, ++i, 1); continue }
         if (c == "\047" || c == "\"") { q = c; seg = seg c; continue }
@@ -431,7 +456,7 @@ The newline must survive into `cfull` so that `gate_cmd` can split on it.
       return gate_seg(seg, d)
     }
     # gate_seg(S, D): skip NAME=value words and the wrappers, then one shell with its options
-    # (following `-c STR` one level down, D < 3); exempt iff the next word's basename is a gate verb.
+    # (following `-c STR` one level down, D < 3); exempt iff the basename of the next word is a gate verb.
     function gate_seg(s, d,   w, n, i, b) {
       n = words(s, w); i = 1
       while (i <= n) {
@@ -464,9 +489,19 @@ The newline must survive into `cfull` so that `gate_cmd` can split on it.
 `unq` in a `-c` body strips the inner quotes along with the outer ones. That is accepted: the inner
 split then sees plain words, which is enough for the exemption.
 
+Preflight fixes:
+- **No apostrophe in any comment of this block.** It sits inside open_calls' single-quoted awk
+  program, so an apostrophe ends the quote and breaks O. Write `"\047"` in code, and reword prose
+  ("the basename of the next word", not the possessive).
+- **A gate call in a command substitution is still a gate call.** Without `sub_end`, the anchored
+  rule misses `x="$(studio-test …)"` and backtick forms (bare `x=$(studio-test)` was caught only by
+  the `(` split). S3's guard follows those forms, so a unit that captures the gate's output in a
+  variable would be stall-killed. Rows E10-E12 and N8 pin the rule. A scratch probe of this code at
+  09ff62a gives the expected verdict on all 20 rows.
+
 **Fixture `tests/fixtures/overnight-open-gate.jsonl`:** one open Bash `tool_use` per line, in the existing
 fixture's shape (`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_<X>","name":"Bash","input":{"command":"<JSON-escaped>"}}]}}`);
-id `toolu_E<n>` = exempt, `toolu_N<n>` = not. The 16 rows:
+id `toolu_E<n>` = exempt, `toolu_N<n>` = not. The 20 rows (E10-E12 and N8: preflight fix):
 
 | id | command (shell text, before JSON escaping) |
 |---|---|
@@ -479,6 +514,9 @@ id `toolu_E<n>` = exempt, `toolu_N<n>` = not. The 16 rows:
 | E7 | `bash -c 'cd d && studio-test'` |
 | E8 | `(cd d; nice -n 5 /usr/bin/env -u X studio-setup gate) 2>&1 \| tail -n 5` |
 | E9 | `X=1 exec studio-gate t -- sh -c true` |
+| E10 | `x="$(studio-test --file a.gd)"` |
+| E11 | ``x=`studio-test` `` |
+| E12 | ``out="`cd d && studio-run --seconds 5`"; echo "$out"`` |
 | N1 | `grep studio-test x` |
 | N2 | `echo "run studio-test"` |
 | N3 | `cat bin/studio-gate` |
@@ -486,6 +524,7 @@ id `toolu_E<n>` = exempt, `toolu_N<n>` = not. The 16 rows:
 | N5 | `echo 'a; studio-test'` |
 | N6 | `echo "x\" ; studio-test"` |
 | N7 | `ls /x/studio-gate-old` |
+| N8 | ``echo '$(studio-test) and `studio-test`'`` (single quotes: no substitution runs) |
 
 - [ ] **Step 1: Write the failing test** `test_overnight_idle_exemption_anchored`:
   ```sh
@@ -497,15 +536,15 @@ id `toolu_E<n>` = exempt, `toolu_N<n>` = not. The 16 rows:
     _id="$(printf '%s' "$_row" | sed 's/.*"id":"toolu_\([EN][0-9]*\)".*/\1/')"
     assert_eq "$_want" "$(sh "$RUNNER" activity --open-gate "$TMP/og.jsonl")" "row $_id: $( [ -n "$_want" ] && echo exempt || echo 'not exempt')"
   done < "$F"
-  assert_eq 16 "$_n" "every fixture row ran"
+  assert_eq 20 "$_n" "every fixture row ran"
   grep '"toolu_E6"' "$F" | { printf '%s\n' '{"type":"system","subtype":"init"}'; cat; } > "$TMP/og-nl.jsonl"
   assert_eq 1 "$(sh "$RUNNER" activity --open "$TMP/og-nl.jsonl" | grep -c .)" "a multi-line command still lists as one flattened line"
   ```
-  This is a fixed 18 assertions. Add an exclusive-scan line: `out (b) a pure parser over fixture rows;
+  This is a fixed 22 assertions (20 rows plus 2; preflight fix). Add an exclusive-scan line: `out (b) a pure parser over fixture rows;
   no process timing`.
-- [ ] **Step 2: Run, expect FAIL.** `TESTS_ONLY="test_overnight_idle_exemption_anchored"` on OT. N1-N7 fail
+- [ ] **Step 2: Run, expect FAIL.** `TESTS_ONLY="test_overnight_idle_exemption_anchored"` on OT. N1-N8 fail
   at baseline, because the substring rule matches them.
-- [ ] **Step 3: Implement.** Change `val()`, add the four functions before `gone()`, and make the O:1128
+- [ ] **Step 3: Implement.** Change `val()`, add the five functions before `gone()`, and make the O:1128
   gate rule `if (gate_cmd(cfull[i], 0)) …`. Update the comment at O:1068-1069 to "runs a gate-routed verb
   (an anchored command word, spec §7.2)".
 - [ ] **Step 4: Run, expect PASS** under sh and dash. Run with it `test_overnight_open_calls`,
@@ -546,17 +585,36 @@ id `toolu_E<n>` = exempt, `toolu_N<n>` = not. The 16 rows:
 
 ### Task 5: Rebase, affected suites, floors — Mechanical
 
-- [ ] `git fetch`, then merge the latest `integration/backlog-2026-10-21` into `issue-63-watchdog`. On a
-  `tests/run_all.sh` floors-table conflict, take the integration side and never hand-merge counts.
-- [ ] Get the suite list from `sh "$W/tests/run_affected.sh" --base integration/backlog-2026-10-21
+This task follows S2's "For other stories" recipe exactly (preflight fix).
+
+- [ ] `git fetch`, then merge the latest `origin/integration/backlog-2026-10-21` into `issue-63-watchdog`. On a
+  `tests/run_all.sh` floors-table conflict, take the integration branch's whole file
+  (`git checkout origin/integration/backlog-2026-10-21 -- tests/run_all.sh`) and never hand-merge counts.
+  Resolve the other shared regions per **Merge notes** below.
+- [ ] Commit every code and test change. The tree must be clean before the runs.
+- [ ] Get the suite list from `sh "$W/tests/run_affected.sh" --base origin/integration/backlog-2026-10-21
   --list`, using the run recipe's cwd. Expect `overnight_test` and `overnight_lanes_test`, plus every
-  suite that the reverse-reference closure over O and L adds. Run those suites as one background run
-  under sh, then one under dash: `TEST_SUITES="<list>" sh "$W/tests/run_all.sh"`, then the same with
-  `TEST_SH=dash`.
-- [ ] `sh "$W/tests/run_all.sh" --update-floors`. Expected: an `overnight_test: <old> → <new>` line and an
-  `overnight_lanes_test: <old> → <new>` line, and no other suite changes. If the S2 plan defines a
-  different exact floor edit, use that one.
+  suite that the reverse-reference closure over O and L adds. Run those suites plus `harness_test` as one
+  background run under sh, then one under dash: `TEST_SUITES="<list> harness_test" sh "$W/tests/run_all.sh"`,
+  then the same with `TEST_SH=dash`. These partial runs never take the heavy-suite lock.
+  - Red only with `floor` / `no floors row` lines is expected. Any other red: fix, commit, and re-run both.
+- [ ] With no commit since the last run, `sh "$W/tests/run_all.sh" --update-floors`. Any commit after the
+  run means a re-run first. Expected: an `overnight_test: <old> → <new>` line and an
+  `overnight_lanes_test: <old> → <new>` line, and no other suite changes.
 - [ ] Commit `test(floors): S4 overnight counts` (only `tests/run_all.sh`).
+
+### Merge notes (preflight fix)
+
+Shared regions with other stories, and how each merge resolves them:
+- **O near :1077-1128.** S4 edits `val()`, inserts its functions before `gone()` and changes the :1128
+  gate rule; S3 edits only the open_calls comment at :1091. Neither reflows the other's lines.
+- **O :674 and run_unit :1365-1415** (S4) vs S5's :665 cfg and :1347. Disjoint; keep both.
+- **`run_tests` lists and rulings tails** (OT, T). S1, S3 and S5 append here too. On a conflict, keep
+  both sides; S4 adds its names on its own new continuation line.
+- **`tests/run_all.sh` floors.** On a conflict, take the integration branch's `run_all.sh`, then redo
+  this task from the commit step.
+- **Order.** S4 builds in parallel with S6 and S3, merges after S6 and before S3, and S1 merges after S4
+  (S2's build order).
 
 ---
 

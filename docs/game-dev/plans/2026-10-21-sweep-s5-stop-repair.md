@@ -80,6 +80,7 @@ T4, T5, T6. **Mechanical**: T1, T2, T7.
 
 **Files:**
 - Modify: `T:42-130` (stub header comment), `T:158-165` (kind case), `T:297-357` (actions), `T:362-372` (post actions), `T:1550-1555` (helpers)
+  - Preflight fix (shared regions, see **Merge notes**): in the header, edit only S5's own action-doc lines. S2 owns :84-88, and S1 adds `push_ref` to the action docs (:58-61, :136-143). Union S5's names with S1's there, and on T:328's post-action list (`push_ref` and `stage` both). Put the `stage` arm after `rmwt` (:371), not next to S1's `push_ref` arm (after :364), and `stoprepair` after `gaterepair` (:337-338).
 - Create: `tests/fixtures/overnight-stop-repairs-zero.golden`
 - Test: `T` (new test after `test_lanes_gate_repair_budget`, T:1661-1668; run list T:4871ff)
 
@@ -432,7 +433,7 @@ stop_repair() {
 
   - Comments: update `story_gate_loop`'s and `run_story`'s header comments, which call gate red "the
     one repairable stop". Update `story_units`' ENDING list. Update L's file header list (L:6-8) only if
-    it names repair functions.
+    it names repair functions. S3 adds `allow_rules` to L:7: union the names, keeping S3's (preflight fix).
   - **The existing test that changes:** in `test_lanes_adopt_round_trip` (T:3392), S1's T5 writes an
     uncategorised feature Stop with holds on, so it would now get a repair. Make it
     `printf 'auto\nstop [human] broke\n'`, and the assertion `"was held: stop: \[human\] broke"`
@@ -444,8 +445,8 @@ stop_repair() {
   `test_lanes_permission_route_note`, `test_lanes_held_dependents_wait` and `test_lanes_adopt_round_trip`.
   Use sh, then dash. Expect PASS. The golden must still match byte for byte.
 - [ ] **Step 5: Audit run.** Run the whole `T` and `OT` suites once (background,
-  `TEST_SUITES="overnight_lanes_test overnight_test" sh "$W/tests/run_all.sh"`, under the heavy-suite
-  lock). Any red test other than the ones this task changed is a regression. Fix the code, not the test.
+  `TEST_SUITES="overnight_lanes_test overnight_test" sh "$W/tests/run_all.sh"`; a partial run, so it
+  takes no heavy-suite lock: preflight fix). Floor-only red lines are expected here. Any other red test other than the ones this task changed is a regression. Fix the code, not the test.
   The one exception: a test whose own scenario writes an uncategorised task-unit Stop, as in the
   round-trip case. Give it a `[human]` category, and record it in the task report.
 - [ ] **Step 6:** Commit `feat(lanes): a task unit's non-human Stop gets a debug-repair unit (#69)`.
@@ -515,12 +516,13 @@ stop_repair() {
   - X: :328-333 (mode list), :504-509 (§5 step 2 regex), :573-579 (§6 stop list), :715-716 (§7),
     :804-826 (§8 Every stop), :850 (Operator messages), :902 (§9), :924 (§10), :981 (§11), a new §12
     after :993;
-  - `R:100-102` (the same regex);
+  - `R:102` only (the same regex). S6 owns R:100 and X:505 and merges first; S5 changes only the
+    X:507 and R:102 regex lines and re-checks them against S6's text (preflight fix);
   - `PL:228-235` (§7 step 2).
 - Test: `ST`:
   - `test_execute_contract` :253-260 (the literal `'final|gate|review'` at :257);
   - `test_execute_one_contract` :445-455 (:452);
-  - `test_execute_lanes` :533-576 (:570);
+  - `test_execute_lanes` :533-576 (:570; S1 adds its assertion after :561, so keep both on merge);
   - `test_execute_gate_repair` :675-704 (the enter-first loop :696-702);
   - `test_execute_operator_messages` :714-735;
   - the run list at the end.
@@ -602,7 +604,8 @@ test_stop_categories_contract() {
     `studio-run` exit 2 and exit 3 are `env`.
   - **X :716, :902, :981:** `Stop: [env] <the printed message>`. **X :924:** `Stop: [<category>] <reason>`.
   - **X :507:** the regex becomes `fix\((T[0-9]+|final|gate|stop|review|B[0-9]+)\)`. **R:102** is the
-    same. **X :850:** "§9 (`--land`), §11 (`--gate-repair`) and §12 (`--debug-repair`) units: after
+    same. Change only those two regex lines; S6's X:505 and R:100 text stays as S6 left it (preflight
+    fix). **X :850:** "§9 (`--land`), §11 (`--gate-repair`) and §12 (`--debug-repair`) units: after
     their **Enter the feature checkout** step."
   - **X §12** (new, after §11; modelled on it; spec §8.7). Its bullets, in this order:
     - **Launch:** prompt, start checkout, the story's env as in §11, `STUDIO_REPAIR=stop:<label>`
@@ -639,9 +642,14 @@ test_stop_categories_contract() {
 
 ### Task 7: Rebase, golden re-check, affected suites, floors — Mechanical
 
-- [ ] Run `git fetch`, then merge the latest `integration/backlog-2026-10-21` into the story branch. On
-  a `tests/run_all.sh` floors-table conflict, take the integration side, never a hand-merge of counts.
-  Resolve X conflicts with S6 (§5) and S1 (§7 step 4) by keeping both sides' text.
+This task follows S2's "For other stories" recipe exactly (preflight fix).
+
+- [ ] Run `git fetch`, then merge the latest `origin/integration/backlog-2026-10-21` into the story branch.
+  S1, S3, S4 and S6 are already in (S2's build order: S5 is last). On a `tests/run_all.sh` floors-table
+  conflict, take the integration branch's whole file
+  (`git checkout origin/integration/backlog-2026-10-21 -- tests/run_all.sh`), never a hand-merge of counts.
+  Resolve X conflicts with S6 (§5) and S1 (§7 step 4) by keeping both sides' text, and the other shared
+  regions per **Merge notes** below.
 - [ ] **Golden re-check** (when the merge brought any change under `studios/game-dev/bin/`):
   - add a temp worktree at the new merge-base under `$S`;
   - copy this branch's `T` and its golden into it;
@@ -649,15 +657,35 @@ test_stop_categories_contract() {
   - copy the regenerated golden back and diff it. Only base-side changes are allowed (for example
     S1's report lines);
   - rerun the test on the story head. Expect PASS. Remove the temp worktree.
-- [ ] Run `sh "$W/tests/run_affected.sh" --base integration/backlog-2026-10-21 --list`. Run what it
-  lists, which must include `overnight_lanes_test`, `overnight_test`, `studio_test`,
-  `studio_adopt_test`, `overnight_progress_test` and `harness_test` (the knob and test-list checks).
-  Run them under sh and dash, as one background run, under the heavy-suite lock. Also run the
-  Multica suite once.
-- [ ] Update the floors with S2's mechanism: `sh "$W/tests/run_all.sh" --update-floors` after that run
-  (or the exact floor edit the S2 plan defines). Expect rises for `overnight_lanes_test`,
+  - Commit the regenerated golden (and any other change) now, before the counts run (preflight fix).
+- [ ] With a clean tree, run `sh "$W/tests/run_affected.sh" --base origin/integration/backlog-2026-10-21 --list`.
+  Run what it lists, plus `harness_test` if it is missing. The list must include `overnight_lanes_test`,
+  `overnight_test`, `studio_test`, `studio_adopt_test`, `overnight_progress_test` and `harness_test`
+  (the knob and test-list checks). Run them through run_all, one background run under sh, then one
+  under dash: `TEST_SUITES="<list> harness_test" sh "$W/tests/run_all.sh"`, then the same with
+  `TEST_SH=dash`. These are partial runs, so they take no heavy-suite lock. Also run the Multica suite once.
+  - Red only with `floor` / `no floors row` lines is expected. Any other red: fix, commit, and re-run both.
+- [ ] With no commit since the last run, update the floors: `sh "$W/tests/run_all.sh" --update-floors`.
+  Any commit after the run means a re-run first. Expect rises for `overnight_lanes_test`,
   `overnight_test`, `studio_test` and `studio_adopt_test` only.
 - [ ] Commit `test(floors): S5 counts` (only `tests/run_all.sh`).
+
+### Merge notes (preflight fix)
+
+S5 merges last (after S1, S3, S4 and S6), so it unions every shared region:
+- **T:328 post-action list and the T stub's action docs (T:58-61, T:136-143).** S1 adds `push_ref`; S5
+  adds `stage` and `stoprepair`. Keep both names on :328 and on the header lines. S2's :84-88 header
+  lines stay as S2 left them.
+- **T post-loop arms.** S1's `push_ref` arm sits after :364; S5's `stage` arm goes after `rmwt` :371 and
+  `stoprepair` after `gaterepair` :337-338.
+- **L header :7.** S3 adds `allow_rules`; S5 unions any repair helper names onto it.
+- **X:507 and R:102.** S6 merged first and owns X:505 and R:100. S5 changes only the two regex lines and
+  re-checks them against S6's text.
+- **studio_test `test_execute_lanes`.** S1's assertion sits after :561; S5 edits :570. Keep both.
+- **`run_tests` lists and rulings tails** (T, OT, ST, AT). S1, S2, S3, S4 and S6 append here too. On a
+  conflict, keep both sides; S5 adds its names on its own new continuation line.
+- **`tests/run_all.sh` floors.** On a conflict, take the integration branch's `run_all.sh`, then redo
+  Task 7 from the commit step.
 
 ---
 
@@ -670,7 +698,8 @@ test_stop_categories_contract() {
   - the gate arm is byte for byte;
   - the `debug-repair` kind is in every list spec §8.5 names;
   - X's pinned literals are intact.
-- **Full gate:** the controller runs it once, at the end (sh and `TEST_SH=dash`, under the heavy-suite lock).
+- **Full gate:** the controller runs it once, at the end (sh and `TEST_SH=dash`; a full run, so run_all
+  takes the heavy-suite lock itself: preflight fix).
 - **Manual acceptance** (operator; with the sweep's later live check). In a phoenix-like run, a task
   unit writes an uncategorised Stop, for example a leaked-state twin-cook mismatch. Check:
   - one `debug-repair` unit runs on `model_repair`;

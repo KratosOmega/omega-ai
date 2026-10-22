@@ -357,16 +357,37 @@ test_no_reader_matches_base_commit() {
 
 ### Task 6: Rebase, affected suites, floors — Mechanical
 
-- [ ] Merge the latest `integration/backlog-2026-10-21` into the story branch (after `git fetch`). On a
-  `tests/run_all.sh` floors-table conflict, take the integration side, never a hand-merge of counts.
-- [ ] Run the affected suites with the recipe: `studio_test` and `pointer_skills_execute_test`, plus
-  anything `run_affected.sh --list` adds, under sh and dash.
-- [ ] Write the counts and update the floors (the S2 mechanism, spec §5.4 item 2). Run
-  `TEST_SUITES="studio_test pointer_skills_execute_test" sh "$W/tests/run_all.sh"`, then
-  `sh "$W/tests/run_all.sh" --update-floors`. Expected: one `studio_test: 741 → <741 + new>` line;
-  `pointer_skills_execute_test` is unchanged. If the S2 plan defines a different exact floor edit, use
-  that one.
+This task follows S2's "For other stories" recipe exactly (preflight fix).
+
+- [ ] Merge the latest `origin/integration/backlog-2026-10-21` into the story branch (after `git fetch`). On a
+  `tests/run_all.sh` floors-table conflict, take the integration branch's whole file
+  (`git checkout origin/integration/backlog-2026-10-21 -- tests/run_all.sh`), never a hand-merge of counts.
+- [ ] Commit every code and test change. The tree must be clean before the runs.
+- [ ] Write the counts: the affected suites `studio_test` and `pointer_skills_execute_test`, plus anything
+  `sh "$W/tests/run_affected.sh" --base origin/integration/backlog-2026-10-21 --list` adds, plus
+  `harness_test`, through run_all under sh and then dash:
+  `TEST_SUITES="studio_test pointer_skills_execute_test harness_test <added>" sh "$W/tests/run_all.sh"`,
+  then the same with `TEST_SH=dash`. These partial runs take no heavy-suite lock. Red only with
+  `floor` / `no floors row` lines is expected; any other red: fix, commit, and re-run both.
+- [ ] With no commit since the last run, `sh "$W/tests/run_all.sh" --update-floors`. Any commit after the
+  run means a re-run first. Expected: one `studio_test: <current floor> → <current floor + new>` line,
+  where the current floor is the post-S2 table's exact value, not the pre-S2 741 (preflight fix);
+  `pointer_skills_execute_test` is unchanged.
 - [ ] Commit `test(floors): S6 studio_test count` (only `tests/run_all.sh`).
+
+### Merge notes (preflight fix)
+
+Shared regions with other stories, and how each merge resolves them:
+- **X:505 and R:100 belong to S6.** S6 merges before S5, which edits only the adjacent regex lines X:507
+  and R:102. S6 does not touch those two lines. R:100 already reads "with `<merge-base>` the scope's
+  start,"; S6's edit adds " (§0)" and nothing else on that line.
+- **X elsewhere.** S1 edits X:703-704 and S5 edits :328-333, :573-579, :715-716 and later; all disjoint
+  from S6's :233-259 and :479.
+- **studio_test `run_tests` list (:854-865) and new tests after :834-845.** S5 appends here too. On a
+  conflict, keep both sides; S6 adds its names on its own new continuation line.
+- **`tests/run_all.sh` floors.** On a conflict, take the integration branch's `run_all.sh`, then redo
+  this task from the commit step.
+- **Order.** S6 builds in parallel with S4 and S3 and merges first of the three (S2's build order).
 
 ---
 
@@ -378,8 +399,8 @@ test_no_reader_matches_base_commit() {
   - A1: a run not in place on the default branch reads exactly as at 1cfca7f;
   - X's existing pinned literals are intact;
   - the line-wrap rule for the asserted literals.
-- **Full gate:** the controller runs it once, at the end (sh and `TEST_SH=dash`, under the heavy-suite
-  lock).
+- **Full gate:** the controller runs it once, at the end (sh and `TEST_SH=dash`; a full run, so run_all
+  takes the heavy-suite lock itself: preflight fix).
 - **Manual acceptance** (operator, not a builder task; it runs with #6's live check): one pressure
   scenario on the slim fixture (`tests/pressure/fixture.sh`), checked out on `main`, executed in place.
   - Its feature ledger has a `base-commit` line.

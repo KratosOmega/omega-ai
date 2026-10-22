@@ -76,7 +76,7 @@ A lanes run of more than 3 tests goes as one background run plus its notificatio
 5. **Bad and edge `Final base:` values.** Each must refuse with a precise text, or (for the default branch) be a no-op:
    - `run/demo`, `integration/demo`, `progress/x`;
    - `a..b` (not a ref);
-   - `<branch>` (the template copied verbatim);
+   - `<branch>` (the template copied verbatim), `@{-1}` and `-x` (refused by the charset check: preflight fix);
    - `main   # comment` under `Mode: direct` (equal to the default branch: no Final-base refusal).
 
    Test: T2 `test_lanes_final_base_bad_names_refused`.
@@ -241,10 +241,10 @@ EOF
     - Exit 2.
     - `assert_contains "$LS_ERR" "manifest: A: branch feat/x is the default branch or the run's Target or the run's Final base — pick another"`.
     - `test_lanes_branch_default_or_target_refused` (T:773-781) keeps today's text, with no suffix.
-  - `test_lanes_final_base_bad_names_refused` (Review Focus 5). For each of `run/demo`, `integration/demo`, `progress/x`, `a..b` and `<branch>`: a fresh fixture `fbbad-<k>` (k = 1..5), then `mf_set_base "$v"` and a dry run.
+  - `test_lanes_final_base_bad_names_refused` (Review Focus 5). For each of `run/demo`, `integration/demo`, `progress/x`, `a..b`, `<branch>`, `@{-1}` and `-x`: a fresh fixture `fbbad-<k>` (k = 1..7), then `mf_set_base "$v"` and a dry run.
     - Exit 2. `LS_ERR` contains `manifest: Final base: `.
     - `run/demo`, `integration/demo` and `progress/x` match `is a run, integration or progress branch`.
-    - `a..b` and `<branch>` match `is not a valid branch name`.
+    - `a..b`, `<branch>`, `@{-1}` and `-x` match `is not a valid branch name`. `git check-ref-format --branch` alone accepts `<branch>` and expands `@{-1}`, so the charset check is what refuses them (preflight fix).
     - Then the direct fixture with `merge_command` and `mf_set_base 'main   # the default'`. A dry run exits 0, and `assert_not_contains "$LS_ERR" "Final base"`.
 - [ ] **Step 3: Run, expect FAIL.**
 
@@ -267,6 +267,11 @@ mf_base_check() {
   if [ "$MF_MODE" = direct ]; then
     refuse "manifest: Final base: is for Mode integration only (direct lands on the default branch)"; return 0
   fi
+  # Charset first (preflight fix): check-ref-format --branch accepts <branch> and expands @{-1}.
+  case "$MF_BASE" in
+    -*|*..*|*[!A-Za-z0-9._/-]*)
+      refuse "manifest: Final base: '$MF_BASE' is not a valid branch name"; return 0 ;;
+  esac
   if ! git check-ref-format --branch "$MF_BASE" >/dev/null 2>&1; then
     refuse "manifest: Final base: '$MF_BASE' is not a valid branch name"; return 0
   fi
@@ -280,6 +285,7 @@ mf_base_check() {
 ```
 
   Ruling: any `integration/*`, `run/*` or `progress/*` is refused, not only this slug's. A run landing into another run's machine branch is never intended.
+  Ruling (preflight fix): a `Final base:` value is `[A-Za-z0-9._/-]` only, with no leading `-` and no `..`, and it must also pass `git check-ref-format --branch`.
 - [ ] **Step 5: Run, expect PASS.** Run the Step 3 command, plus `test_lanes_branch_default_or_target_refused test_lanes_manifest_header_refusals test_lanes_manifest_refusals test_lanes_next test_lanes_status_dead_old_lock_not_masking`.
 - [ ] **Step 6: Commit.** `feat(#81): the manifest's optional Final base: header, parsed and preflighted`
 
@@ -442,7 +448,7 @@ mf_base_check() {
     - `assert_contains "$S" '^ *Final base: <branch> *# optional' "the manifest template names the optional Final base"`;
     - `assert_contains "$S" 'origin/<Final base>:refs/heads/integration/<slug>' "integration is pushed from the Final base when set"`;
     - keep :56's `origin/<default>:refs/heads/integration/<slug>`.
-  - studio_test `test_execute_lanes`: `assert_contains "$E" 'A manifest.s `Final base:` is the runner.s' "a lane unit never targets the Final base"`.
+  - studio_test `test_execute_lanes`: `assert_contains "$E" 'A manifest.s `Final base:` is the runner.s' "a lane unit never targets the Final base"`. Put it right after the `:561` assertion (`under integration, no PR and \`shipped <Branch>\``), not next to :570, which S5 edits (preflight fix).
   - OT `test_help_final_base_and_direct_detach`:
     - `out="$(sh "$RUNNER" --help 2>&1)"`;
     - help contains `Final base: <branch>`;
@@ -472,14 +478,30 @@ mf_base_check() {
 
 ### Task 6: Rebase, affected suites, exact floors — **Mechanical**
 
-- [ ] **Step 1:** `git fetch origin`, then merge the latest `origin/integration/backlog-2026-10-21` into `issue-82-runner-config`. S2, S3, S4 and S6 land first (spec §11). Resolve L/O/T conflicts by relocating the hunks with their anchors. A `tests/run_all.sh` floors conflict takes the integration side, and Step 3 recomputes it.
-- [ ] **Step 2:** `cd <W> && sh tests/run_affected.sh --base origin/integration/backlog-2026-10-21 --list`. Then run it without `--list`, from `<S>` with `TMPDIR=<S>/tmp`, as one background run.
-  - Expected suites: at least `overnight_lanes_test`, `overnight_test`, `omega_test`, `studio_test` and `pointer_skills_omega_test`.
-  - Also run every suite the list adds (the studio-overnight closure: `overnight_runs_test`, `overnight_progress_test`, `overnight_ids_test`, `studio_adopt_test`, …).
-  - Then run the same under `TEST_SH=dash`. Everything is green.
-  - If `harness_test`'s exclusive scan flags a new test, add it to T's `TESTS_EXCLUSIVE`.
-- [ ] **Step 3:** commit any fix. With a clean tree, run `sh tests/run_all.sh --update-floors` (spec §5.4 item 2, or the exact floor step the S2 plan defines). It rewrites the floors of the suites the last run counted. Check the diff: only the touched suites' floors change. Commit `chore(tests): exact floors for S1 (#82, #81)`.
-- [ ] **Step 4:** hand back with the PR body notes: the falsified rows this story relied on, re-checked at its own base (spec §13).
+This task follows S2's "For other stories" recipe exactly (preflight fix).
+
+- [ ] **Step 1:** `git fetch origin`, then merge the latest `origin/integration/backlog-2026-10-21` into `issue-82-runner-config`. S2, S6, S4 and S3 land first (S2's build order). Resolve L/O/T conflicts by relocating the hunks with their anchors, per **Merge notes** below. A `tests/run_all.sh` floors conflict takes the integration branch's whole file (`git checkout origin/integration/backlog-2026-10-21 -- tests/run_all.sh`), and Steps 3–5 recompute it.
+- [ ] **Step 2:** commit every code and test change first. The tree must be clean before Step 3.
+- [ ] **Step 3:** `cd <W> && sh tests/run_affected.sh --base origin/integration/backlog-2026-10-21 --list` gives the affected suites. Expect at least `overnight_lanes_test`, `overnight_test`, `omega_test`, `studio_test` and `pointer_skills_omega_test`, plus the studio-overnight closure (`overnight_runs_test`, `overnight_progress_test`, `overnight_ids_test`, `studio_adopt_test`, …). Then one run_all run of all of them plus `harness_test`, from `<S>`, as one background run plus its notification, and the same under dash:
+  ```sh
+  cd <S> && TMPDIR=<S>/tmp TEST_SUITES="<the listed suites> harness_test" sh <W>/tests/run_all.sh
+  cd <S> && TMPDIR=<S>/tmp TEST_SUITES="<the listed suites> harness_test" TEST_SH=dash sh <W>/tests/run_all.sh
+  ```
+  - Red only with `floor` / `no floors row` lines is expected. Any other red is a real failure: fix it, commit, and redo Step 3.
+  - If `harness_test`'s exclusive scan flags a new test, add an `# exclusive-scan:` ruling for it in its suite (not a `TESTS_EXCLUSIVE` entry by default), commit, and redo Step 3.
+  - These are partial runs: they never take the heavy-suite lock.
+- [ ] **Step 4:** with no commit since Step 3's last run, `sh <W>/tests/run_all.sh --update-floors`. Any commit after the run means a re-run first, or it exits 2 with "counts are from another tree". It rewrites the floors of the suites the last run counted. Check the diff: only the touched suites' floors change.
+- [ ] **Step 5:** `git add tests/run_all.sh`, commit `chore(tests): exact floors for S1 (#82, #81)`.
+- [ ] **Step 6:** hand back with the PR body notes: the falsified rows this story relied on, re-checked at its own base (spec §13).
+
+### Merge notes (preflight fix)
+
+Shared regions with other stories, and how each merge resolves them:
+- **T:328 post-action list and the T stub's action docs (T:58-61, T:136-143).** S1 adds `push_ref`; S5 adds `stage`. S5 merges after S1 and unions both names on :328 and on the header lines. S1 adds its `push_ref` arm after T:364 and leaves S2's `waitafter` lines (:367-369) unchanged and unreflowed.
+- **studio_test `test_execute_lanes`.** S1's assertion goes after :561; S5 edits :570.
+- **`run_tests` lists (T, OT, studio_test) and rulings tails (`# exclusive-scan:` lines).** S1, S3, S4 and S5 all append here. On a conflict, keep both sides; S1 adds its names on its own new continuation line.
+- **`tests/run_all.sh` floors.** On a conflict, take the integration branch's `run_all.sh`, then redo Task 6 Steps 3–5.
+- **Order.** S1 merges after S4 (S2's build order), and S5 merges after S1.
 
 ## Falsified assumptions (planner falsify clause, checked at 1cfca7f)
 
