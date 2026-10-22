@@ -7,6 +7,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/../../.." && pwd -P)"
 . "$REPO_ROOT/tests/assert.sh"
 M="$REPO_ROOT/integrations/multica"
 R="$M/README.md"
+SPEC="$REPO_ROOT/docs/game-dev/specs/2026-10-03-multica-integration.md"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
@@ -169,7 +170,13 @@ test_readme_queue_section() {
   assert_contains "$R" "Do not assign a queued kickoff" "queue recipe: never assign"
 }
 
-run_tests test_agent_instructions_adopted_line test_readme_sections test_readme_teaching_phrases test_readme_flags_match_install \
+test_readme_hold_notices() {
+  assert_contains "$R" 'studio: \[notify only\]' "hold notice marker"
+  assert_contains "$R" 'An unassigned (queued) kickoff' "queued kickoff limit"
+  assert_contains "$SPEC" 'Exception (#85)' "AC17 exception"
+}
+
+run_tests test_readme_hold_notices test_agent_instructions_adopted_line test_readme_sections test_readme_teaching_phrases test_readme_flags_match_install \
   test_readme_flags_exist test_readme_commands_match_code test_readme_status_table_matches_code \
   test_readme_deny_list_by_reference test_readme_known_risks test_readme_p5_text_matches_install \
   test_readme_names_every_linked_command test_agent_instructions_wake_line test_readme_queue_section

@@ -132,7 +132,9 @@ mirrors each live run on its own Run issue.
 3. **Steer (phone).** Watch the Run issue and the story sub-issues (see
    [What the board shows](#what-the-board-shows)). When a story goes Blocked,
    read its `studio: held:` comment, then post `/say <guidance>` and `/resume`,
-   or `/stop`. See [Commands](#commands).
+   or `/stop`. A hold also turns the Run issue Blocked and posts a notice there and on
+   your request issue; the kickoff agent's one-line reply is what reaches your phone.
+   See [Commands](#commands).
 4. **Review (morning).** The agent's summary is on your request issue, and the
    report path is in the Run issue's `studio: run ended:` comment. In
    integration mode, review and merge the draft PR `integration/<slug>` → main,
@@ -228,7 +230,13 @@ Rules that catch people out:
 | `stopped`, `skipped` | `cancelled` |
 
 - The Run issue goes In Progress when the run starts and Done when it ends, with
-  the ending and the report path.
+  the ending and the report path. In a manifest run it also goes Blocked while any
+  story is held, and back to In Progress when none is.
+- Hold notice: when a story is held (or a hold expires), the bridge posts a comment
+  starting `studio: [notify only]` on the Run issue and on your request issue. It names
+  the story, why it is held and how to answer (`/say`, `/resume`, `/stop`). The marker
+  means the comment is a notice only, never a command. The operator's Mac also shows a
+  macOS banner. An unassigned (queued) kickoff wakes no agent; the banner is then the only alert.
 - When the Run issue closes, the game-dev agent wakes once on the request issue and posts a short summary of the report. An agent-assigned request issue whose Run issue is its sub-issue is woken by Multica when its last sub-issue closes. Otherwise (a queued kickoff, or a Run issue that could not be made a sub-issue) it is woken by a once-only rule the bridge arms (see [Queue a run behind another](#queue-a-run-behind-another)).
 
 Hands-off: if you assign a mirrored issue to an agent, the bridge stops writing to
@@ -255,7 +263,8 @@ listing the status changes and unit events it held back.
 - Do not run `multica-bridge once` while the service is running if you can avoid it: both write
   `bridge.log`, and its rotation is not safe across two processes.
 - Phone notifications: bridge comments are posted with your own token, so Multica may
-  not notify you. The board still shows everything.
+  not notify you. The board still shows everything. A hold posts a `studio: [notify only]`
+  notice and a macOS banner (see [What the board shows](#what-the-board-shows)).
 
 ## Known risks
 
@@ -271,7 +280,7 @@ listing the status changes and unit events it held back.
 - A queued kickoff is found only by the task's workdir name. If that misses, the Run issue goes top level and nothing is armed.
 - A runner that dies with no clean end never closes its Run issue, so the rule never fires (as for an assigned kickoff).
 - An agent created before this change keeps its old instructions until you update them. The rule's own instruction says what to do anyway.
-- Multica may not notify you of bridge comments, since they use your own token.
+- Multica may not notify you of bridge comments, since they use your own token. The hold notice is the same kind of comment, so the macOS banner is the alert you can rely on.
 - The Multica CLI is 0.x and its output may change. Every call goes through one adapter,
   and `multica-bridge status` shows the CLI version.
 - Multica's rate limits are not published. A long night at the default poll reads a lot

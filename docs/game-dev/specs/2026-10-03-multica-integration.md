@@ -436,6 +436,11 @@ Bridge: mirroring
     comment on the Run issue naming the version, and retires it.
 17. Every `issue status` and `issue update` call passes `--no-start`. The
     bridge never comments on, assigns, or changes the request issue.
+    Exception (#85): hold and expiry notices, comments starting
+    `studio: [notify only] ` and posted only through `Cli.add_notice`, which
+    checks that prefix (specs/2026-10-22-hold-notice-and-plan-probes.md).
+    Status and assignee stay forbidden; the #72 wakeup rule is the other
+    carve-out.
 18. Every title, description and comment the bridge writes passes through
     one outgoing sanitizer in the CLI adapter. It rewrites every `mention:`
     (any case) to `no-mention:`, every `@` to `＠` (U+FF20), and puts U+200B
