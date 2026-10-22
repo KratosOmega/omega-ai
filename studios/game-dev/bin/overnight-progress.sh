@@ -3,6 +3,8 @@
 # `studio-overnight status` (and so `watch`) print (#37). Sourced by
 # studio-overnight before its dispatch; never run on its own. Terminal only:
 # no event, no report.
+# Byte collation: under a UTF-8 locale macOS sh matches [a-z] by collation (A-Y too).
+unset LC_ALL; LC_COLLATE=C
 [ -n "${SELF_DIR:-}" ] || { echo "overnight-progress.sh: sourced by studio-overnight" >&2; exit 2; }
 #
 # Units. A story's planned units are the units it has done plus the ones it

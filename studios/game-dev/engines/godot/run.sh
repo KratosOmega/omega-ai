@@ -8,6 +8,8 @@
 # (an import first logs to import-<stamp>.log); error lines are
 # echoed first, then the last 40 lines. macOS has no timeout(1), so the
 # engine is started in the background, slept on, and sent TERM.
+# Byte collation: under a UTF-8 locale macOS sh matches [a-z] by collation (A-Y too).
+unset LC_ALL; LC_COLLATE=C
 set -u
 
 HERE="$(cd "$(dirname "$0")" && pwd)"

@@ -58,7 +58,7 @@ run_all_test                 1       98
 studio_test                  1       741
 state_test                   1       245
 gate_class_test              1       102
-omega_test                   1       528
+omega_test                   1       530
 run_affected_test            1       34
 harness_test                 1       115
 state_move_test              1       244
@@ -72,7 +72,8 @@ studio_env_test              1       43
 overnight_runs_test          1       41
 state_guard_test             1       66
 studio_peers_test            1       23
-studio_event_test            1       38
+studio_event_test            1       41
+locale_guard_test            1       41
 overnight_sessions_test      1       23
 sync_test                    1       8
 pointer_skills_route_test    1       15

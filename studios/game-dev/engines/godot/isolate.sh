@@ -16,6 +16,8 @@
 # Test-only knob: STUDIO_GODOT_USER_ROOT names the data root holding the per-project
 # folders (production: unset, so ~/Library/Application Support on Darwin). Setting it
 # also marks the platform known; any other platform without it is not isolated.
+# Byte collation: under a UTF-8 locale macOS sh matches [a-z] by collation (A-Y too).
+unset LC_ALL; LC_COLLATE=C
 set -u
 
 LANES_USE_RE='^config/use_custom_user_dir='

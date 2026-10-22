@@ -34,6 +34,8 @@
 # Exit: 0 ok · 1 no .studio/ (except init and root), bad key, bad value, bad
 # usage, or a check that found a mismatch · 3 worktree: the
 # branch exists but no worktree has it checked out · 4 refused: a story switch in this checkout, a story write after the story moved away, or a take/handoff onto another story or the wrong spec (--force overrides where stated)
+# Byte collation: under a UTF-8 locale macOS sh matches [a-z] by collation (A-Y too).
+unset LC_ALL; LC_COLLATE=C
 set -eu
 
 # The pointer's root is the main worktree, always listed first by

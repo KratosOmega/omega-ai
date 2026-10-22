@@ -13,6 +13,8 @@
 # studio-dispatch --has VERB — exit 0 when the engine's adapter VERB.sh exists,
 # 1 otherwise; silent on every path (#71).
 # Exit: 2 when the root, the engine, or the adapter is missing.
+# Byte collation: under a UTF-8 locale macOS sh matches [a-z] by collation (A-Y too).
+unset LC_ALL; LC_COLLATE=C
 set -u
 
 has=0
