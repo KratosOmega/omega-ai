@@ -136,8 +136,10 @@ wait_runtimes() {   # sets DAEMON and RT_OMEGA or dies
       die "step 7 (runtimes): several daemons serve both profiles: $named — re-run with --daemon-id <one of the ids>"
     fi
     if [ "$waited" -ge "$limit" ]; then
+      restart="restart the Multica daemon (Multica.app has no restart button; run: multica daemon restart --profile <name from ls ~/.multica/profiles>), then re-run install.sh"
+      [ "$LOCAL_DAEMON" = 0 ] || die "step 7 (runtimes): no online runtime for \"omega game-dev\" and \"claude (multica)\" on this Mac's daemon ($DAEMON_ID) after $limit s — $restart, or pass --daemon-id <id> to use another Mac's daemon"
       [ -z "$DAEMON_ID" ] || die "step 7 (runtimes): no online runtime for both profiles on daemon $DAEMON_ID after $limit s — check --daemon-id"
-      die "step 7 (runtimes): no online runtime for \"omega game-dev\" and \"claude (multica)\" after $limit s — restart the Multica daemon (quit and reopen Multica.app, or run: multica daemon restart), then re-run install.sh"
+      die "step 7 (runtimes): no online runtime for \"omega game-dev\" and \"claude (multica)\" after $limit s — $restart"
     fi
     sleep 2; waited=$((waited + 2))
   done
@@ -237,6 +239,13 @@ fi
 [ -n "$POLL_SECONDS" ] || POLL_SECONDS="$(cfg poll_seconds)"
 [ -n "$POLL_SECONDS" ] || POLL_SECONDS=15
 [ -n "$ROOTS" ] || ROOTS="$(cfg roots)"
+# Without --daemon-id, wait for this Mac's daemon: another Mac's daemon serving both
+# profiles must not stand in for it (its runtimes would get the agent).
+LOCAL_DAEMON=0
+if [ -z "$DAEMON_ID" ] && [ -r "$HOME/.multica/daemon.id" ]; then
+  DAEMON_ID="$(tr -d '[:space:]' < "$HOME/.multica/daemon.id")"
+  [ -z "$DAEMON_ID" ] || LOCAL_DAEMON=1
+fi
 [ -n "$WORKSPACE_ID" ] || usage_err "no workspace id — pass --workspace-id <id>"
 case "$POLL_SECONDS" in
   ''|*[!0-9]*) usage_err "--poll-seconds must be a number from 5 to 300" ;;
