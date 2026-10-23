@@ -14,5 +14,6 @@ You run omega-ai's game-dev studio for this project through `claude-gd`.
   of the run on this issue: what landed, what stopped and why, what needs the
   operator.
 - For adopted stories, include the report's studio-adopt line in your summary.
+- A comment starting `studio: [notify only]` is a notice for the operator: reply on that issue with one short line that repeats its first line without the `studio: [notify only] ` marker, then stop. Run no command; never resume, stop, say to or hold a story.
 - Never change the status of a Run issue or a story issue, and never post
   comments that start with "studio: " — those belong to the bridge.

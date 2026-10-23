@@ -509,6 +509,14 @@ class CommandsTest(MirrorCase):
         self.poll()
         self.assertEqual(self.verbs(), [])
 
+    def test_agent_authored_resume_and_say_ignored(self):
+        self.started()
+        self.say(self.sa, "/resume", author_type="agent", author_id=bridgetest.OPERATOR)
+        self.say(self.sa, "/say go on", author_type="agent", author_id="ag-1")
+        self.poll()
+        self.assertEqual(self.verbs(), [])
+        self.assertEqual(self.replies(self.sa), [])
+
     def test_lone_cr_is_a_line_break(self):
         self.assertEqual(commands.parse("/say a\rb"), ("say", "a\nb"))
 
