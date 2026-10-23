@@ -133,6 +133,14 @@ test_mode_validation() {
   assert_status 1 "a value with a backslash is refused" -- mode --session t9 set parallel 'max=3\4'
   assert_status 1 "clear without a mode exits 1" -- mode --session t9 clear
   assert_status 1 "clear with two modes exits 1" -- mode --session t9 clear parallel autopilot
+  # Under a UTF-8 locale macOS sh (bash 3.2) matches [a-z] by collation, so A-Y fall inside it.
+  _l="$(locale -a 2>/dev/null | grep -iE '^(en_US|C)\.utf-?8$' | head -n 1)"
+  if [ -n "$_l" ]; then
+    assert_status 1 "an uppercase mode name is refused under $_l" -- \
+      env LC_ALL="$_l" CLAUDE_CONFIG_DIR="$CFG" sh "$MODE" --session t9 set Parallel
+    assert_status 1 "an uppercase key is refused under $_l" -- \
+      env LC_ALL="$_l" CLAUDE_CONFIG_DIR="$CFG" sh "$MODE" --session t9 set parallel Max=3
+  fi
   assert_missing "$CFG/omega/modes/t9" "a refused set writes nothing"
   assert_status 1 "HOME and CLAUDE_CONFIG_DIR both unset exits 1" -- \
     env -u HOME -u CLAUDE_CONFIG_DIR sh "$MODE" --session x show

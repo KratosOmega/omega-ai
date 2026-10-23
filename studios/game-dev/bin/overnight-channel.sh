@@ -6,6 +6,8 @@
 # before its dispatch; never run on its own. The verbs write only
 # inbox/<story>/<id>.msg and control/<story>.<kind> in the live run's dir,
 # each by temp file then mv, and never a story record (R1, R27).
+# Byte collation: under a UTF-8 locale macOS sh matches [a-z] by collation (A-Y too).
+unset LC_ALL; LC_COLLATE=C
 [ -n "${SELF_DIR:-}" ] || { echo "overnight-channel.sh: sourced by studio-overnight" >&2; exit 2; }
 CH_TAB="$(printf '\t')"
 

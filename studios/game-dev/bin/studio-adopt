@@ -12,6 +12,8 @@
 #
 # Exit: 0 clean / in sync · 1 a mismatch or a refused precondition (one stderr
 # line naming it) · 2 usage
+# Byte collation: under a UTF-8 locale macOS sh matches [a-z] by collation (A-Y too).
+unset LC_ALL; LC_COLLATE=C
 set -u
 
 SELF_DIR="$(cd "$(dirname "$0")" && pwd)"

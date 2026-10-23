@@ -20,6 +20,8 @@
 # studio-event and studio-env, and sources overnight-lanes.sh, -channel.sh and
 # -progress.sh. status prints a progress bar with a rough finish time, then the
 # resource readout (studio-env).
+# Byte collation: under a UTF-8 locale macOS sh matches [a-z] by collation (A-Y too).
+unset LC_ALL; LC_COLLATE=C
 set -u
 
 # Manifest mode's per-unit words, set only by overnight-lanes.sh: never taken

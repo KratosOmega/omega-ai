@@ -34,6 +34,8 @@
 # Test hook: STUDIO_SETUP_TIMEOUT_SECONDS replaces minutes x 60.
 # Test hook: STUDIO_SETUP_POLL_SECONDS (1, 0.5, 0.2 or 0.1; default 1) — the poll of the lock wait, run loop and TERM grace; budgets stay in seconds.
 
+# Byte collation: under a UTF-8 locale macOS sh matches [a-z] by collation (A-Y too).
+unset LC_ALL; LC_COLLATE=C
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
 usage() {

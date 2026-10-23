@@ -64,6 +64,8 @@
 # bare Godot script/import run, a missing godot-cmd.awk, a task without
 # Spec:, or no tasks) · 2 bad usage, (validate) a missing plan or (rewrite) a
 # missing file
+# Byte collation: under a UTF-8 locale macOS sh matches [a-z] by collation (A-Y too).
+unset LC_ALL; LC_COLLATE=C
 set -u
 
 HERE="$(cd "$(dirname "$0")" && pwd)"

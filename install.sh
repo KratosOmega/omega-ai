@@ -1,4 +1,6 @@
 #!/bin/sh
+# Byte collation: under a UTF-8 locale macOS sh matches [a-z] by collation (A-Y too).
+unset LC_ALL; LC_COLLATE=C
 set -eu
 REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
 . "$REPO_ROOT/lib/common.sh"

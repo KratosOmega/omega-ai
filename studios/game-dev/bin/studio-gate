@@ -51,6 +51,8 @@
 # STUDIO_GATE_MINUTES stopped the run.
 # With no .studio/ project there is nothing to protect: the command just runs.
 
+# Byte collation: under a UTF-8 locale macOS sh matches [a-z] by collation (A-Y too).
+unset LC_ALL; LC_COLLATE=C
 SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$SELF_DIR/gate-class.sh"
 . "$SELF_DIR/gate-times.sh"

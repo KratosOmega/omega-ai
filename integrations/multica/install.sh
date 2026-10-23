@@ -1,5 +1,7 @@
 #!/bin/sh
 # install.sh — set up the omega-ai Multica integration on this Mac (#28).
+# Byte collation: under a UTF-8 locale macOS sh matches [a-z] by collation (A-Y too).
+unset LC_ALL; LC_COLLATE=C
 set -eu
 unset CDPATH
 HERE="$(cd "$(dirname "$0")" && pwd -P)"

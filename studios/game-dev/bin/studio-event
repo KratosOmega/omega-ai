@@ -14,6 +14,8 @@
 # sh, date and awk (the runner suites' minimal PATH).
 # Exit: 0 written · 1 RUN_DIR missing or not writable (a line on stderr) ·
 # 2 bad usage.
+# Byte collation: under a UTF-8 locale macOS sh matches [a-z] by collation (A-Y too).
+unset LC_ALL; LC_COLLATE=C
 set -u
 usage() { echo "usage: studio-event RUN_DIR EVENT [key=text|key:=number|key[]=a,b]…" >&2; exit 2; }
 [ "$#" -ge 2 ] || usage

@@ -24,6 +24,8 @@
 #
 # Exit 0 always. Self-contained on purpose: in copy mode the plugin root has
 # no lib/.
+# Byte collation: under a UTF-8 locale macOS sh matches [a-z] by collation (A-Y too).
+unset LC_ALL; LC_COLLATE=C
 set -u
 
 ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"

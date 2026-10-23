@@ -1,6 +1,8 @@
 #!/bin/sh
 # uninstall.sh — remove the omega-ai Multica integration from this Mac (#28).
 # Never deletes or edits Multica issues, agents or properties.
+# Byte collation: under a UTF-8 locale macOS sh matches [a-z] by collation (A-Y too).
+unset LC_ALL; LC_COLLATE=C
 set -eu
 unset CDPATH
 HERE="$(cd "$(dirname "$0")" && pwd -P)"

@@ -8,6 +8,8 @@
 # mean per test) and the N slowest tests (default N 10), then the share of the
 # time spent in the top N files and in tests of 0.5 s or more.
 # Exit: 0 · 1 no report, or N not a number.
+# Byte collation: under a UTF-8 locale macOS sh matches [a-z] by collation (A-Y too).
+unset LC_ALL; LC_COLLATE=C
 set -u
 
 N="${1:-10}"
