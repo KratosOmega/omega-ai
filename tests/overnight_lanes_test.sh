@@ -481,6 +481,7 @@ STUB
 cat > "$FAKE/merge-stub" <<'STUB'
 #!/bin/sh
 echo "s merge $(date +%s)" >> "$CALLS/gate.iv"
+[ -z "${MERGE_SD:-}" ] || printf '%s\n' "${STUDIO_START_DIR:-unset}" > "$CALLS/merge.sd"
 k=$(( $(cat "$CALLS/merge-count" 2>/dev/null || echo 0) + 1 )); echo "$k" > "$CALLS/merge-count"
 out="$(printf '%s\n' ${MERGE_OUTCOMES:-ok} | sed -n "${k}p")"; [ -n "$out" ] || out=ok
 f="$GH/pr-$1"; rc=0
@@ -1885,6 +1886,26 @@ test_lanes_final_step_once() {
   assert_eq 1 "$(grep -c '^pr create ' "$GH/calls")" "and opens none"
   assert_eq 1 "$(prompt_calls '/game-dev:execute --progress' | grep -c .)" "and runs no second progress unit"
   use_gate true
+}
+# #82: the final gate reads the run worktree's config through STUDIO_START_DIR.
+test_lanes_final_gate_reads_run_config() {
+  LANES_CONFIG='{"test_engine_args": "--fixed-fps 60"}'; export LANES_CONFIG
+  lanes_fixture fgcfg integration A:-
+  use_gate ". '$BIN/gate-class.sh'; studio_cfg test_engine_args > '$CALLS/fg.args'; printf '%s\n' \"\${STUDIO_START_DIR:-unset}\" > '$CALLS/fg.sd'"
+  run_lanes start "$MFP"
+  use_gate true
+  assert_eq "--fixed-fps 60" "$(cat "$CALLS/fg.args" 2>/dev/null)" "the final gate sees the run's test_engine_args"
+  assert_eq "$P" "$(cat "$CALLS/fg.sd" 2>/dev/null)" "with STUDIO_START_DIR = the start checkout"
+  assert_missing "$P/.claude/worktrees/integration-demo/.studio/config.json" "the integration worktree has no config of its own"
+}
+# #82: the landing's studio-gate merge gets STUDIO_START_DIR too.
+test_lanes_merge_gate_gets_start_dir() {
+  LANES_CONFIG='{"merge_command": "scripts/merge.sh <pr>"}'; export LANES_CONFIG
+  lanes_fixture mgsd direct A:-
+  MERGE_SD=1; export MERGE_SD
+  run_lanes start "$MFP"
+  unset MERGE_SD
+  assert_eq "$P" "$(cat "$CALLS/merge.sd" 2>/dev/null)" "the merge program sees STUDIO_START_DIR = the start checkout"
 }
 test_lanes_final_red_after_repair() {
   lanes_fixture finred integration A:-
@@ -4974,7 +4995,7 @@ run_tests test_stub_waitexist_and_run_token test_lanes_setup_preflight_refuses_l
   test_lanes_sync_failed_merge_aborts test_lanes_sync_conflict_launches_repair test_lanes_sync_repair_stops test_lanes_sync_repair_budget \
   test_lanes_stalled_outcome \
   test_lanes_no_sync_before_repairs \
-  test_lanes_final_step_once test_lanes_final_red_after_repair \
+  test_lanes_final_step_once test_lanes_final_gate_reads_run_config test_lanes_merge_gate_gets_start_dir test_lanes_final_red_after_repair \
   test_lanes_final_repair_turns_green test_lanes_final_conflict test_lanes_final_resume_edits_pr \
   test_lanes_final_skipped_on_stop_or_nothing_landed test_lanes_final_stop_before_setup test_lanes_final_gate_default test_lanes_direct_progress_landing \
   test_lanes_final_dirty_unit_is_red test_lanes_final_unit_stop_pointer_invisible test_lanes_final_budget test_lanes_final_conflict_then_red test_lanes_final_gate_interrupted_not_recorded \

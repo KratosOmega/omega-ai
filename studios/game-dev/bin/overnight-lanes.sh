@@ -636,6 +636,7 @@ land_once_direct() {
   set -m 2>/dev/null || true   # own process group, as start_session's session
   ( cd "$_ld_dir" || exit 2
     set -f; set -- $_ld_a; set +f
+    STUDIO_START_DIR="$START_DIR"; export STUDIO_START_DIR
     exec sh "$SELF_DIR/studio-gate" merge -- "$START_DIR/$_ld_w" "$@" ) > "$_ld_log" 2>&1 < /dev/null &
   _ld_pid=$!
   set +m 2>/dev/null || true
@@ -1730,7 +1731,7 @@ gate_signalled() { case "$1" in 129|130|143) return 0 ;; esac; return 1; }
 # final-gate, D17), stdin /dev/null, output to LOG. Its exit code.
 final_gate() {
   _fg_c="$(final_gate_cmds)"
-  ( cd "$FINAL_W" && exec sh "$SELF_DIR/studio-gate" final-gate -- sh -c "$_fg_c" ) > "$1" 2>&1 < /dev/null
+  ( cd "$FINAL_W" && STUDIO_START_DIR="$START_DIR" && export STUDIO_START_DIR && exec sh "$SELF_DIR/studio-gate" final-gate -- sh -c "$_fg_c" ) > "$1" 2>&1 < /dev/null
 }
 
 # final_pr_open BRANCH — the open PR of BRANCH into the default branch
@@ -1857,7 +1858,7 @@ final_integration() {
   # Failure is tracked by exit status (_fi_su), never by the note's text.
   final_stopped "the worktree setup" && return 1
   _fi_su=0; _fi_sn=""
-  _fi_se="$( cd "$FINAL_W" && sh "$SELF_DIR/studio-setup" 2>&1 >/dev/null )" \
+  _fi_se="$( cd "$FINAL_W" && STUDIO_START_DIR="$START_DIR" && export STUDIO_START_DIR && sh "$SELF_DIR/studio-setup" 2>&1 >/dev/null )" \
     || { _fi_su=$?; _fi_sn="$(setup_note "$_fi_su" "$_fi_se")"; }
   # Step 2.
   final_stopped "the progress unit" && return 1
@@ -1954,7 +1955,7 @@ progress_direct() {
       || { FINAL_COLOR=red; final_note "the worktree $FINAL_W is not clean"; return 1; }
   fi
   # D12: the project's worktree setup; a failure is a red final, before any unit.
-  _pd_se="$( cd "$FINAL_W" && sh "$SELF_DIR/studio-setup" 2>&1 >/dev/null )" \
+  _pd_se="$( cd "$FINAL_W" && STUDIO_START_DIR="$START_DIR" && export STUDIO_START_DIR && sh "$SELF_DIR/studio-setup" 2>&1 >/dev/null )" \
     || { _pd_su=$?; FINAL_COLOR=red; final_note "$(setup_note "$_pd_su" "$_pd_se")"; return 1; }
   if ! git -C "$FINAL_W" log --format=%s HEAD | grep -qxF "docs(progress): $MF_SLUG"; then
     final_stopped "the progress unit" && return 1

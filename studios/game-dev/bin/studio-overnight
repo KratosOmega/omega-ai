@@ -2101,7 +2101,7 @@ setup_preflight() {
     || sp_refuse "cannot mark the scratch worktree $SP_W"
   _sp_ef="$(mktemp "${TMPDIR:-/tmp}/setup-preflight.XXXXXX")" || { _sp_ef=""; sp_refuse "mktemp failed"; }
   # Background + wait: a trapped signal interrupts wait at once (D4).
-  ( cd "$SP_W" && exec sh "$SELF_DIR/studio-setup" ) > /dev/null 2> "$_sp_ef" &
+  ( cd "$SP_W" && STUDIO_START_DIR="$START_DIR" && export STUDIO_START_DIR && exec sh "$SELF_DIR/studio-setup" ) > /dev/null 2> "$_sp_ef" &
   SP_PID=$!
   _sp_rc=0; wait "$SP_PID" || _sp_rc=$?
   trap - INT TERM HUP
