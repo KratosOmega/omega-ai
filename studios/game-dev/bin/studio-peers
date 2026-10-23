@@ -4,6 +4,8 @@
 # files of those stories' unfinished tasks (k+1..N above ## Backlog) read
 # from each run's plans at its Docs: revision. Reads only; no lock. A run
 # whose data cannot be read prints `<slug>: unreadable`. Always exits 0.
+# Byte collation: under a UTF-8 locale macOS sh matches [a-z] by collation (A-Y too).
+unset LC_ALL; LC_COLLATE=C
 set -u
 SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$SELF_DIR/overnight-runs.sh"

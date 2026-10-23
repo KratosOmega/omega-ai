@@ -12,6 +12,8 @@
 # CPU-bound fixed-fps suite (~ 6). It refuses at >= 8, when every logical CPU is
 # busy. There is no config override.
 
+# Byte collation: under a UTF-8 locale macOS sh matches [a-z] by collation (A-Y too).
+unset LC_ALL; LC_COLLATE=C
 # cfg-begin (byte-identical in bin/gate-class.sh and engines/godot/cfg.sh; #71 D15)
 # cfg_field FILE KEY — a flat JSON string key's value (studio-dispatch field()).
 cfg_field() {

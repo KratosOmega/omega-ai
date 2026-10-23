@@ -6,6 +6,8 @@
 # (cmd_check_id). Sourced by overnight-lanes.sh, so by every manifest-mode
 # path; never run on its own. Reads git refs and files only: it never fetches
 # and never writes.
+# Byte collation: under a UTF-8 locale macOS sh matches [a-z] by collation (A-Y too).
+unset LC_ALL; LC_COLLATE=C
 [ -n "${SELF_DIR:-}" ] || { echo "overnight-ids.sh: sourced by studio-overnight" >&2; exit 2; }
 IDS_PAT='^[A-Za-z0-9._-]+$'
 

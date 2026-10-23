@@ -12,6 +12,8 @@
 # is skipped), and print one delivery block — plain text at SessionStart,
 # hookSpecificOutput.additionalContext JSON at PostToolUse.
 # compact: re-show what this unit tag already claimed, claiming nothing.
+# Byte collation: under a UTF-8 locale macOS sh matches [a-z] by collation (A-Y too).
+unset LC_ALL; LC_COLLATE=C
 trap 'exit 0' EXIT
 [ -n "${STUDIO_UNIT_TAG:-}" ] && [ -n "${STUDIO_RUN_DIR:-}" ] || exit 0
 RD="$STUDIO_RUN_DIR"; TAG="$STUDIO_UNIT_TAG"

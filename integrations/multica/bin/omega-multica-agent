@@ -1,6 +1,8 @@
 #!/bin/sh
 # omega-multica-agent — the "omega game-dev" runtime (mode 3): claude-gd in
 # OMEGA_PROJECT with Multica's context appended and the deny rules.
+# Byte collation: under a UTF-8 locale macOS sh matches [a-z] by collation (A-Y too).
+unset LC_ALL; LC_COLLATE=C
 self="$0"
 while [ -L "$self" ]; do
   link="$(readlink "$self")"
