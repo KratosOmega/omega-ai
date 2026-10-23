@@ -331,7 +331,7 @@ class MirrorRunsTest(MirrorCase):
                 run.append(e)
                 self.poll()
                 new_s = self.status_calls()[before_s:]
-                self.assertEqual([(c[2], c[3]) for c in new_s], [(row, status)] if status else [])
+                self.assertEqual([(c[2], c[3]) for c in new_s if c[2] == row], [(row, status)] if status else [])
                 self.assertEqual(self.comments_on(row)[before_c:], [comment] if comment else [])
         run.append(ev("run_ended", ending="done", report="/r/report.md"))
         self.poll()
@@ -545,7 +545,7 @@ class MirrorRunsTest(MirrorCase):
                    ev("run_ended", ending="done", report=bad))
         self.poll()
         texts = self.stdins()
-        self.assertEqual(len([t for t in texts if "no-mention:" in t]), 2)
+        self.assertEqual(len([t for t in texts if "no-mention:" in t]), 3)
         for t in texts:
             self.assertNotIn("@", t)
             self.assertNotIn("```", t)

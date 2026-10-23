@@ -1,7 +1,8 @@
 """Mirror live overnight runs into Multica: Run and story issues, events as statuses and comments (#28).
 
 Part 1: adoption, the request issue, the Run and story issues, event mapping. The bridge writes
-only issues it created (the Run and story issues) and never the request issue.
+only issues it created (the Run and story issues). On the request issue it writes only the end-of-run
+wakeup rule (#72) and the notify-only hold notices (#85, Cli.add_notice).
 """
 from __future__ import annotations
 
@@ -9,7 +10,7 @@ import os
 import traceback
 
 from . import multica_cli as mc
-from . import state, studio
+from . import notice, state, studio
 
 STATUS = {"queued": "todo", "waiting": "todo", "running": "in_progress", "repair": "in_progress",
           "gate-repair": "in_progress", "sync-repair": "in_progress", "landing": "in_progress", "held": "blocked",
@@ -37,11 +38,13 @@ def cost(usd) -> str:
         return "cost unknown"
 
 
-def event_writes(st, ev):
+def event_writes(st, ev, superseded: bool = False):
     """The writes one event asks for, in order, as (kind, target, value):
-    kind "status" (value: status key), "comment" (value: the full text) or
-    "story" (value: the story issue's description). target is "run" or a
-    story id. Pure: reads st, writes nothing."""
+    kind "status" (value: status key), "comment" (value: the full text),
+    "story" (value: the story issue's description), "kickoff" (value: the
+    notify-only notice for the request issue) or "banner" (value: the macOS
+    banner text). target is "run", a story id, "request" or "-". Pure: reads
+    st, writes nothing. `superseded`: see notice_writes."""
     e, s = ev.get("event"), str(ev.get("story", "-"))
     single = st.get("mode") == "single" or s == "-"
     routed = s in st["story_failed"] and not st["stories"].get(s)   # AC12: its issue could not be made
@@ -70,7 +73,7 @@ def event_writes(st, ev):
             out.append(say("held: %s — until %s — /say, /resume or /stop" % (ev.get("why", "?"), ev.get("until", "?"))))
         elif state_ in ("stopped", "skipped"):
             out.append(say("%s: %s" % (state_, ev.get("why", "?"))))
-        return out
+        return out + notice_writes(st, ev, superseded)
     if e == "story_synced":
         if ev.get("refs"):
             return [say("synced %s (%s)" % (", ".join(map(str, ev.get("refs") or [])), str(ev.get("sha", "?"))[:7]))]
@@ -93,6 +96,45 @@ def event_writes(st, ev):
         return [("comment", "run", "studio: run ended: %s — report: %s" % (ev.get("ending"), ev.get("report"))),
                 ("status", "run", "done")]
     return []   # includes session_wait: not mirrored; the unit's own unit_started follows
+
+
+def notice_writes(st, ev, superseded=False) -> list:
+    """#85: what a story_state adds for the operator, as (kind, target, value). Manifest runs: the Run
+    issue goes blocked on the first held story and back to in_progress when the last one leaves the held
+    set. A hold or an expiry also posts its notice on the Run issue (manifest runs), the notify-only
+    notice on the kickoff issue and one banner. A superseded hold (a later story_state for the same
+    story is in the same read) keeps only its Run-issue notice. Pure."""
+    s, state_ = str(ev.get("story", "-")), ev.get("state")
+    single = st.get("mode") == "single" or s == "-"
+    story = "-" if single else s
+    why = ev.get("why") or "?"
+    held = st.get("held") or []                                   # AC12: states saved before #85 have no key
+    out = []
+    if not single:
+        if state_ == "held":
+            if not superseded and not held:
+                out.append(("status", "run", "blocked"))
+        elif s in held and notice.held_after(held, ev) == [] and not st.get("ended"):
+            out.append(("status", "run", "in_progress"))
+    expiry = state_ == "stopped" and notice.is_expiry(why)
+    if state_ != "held" and not expiry:
+        return out
+    run = os.path.basename(st["run_dir"].rstrip("/"))
+    if state_ == "held":
+        issue = st.get("run_issue") if single else st["stories"].get(s)
+        body = notice.hold_body(story, why, ev.get("until"), issue, run)
+        banner = notice.banner_text(story, run, why)
+    else:
+        body = notice.expiry_body(story, why)
+        banner = notice.banner_text(story, run, expired=True)
+    if not single:
+        out.append(("comment", "run", mc.PREFIX + body))
+    if superseded:
+        return out
+    if st["request"].get("issue"):
+        out.append(("kickoff", "request", notice.kickoff_text(body)))
+    out.append(("banner", "-", banner))
+    return out
 
 
 # ----- adoption --------------------------------------------------------------
@@ -269,6 +311,22 @@ def note(ctx, st, text):
         ctx.log.error("run %s: note not posted (%s): %s", st["key"], e, text)
 
 
+def post_notice(ctx, st, text) -> None:
+    """#85: the notify-only notice on the request issue, the narrow AC17 exception (Cli.add_notice).
+    Not hands-off checked: an agent-assigned kickoff is the point, its agent replies to the operator.
+    A 4xx (gone, refused) is logged and the notice dropped; transient and auth errors propagate."""
+    ident = st["request"].get("issue")
+    if not ident:
+        return
+    try:
+        c = ctx.cli.add_notice(ident, text)
+    except mc.PermanentError as e:
+        ctx.log.error("run %s: notice on %s not posted, dropped: %s", st["key"], ident, e)
+        return
+    if isinstance(c, dict) and c.get("id"):
+        st["posted"] = (st["posted"] + [c["id"]])[-POSTED_KEEP:]
+
+
 def is_hands_off(row) -> bool:
     return row.get("assignee_type") in ("agent", "squad")
 
@@ -388,6 +446,12 @@ def _do_write(ctx, st, w):
     if kind == "story":
         ensure_story_issue(ctx, st, tgt, value)
         return
+    if kind == "kickoff":
+        post_notice(ctx, st, value)
+        return
+    if kind == "banner":           # the kind is unique to the event: the once-per-outage dedupe never swallows it
+        ctx.notify("notice:%s:%s" % (st["key"], (st.get("pending") or {}).get("offset")), value)
+        return
     if tgt == "run":
         _write(ctx, st, kind, st["run_issue"], value)
         return
@@ -456,7 +520,7 @@ def apply_events(ctx, st):
         note(ctx, st, LOG_GONE)
         retire(ctx, st)
         return
-    for start, end, raw in lines:
+    for i, (start, end, raw) in enumerate(lines):
         kind, ev = studio.parse_event(raw)
         if kind == "version":
             note(ctx, st, "studio: event log version %s is newer than this bridge reads (1) — mirroring stopped" % ev.get("v"))
@@ -469,20 +533,37 @@ def apply_events(ctx, st):
                 st["mode"] = "single" if ev.get("mode") == "single" else "manifest"
             if ev["event"] == "story_state" and ev.get("state") not in STATUS:
                 ctx.log.warning("run %s: unknown story state %r left the status unchanged", st["key"], ev.get("state"))
-            if not _apply_one(ctx, st, start, ev):
+            hold = ev["event"] == "story_state" and ev.get("state") == "held"
+            if not _apply_one(ctx, st, start, ev, superseded=hold and _superseded(lines, i, ev)):
                 return                                    # retried on the next poll
             if ev["event"] == "run_ended":
                 st["ended"] = True
+                st["held"] = []
+            elif not (hold and (st["pending"] or {}).get("superseded")):   # the value fixed with its writes
+                st["held"] = notice.held_after(st.get("held") or [], ev)
         st["offset"], st["pending"] = end, None
         state.save_run(ctx.paths, st)
 
 
-def _apply_one(ctx, st, offset, ev):
-    """True when the event is finished (all writes done, or skipped)."""
+def _superseded(lines, i, ev) -> bool:
+    """#85: a later line of this read is a story_state for the same story (the hold is over already)."""
+    story = str(ev.get("story", "-"))
+    for _, _, raw in lines[i + 1:]:
+        if b"story_state" in raw:
+            later = studio.parse_event(raw)[1]
+            if isinstance(later, dict) and later.get("event") == "story_state" \
+                    and str(later.get("story", "-")) == story:
+                return True
+    return False
+
+
+def _apply_one(ctx, st, offset, ev, superseded=False):
+    """True when the event is finished (all writes done, or skipped). `superseded` counts only when the
+    event's pending is built; it is stored there, so a retry keeps the value its writes were fixed with."""
     p = st["pending"]
     if not p or p["offset"] != offset:
-        p = st["pending"] = {"offset": offset, "done": [], "fails": 0, "error": "",
-                             "writes": [list(w) for w in event_writes(st, ev)]}   # fixed once: done[] indexes this list
+        p = st["pending"] = {"offset": offset, "done": [], "fails": 0, "error": "", "superseded": superseded,
+                             "writes": [list(w) for w in event_writes(st, ev, superseded)]}   # fixed once: done[] indexes this list
     try:
         for i, w in enumerate(p["writes"]):
             if i in p["done"]:
@@ -498,10 +579,12 @@ def _apply_one(ctx, st, offset, ev):
         if p["fails"] < PERMANENT_ATTEMPTS:
             return False
         ctx.log.error("run %s: skipped %s after %d failed polls: %s", st["key"], ev.get("event"), p["fails"], e)
-        for i, w in enumerate(p["writes"]):               # M6: the comment is given up on, its status writes are not
-            if w[0] == "status" and i not in p["done"]:
+        for i, w in enumerate(p["writes"]):               # M6: the comment is given up on; its status writes,
+            if w[0] in ("status", "kickoff", "banner") and i not in p["done"]:      # notice and banner (#85) are not
                 try:
                     _do_write(ctx, st, w)                 # once, best effort; a TransientError retries the whole skip
+                    p["done"].append(i)                   # #85: that retry must not repeat a notice or a banner
+                    state.save_run(ctx.paths, st)
                 except (mc.PermanentError, mc.ForbiddenWrite) as e2:
                     ctx.log.error("run %s: status write of skipped %s failed: %s", st["key"], ev.get("event"), e2)
         note(ctx, st, "studio: skipped %s (story %s) after %d failed attempts: %s"

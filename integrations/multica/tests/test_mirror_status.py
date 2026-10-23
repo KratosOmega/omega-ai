@@ -391,7 +391,8 @@ class MirrorStatusTest(MirrorCase):
         self.assertEqual(self.status_of(self.sa), "blocked")
         self.board.reset_calls()
         self.poll()
-        self.assertEqual(self.status_calls(), [])
+        # #85: the Run issue now follows holds
+        self.assertEqual([c for c in self.status_calls() if c[2] == self.sa], [])
         self.assertTrue(any(t.startswith("studio: held:") for t in self.comments_on(self.sa)))
         self.assertGreater(self.load(run)["offset"], 0)
 
