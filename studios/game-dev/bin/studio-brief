@@ -351,7 +351,7 @@ tracks)
       for (i = 1; i <= nf; i++) { split(fl[i], e, SUBSEP); r = find(e[1])
         if (!((r SUBSEP e[2]) in has)) { has[r SUBSEP e[2]] = 1; nfiles[r]++; F[r, nfiles[r]] = e[2] } }
       for (i = 1; i <= k; i++) for (j = i + 1; j <= k; j++) if (roots[j] + 0 < roots[i] + 0) { t = roots[i]; roots[i] = roots[j]; roots[j] = t }
-      print "tracks: " k
+      print "tracks: " (k + 0)
       for (i = 1; i <= k; i++) { r = roots[i]; m = nfiles[r] + 0
         for (a = 2; a <= m; a++) { v = F[r, a]; b = a - 1
           while (b >= 1 && F[r, b] > v) { F[r, b + 1] = F[r, b]; b-- }

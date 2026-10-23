@@ -519,6 +519,16 @@ Files: x.js
 PLAN
   assert_eq "tracks: 2" "$(sh "$BRIEF" tracks "$Q/p2.md" | sed -n 1p)" "a fenced Files: line in a task is ignored"
 }
+test_tracks_no_tasks() {
+  Q="$TMP/trk6"; mkdir -p "$Q"
+  printf '# Plan\nnothing here\n' > "$Q/plan.md"
+  sh "$BRIEF" tracks "$Q/plan.md" > "$TMP/t.out"; st=$?
+  assert_eq 0 "$st" "no tasks: exit 0"
+  assert_eq "tracks: 0" "$(cat "$TMP/t.out")" "no task headings: tracks: 0"
+  printf '# Plan\n## Backlog\n### Task 1: later\nFiles: a.gd\n' > "$Q/plan.md"
+  sh "$BRIEF" tracks "$Q/plan.md" > "$TMP/t.out"
+  assert_eq "tracks: 0" "$(cat "$TMP/t.out")" "only backlog tasks: tracks: 0"
+}
 test_tracks_deterministic() {
   Q="$TMP/trk5"; mkdir -p "$Q"; tracks_plan "$Q/plan.md"
   sh "$BRIEF" tracks "$Q/plan.md" > "$TMP/t1.out"; sh "$BRIEF" tracks "$Q/plan.md" > "$TMP/t2.out"
@@ -870,4 +880,4 @@ test_brief_rewrite_file() {
   assert_eq 0 "$(ls "$TMP/rf" | grep -c nope)" "and creates nothing"
 }
 
-run_tests test_godot_cmd_md_finds_bare_forms test_godot_cmd_md_span_edges test_godot_cmd_md_multiline test_brief_task test_brief_final test_brief_refusals test_brief_missing_sections test_brief_directives_task test_brief_directives_final test_brief_directive_text_not_ruling test_brief_directive_edge_cases test_brief_no_directives_no_part test_brief_context_appended test_brief_context_cap test_brief_context_missing_file test_brief_context_no_glob test_brief_final_plan_acceptance test_brief_check_verb test_brief_check_uses_truth_region test_brief_final_reads_check_rulings test_brief_original_plan_item test_brief_usage_names_check test_brief_single_line_item test_brief_validate_good_plan test_brief_validate_reports_all test_brief_validate_duplicate_task test_brief_validate_missing_plan_and_no_state test_brief_validate_relative_to_caller test_brief_rewrite_wraps_only test_brief_task_check_final_rewritten test_brief_validate_godot_form test_brief_missing_detector test_brief_broken_detector test_brief_rewrite_no_tmpdir test_brief_rewrite_file test_tracks_two_groups test_tracks_after_joins test_tracks_normalizes_paths test_tracks_ignores_backlog_and_fences test_tracks_deterministic test_validate_after_forward_fails test_validate_after_unknown_fails test_validate_after_ok
+run_tests test_godot_cmd_md_finds_bare_forms test_godot_cmd_md_span_edges test_godot_cmd_md_multiline test_brief_task test_brief_final test_brief_refusals test_brief_missing_sections test_brief_directives_task test_brief_directives_final test_brief_directive_text_not_ruling test_brief_directive_edge_cases test_brief_no_directives_no_part test_brief_context_appended test_brief_context_cap test_brief_context_missing_file test_brief_context_no_glob test_brief_final_plan_acceptance test_brief_check_verb test_brief_check_uses_truth_region test_brief_final_reads_check_rulings test_brief_original_plan_item test_brief_usage_names_check test_brief_single_line_item test_brief_validate_good_plan test_brief_validate_reports_all test_brief_validate_duplicate_task test_brief_validate_missing_plan_and_no_state test_brief_validate_relative_to_caller test_brief_rewrite_wraps_only test_brief_task_check_final_rewritten test_brief_validate_godot_form test_brief_missing_detector test_brief_broken_detector test_brief_rewrite_no_tmpdir test_brief_rewrite_file test_tracks_two_groups test_tracks_after_joins test_tracks_normalizes_paths test_tracks_ignores_backlog_and_fences test_tracks_deterministic test_validate_after_forward_fails test_validate_after_unknown_fails test_validate_after_ok test_tracks_no_tasks
