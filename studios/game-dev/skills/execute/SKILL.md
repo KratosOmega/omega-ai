@@ -653,9 +653,13 @@ A finish records operator messages at §0's recording point and commits them wit
      adding `--draft` when `omega-mode show` lists `autopilot`, when
      `omega-mode show` fails (it exits 1 without `CLAUDE_CODE_SESSION_ID`;
      an unknown mode counts as autopilot), or when step 1 ended red.
-   - No `origin` remote, `gh auth status` failing, a rejected push (never
-     force-push) or a failed `gh pr create`: keep the body file, say which
-     failed, print the body path, and continue.
+   - `gh auth status` failing or a failed `gh pr create`, in every mode
+     (`--one` included): keep the body file, say which failed, print the
+     body path, and continue.
+   - No `origin` remote or a rejected push (never force-push), outside `--one`
+     (an interactive finish): keep the body file, say which failed, print
+     the body path, and continue; under `--one`, a missing `origin`
+     counts as a failed push and §8's push rule applies.
      Never merge: no session merges into `main` (the default branch) in any run mode; the runner lands.
 5. **State.** `studio-state ledger "shipped <PR url, or the branch name when there is no PR>"`;
    commit the ledger
@@ -800,9 +804,15 @@ runs exactly one unit, writes its state, commits, pushes, and ends the turn.
     under integration, no PR and `shipped <Branch>`; a red integration gate, `Stop:` and no `shipped` line;
     `stage idle`, `task -`).
 
-  A rejected push is a `Ruling:` line, not a stop.
+  Under `--one`, a push that fails for any reason is a stop the first time
+  it happens: run `studio-state ledger "Stop: push rejected — <git's last error line>"`,
+  commit it as stops are committed, do not retry the push, and end the turn.
+  This unit and every later unit never writes a `Ruling:` about a push. An
+  earlier `Ruling: push rejected` line is a record only; it is not a stop and
+  not a reason to skip a push.
 - **Every stop** (§0's preconditions and isolation stops, §6's hard-stop
-  list, §7 step 1's exit 2 and exit 3, a red gate under a lane): run
+  list, §7 step 1's exit 2 and exit 3, a red gate under a lane, a failed push
+  (§8's push rule)): run
   `studio-state ledger "Stop: <reason>"`, one line, reason first. Where:
   - Once §0 step (c) has recorded `branch` — or a resume has entered the
     feature checkout its recorded `branch` names — in the feature checkout,
@@ -856,7 +866,7 @@ and pushed only when that commit is pushed: a red stop pushes nothing. A
 line recorded after the unit's last ledger commit
 is committed in a `chore(studio): ledger` commit before the unit ends
 (`git add .studio/ledger && git commit -m "chore(studio): ledger"`), and is
-pushed under the same rule.
+pushed under the same rule (a rejected push: §8's push rule).
 
 **Conflicts.** If a message conflicts with the approved plan or spec,
 follow it for how you work; for what you build, record a `Stop:` with the conflict instead (§8's stop rule).
@@ -884,7 +894,7 @@ a `Stop:` line (§8's stop rule).
   `git merge <ref>`. Resolve the conflict with one fresh fixer (§4a's brief).
   Gate with `studio-test --file <path>[,<path>…]`: one run of the test files
   the resolution touched, as §11 scopes it, up to three rounds. Green: commit `fix(sync): <summary>`, push,
-  `studio-state ledger "Synced: <summary>"`, committed and pushed. Red after
+  `studio-state ledger "Synced: <summary>"`, committed and pushed (a rejected push: §8's push rule). Red after
   three rounds: `studio-state ledger "Stop: sync repair red — <failing line>"`,
   committed, not pushed. The next task's `Verify:` and the finish gate cover
   the rest. The `origin/<Target>` form below is unchanged.
@@ -902,7 +912,7 @@ a `Stop:` line (§8's stop rule).
   `studio-test` or `studio-run` exit 2 and `studio-test` exit 3 are hard stops that end the unit at once with `studio-state ledger "Stop: <the printed message>"`, committed and not pushed.
 - **Commit and record:** commit `fix(land): <summary>`, push the story
   branch, then `studio-state ledger "Repair: <summary>"`, committed and
-  pushed. The runner reads that `Repair:` line to retry the landing once.
+  pushed (a rejected push: §8's push rule). The runner reads that `Repair:` line to retry the landing once.
 - **Red after three runs:** `studio-state ledger "Stop: land repair red — <failing line>"`.
   Commit the Stop line; do not push it: a red merge head never reaches origin/<Branch>, which keeps its `shipped` line. The runner reads the ledger from the feature checkout. End the turn.
 - A git write whose stderr says `could not lock` or `cannot lock ref` is retried, as §0 and §7 do.
@@ -981,7 +991,7 @@ then launches a fresh finish, which runs the full gate once (§7).
   `studio-state ledger "Stop: <the printed message>"`, committed.
 - **Record:** `studio-state ledger "Repair: gate — <summary>"`, commit the
   ledger (`git add .studio/ledger && git commit -m "chore(studio): gate repair"`),
-  then push the story branch. The runner reads that `Repair:` line and
+  then push the story branch (a rejected push: §8's push rule). The runner reads that `Repair:` line and
   launches the fresh finish.
 - **Red after three rounds:** `studio-state ledger "Stop: gate repair red — <failing line>"`,
   committed. It is a hard stop: the runner launches no further repair.
