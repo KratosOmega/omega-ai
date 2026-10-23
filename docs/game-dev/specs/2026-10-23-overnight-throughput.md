@@ -1,11 +1,14 @@
-# Overnight throughput on the Mac mini: parallel tracks, required tools, machine-tuned caps, checkpoint suites, isolation-safe commands — design
+# Overnight throughput on the Mac mini: parallel tracks, machine-tuned caps, checkpoint suites, isolation-safe commands — design
 
 Status: Draft (awaiting operator approval).
-Branch: `feat/overnight-throughput`, worktree `../omega-ai-throughput`, off `origin/main` d5183d2.
-Issues: none filed yet (the operator decides).
+Branch: `feat/overnight-throughput`, worktree `../omega-ai-throughput`, based on `origin/fix/overnight-push-gaps`
+(PR #93), because both change `studio-overnight`'s preflight and the execute skill.
+Issues: none filed yet for this work (the operator decides). Related: PR #93 (#90-#92, push gaps), and #95
+(required tools, owned by the omega-ai-42 session on `fix/block-and-tools`).
 Source: the 2026-10-23 review of autopilot's overnight run (phoenix run `overnight-bat-sonic-rings-20261022-224317`,
 the 43 story ledgers, about 22 run manifests, `.studio/gate.times`). The review ranked seven findings. This
-design covers ranks 1, 2 (the part #90-#92 does not cover), 5, 6 and 7. Ranks 3 (GUT sharding) and 4 (a counting
+design covers ranks 1, 5, 6 and 7. Rank 2 is covered elsewhere: #90-#92 in PR #93, and the required-tools part
+in #95 (`required_tools`, owned by the omega-ai-42 session). Ranks 3 (GUT sharding) and 4 (a counting
 gate semaphore) are out of scope.
 
 ## Intent
@@ -36,19 +39,19 @@ still runs.
 1. **Parallel tracks (rank 1).** A big manifest story whose tasks fall into independent tracks is planned as several
    sibling stories that run in their own lanes. A run with one chain says so before it starts, and offers a backfill
    story.
-2. **Required tools (rank 2, remainder).** A plan, and a project, can name the tools and minimum versions their tasks
-   need. `start`, `--dry-run` and `--detach` refuse a run whose machine lacks one, before any unit launches.
-3. **Caps tuned to the machine (rank 5).** vitest worker counts and the gate run cap come from the machine and its
+2. **Caps tuned to the machine (rank 5).** vitest worker counts and the gate run cap come from the machine and its
    measured history, not from constants set for the old laptop. On a 4-core machine the result is today's values.
-4. **Checkpoint suite (rank 6).** While the suite is cheap, a lane runs the full suite every K completed tasks, and
+3. **Checkpoint suite (rank 6).** While the suite is cheap, a lane runs the full suite every K completed tasks, and
    repairs a red checkpoint before the next task builds on it.
-5. **Isolation-safe forms (rank 7).** No command a skill prescribes is refused by worktree isolation, and every
+4. **Isolation-safe forms (rank 7).** No command a skill prescribes is refused by worktree isolation, and every
    brief tells subagents which shell forms the isolation refuses.
 
 ## Non-goals
 
 - GUT sharding (rank 3) and replacing the single gate lock with a counting semaphore (rank 4).
-- The push gaps #90, #91 and #92 (branch `fix/overnight-push-gaps`, another session's work).
+- The push gaps #90, #91 and #92 (PR #93, branch `fix/overnight-push-gaps`, another session's work).
+- Required tools (#95: the `required_tools` key and `tools_check`, owned by the omega-ai-42 session on
+  `fix/block-and-tools`). This design adds no tools key and no tools check.
 - Cucumber `--parallel`, which is phoenix's own `npm run test:functional`, not this repository. It is a follow-up
   for phoenix (a story the studio itself can run).
 - Task-level parallelism inside one story. The `task k/N` pointer stays a counter.
@@ -74,8 +77,11 @@ still runs.
   `tests/pointer_skills_*`, `tests/studio_test.sh`). Every wording change updates its pin.
 - `tests/run_all.sh` stays green. The PR merges only after every active overnight run has ended, followed by a
   reinstall, because a live run reads the plugin while it runs.
-- Rebase onto `main` once the push-gaps PR (#90-#92) lands, before implementing. Conflicts are expected in
-  `studio-overnight`'s `preflight()` and in execute §7 and §8.
+- Based on PR #93's branch. Before implementing, and again before the PR, rebase onto what has landed: `main`
+  after #93 merges, and `fix/block-and-tools` (#94, #95, #82) if it lands first. That branch builds on #93 in the
+  same files: `preflight()`, `story_units`, execute §7-§11 and the overnight test harnesses. New preflight lines
+  (`one lane:`, `suite checkpoint:`, `gate caps:`) go beside #93's `push_check` and #95's `tools_check`, and
+  never reorder them.
 
 ## Part A — Parallel tracks (rank 1)
 
@@ -163,42 +169,6 @@ story.
   then the planning loop for that row only, then step 3 again from the top for all rows; **run as is** goes on.
   Step 3's seeding already writes each row once per pass, and a half-done row's `task` is never reset. Designer's
   call: the reviewer found that step 5 comes after seeding and the `Docs:` commit.
-
-## Part B — Required tools (rank 2, remainder)
-
-### B1. What declares a requirement
-
-- A plan header line `Requires: <item>[, <item>…]`. `/game-dev:plan` §2: list every executable a task runs that is
-  not `sh`, `git`, `gh`, a studio verb or the engine binary, with a minimum version when the plan relies on a newer
-  feature (`python3>=3.10` for `int | None`).
-- A project-wide `.studio/config.json` top-level key `"requires": ["ffmpeg", "python3>=3.10"]`, for tools every
-  story of the project needs. It is read from the main checkout's config (`STATE_ROOT`), as `max_sessions` is.
-- An item is `<name>` or `<name>>=<X.Y[.Z]>`. `<name>` matches `^[A-Za-z0-9._/+-]+$`. A name with a `/` is a path
-  relative to the worktree root (`.venv/bin/python>=3.10`).
-- `studio-brief validate` checks the header's syntax. The preflight checks the config key's syntax and refuses a bad
-  item: `config requires: bad item <item>`.
-
-### B2. The check
-
-`preflight()` runs it in every mode, over the project's list plus each plan's (single-plan: the plan; manifest: every
-row's plan):
-
-- A bare name: `command -v <name>`, under the PATH the sessions will have (the runner's PATH, which the shim built).
-- A version: `<name> --version` with a 10 s cap, stdout and stderr together. The first `[0-9]+\.[0-9]+(\.[0-9]+)?`
-  token is the version, compared numerically field by field.
-- A path item: when `worktree_setup` is configured, `start` and `--detach` check it in the preflight's scratch
-  worktree after the setup has run there, because that is what a new story worktree will look like. Both do so in
-  the foreground, before anything detaches, so a refusal is seen at once. `--dry-run` never runs the setup
-  (`studio-overnight:2007-2010`). It checks path items in the start checkout and prints
-  `requires <item>: checked in the start checkout; start re-checks it after worktree_setup`. Without
-  `worktree_setup`, every mode checks the start checkout. Designer's call.
-- Refusals, through `refuse` (exit 2), one line per miss, naming the source:
-  `requires ffmpeg (plan docs/game-dev/plans/x.md): not on PATH` ·
-  `requires python3>=3.10 (config): found 3.9.6`.
-  A version that cannot be parsed is a warning, not a refusal: `requires python3>=3.10: cannot read a version from
-  'python3 --version' — check it by hand`.
-- Each pass prints one stdout line beside `env_line`: `requires: ffmpeg 7.1, python3 3.12.7`.
-- Autopilot's readiness checklist names the check inside its `--dry-run` line. There is no new checklist line.
 
 ## Part C — Caps tuned to the machine (rank 5)
 
@@ -343,16 +313,15 @@ chains `git` with `&&`, `;` or `|`.
 4. The minimum track size for a split is 3 tasks. It is not a config key.
 5. Backfill is an offer in autopilot step 3, before seeding, never automatic. "One lane in effect" is one chain,
    `max_lanes` 1, or a single-plan run.
-6. `requires` checks refuse a missing tool or one too old. An unreadable version only warns.
-7. `node_workers` auto is max(2, physical cores / 2). The short-lane whitelist does not change.
-8. The learned gate cap is factor 4, floor 15 min, runner sessions only.
-9. `suite_every` auto is every 4 tasks when the median suite is at most 8 min, **in manifest runs only**. A red
+6. `node_workers` auto is max(2, physical cores / 2). The short-lane whitelist does not change.
+7. The learned gate cap is factor 4, floor 15 min, runner sessions only.
+8. `suite_every` auto is every 4 tasks when the median suite is at most 8 min, **in manifest runs only**. A red
    checkpoint gets one inline fix and then the existing gate-repair loop, sharing its budget.
-10. Cucumber `--parallel` is a phoenix follow-up, not in this repository.
-11. For a manifest story, the conflict scan moves from plan §7 to §6, before the split. A cross-sibling dependency
+9. Cucumber `--parallel` is a phoenix follow-up, not in this repository.
+10. For a manifest story, the conflict scan moves from plan §7 to §6, before the split. A cross-sibling dependency
     found later becomes a manifest Depends on.
-12. A cross-cutting AC goes to every sibling. Only a feature AC ties tracks.
-13. Every compound git command the skills prescribe is split into separate calls (Part E).
+11. A cross-cutting AC goes to every sibling. Only a feature AC ties tracks.
+12. Every compound git command the skills prescribe is split into separate calls (Part E).
 
 ## Acceptance criteria
 
@@ -367,32 +336,26 @@ chains `git` with `&&`, `;` or `|`.
 5. `--dry-run` prints the `one lane:` line, and still exits 0, for a one-chain manifest, for a two-chain manifest
    with `max_lanes` 1, and for a single-plan run. A two-chain manifest with `max_lanes` 0 does not print it.
 6. The autopilot skill offers **add a backfill story** in step 3, before the first seed, under the same rule. Pinned.
-7. A plan with `Requires: nosuchtool-xyz` makes `start`, `--dry-run` and `--detach` exit 2 naming the tool and the
-   plan. No unit or run dir is created.
-8. `Requires: sh>=999` refuses with the found version. A stub tool whose `--version` prints no number warns and
-   passes. A config `requires` item behaves the same, naming `(config)`. A bad item is a refusal.
-9. With `worktree_setup` configured, `start` checks a path item in the scratch worktree after setup. `--dry-run`
-   checks it in the start checkout and prints the re-check note.
-10. `studio-vitest a.test.ts`, and the same with five files, run the gate with `--maxWorkers=2` and are classed
+7. `studio-vitest a.test.ts`, and the same with five files, run the gate with `--maxWorkers=2` and are classed
     `short` by `studio-gate --classify`. `studio-vitest tests/dir` and a bare `studio-vitest` run with
     `--maxWorkers=<node_workers>` and are exclusive.
     A missing node dir exits 2 with the message.
-11. `node_workers: "auto"` gives 2 on a stubbed 4-core machine and 6 on a stubbed 12-core one. An out-of-range value
+8. `node_workers: "auto"` gives 2 on a stubbed 4-core machine and 6 on a stubbed 12-core one. An out-of-range value
     is a refusal.
-12. With 5 or more rc-0 rows of `who` X in `gate.times` and `STUDIO_GATE_MINUTES` set, the gate's cap is
+9. With 5 or more rc-0 rows of `who` X in `gate.times` and `STUDIO_GATE_MINUTES` set, the gate's cap is
     clamp(ceil(4 × p95 / 60), 15, STUDIO_GATE_MINUTES). A run past it exits 124 with the learned-cap message. With
     fewer rows, or `gate_cap_factor` 0, or no `STUDIO_GATE_MINUTES`, behaviour is today's.
-13. `suite_every: "auto"` resolves to 4 with a fixture median of 4.5 min and to 0 with 20 min, and the preflight
+10. `suite_every: "auto"` resolves to 4 with a fixture median of 4.5 min and to 0 with 20 min, and the preflight
     prints the line. `STUDIO_SUITE_EVERY` is in a lane story's launch env, and never in a single-plan run's.
-14. The execute skill text holds the checkpoint rule, the `suite green` line, the red-checkpoint steps, the
+11. The execute skill text holds the checkpoint rule, the `suite green` line, the red-checkpoint steps, the
     `fix(suite)` pattern and the `Stop: gate red — checkpoint after T<n>` form. Pinned.
-15. A lane fixture whose task unit writes `Stop: gate red — checkpoint after T2 — …` at task 2/4 runs one gate-repair
+12. A lane fixture whose task unit writes `Stop: gate red — checkpoint after T2 — …` at task 2/4 runs one gate-repair
     unit, then a task unit for T3 (not T2 again), and never a finish in between.
-16. `sdd-run review-package <args>` runs the same script `sdd-script review-package` names, with the arguments.
+13. `sdd-run review-package <args>` runs the same script `sdd-script review-package` names, with the arguments.
     `studio-docs-sync` commits only when something changed, and `--new` adds the ledger.
-17. The regression contract (E3) finds none of the refused forms in `studios/` or `shared/omega/`, compound git
+14. The regression contract (E3) finds none of the refused forms in `studios/` or `shared/omega/`, compound git
     chains included, and the E2 sentence is in execute §2. Pinned.
-18. `studio-overnight --help` lists `suite_every`, `gate_cap_factor`, and the top-level `node_workers`, `node_dir`
-    and `requires`. `tests/run_all.sh` is green, and `docs/game-dev/PROGRESS.md` has the entry.
-19. The plan skill runs the conflict scan in §6 before `studio-brief tracks` for a manifest story, and a dependency
+15. `studio-overnight --help` lists `suite_every`, `gate_cap_factor`, and the top-level `node_workers` and
+    `node_dir`. `tests/run_all.sh` is green, and `docs/game-dev/PROGRESS.md` has the entry.
+16. The plan skill runs the conflict scan in §6 before `studio-brief tracks` for a manifest story, and a dependency
     across siblings found later becomes a manifest Depends on. Pinned.
