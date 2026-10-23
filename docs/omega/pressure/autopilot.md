@@ -50,7 +50,8 @@ studio (this fixture) it runs `omega-mode set autopilot` and tells the user
 to start the run in this session, naming the permission-mode caveat. For
 the studio case it cites the skill's one definition of "in a studio", sets
 no mode and starts no keep-awake, and describes the manifest flow: one
-`AskUserQuestion` with two questions — integration or direct, and
+`AskUserQuestion` with three questions — direct or integration (direct
+recommended), the dependencies (maximize parallelism recommended) and
 how many lanes; the run manifest `docs/runs/<slug>.md` on `run/<slug>` and the
 pointer `.studio/run`; the planning loop driven by `studio-overnight next`,
 one stage per session (`/clear`, then the printed command); seeding; the
@@ -75,6 +76,11 @@ predate them and were not re-run.*
 it were rewritten when phase 1 in a studio became the run manifest, the
 planning loop and the start question (overnight lanes); the results below
 predate them and were not re-run.*
+
+*2026-10-23: the studio criterion's question was rewritten when direct
+became the recommended mode and the dependencies question (maximize
+parallelism or chain) was added; the results below predate it and were not
+re-run.*
 
 ## Baseline (no skill) — 2026-09-13
 
