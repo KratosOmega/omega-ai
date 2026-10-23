@@ -883,6 +883,28 @@ test_plan_probe_rule() {
   assert_eq 1 "$(grep -c '^## 7\. Sweep, for a manifest story' "$PL")" "§7 keeps its number"
 }
 
+test_plan_split_rules() {
+  _has() { TESTS_RUN=$((TESTS_RUN + 1)); if grep -q -F -- "$2" "$1"; then _pass "$3"; else _fail "$3 (missing '$2')"; fi; }
+  PL="$REPO_ROOT/studios/game-dev/skills/plan/SKILL.md"
+  _has "$PL" 'After: T<a>[, T<b>…]' "After: line documented"
+  _has "$PL" 'studio-brief tracks <plan>' "tracks command"
+  _has "$PL" 'at least two tracks with at least 3 tasks each' "split threshold"
+  _has "$PL" 'Reply **approve** (split), **approve one** (keep one story), or name the task to change.' "split stop reply"
+  _has "$PL" '<id>-<k>' "sibling id"
+  _has "$PL" '<Branch>-<k>' "sibling branch"
+  _has "$PL" '<plan stem>-<k>.md' "sibling plan file"
+  _has "$PL" 'A **feature AC** that tasks in two tracks both implement ties those tracks' "feature AC ties"
+  _has "$PL" 'A **cross-cutting AC**' "cross-cutting AC"
+  _has "$PL" 'docs(plans): approve <topic> (split <S>)' "split commit subject"
+  _has "$PL" 'becomes a manifest Depends on' "later dependency becomes Depends on"
+  _c="$(grep -n -F -m1 -- '**Conflict scan first.**' "$PL" | cut -d: -f1)"
+  _t2="$(grep -n -F -m1 -- 'studio-brief tracks <plan>' "$PL" | cut -d: -f1)"
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if [ -n "$_c" ] && [ -n "$_t2" ] && [ "$_c" -lt "$_t2" ]; then
+    _pass "the conflict scan precedes studio-brief tracks"
+  else _fail "conflict scan order ($_c < $_t2)"; fi
+}
+
 run_tests test_plugin_manifests test_skill_frontmatter test_agent_frontmatter \
   test_external_references_declared test_required_plugins_enabled test_bin_syntax \
   test_role_agents_exist test_stage_skill_contracts test_plan_skill_contract \
@@ -894,4 +916,4 @@ run_tests test_plugin_manifests test_skill_frontmatter test_agent_frontmatter \
   test_no_ship_references test_superpowers_requires_referenced test_no_last_playtest_callers \
   test_execute_one_contract test_router_overnight_lock test_execute_lanes test_execute_lane_gate_foreground test_execute_command_caps_text test_docs_59_wording test_agent_gameplay_programmer_file_runs test_short_lane_unit_rule_text test_execute_land_and_progress test_execute_gate_repair test_execute_operator_messages test_execute_adopt test_final_wave_contracts \
   test_plan_brainstorm_lanes test_execute_sync_repair_form test_execute_peers_brief_rule test_plan_brainstorm_slug_form test_plan_brainstorm_check_id \
-  test_sdd_script_references test_execute_task_brief_rewritten test_plan_gated_godot_forms test_plan_probe_rule
+  test_sdd_script_references test_execute_task_brief_rewritten test_plan_gated_godot_forms test_plan_probe_rule test_plan_split_rules

@@ -81,6 +81,11 @@ the self-review. Two studio rules override its defaults:
   - `Review: task|final` says whether execute reviews the task by itself.
     `task` is for new seam, cross-system, gameplay feel, data or schema, or importer work; `final` is for the rest, which
     folds into the final review.
+  - `After: T<a>[, T<b>…]` is optional and sits beside `Role:`. It names the
+    earlier tasks whose code, data or interface this task needs. Do not list
+    shared files there; `studio-brief tracks` finds those itself.
+    `studio-brief validate` fails a reference to an unknown task, to a task
+    below `## Backlog`, or to this task or a later one, naming the line.
   - A step that runs Godot writes the gated form: a script or import run as
     `studio-gate godot -- <Godot command>` (e.g.
     `studio-gate godot -- Godot --headless --path . --script res://tools/x.gd`),
@@ -190,6 +195,70 @@ a `Spec:` line and a `Review:` line; every plan-time probe has a measured-input 
 and fix the plan until it exits 0: it checks every task's `Spec:` items (the
 file, the range, the heading) the way execute's brief will read them. It also fails on a bare Godot script/import run anywhere in the plan, naming the line and the gated form to write.
 
+**Split for parallel lanes (manifest stories only).** Run this only when
+`.studio/run` names a manifest that lists this story. Otherwise skip it and
+use the plain stop below.
+
+**Conflict scan first.** Before `studio-brief tracks` runs, do SDD's
+pre-flight conflict scan: the plan's tasks against each other and against the
+code on the default branch, for files two tasks both write, and an interface
+one task assumes another changes. Write each finding and its resolution into
+the plan's `## Decisions` (add the section after Global Constraints when
+absent, `none` when empty). Write each interface finding as an `After:` line
+too, so the split sees every known dependency. Re-run `studio-brief validate`
+when you add one.
+
+1. Run `studio-brief tracks <plan>`. Read its output: `tracks: <K>`, then one
+   `track <k>: T… — <m> tasks — files: …` line per track. Propose a split when
+   it prints at least two tracks with at least 3 tasks each. Fold tracks
+   smaller than that into the track they share an acceptance criterion with,
+   or into track 1. With no such split, skip to the plain stop.
+2. Assign every acceptance criterion to the track whose tasks implement it.
+   Judge this from the tasks' `Spec:` citations and their text; it is not
+   computed.
+   - A **feature AC** that tasks in two tracks both implement ties those tracks:
+     they become one track. Never produce two stories that each own
+     half of one feature.
+   - A **cross-cutting AC** that no single task implements and that holds for
+     the whole change goes to **every** sibling, and does not tie tracks.
+     Examples: "the suite is green", "no regressions", "a PROGRESS entry".
+   - The original's `## Stories` row is narrowed to track 1's ACs, and each
+     sibling gets its own row. When the spec has no `## Stories` table, the
+     split creates one with every sibling's row, since `studio-brief final`
+     reads it.
+3. Stop with the split message below instead of the plain one.
+4. On **approve**, in the run worktree, in place of the single-plan approval
+   below:
+   - Track 1 keeps the story's id, branch and plan file. Each other track `k`
+     gets id `<id>-<k>`, checked with `studio-overnight check-id`. A taken id
+     takes the suggestion check-id prints. It also gets branch `<Branch>-<k>`
+     and plan file `<plan stem>-<k>.md`.
+   - Each plan holds its own track's tasks, renumbered 1..m in their original
+     order, titles kept, `After:` references renumbered. It has its own
+     `Story:` line, and the same header, Global Constraints and `## Decisions`
+     as the original. Its Acceptance criteria are its track's ACs. Tasks of
+     other tracks are not listed, and no backlog task is duplicated: the
+     backlog stays with track 1.
+   - The manifest gains one row per new story, directly after the original.
+     Ticket and Spec are the original's. Depends on is the original's own
+     Depends on: siblings do not depend on each other. A later row that
+     depended on the original now depends on the original and every sibling.
+   - The spec's `## Stories` table gains the rows, with each story's AC
+     numbers.
+   - Set every plan's `Status:` to `Approved`. Run
+     `studio-state ledger "plan approved <plan path>"` for every plan, and
+     `STUDIO_STORY=<id> studio-state init` for each new id.
+   - §7's sweep runs once for the whole split: ask the questions once, write
+     the answers into each plan's `## Decisions`, and record
+     `Decisions swept <id>` for every id.
+   - Commit everything on `run/<slug>` as one commit, as separate commands:
+     `git add` the plans, the spec, the manifest and `.studio/`, then
+     `git commit -m "docs(plans): approve <topic> (split <S>)"`, S being the
+     number of stories.
+5. `studio-overnight next` then classifies every new row `planned`.
+   Autopilot step 3's overlap check runs over the siblings like any other
+   parallel pair.
+
 Then run `studio-state set stage plan`, `studio-state set plan <plan path>`,
 `studio-state set task 0/N` (N = number of tasks outside the backlog), and
 `studio-state ledger "plan written <plan path>"`. On exit 4 from any of these
@@ -197,6 +266,14 @@ state writes: stop and show the message. **Stop** with:
 
 > Plan at `<path>`: N tasks, K cut to backlog. Reply **approve**, or name the
 > task to change.
+
+When the split applies (step 3), stop with this instead:
+
+> Plan at `<path>`: N tasks, K cut to backlog. Splits into S stories that run
+> in parallel: `<id>` (T…), `<id>-2` (T…), ….
+> Reply **approve** (split), **approve one** (keep one story), or name the task to change.
+
+**approve one** keeps one story and takes the plain approval below exactly.
 
 On approval: change the plan's `Status:` line to `Approved`, run
 `studio-state ledger "plan approved <plan path>"`, then commit the plan, the
@@ -238,10 +315,11 @@ invoke it yourself.
 When `.studio/run` names a manifest that lists the id, then after approval
 and in the same session, before anything is printed:
 
-1. SDD's pre-flight conflict scan: the plan's tasks against each other and
-   against the code on the default branch, for files two tasks both write,
-   and an interface one task assumes another changes. Write each finding
-   and its resolution into the plan's `## Decisions`.
+1. SDD's pre-flight conflict scan already ran in §6 (**Conflict scan first**).
+   A dependency between two siblings found now, by this sweep or by a later
+   review, is never written as `After:`, which `studio-brief validate` would
+   refuse. It becomes a manifest Depends on: the later sibling depends on the
+   earlier one. Record it in that plan's `## Decisions`.
    Always add the section after Global Constraints when absent, writing `none` when it is empty.
 2. The question sweep (autopilot's sweep procedure, moved here). Read the
    approved spec and plan and list every decision the implementation could
