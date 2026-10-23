@@ -120,6 +120,14 @@ export GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
 #                   runner error, exit 3)
 #   ruling <text>   modifier: ledgers <text> in the story worktree and
 #                   commits it, before auto runs
+#   block <check>   modifier: in the story worktree, writes tests/<check>.pending
+#                   (`BLOCKED <id> <check>: ticks — expected 12, got 13 — ...`),
+#                   appends `## <id> B1 — <check> — OPEN` to
+#                   docs/game-dev/playtests/demo-blocks.md (header if new),
+#                   ledgers `T<k> Block: <check> — ticks: 12 vs 13 — blocks
+#                   <that path>` (k = the next task), commits all, before auto
+#                   commits its task (it runs inside auto, once the worktree
+#                   exists, so it also works on a story's first unit)
 #   gatecmd         terminal: in the story worktree, runs `studio-setup gate`;
 #                   a red one ledgers and commits `Stop: gate red — <its
 #                   stderr line>` (execute §7's gate_command step)
@@ -212,6 +220,17 @@ BRANCH="$(awk -F'|' -v id="$id" '
 story_wt() { _w="$(st worktree 2>/dev/null)"; [ -n "$_w" ] && [ -d "$_w" ] && printf '%s\n' "$_w"; }
 commit_ledger() { git add ".studio/ledger/$id.md" && git commit -qm "ledger($id): $1"; }
 
+# block_write — the `block` action's work, in the story worktree (the cwd).
+block_write() {
+  _bf=docs/game-dev/playtests/demo-blocks.md; _bk=$((k + 1))
+  mkdir -p tests "$(dirname "$_bf")" \
+    && printf 'BLOCKED %s %s: ticks — expected 12, got 13 — fixtures/frozen.json\n' "$id" "$blockchk" > "tests/$blockchk.pending" \
+    && { [ -f "$_bf" ] || printf '# demo — blocked checks\n\nA run names a failed check against a pinned reference and carries on. It never resolves a block itself: the author rules.\n' > "$_bf"; } \
+    && printf '\n## %s B1 — %s — OPEN\n- **Where:** tests/%s.pending, fixtures/frozen.json\n- **Expected / actual:** ticks: 12 vs 13\n- **Task:** T%s, 2026-10-23\n' "$id" "$blockchk" "$blockchk" "$_bk" >> "$_bf" \
+    && st ledger "T$_bk Block: $blockchk — ticks: 12 vs 13 — blocks $_bf" \
+    && git add "tests/$blockchk.pending" "$_bf" ".studio/ledger/$id.md" && git commit -qm "block($id): $blockchk"
+}
+
 auto() {
   spec="$(st get spec)"; plan="$(st get plan)"
   wt="$(story_wt)"
@@ -249,6 +268,7 @@ auto() {
   task="$(st get task)"; k="${task%/*}"; N="${task#*/}"
   case "$k" in ''|-|*[!0-9]*) k=0 ;; esac
   case "$N" in ''|-|*[!0-9]*) N=1 ;; esac
+  [ -z "$blockchk" ] || block_write
   frd="$(grep -c 'final review done$' ".studio/ledger/$id.md" 2>/dev/null)"
   if [ "$k" -lt "$N" ]; then
     k=$((k + 1)); f="${conflict:-$id-T$k.txt}"
@@ -281,7 +301,7 @@ push_to() {
     && printf '%s\n' "$1" > "$2" && git add "$2" && git commit -qm "$1 moves: $2" && git push -q origin "$1" ) >&2
   rm -rf "$_pd"
 }
-cost=1; code=0; terminal=0; conflict=""; post=""
+cost=1; code=0; terminal=0; conflict=""; post=""; blockchk=""
 old_ifs="$IFS"; IFS=';'
 set -f; set -- $line; set +f
 IFS="$old_ifs"
@@ -350,6 +370,7 @@ for act in "$@"; do
                         || { st ledger "Stop: gate red — $_g"; commit_ledger gate-red; }; } ) ;;
     "ruling "*)       w="$(story_wt)"
                       ( cd "$w" && st ledger "${act#ruling }" && commit_ledger ruling ) ;;
+    "block "*)        blockchk="${act#block }" ;;
     inbox)            printf '{"session_id":"s","hook_event_name":"SessionStart","source":"startup"}' \
                         | sh "$STUB_PLUGIN/hooks/operator-inbox.sh" > "$CALLS/$n.inbox" ;;
     "say "*)          sh "$STUB_RUNNER" say "$id" -- "${act#say }" > /dev/null 2>&1 ;;
@@ -3231,6 +3252,33 @@ test_lanes_push_rejected_first_unit_holds() {
   assert_eq 1 "$(story_calls A | wc -l | tr -d ' ')" "no second unit of A was launched"
   lholds_off
 }
+# #94: a unit that writes a Block (not a Stop) is progress; the lane is not held.
+test_lanes_block_carries_on() {
+  LANES_TASKS=2; export LANES_TASKS
+  lanes_fixture blk integration A:-
+  printf 'block ring_ticks; auto\nauto\nauto\nauto\n' > "$SCEN/A"
+  run_lanes start "$MFP"
+  assert_eq 0 "$LS_STATUS" "the run is done"
+  assert_eq "1 A-T1 progress," "$(story_rows A | cut -c1-16)" "the Block unit is progress"
+  assert_contains "$(last_lanes_dir)/stories/A" "^landed" "A lands"
+  git -C "$P" fetch -q origin
+  assert_eq 1 "$(git -C "$P" show origin/A-b:tests/ring_ticks.pending | grep -c "^BLOCKED A ring_ticks:")" "the pending marker is on A's branch"
+  assert_eq 1 "$(git -C "$P" show origin/A-b:docs/game-dev/playtests/demo-blocks.md | grep -c "^## A B1 — ring_ticks — OPEN")" "the blocks entry is on A's branch"
+  assert_not_contains "$(last_lanes_dir)/events.jsonl" '"story":"A","state":"held"' "A was never held"
+}
+# #94: a missing tool is still a Stop, and still holds.
+test_lanes_missing_tool_still_stops() {
+  lanes_fixture mts integration A:-
+  lholds_on 120
+  printf 'auto\nstop ffmpeg not found on PATH (tools/convert_ambience.py)\n' > "$SCEN/A"
+  lanes_bg
+  wait_for 'is_held A' 60
+  assert_contains "$(last_lanes_dir)/stories/A" "^held stop: ffmpeg not found on PATH (tools/convert_ambience.py) until " "a missing tool holds A"
+  assert_eq "1 A-T1 progress,2 A-final-review stop," "$(story_rows A)" "the first unit is progress; the missing tool ends the next as stop"
+  lverb stop
+  wait_pid_or_fail "$RPID" 60 "the run ends"
+  lholds_off
+}
 # AC8: the old ahead shape — a unit that moves the task, then an unpushed commit.
 test_lanes_origin_check_localcommit_holds() {
   lanes_fixture olc integration A:-
@@ -5033,6 +5081,7 @@ run_tests test_stub_waitexist_and_run_token test_lanes_setup_preflight_refuses_l
   test_lanes_stop_queued_story test_lanes_stop_running_story test_lanes_stop_waiting_story \
   test_lanes_hold_waiting_story_holds_at_start test_lanes_hold_running_then_resume test_lanes_run_stop_held_was_held \
   test_lanes_push_rejected_first_unit_holds test_lanes_origin_check_localcommit_holds \
+  test_lanes_block_carries_on test_lanes_missing_tool_still_stops \
   test_lanes_final_step_no_delivery test_lanes_deadline \
   test_lanes_stop_at_done_never_lands test_lanes_stop_held_by_operator test_lanes_stop_pending_never_holds \
   test_lanes_gate_repair_own_stop_holds test_lanes_directive_cap_holds test_lanes_hold_during_last_unit_lands_and_clears \
