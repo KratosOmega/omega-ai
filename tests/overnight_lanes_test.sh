@@ -528,6 +528,8 @@ STUB_RUNNER="$RUNNER"; STUB_PLUGIN="$REPO_ROOT/studios/game-dev"; export STUB_RU
 STUDIO_OVERNIGHT_GATE_CMD=true; export STUDIO_OVERNIGHT_GATE_CMD
 # The suites test today's endings: hold_minutes 0 (spec milestone gate 1).
 STUDIO_OVERNIGHT_HOLD_MINUTES=0; export STUDIO_OVERNIGHT_HOLD_MINUTES
+# A hold raises a banner (#92): the suites never show a real one.
+STUDIO_OVERNIGHT_NOTIFY_CMD=': '; export STUDIO_OVERNIGHT_NOTIFY_CMD
 
 # calls — the stub session counter (0 when none ran).
 calls() { cat "$CALLS/count" 2>/dev/null || echo 0; }
