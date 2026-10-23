@@ -1,7 +1,7 @@
 # A run that cannot push stops at once, and a hold reaches the operator — design
 
 Status: questions answered by the operator in chat, 2026-10-23 (banner + Multica only; no @-mention).
-Issues: one per gap, one PR. The PR merges only after every active overnight run has ended, then reinstall.
+Issues: #90 (Gap 1), #91 (Gap 2), #92 (Gap 3); one PR. The PR merges only after every active overnight run has ended, then reinstall.
 
 ## Incident (phoenix bat-sonic-rings, Mac.lan, run overnight-bat-sonic-rings-20261022-224317)
 

@@ -12,7 +12,7 @@ push rule becomes a stop. The bridge maps a new `hold_reminder` event onto #85's
 **Tech Stack:** POSIX sh (tests run under sh and dash), Python 3.9 bridge (unittest + stub `multica`).
 **Spec:** `docs/game-dev/specs/2026-10-23-push-capability-and-hold-reach.md` (AC1–AC14)
 **Branch:** `fix/overnight-push-gaps` (worktree `/Users/xin/game-dev/proj/omega-ai-push-gaps`), off
-origin/main d5183d2. One issue per gap (filed before Task 1); one PR, **not merged** until every active
+origin/main d5183d2. Issues #90 (Gap 1), #91 (Gap 2), #92 (Gap 3); one PR, **not merged** until every active
 overnight run has ended.
 
 Paths: `SO` = `studios/game-dev/bin/studio-overnight`, `OL` = `studios/game-dev/bin/overnight-lanes.sh`,
@@ -147,7 +147,7 @@ TEST_JOBS=4 sh "$W/tests/run_all.sh"                            # the merge gate
 - [ ] **Step 6: Run Task 1's tests and the existing preflight tests**
   (`test_overnight_preflight_refusals`, `test_overnight_preflight_all_failures`, `test_overnight_dry_run*`,
   the `LT` dry-run and detach tests). Under sh and dash: PASS.
-- [ ] **Step 7: Commit** `feat(overnight): preflight refuses a run whose gh token cannot push workflows (#<gap1>)`.
+- [ ] **Step 7: Commit** `feat(overnight): preflight refuses a run whose gh token cannot push workflows (#90)`.
 
 ### Task 2: Gap 2b — `origin_check`: work not on origin is not progress
 
@@ -202,7 +202,7 @@ TEST_JOBS=4 sh "$W/tests/run_all.sh"                            # the merge gate
   In `holdable`, add the case `"stop: push not on origin — "*) isolated; return $? ;;` before the general
   `"stop: "*` case.
 - [ ] **Step 6: Run** Task 2's tests, then all of `OT` and `LT`, under sh and dash: PASS.
-- [ ] **Step 7: Commit** `feat(overnight): a unit whose work is not on origin ends held, not progress (#<gap2>)`.
+- [ ] **Step 7: Commit** `feat(overnight): a unit whose work is not on origin ends held, not progress (#91)`.
 
 ### Task 3: Gap 2a — the execute skill stops on a rejected push
 
@@ -229,7 +229,7 @@ TEST_JOBS=4 sh "$W/tests/run_all.sh"                            # the merge gate
   - §9, §11 and the sync-repair form: wherever "push" appears as a success step, add
     ``(a rejected push: §8's push rule)`` once per section.
 - [ ] **Step 4: Run** `ST` (whole) under sh and dash: PASS.
-- [ ] **Step 5: Commit** `fix(execute): a rejected push under --one is a Stop, never a Ruling (#<gap2>)`.
+- [ ] **Step 5: Commit** `fix(execute): a rejected push under --one is a Stop, never a Ruling (#91)`.
 
 ### Task 4: Gap 3 (runner) — `notify_operator`, the start banner and the reminder
 
@@ -270,7 +270,7 @@ TEST_JOBS=4 sh "$W/tests/run_all.sh"                            # the merge gate
   then `kill` it. Its stdout and stderr go to /dev/null. Add the `export STUDIO_OVERNIGHT_NOTIFY_CMD=': '`
   harness default in `OT` and `LT`.
 - [ ] **Step 4: Run** Task 4's tests plus every `hold` test in `OT` and `LT`, under sh and dash: PASS.
-- [ ] **Step 5: Commit** `feat(overnight): a hold raises a banner at start and a reminder at 25% left (#<gap3>)`.
+- [ ] **Step 5: Commit** `feat(overnight): a hold raises a banner at start and a reminder at 25% left (#92)`.
 
 ### Task 5: Gap 3 (bridge) — `hold_reminder` reaches the Run and kickoff issues
 
@@ -299,7 +299,7 @@ TEST_JOBS=4 sh "$W/tests/run_all.sh"                            # the merge gate
 - [ ] **Step 2: Run; expect FAIL.**
 - [ ] **Step 3: Implement** the branch and the `reminder_body` text builder.
 - [ ] **Step 4: Run** `sh "$W/integrations/multica/tests/run.sh"`: PASS.
-- [ ] **Step 5: Commit** `feat(multica): a hold reminder reaches the Run and kickoff issues (#<gap3>)`.
+- [ ] **Step 5: Commit** `feat(multica): a hold reminder reaches the Run and kickoff issues (#92)`.
 
 ### Task 6: Docs and the full gate
 
@@ -307,11 +307,11 @@ TEST_JOBS=4 sh "$W/tests/run_all.sh"                            # the merge gate
 on the reminder next to #85's notices), `studios/game-dev/bin/studio-overnight` usage text (if it lists
 preflight checks; `grep -n 'gh auth' SO`).
 
-- [ ] **Step 1:** PROGRESS entry `### 2026-10-23 — A run that cannot push stops at once; holds remind (#…)`.
+- [ ] **Step 1:** PROGRESS entry `### 2026-10-23 — A run that cannot push stops at once; holds remind (#90, #91, #92)`.
   It covers the incident in 3 bullets, the three fixes, the limits (no @-mention; banner duplicates the
   bridge's on a Mac with both), and a closing bullet: `Install is pending: merge and reinstall once every
   active overnight run has ended.` Add one note bullet: `Kickoff texts: resolve the project path on the
   target machine (OMEG-118 carried /Users/xinli/... from the other laptop) — follow-up.`
 - [ ] **Step 2:** `TEST_JOBS=4 sh "$W/tests/run_all.sh"` and `sh "$W/integrations/multica/tests/run.sh"`:
   both green. Paste the summary lines into the PR.
-- [ ] **Step 3: Commit** `docs: push capability and hold reach (#…)`.
+- [ ] **Step 3: Commit** `docs: push capability and hold reach (#90, #91, #92)`.
