@@ -1,0 +1,54 @@
+#!/bin/sh
+# studio-vitest [--dir D] [-t PATTERN] [ARG…] — vitest through the gate, from
+# the node dir, as one command (no `cd … &&` chain, which worktree isolation
+# refuses): studio-gate vitest -- npx vitest run --minWorkers=1 --maxWorkers=W
+# [-t PATTERN] ARG…
+# W is 2 when there is at least one ARG and every ARG is an existing file
+# (paths relative to the node dir): the gate classifies that run `short`, with
+# no exclusive lock. Any other call (no ARG, a directory, a flag) is a
+# whole-suite run and gets W = gate_node_workers (config node_workers, else
+# half the physical cores, at least 2).
+# Node dir: --dir, else config node_dir (relative to the git top level), else
+# `.` when ./package.json exists.
+# Exit: studio-gate's (the vitest status · 124 the run cap) · 2 no node dir, a
+# bad option, or a bad node_workers.
+SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
+. "$SELF_DIR/gate-class.sh"
+_sv_dir=""; _sv_t=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --dir) [ "$#" -ge 2 ] || { echo 'studio-vitest: --dir needs a path' >&2; exit 2; }
+           _sv_dir="$2"; shift 2 ;;
+    -t) [ "$#" -ge 2 ] || { echo 'studio-vitest: -t needs a pattern' >&2; exit 2; }
+        _sv_t="$2"; shift 2 ;;
+    --) shift; break ;;
+    *) break ;;
+  esac
+done
+if [ -z "$_sv_dir" ]; then
+  _sv_dir="$(studio_cfg node_dir)"
+  case "$_sv_dir" in
+    '') [ -f ./package.json ] && _sv_dir=. ;;
+    /*) ;;
+    *) _sv_dir="$(gate_wt)/$_sv_dir" ;;
+  esac
+fi
+if [ -z "$_sv_dir" ]; then
+  echo 'studio-vitest: no node dir — set node_dir in .studio/config.json or pass --dir' >&2
+  exit 2
+fi
+# The files test runs in the node dir (paths are relative to it); the worker
+# count is read from here, where the project's config is found.
+[ -d "$_sv_dir" ] || { printf 'studio-vitest: cannot enter node dir %s\n' "$_sv_dir" >&2; exit 2; }
+_sv_files=1; [ "$#" -ge 1 ] || _sv_files=0
+for _sv_a in "$@"; do ( cd "$_sv_dir" && [ -f "$_sv_a" ] ) || _sv_files=0; done
+if [ "$_sv_files" = 1 ]; then
+  _sv_w=2
+else
+  _sv_w="$(gate_node_workers)" || exit 2
+fi
+cd "$_sv_dir" || exit 2
+if [ -n "$_sv_t" ]; then
+  exec studio-gate vitest -- npx vitest run --minWorkers=1 --maxWorkers="$_sv_w" -t "$_sv_t" "$@"
+fi
+exec studio-gate vitest -- npx vitest run --minWorkers=1 --maxWorkers="$_sv_w" "$@"

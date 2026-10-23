@@ -92,7 +92,9 @@ test_autopilot_contract() {
   assert_contains "$S" '"user_dir": "per-worktree"' "on writes user_dir (#71)"
   assert_contains "$S" '"test_engine_args": "--fixed-fps 60"' "on writes test_engine_args (#71)"
   assert_contains "$S" "' <n> <on|off>" "the one-liner takes the lane count and on|off (#71)"
-  assert_contains "$S" 'studio-gate vitest -- npx vitest run --minWorkers=1 --maxWorkers=2' "the targeted vitest form is a constraint (#71)"
+  assert_contains "$S" 'studio-vitest <file>' "the targeted vitest verb is a constraint (#71)"
+  assert_contains "$S" 'tsc as `studio-tsc`' "the tsc verb is a constraint (#71)"
+  assert_not_contains "$S" 'cd <node dir> && studio-gate vitest' "no cd chain into the gate (#71)"
   if python3 -c 'import json' >/dev/null 2>&1; then
     _pf="$TMP/ap-fx"; rm -rf "$_pf"; mkdir -p "$_pf/.studio"
     _prog="$(sed -n "s/.*python3 -c '\([^']*\)' <n> <on|off>.*/\1/p" "$S" | head -n 1)"

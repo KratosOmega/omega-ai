@@ -90,7 +90,7 @@ the self-review. Two studio rules override its defaults:
     `studio-gate godot -- <Godot command>` (e.g.
     `studio-gate godot -- Godot --headless --path . --script res://tools/x.gd`),
     tests as `studio-test` or `studio-test --file <test file>`, targeted vitest as
-    `cd <node dir> && studio-gate vitest -- npx vitest run --minWorkers=1 --maxWorkers=2 <file>…`,
+    `studio-vitest <file>…` and tsc as `studio-tsc` (each runs from the node dir under the gate),
     the game as `studio-run`. Never a bare Godot script/import run (`-s`, `--script`,
     `--import`): the studio's hook refuses it, and `studio-brief validate`
     fails the plan on it (§6).

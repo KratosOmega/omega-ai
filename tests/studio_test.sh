@@ -637,11 +637,14 @@ test_short_lane_unit_rule_text() {
     'calls of up to three files are short-lane eligible' \
     "when the task's \`Verify:\` includes \`suite\`" \
     '`suite` — the implementer also runs the whole suite' \
-    'studio-gate vitest -- npx vitest run --minWorkers=1 --maxWorkers=2' \
-    'never `sh -c` inside it' "the implementers ran each task's touched tests"; do
+    '`studio-vitest <file>…`' '`studio-tsc`' \
+    'never `sh -c` inside the gate' "the implementers ran each task's touched tests"; do
     assert_contains "$E" "$lit" "execute says: $lit"
   done
   assert_not_contains "$E" 'runs `studio-test` and pastes its summary' "the old whole-suite unit rule is gone"
+  assert_not_contains "$E" 'cd <node dir> && studio-gate' "execute: no cd chain into the gate"
+  assert_not_contains "$P" 'cd <node dir> && studio-gate' "plan: no cd chain into the gate"
+  assert_contains "$P" 'studio-vitest <file>' "plan: the vitest verb"
   for lit in '`suite` — the task changes a seam whose effects reach tests it does not touch' \
     "Without \`suite\`, a task's tests are the files it touches" 'targeted vitest as'; do
     assert_contains "$P" "$lit" "plan says: $lit"

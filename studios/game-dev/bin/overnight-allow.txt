@@ -14,6 +14,8 @@
 # classifier.
 Bash(studio-test:*)
 Bash(studio-run:*)
+Bash(studio-vitest:*)
+Bash(studio-tsc:*)
 Bash(studio-gate godot -- /Applications/Godot.app/Contents/MacOS/Godot *)
 Bash(studio-gate godot -- /Applications/Godot_mono.app/Contents/MacOS/Godot *)
 Bash(studio-gate godot -- Godot *)

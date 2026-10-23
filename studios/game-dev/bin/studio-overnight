@@ -447,6 +447,10 @@ Config: .studio/config.json "overnight" (defaults, ranges):
                                     each followed by a fresh finish (the full gate again);
                                     0 = a red gate stops the story
   kill_grace_seconds   30    5-120    TERM-to-KILL grace
+  node_workers         auto  auto|1-32 vitest workers for a whole-suite run (studio-vitest): auto =
+                                    max(2, physical cores / 2); a run naming only existing files stays at 2
+  node_dir             ""             the node project dir, from the project root (studio-vitest, studio-tsc);
+                                    unset = the current dir when it holds package.json
   max_lanes            0     0-8      lane processes (0 = one per chain)
   max_sessions         6     1-8      claude sessions running at once across every live run
                                     in the project (read from the main checkout's config)

@@ -1332,6 +1332,100 @@ TESTS_REAL_CLOCK="test_gate_no_overlap test_gate_waiting_message test_gate_poll_
 # exclusive-scan: test_test_file_several_positionals out (static) no clock
 TESTS_EXCLUSIVE="test_run_clean test_run_imports_when_dot_godot_is_absent test_run_terminates_a_long_process test_gate_three_reclaimers_never_overlap test_gate_stale_reclaim_race test_run_detects_script_errors test_run_passes_scene_and_windowed \
   test_gate_run_cap_stops_a_long_run test_gate_run_cap_excludes_lock_wait test_gate_run_cap_kills_a_term_ignorer test_gate_run_cap_no_false_stop test_gate_run_cap_fast_runs_leave_nothing"
+# nodeverb DIR — a node project at DIR with package.json and web-tools/tests files;
+# the stub bin dir $TMP/nodestub has `npx` and `studio-gate` that record argv and cwd.
+mkdir -p "$TMP/nodestub"
+cat > "$TMP/nodestub/studio-gate" <<'STUB'
+#!/bin/sh
+{ pwd -P; printf '%s\n' "$*"; } > "$NODESTUB_OUT"
+STUB
+chmod +x "$TMP/nodestub/studio-gate"
+node_project() {
+  P="$TMP/node-$1"
+  mkdir -p "$P/web-tools/tests" "$P/.studio"
+  : > "$P/web-tools/package.json"
+  for _f in a b c d e; do : > "$P/web-tools/tests/$_f.test.ts"; done
+  printf '%s\n' "$P"
+}
+# nodeverb DIR VERB ARGS… — run bin/VERB in DIR with the stubs first on PATH; the
+# recorded cwd and argv land in $TMP/node.out, the status in $TMP/node.rc.
+nodeverb() {
+  _nd="$1"; _nv="$2"; shift 2
+  rm -f "$TMP/node.out"
+  ( cd "$_nd" && PATH="$TMP/nodestub:$PATH" NODESTUB_OUT="$TMP/node.out" sh "$BIN/$_nv" "$@" ) > "$TMP/node.so" 2> "$TMP/node.err"
+  echo $? > "$TMP/node.rc"
+}
+
+test_vitest_files_two_workers() {
+  node_project f >/dev/null
+  P="$TMP/node-f"
+  printf '{"node_dir": "web-tools", "gate_short_lane": "on"}\n' > "$P/.studio/config.json"
+  nodeverb "$P" studio-vitest tests/a.test.ts
+  assert_eq "vitest -- npx vitest run --minWorkers=1 --maxWorkers=2 tests/a.test.ts" "$(sed -n 2p "$TMP/node.out")" "one file: 2 workers"
+  nodeverb "$P" studio-vitest tests/a.test.ts tests/b.test.ts tests/c.test.ts tests/d.test.ts tests/e.test.ts
+  assert_contains "$TMP/node.out" "--maxWorkers=2 tests/a.test.ts tests/b.test.ts tests/c.test.ts tests/d.test.ts tests/e.test.ts" "five files: 2 workers"
+  _five="tests/a.test.ts tests/b.test.ts tests/c.test.ts tests/d.test.ts tests/e.test.ts"
+  # shellcheck disable=SC2086
+  _cls="$( cd "$P/web-tools" && STUDIO_START_DIR="$P" sh "$BIN/studio-gate" --classify -- npx vitest run --minWorkers=1 --maxWorkers=2 $_five )"
+  assert_eq "short node" "$(printf '%s\n' "$_cls" | cut -d' ' -f1-2)" "the five-file form classifies short"
+  nodeverb "$P" studio-vitest -t 'a b' tests/a.test.ts
+  assert_contains "$TMP/node.out" "--maxWorkers=2 -t a b tests/a.test.ts" "-t goes before the files"
+}
+
+test_vitest_dir_node_workers() {
+  node_project d >/dev/null
+  P="$TMP/node-d"
+  printf '{"node_dir": "web-tools", "gate_short_lane": "on"}\n' > "$P/.studio/config.json"
+  STUDIO_GATE_PHYS_CORES=12 nodeverb "$P" studio-vitest tests
+  assert_contains "$TMP/node.out" "--maxWorkers=6 tests" "a directory: node_workers"
+  STUDIO_GATE_PHYS_CORES=12 nodeverb "$P" studio-vitest
+  assert_contains "$TMP/node.out" "--maxWorkers=6$" "no ARG: node_workers"
+  STUDIO_GATE_PHYS_CORES=12 nodeverb "$P" studio-vitest tests/a.test.ts tests
+  assert_contains "$TMP/node.out" "--maxWorkers=6 tests/a.test.ts tests" "a mix with a directory: node_workers"
+  _cls="$( cd "$P/web-tools" && STUDIO_START_DIR="$P" sh "$BIN/studio-gate" --classify -- npx vitest run --minWorkers=1 --maxWorkers=6 )"
+  assert_eq "exclusive" "$(printf '%s\n' "$_cls" | cut -d' ' -f1)" "a whole-suite run classifies exclusive"
+  printf '{"node_dir": "web-tools", "node_workers": 3}\n' > "$P/.studio/config.json"
+  STUDIO_GATE_PHYS_CORES=12 nodeverb "$P" studio-vitest
+  assert_contains "$TMP/node.out" "--maxWorkers=3$" "config node_workers wins"
+  printf '{"node_dir": "web-tools", "node_workers": 99}\n' > "$P/.studio/config.json"
+  nodeverb "$P" studio-vitest
+  assert_eq "2" "$(cat "$TMP/node.rc")" "a bad node_workers exits 2"
+  assert_contains "$TMP/node.err" "node_workers must be auto or 1-32, got 99" "and says so"
+  assert_missing "$TMP/node.out" "and runs nothing"
+}
+
+test_vitest_no_node_dir() {
+  P="$TMP/node-none"; mkdir -p "$P"
+  nodeverb "$P" studio-vitest tests/a.test.ts
+  assert_eq "2" "$(cat "$TMP/node.rc")" "exit 2"
+  assert_contains "$TMP/node.err" "studio-vitest: no node dir — set node_dir in .studio/config.json or pass --dir" "the message"
+  assert_missing "$TMP/node.out" "nothing ran"
+  nodeverb "$P" studio-tsc
+  assert_eq "2" "$(cat "$TMP/node.rc")" "tsc: exit 2"
+  assert_contains "$TMP/node.err" "studio-tsc: no node dir — set node_dir in .studio/config.json or pass --dir" "tsc: the message"
+}
+
+test_vitest_dir_option_and_package_json() {
+  node_project o >/dev/null
+  P="$TMP/node-o"
+  nodeverb "$P" studio-vitest --dir web-tools tests/a.test.ts
+  assert_eq "$(cd "$P/web-tools" && pwd -P)" "$(sed -n 1p "$TMP/node.out")" "--dir is the cwd"
+  assert_contains "$TMP/node.out" "--maxWorkers=2 tests/a.test.ts" "--dir files: 2 workers"
+  nodeverb "$P/web-tools" studio-vitest tests/a.test.ts
+  assert_eq "$(cd "$P/web-tools" && pwd -P)" "$(sed -n 1p "$TMP/node.out")" "./package.json is the node dir"
+}
+
+test_tsc_runs_from_node_dir() {
+  node_project t >/dev/null
+  P="$TMP/node-t"
+  printf '{"node_dir": "web-tools"}\n' > "$P/.studio/config.json"
+  nodeverb "$P" studio-tsc
+  assert_eq "$(cd "$P/web-tools" && pwd -P)" "$(sed -n 1p "$TMP/node.out")" "the recorded cwd is the node dir"
+  assert_eq "tsc -- npx tsc --noEmit" "$(sed -n 2p "$TMP/node.out")" "the gate form"
+  nodeverb "$P" studio-tsc --dir "$P/web-tools"
+  assert_eq "$(cd "$P/web-tools" && pwd -P)" "$(sed -n 1p "$TMP/node.out")" "--dir"
+}
+
 run_tests test_gate_run_cap_stops_a_long_run test_gate_run_cap_excludes_lock_wait \
   test_gate_run_cap_off_unset_zero_and_setup test_gate_run_cap_kills_a_term_ignorer test_gate_run_cap_no_false_stop \
   test_gate_run_cap_fast_runs_leave_nothing test_gate_run_cap_leading_zeros test_gate_run_cap_production_seconds \
@@ -1361,4 +1455,6 @@ run_tests test_gate_run_cap_stops_a_long_run test_gate_run_cap_excludes_lock_wai
   test_test_engine_args_reach_godot test_test_engine_args_absent_is_golden test_test_engine_args_refuses_bad_chars \
   test_test_engine_args_allowlist test_test_engine_args_odd_spacing test_test_engine_args_run_fallback \
   test_test_engine_args_not_for_import test_test_config_keys_still_read \
-  test_test_demotes_an_import_in_the_short_lane test_test_stale_demote_env_imports
+  test_test_demotes_an_import_in_the_short_lane test_test_stale_demote_env_imports \
+  test_vitest_files_two_workers test_vitest_dir_node_workers test_vitest_no_node_dir \
+  test_vitest_dir_option_and_package_json test_tsc_runs_from_node_dir

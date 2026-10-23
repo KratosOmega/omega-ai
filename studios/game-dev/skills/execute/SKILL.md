@@ -381,9 +381,8 @@ Every implementer and fixer brief also carries: "run one test file with
 `studio-test --file <test file>`; never build a Godot or GUT command by
 hand; run a Godot script or import as `studio-gate godot -- <command>`; pass `timeout` only on gate-routed commands; a gate-routed command
 that exits 124 is `Stop: gate timed out`; a targeted vitest runs as
-`cd <node dir> && studio-gate vitest -- npx vitest run --minWorkers=1 --maxWorkers=2 <file>…`,
-tsc as `cd <node dir> && studio-gate tsc -- npx tsc --noEmit` — the `cd` outside the gate,
-never `sh -c` inside it; the whole suite runs only when `Verify:` includes `suite`".
+`studio-vitest <file>…`, tsc as `studio-tsc` — each changes into the node dir and runs under the gate;
+never a `cd <node dir> &&` chain, never `sh -c` inside the gate; the whole suite runs only when `Verify:` includes `suite`".
 
 ## 3. Verify rules (both modes)
 
