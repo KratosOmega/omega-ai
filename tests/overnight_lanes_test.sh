@@ -750,6 +750,40 @@ bg_wait() { _bp="$(cat "$TMP/bg-$1.pid")"; _bi=0
   if kill -0 "$_bp" 2>/dev/null; then kill -TERM "$_bp"; TESTS_RUN=$((TESTS_RUN + 1)); _fail "bg run $1 ran past 120 s"; fi
   BG_STATUS=0; wait "$_bp" 2>/dev/null || BG_STATUS=$?; }
 
+ONE_LANE_LINE='^one lane: a hold idles this run until you answer; add an independent story to keep the machine busy$'
+test_lanes_one_lane_note_one_chain() {
+  lanes_fixture ol1 integration A:- B:A
+  run_lanes start --dry-run "$MFP"
+  assert_eq 0 "$LS_STATUS" "dry run exits 0 $(cat "$LS_ERR")"
+  assert_contains "$LS_OUT" "$ONE_LANE_LINE" "one chain: the one-lane line"
+}
+test_lanes_one_lane_note_max_lanes_1() {
+  LANES_CONFIG='{"overnight": {"max_lanes": 1}}'; export LANES_CONFIG
+  lanes_fixture ol2 integration A:- B:-
+  run_lanes start --dry-run "$MFP"
+  assert_eq 0 "$LS_STATUS" "dry run exits 0 $(cat "$LS_ERR")"
+  assert_contains "$LS_OUT" "$ONE_LANE_LINE" "max_lanes 1: the one-lane line"
+}
+test_lanes_no_note_two_chains() {
+  lanes_fixture ol3 integration A:- B:-
+  run_lanes start --dry-run "$MFP"
+  assert_eq 0 "$LS_STATUS" "dry run exits 0 $(cat "$LS_ERR")"
+  assert_not_contains "$LS_OUT" "^one lane:" "two chains: no one-lane line"
+}
+# AC4 pin: sibling stories A and A-2 (Task 2's shape) are two independent chains.
+test_lanes_split_siblings_planned() {
+  LANES_CELLS=dash; export LANES_CELLS
+  lanes_fixture sib integration A:- A-2:-
+  printf -- '- 2026-10-01 spec approved docs/game-dev/specs/2026-10-01-demo.md\n- 2026-10-01 plan approved docs/game-dev/plans/2026-10-01-A.md\n- 2026-10-01 plan approved docs/game-dev/plans/2026-10-01-A-2.md\n- 2026-10-01 Decisions swept A\n- 2026-10-01 Decisions swept A-2\n' > "$P/.studio/ledger/demo.md"
+  run_lanes next "$MFP"
+  assert_contains "$LS_OUT" "^next: /omega:autopilot demo$" "both siblings planned"
+  lanes_fixture sib2 integration A:- A-2:-
+  run_lanes start --dry-run "$MFP"
+  assert_eq 0 "$LS_STATUS" "dry run exits 0 $(cat "$LS_ERR")"
+  assert_contains "$LS_OUT" "^chain 1: A$" "first sibling chain"
+  assert_contains "$LS_OUT" "^chain 2: A-2$" "second sibling chain"
+}
+
 test_lanes_chain_rule() {
   lanes_fixture chains integration A:- B:- C:A D:A E:C,B F:E
   run_lanes start --dry-run "$MFP"
@@ -4954,6 +4988,7 @@ run_tests test_stub_waitexist_and_run_token test_lanes_setup_preflight_refuses_l
   test_lanes_setup_preflight_bad_config test_lanes_setup_preflight_timeout \
   test_lanes_detach_setup_preflight_refused test_lanes_detach_setup_preflight_interrupt \
   test_lanes_detach_setup_preflight_runs_once test_lanes_setup_checked_env_binds_to_sha \
+  test_lanes_one_lane_note_one_chain test_lanes_one_lane_note_max_lanes_1 test_lanes_no_note_two_chains test_lanes_split_siblings_planned \
   test_lanes_chain_rule test_lanes_manifest_refusals test_lanes_branch_default_or_target_refused test_lanes_conflicts_lock_without_start test_lanes_preflight_backlog_tasks test_lanes_manifest_header_refusals \
   test_lanes_preflight_story_checks test_lanes_preflight_story_state test_lanes_docs_unreachable \
   test_lanes_git_too_old test_lanes_sourced_only test_lanes_next \

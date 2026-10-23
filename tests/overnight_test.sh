@@ -484,6 +484,12 @@ test_overnight_push_check_refuses_without_workflow() {
   assert_eq 2 "$RS_STATUS" "--dry-run refuses the same"
   assert_contains "$RS_ERR" "$PUSH_FIX" "and prints the same line"
 }
+test_single_plan_one_lane_note() {
+  push_fixture ol1
+  run_start --dry-run
+  assert_eq 0 "$RS_STATUS" "dry run exits 0"
+  assert_contains "$RS_OUT" "^one lane: a hold idles this run until you answer; add an independent story to keep the machine busy$" "single-plan run: the one-lane line"
+}
 test_overnight_push_check_ok_line() {
   push_fixture pk2 1
   run_start --dry-run
@@ -2891,7 +2897,7 @@ run_tests test_overnight_setup_preflight_single test_overnight_help_setup_prefli
   test_overnight_stop_no_run test_overnight_inhibitor test_overnight_no_inhibitor \
   test_overnight_help test_overnight_unit_caps test_events_contract_doc test_overnight_dry_run \
   test_overnight_preflight_refusals test_overnight_preflight_all_failures \
-  test_overnight_push_check_refuses_without_workflow test_overnight_push_check_ok_line test_overnight_push_check_no_workflows \
+  test_overnight_push_check_refuses_without_workflow test_overnight_push_check_ok_line test_single_plan_one_lane_note test_overnight_push_check_no_workflows \
   test_overnight_push_check_ssh test_overnight_push_check_unknown_scopes test_overnight_push_check_other_helper \
   test_overnight_config_refusals test_overnight_deny_file_required \
   test_overnight_lock test_overnight_first_use_ignores \

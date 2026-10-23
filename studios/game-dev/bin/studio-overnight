@@ -696,6 +696,8 @@ preflight() {
   fi
   # A manifest run's push check is lanes_start's (it needs the target branch too).
   [ -n "$_pf_mf" ] || [ -z "$DEFAULT_BRANCH" ] || push_check "$DEFAULT_BRANCH"
+  # A4: a single-plan run is one lane by definition.
+  [ -n "$_pf_mf" ] || echo "one lane: a hold idles this run until you answer; add an independent story to keep the machine busy"
   env_line
   [ -n "$_pf_mf" ] || [ "$FAILED" -eq 0 ] || exit 2
 }

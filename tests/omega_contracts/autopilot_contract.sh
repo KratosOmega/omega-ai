@@ -53,6 +53,13 @@ test_autopilot_contract() {
   assert_contains "$S" 'Overlap check, before the first seed' "plans are checked for overlapping files before seeding"
   assert_contains "$S" 'add a dependency' "an overlap can add a dependency"
   assert_contains "$S" 'keep parallel' "or keep the stories parallel"
+  assert_contains "$S" '\*\*add a backfill story\*\*' "step 3 offers a backfill story when one lane is in effect"
+  assert_contains "$S" '\*\*run as is\*\*' "or running as is"
+  _a="$(grep -n -F -m1 -- '**add a backfill story**' "$S" | cut -d: -f1)"
+  _b="$(grep -n -F -m1 -- 'Check that the run worktree has `.studio/run` before the first seed' "$S" | cut -d: -f1)"
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if [ -n "$_a" ] && [ -n "$_b" ] && [ "$_a" -lt "$_b" ]; then _pass "the backfill offer comes before the first seed"
+  else _fail "the backfill offer comes before the first seed ($_a, $_b)"; fi
   assert_contains "$S" 'Mode: direct ' "the manifest template defaults to direct"
   assert_contains "$S" 'docs/runs/<slug>.md' "the run manifest"
   assert_contains "$S" '> \.studio/run`' "the pointer (anchored: not .studio/runs/)"

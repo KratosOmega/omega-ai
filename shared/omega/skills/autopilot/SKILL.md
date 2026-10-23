@@ -157,6 +157,10 @@ session (it is on `PATH` only inside a `claude-gd` session).
      - **add a dependency**: the later row depends on the earlier one, and starts from `origin/<Target>` after the earlier one lands;
      - **keep parallel**: the later landing merges over the earlier one, and a conflict gets the runner's one repair unit.
      Write each added dependency into the later row's Depends on cell, and into that story's `## Stories` row when its spec has one. Both are committed with the `planned` commit below.
+   - **Backfill offer, before the first seed, after the overlap check.** One lane is in effect when at most one story can run at a time: the manifest has one chain (every row but the first depends on a row before it), or the chosen lane count is 1. Chains that only wait on each other are not analysed. In that case a hold idles the whole run until the operator answers. Ask one `AskUserQuestion`:
+     - **add a backfill story**: return to step 1's story list for one new row with Depends on `-`, then run the planning loop (step 2) for that row only, then start step 3 again from the top for all rows. Seeding writes each row once per pass, and a half-done row's `task` is never reset, so nothing is seeded twice and `Docs:` is written once;
+     - **run as is**: go on.
+     With two or more independent chains and a lane count above 1, skip this question.
    - Check that the run worktree has `.studio/run` before the first seed (write it as in step 1 when missing): `studio-adopt seed` finds the story's run through it, and falls back to the committed manifest only with a note.
    - A `plan` story that was adopted (its `<id>.md` holds `verdict plan`): first, with `STUDIO_STORY=<id>`, `studio-state ledger "adopted <original> -> <new plan>"` (`<new plan>` from `next`'s `plan=`), before the seeding below
      — ledgered from the run worktree, never from the main checkout (`studio-state ledger` writes the ledger of the checkout the shell is in).
