@@ -850,6 +850,28 @@ test_plan_gated_godot_forms() {
   assert_contains "$PL" 'fails the plan on it' "§2 says validate enforces it"
   assert_contains "$PL" 'also fails on a bare Godot script/import run' "§6 says so too"
 }
+# #86: the plan-time probes rule opens §6.
+test_plan_probe_rule() {
+  PL="$REPO_ROOT/studios/game-dev/skills/plan/SKILL.md"
+  assert_contains "$PL" '^\*\*Plan-time probes\.\*\* When the plan defines a measurement of engine or' "the rule opens §6"
+  assert_contains "$PL" 'later task pins numbers from it or branches on its' "its trigger"
+  assert_contains "$PL" 'Run it in the planning checkout, through the gated forms' "planning checkout, gated forms"
+  assert_contains "$PL" 'as a measured input: the command and its output' "measured-input block"
+  assert_contains "$PL" 'Restore any tracked file the probe regenerates, or commit it as an input' "regenerated files"
+  assert_contains "$PL" 'mismatch is a BLOCK' "execute re-measures"
+  assert_contains "$PL" "port the engine's own algorithm" "port, don't fit"
+  assert_contains "$PL" 'Godot MCP) stays a run task' "the headless exception"
+  assert_contains "$PL" 'every plan-time probe has a measured-input block, or is a run task with every outcome stated' "the self-review check"
+  _p="$(grep -n -F -m1 -- '**Plan-time probes.**' "$PL" | cut -d: -f1)"
+  _h="$(grep -n -F -m1 -- '## 6. Self-review, then gate' "$PL" | cut -d: -f1)"
+  _r="$(grep -n -F -m1 -- 'Run the writing-plans self-review' "$PL" | cut -d: -f1)"
+  _a="$(grep -n -F -m1 -- 'Reply **approve**' "$PL" | cut -d: -f1)"
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if [ -n "$_p" ] && [ -n "$_h" ] && [ -n "$_r" ] && [ -n "$_a" ] && [ "$_h" -lt "$_p" ] && [ "$_p" -lt "$_r" ] && [ "$_r" -lt "$_a" ]; then
+    _pass "the probe rule sits under §6, before the self-review and the approval stop"
+  else _fail "probe rule order ($_h < $_p < $_r < $_a)"; fi
+  assert_eq 1 "$(grep -c '^## 7\. Sweep, for a manifest story' "$PL")" "§7 keeps its number"
+}
 
 run_tests test_plugin_manifests test_skill_frontmatter test_agent_frontmatter \
   test_external_references_declared test_required_plugins_enabled test_bin_syntax \
@@ -862,4 +884,4 @@ run_tests test_plugin_manifests test_skill_frontmatter test_agent_frontmatter \
   test_no_ship_references test_superpowers_requires_referenced test_no_last_playtest_callers \
   test_execute_one_contract test_router_overnight_lock test_execute_lanes test_execute_lane_gate_foreground test_execute_command_caps_text test_docs_59_wording test_agent_gameplay_programmer_file_runs test_short_lane_unit_rule_text test_execute_land_and_progress test_execute_gate_repair test_execute_operator_messages test_execute_adopt test_final_wave_contracts \
   test_plan_brainstorm_lanes test_execute_sync_repair_form test_execute_peers_brief_rule test_plan_brainstorm_slug_form test_plan_brainstorm_check_id \
-  test_sdd_script_references test_execute_task_brief_rewritten test_plan_gated_godot_forms
+  test_sdd_script_references test_execute_task_brief_rewritten test_plan_gated_godot_forms test_plan_probe_rule

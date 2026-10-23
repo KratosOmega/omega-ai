@@ -323,6 +323,46 @@ test_multica_deny_rules_ac5() {
   done
 }
 
+test_multica_deny_hold_verbs() {
+  for _r in 'Bash(*studio-overnight say*)' 'Bash(*studio-overnight unsay*)' 'Bash(*studio-overnight hold*)' \
+            'Bash(*studio-overnight resume*)' 'Bash(*studio-overnight stop*)'; do
+    TESTS_RUN=$((TESTS_RUN + 1))
+    if grep -Fxq -- "$_r" "$DENY"; then _pass "deny file has $_r"; else _fail "deny file lacks $_r"; fi
+  done
+  _pats="$(sed -n 's/^Bash(\(.*\))$/\1/p' "$DENY")"
+  for _cmd in 'studio-overnight resume B --run r' '/x/bin/studio-overnight stop B' 'sh studio-overnight say B -- hi' \
+              'studio-overnight unsay B 3' 'studio-overnight hold B'; do
+    TESTS_RUN=$((TESTS_RUN + 1)); _hit=0
+    while IFS= read -r _pat; do
+      [ -n "$_pat" ] || continue
+      # shellcheck disable=SC2254
+      case "$_cmd" in $_pat) _hit=1; break ;; esac
+    done <<EOP
+$_pats
+EOP
+    if [ "$_hit" = 1 ]; then _pass "deny rules match: $_cmd"; else _fail "no deny rule matches: $_cmd"; fi
+  done
+  for _cmd in 'studio-overnight start --detach docs/runs/x.md' 'studio-overnight status' 'studio-overnight said B' 'studio-overnight next'; do
+    TESTS_RUN=$((TESTS_RUN + 1)); _hit=0
+    while IFS= read -r _pat; do
+      [ -n "$_pat" ] || continue
+      # shellcheck disable=SC2254
+      case "$_cmd" in $_pat) _hit=1; break ;; esac
+    done <<EOP
+$_pats
+EOP
+    if [ "$_hit" = 0 ]; then _pass "deny rules leave alone: $_cmd"; else _fail "deny rule wrongly matches: $_cmd"; fi
+  done
+}
+
+test_agent_notify_only_rule() {
+  _ins="$REPO_ROOT/integrations/multica/agent-instructions.md"
+  assert_contains "$CTXSRC" '^- A comment starting `studio: \[notify only\]`' "#85 notify-only bullet (context)"
+  assert_contains "$_ins" '^- A comment starting `studio: \[notify only\]`' "#85 notify-only bullet (instructions)"
+  assert_contains "$CTXSRC" 'never resume, stop, say to or hold a story' "#85 never-rule (context)"
+  assert_contains "$_ins" 'never resume, stop, say to or hold a story' "#85 never-rule (instructions)"
+}
+
 test_cm_rules_from_pwd() {
   reset
   go "$PROJ" "$CM" $MARGS
@@ -539,4 +579,5 @@ run_tests test_cm_version_passthrough test_cm_argv_order \
   test_home_multica_rules_literal test_deny_comment_only_blocks_launch test_agent_context_unreadable_dies \
   test_agent_id_newline_no_injection test_claude_md_symlink_outside_skipped test_claude_md_bypass_shapes_skipped test_resolve_path_is_physical \
   test_context_temp_file_uses_mktemp test_cm_drops_inherited_origin test_context_path_planted \
-  test_project_unsearchable_one_line test_agent_ignores_inherited_origin test_sq_non_utf8 test_scripts_parse
+  test_project_unsearchable_one_line test_agent_ignores_inherited_origin test_sq_non_utf8 test_scripts_parse \
+  test_multica_deny_hold_verbs test_agent_notify_only_rule

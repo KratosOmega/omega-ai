@@ -14,6 +14,15 @@ approval page in `artifacts/`.
 
 ## Log
 
+### 2026-10-22 — Holds reach the operator; plans measure before approval (#85, #86)
+
+- #85: a hold used to be silent on the phone. In a manifest run the Run issue now goes Blocked while any story is held and back to In Progress when none is.
+- The bridge posts a `studio: [notify only]` notice on the request issue through `Cli.add_notice` (it bypasses `_guard` and is content-checked for the marker instead); the Run issue gets a plain `studio: story B held: …` comment through the normal comment path (single-plan runs: only today's `held:` line). Status and assignee stay forbidden (AC17 exception).
+- Limit: an unassigned (queued) kickoff wakes no agent, so the notice there has no one-line reply; the macOS banner is then the only alert.
+- The README, the agent text and the deny rules were updated to match.
+- #86: the plan skill (`studios/game-dev/skills/plan/SKILL.md` section 6, b640c6c) now requires plan-time probes: measure before the plan is approved.
+- Install is pending: a phoenix run is live, so nothing is reinstalled yet.
+
 ### 2026-10-20 — Short checks no longer wait behind a whole-suite run (#71)
 
 - Incident, measured over 14 days of phoenix overnight runs: 191 of 3187 short gate calls waited
