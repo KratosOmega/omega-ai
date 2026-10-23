@@ -59,16 +59,29 @@ for act in "$@"; do
     "ledger "*)   sh "$STUB_STATE_BIN" ledger "${act#ledger }" ;;
     # branch: real execute's (c) (#42) — a new worktree, the hand-off into it,
     # then `set branch` there; the line's later actions run in the worktree.
+    # branch, legacybranch and inplace push the new branch, as a real unit's
+    # work reaches origin (#91: the runner checks it after a unit).
     "branch "*)   b="${act#branch }"
                   git worktree add -q "$TMP_WT/wt-$b" -b "$b" >/dev/null 2>&1
                   cd "$TMP_WT/wt-$b" && sh "$STUB_STATE_BIN" handoff "$(pwd -P)" >/dev/null 2>&1
-                  sh "$STUB_STATE_BIN" set branch "$b" ;;
+                  sh "$STUB_STATE_BIN" set branch "$b"
+                  git push -q -u origin "$b" >/dev/null 2>&1 ;;
     # legacybranch: the pre-#42 (c), `set branch` in the start checkout.
     "legacybranch "*) b="${act#legacybranch }"
                   git worktree add -q "$TMP_WT/wt-$b" -b "$b" >/dev/null 2>&1
-                  sh "$STUB_STATE_BIN" set branch "$b" ;;
+                  sh "$STUB_STATE_BIN" set branch "$b"
+                  git -C "$TMP_WT/wt-$b" push -q -u origin "$b" >/dev/null 2>&1 ;;
     # inplace: (c) with consent to work in place — no worktree, no hand-off.
-    inplace)      git checkout -q -b feat && sh "$STUB_STATE_BIN" set branch feat ;;
+    inplace)      git checkout -q -b feat && sh "$STUB_STATE_BIN" set branch feat
+                  git push -q -u origin feat >/dev/null 2>&1 ;;
+    # unpushed: an empty commit in the story worktree, not pushed (#91).
+    unpushed)     git -C "$(sh "$STUB_STATE_BIN" worktree)" -c user.name=t -c user.email=t@t commit -q --allow-empty -m unpushed ;;
+    # pushwt: push the story worktree's branch to origin.
+    pushwt)       _pw="$(sh "$STUB_STATE_BIN" worktree)"
+                  git -C "$_pw" push -q origin "$(git -C "$_pw" symbolic-ref --short HEAD)" >/dev/null 2>&1 ;;
+    # onmain: in place on the default branch (execute §7 step 4) — `set branch
+    # main` and an empty commit, never pushed.
+    onmain)       sh "$STUB_STATE_BIN" set branch main && git -c user.name=t -c user.email=t@t commit -q --allow-empty -m onmain ;;
     stopbeforec)  sh "$STUB_STATE_BIN" ledger "Stop: stopped before isolation" ;;
     wtcheck)      _w=0; sh "$STUB_STATE_BIN" worktree >/dev/null 2>&1 || _w=$?; echo "$_w" > "$CALLS/$n.wt" ;;
     "dupstory "*) b="${act#dupstory }"; ( git worktree add -q "$TMP_WT/wt-$b" -b "$b" >/dev/null 2>&1
@@ -2125,6 +2138,53 @@ test_overnight_requeue_retire() {
 }
 
 
+# ---- #91 Gap 2b: origin_check — work not on origin is not progress ----
+# PUSH_WHY — the origin-check ending's text after `stop: ` for feat (BRE).
+PUSH_WHY='push not on origin — feat [0-9a-f]\{7\} vs origin [0-9a-f]\{7\}'
+test_overnight_origin_check_holds_unpushed() {
+  fixture ocu; holds_on 60
+  scenario "$ISO1; unpushed"
+  start_bg
+  wait_held 60; assert_file "$R/control/-.held" "a unit whose head is not on origin holds the isolated story"
+  assert_contains "$R/control/-.held" "^held stop: $PUSH_WHY until " "the held record names the branch, the local head and origin's"
+  assert_eq stop "$(unit_col 7)" "unit 1's outcome is stop"
+  assert_eq 1 "$(calls)" "no other unit runs"
+  assert_not_contains "$R/units.tsv" "	progress$" "the unit is not counted as progress"
+  verb stop -; bg_end 20 "the run ends within a poll"
+  assert_contains "$R/report.md" "^Ending: stop: $PUSH_WHY$" "the stop keeps the why"
+  holds_off
+}
+test_overnight_origin_check_ends_without_holds() {
+  fixture oce; scenario "$ISO1; unpushed"; run_start
+  assert_contains "$(last_run_dir)/report.md" "^Ending: stop: push not on origin — feat " "holds off: the run ends with the origin check's stop"
+  assert_eq 1 "$(calls)" "one unit"
+  assert_eq stop "$(unit_col 7)" "its outcome is stop"
+}
+test_overnight_origin_check_resume_after_push() {
+  fixture ocr; holds_on 60
+  scenario "$ISO1; unpushed" "task 2/2; wtledger T2 complete c..d" \
+           "wtledger final review done" "wtledger shipped https://x/pull/3; stage idle; task -"
+  start_bg; wait_held 60
+  git -C "$TMP_WT/wt-feat" push -q origin feat
+  verb resume -
+  bg_end 60 "the resumed run finishes"
+  assert_eq 0 "$BG_STATUS" "it ends done"
+  assert_eq "stop progress progress done" "$(unit_col 7)" "once the operator pushed, the next unit runs and is progress"
+  assert_eq 1 "$(grep -c '"state":"held"' "$R/events.jsonl")" "held once: the check does not hold the story again"
+  holds_off
+}
+test_overnight_origin_check_skips_default_branch() {
+  fixture ocm; scenario "stage execute; onmain; task 1/2" "task 2/2"; run_start
+  assert_eq main "$(git -C "$P" symbolic-ref --short HEAD)" "the stub worked in place on main"
+  assert_eq onmain "$(git -C "$P" log -1 --format=%s)" "with a commit origin does not have"
+  assert_eq "progress progress" "$(unit_col 7 | cut -d' ' -f1-2)" "the default branch in place is never checked (§7 step 4)"
+}
+test_overnight_origin_check_noprog_not_checked() {
+  fixture ocn; scenario "$ISO1" "unpushed" "pushwt; task 2/2"; run_start
+  assert_eq "progress noprog progress" "$(unit_col 7 | cut -d' ' -f1-3)" "an unpushed commit with no progress is a retry, not a stop; the pushed unit is progress"
+  assert_not_contains "$(last_run_dir)/report.md" "push not on origin" "the check never ran on the no-progress unit"
+}
+
 # ---- #39 T10: run selection for status, watch, stop and the channel ----
 test_status_two_runs_blocks_oldest_first() {
   fixture s2r; FR_SEQ=2; fake_mrun beta S2=running; _pb="$FR_PID"; FR_SEQ=1; fake_mrun alpha S1=running
@@ -2332,11 +2392,13 @@ test_single_plan_rerun_after_stop_before_handoff() {
 }
 # I1: a pre-#42 layout (P at execute, branch feat recorded, a live pointer-less
 # worktree on feat): snapshot's ledger read adopts the story into the worktree,
-# and the run follows it instead of stopping on P's now-idle stage.
+# and the run follows it instead of stopping on P's now-idle stage. Its earlier
+# units pushed feat, as a real story's do (#91: the runner checks origin).
 test_single_plan_follows_adopted_legacy_story() {
   fixture ald
   ( cd "$P" && sh "$STATE_BIN" set stage execute && sh "$STATE_BIN" set task 1/2 \
-      && sh "$STATE_BIN" set branch feat && git worktree add -q "$TMP_WT/wt-feat" -b feat ) >/dev/null 2>&1
+      && sh "$STATE_BIN" set branch feat && git worktree add -q "$TMP_WT/wt-feat" -b feat \
+      && git push -q -u origin feat ) >/dev/null 2>&1
   scenario "task 2/2; wtledger T2 complete b..c; wtledger final review done" \
            "wtledger shipped https://x/pull/1; stage idle; task -"
   run_start
@@ -2827,6 +2889,9 @@ run_tests test_overnight_setup_preflight_single test_overnight_help_setup_prefli
   test_overnight_stop_pending_never_holds \
   test_overnight_sighup_while_held \
   test_overnight_requeue_retire \
+  test_overnight_origin_check_holds_unpushed test_overnight_origin_check_ends_without_holds \
+  test_overnight_origin_check_resume_after_push test_overnight_origin_check_skips_default_branch \
+  test_overnight_origin_check_noprog_not_checked \
   test_status_two_runs_blocks_oldest_first test_status_run_not_live test_status_registry_root_once \
   test_watch_run_selects test_stop_two_runs_refuses test_stop_run_writes_own_flag test_stop_all_writes_each_flag \
   test_stop_story_unchanged test_verbs_channel_resolution_by_story test_verbs_channel_run_flag_slug_or_basename \

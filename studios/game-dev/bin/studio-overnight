@@ -856,6 +856,37 @@ snapshot() {
     { printf '%s\n' "$_l" | stop_lines; cat "$1.start"; } | sort -u > "$1"
   fi
 }
+# story_branch — the story's branch: `state get branch` (single plan);
+# overnight-lanes.sh redefines it as the manifest row's Branch.
+story_branch() { state get branch 2>/dev/null; }
+# origin_check — #91 Gap 2b: work not on origin is not progress. After a unit
+# that made progress or finished, the story branch's head (snapshot's
+# FEATURE_DIR) must be on origin. Skipped (0) when the story has no branch,
+# its branch is the default branch (in place, pushing nothing: execute §7
+# step 4), or FEATURE_DIR does not have it checked out. Else it fetches
+# origin's branch (git_retry when loaded, sp_git) and HEAD must be an ancestor
+# of refs/remotes/origin/<branch>. On failure 1 and ORIGIN_WHY (the ending
+# after `stop: `): `push not on origin — <branch> <sha7> vs origin
+# <sha7|none>` (none: origin has no such branch, by ls-remote, after a failed
+# fetch), or `… — <branch> fetch failed`. Never pushes, never moves a branch.
+origin_check() {
+  ORIGIN_WHY=""
+  _oc_b="$(story_branch)"
+  case "$_oc_b" in ''|-) return 0 ;; esac
+  [ "$_oc_b" != "${DEFAULT_BRANCH:-}" ] || return 0
+  [ "$(git -C "$FEATURE_DIR" symbolic-ref -q --short HEAD 2>/dev/null)" = "$_oc_b" ] || return 0
+  _oc_h="$(git -C "$FEATURE_DIR" rev-parse --short=7 HEAD 2>/dev/null)"
+  if ! sp_git -C "$FEATURE_DIR" fetch -q origin "$_oc_b" >/dev/null 2>&1; then
+    _oc_rc=0; git -C "$FEATURE_DIR" ls-remote -q --exit-code origin "refs/heads/$_oc_b" >/dev/null 2>&1 || _oc_rc=$?
+    if [ "$_oc_rc" = 2 ]; then ORIGIN_WHY="push not on origin — $_oc_b $_oc_h vs origin none"
+    else ORIGIN_WHY="push not on origin — $_oc_b fetch failed"; fi
+    return 1
+  fi
+  git -C "$FEATURE_DIR" merge-base --is-ancestor HEAD "refs/remotes/origin/$_oc_b" 2>/dev/null && return 0
+  _oc_o="$(git -C "$FEATURE_DIR" rev-parse -q --short=7 --verify "refs/remotes/origin/$_oc_b^{commit}" 2>/dev/null)" || _oc_o=none
+  ORIGIN_WHY="push not on origin — $_oc_b $_oc_h vs origin ${_oc_o:-none}"
+  return 1
+}
 # stop_lines — the Stop: lines of one ledger on stdin, each suffixed with a
 # tab and its occurrence number (snapshot's rule).
 stop_lines() { grep '^- [0-9-]* Stop: ' | awk '{ k[$0]++; printf "%s\t%d\n", $0, k[$0] }'; }
@@ -986,7 +1017,8 @@ op_boundary() {
 isolated() { [ "${FEATURE_DIR:-$START_DIR}" != "$START_DIR" ]; }
 # holdable — AC17-18, R6: ENDING holds instead of ending. Never under a halt,
 # never with holds off; `held by operator` always; a `stop:` only when it is
-# the feature-only Stop take_new_stop saw; the rest only after isolation.
+# the feature-only Stop take_new_stop saw, or origin_check's (#91); the rest
+# only after isolation.
 holdable() {
   [ "$HOLD_ON" = 1 ] || return 1
   ! stop_requested || return 1
@@ -994,6 +1026,7 @@ holdable() {
   _h_e="${ENDING%% \[permission-route — *}"
   case "$_h_e" in
     "held by operator") return 0 ;;
+    "stop: push not on origin — "*) isolated; return $? ;;
     "stop: "*) [ "$_h_e" = "${STOP_ENDING:-}" ] && [ "${STOP_SRC:-}" = feature ] && isolated; return $? ;;
     "no progress on "*|"timed out on "*|"directive "*" not recorded"|"gate red after "*|"gate repair made no progress"|"gate repair timed out"*|"stalled on "*|"gate repair stalled"*)
       isolated; return $? ;;
@@ -1672,6 +1705,10 @@ story_units() {
     snapshot "$UNIT_DIR/stops.after"
     take_new_stop "$UNIT_DIR/stops.before" "$UNIT_DIR/stops.after"
     if [ -n "$NEW_STOP" ]; then row "$n" "$_base$suffix" stop; ENDING="$STOP_ENDING$UNIT_DENY_NOTE"; return 0; fi
+    # #91: a unit that would be done or progress must have its work on origin.
+    if { [ "$SIG_STAGE" = idle ] && [ "$SIG_SHIPPED" -gt 0 ]; } || [ "$SIG" != "$_before" ]; then
+      if ! origin_check; then row "$n" "$_base$suffix" stop; ENDING="stop: $ORIGIN_WHY$UNIT_DENY_NOTE"; return 0; fi
+    fi
     if [ "$SIG_STAGE" = idle ] && [ "$SIG_SHIPPED" -gt 0 ]; then row "$n" "$_base$suffix" done; ENDING=done; return 0; fi
     if [ -n "$REQ_LIMIT" ]; then
       if [ "$SIG" != "$_before" ]; then _su_o=progress; else _su_o="$(unit_outcome)"; fi

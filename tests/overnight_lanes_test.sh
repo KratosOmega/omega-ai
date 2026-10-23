@@ -1707,7 +1707,11 @@ test_lanes_sync_skips() {
     lanes_fixture "sync-$_ss" integration A:-
     case "$_ss" in
       dirty) printf 'push_target other.txt; dirty stray.txt\n' > "$SCEN/A" ;;
-      ahead) printf 'push_target other.txt; localcommit\nlocalcommit\n' > "$SCEN/A" ;;
+      # #91: an unpushed commit after progress holds (origin_check), so the
+      # commits that make A ahead come from units that make no progress (T2,
+      # then the final review), each before its retry's check; the target
+      # moves in the final review's, so a check that did not skip would merge it.
+      ahead) printf 'auto\nnoop; localcommit\nauto\npush_target other.txt; noop; localcommit\nauto\n' > "$SCEN/A" ;;
       no-worktree) printf 'push_target other.txt; rmwt\nrmwt\n' > "$SCEN/A" ;;
     esac
     run_lanes start "$MFP"
@@ -1715,6 +1719,8 @@ test_lanes_sync_skips() {
     assert_eq 0 "$(sync_events A | grep -c '"refs"')" "$_ss: no merged event"
     assert_eq "" "$(sync_merges A)" "$_ss: no sync merge"
     assert_contains "$(last_lanes_dir)/stories/A" "^landed " "$_ss: a skip never stops the story"
+    [ "$_ss" != ahead ] || assert_eq "1 A-T1 progress,2 A-T2 noprog,3 A-T2-retry progress,4 A-final-review noprog,5 A-final-review-retry progress,6 A-finish done," \
+      "$(story_rows A)" "ahead: each unpushed commit came from a unit with no progress, and the retries were checked"
   done
 }
 test_lanes_sync_integration_two_refs() {
@@ -3165,6 +3171,40 @@ test_lanes_hold_running_then_resume() {
   assert_eq "1 A-T1 progress,2 A-final-review progress,3 A-finish done," "$(story_rows A)" "the units ran on"
   lholds_off
   assert_missing "$CALLS/wait.timeout" "no stub wait hit its ceiling"
+}
+# ---- #91 Gap 2b: origin_check in a lane ----
+# AC10: origin refuses A's branch (a pre-receive hook), so the first unit's
+# push fails while it moves the task: it ends stop and A holds; no second unit.
+test_lanes_push_rejected_first_unit_holds() {
+  lanes_fixture prj integration A:-
+  mkdir -p "$TMP/prj.git/hooks"
+  printf '#!/bin/sh\nwhile read -r _o _n _r; do [ "$_r" != refs/heads/A-b ] || exit 1; done\nexit 0\n' > "$TMP/prj.git/hooks/pre-receive"
+  chmod +x "$TMP/prj.git/hooks/pre-receive"
+  lholds_on 120
+  lanes_bg
+  wait_for 'is_held A' 60
+  assert_contains "$(last_lanes_dir)/stories/A" "^held stop: push not on origin — A-b [0-9a-f]\{7\} vs origin none until " "a rejected push holds A: origin has no A-b"
+  assert_contains "$(last_lanes_dir)/events.jsonl" '"story":"A","state":"held","why":"stop: push not on origin — A-b ' "a held event"
+  assert_eq "1 A-T1 stop," "$(story_rows A)" "the first unit ends stop, not progress"
+  lverb stop
+  wait_pid_or_fail "$RPID" 60 "the run ends"
+  assert_eq 1 "$(story_calls A | wc -l | tr -d ' ')" "no second unit of A was launched"
+  lholds_off
+}
+# AC8: the old ahead shape — a unit that moves the task, then an unpushed commit.
+test_lanes_origin_check_localcommit_holds() {
+  lanes_fixture olc integration A:-
+  lholds_on 120
+  printf 'auto; localcommit\n' > "$SCEN/A"
+  lanes_bg
+  wait_for 'is_held A' 60
+  assert_contains "$(last_lanes_dir)/stories/A" "^held stop: push not on origin — A-b [0-9a-f]\{7\} vs origin [0-9a-f]\{7\} until " "an unpushed head after progress holds A"
+  assert_eq "1 A-T1 stop," "$(story_rows A)" "the unit is stop, not progress"
+  lverb stop A
+  wait_pid_or_fail "$RPID" 60 "the run ends"
+  assert_contains "$(last_lanes_dir)/stories/A" "^stopped stop: push not on origin — A-b " "stop A ends it with the why"
+  assert_eq 1 "$(story_calls A | wc -l | tr -d ' ')" "one unit"
+  lholds_off
 }
 test_lanes_run_stop_held_was_held() {
   lanes_fixture rsw integration A:- B:A
@@ -4937,6 +4977,7 @@ run_tests test_stub_waitexist_and_run_token test_lanes_setup_preflight_refuses_l
   test_lanes_resume_not_gate_red_no_repair_unit test_lanes_gate_repair_noprog_holds test_lanes_permission_route_note test_lanes_landing_never_holds \
   test_lanes_stop_queued_story test_lanes_stop_running_story test_lanes_stop_waiting_story \
   test_lanes_hold_waiting_story_holds_at_start test_lanes_hold_running_then_resume test_lanes_run_stop_held_was_held \
+  test_lanes_push_rejected_first_unit_holds test_lanes_origin_check_localcommit_holds \
   test_lanes_final_step_no_delivery test_lanes_deadline \
   test_lanes_stop_at_done_never_lands test_lanes_stop_held_by_operator test_lanes_stop_pending_never_holds \
   test_lanes_gate_repair_own_stop_holds test_lanes_directive_cap_holds test_lanes_hold_during_last_unit_lands_and_clears \

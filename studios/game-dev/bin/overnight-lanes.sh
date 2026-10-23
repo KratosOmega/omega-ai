@@ -924,6 +924,8 @@ lane_halt_reason() {
 # record is the story's record, stories/<id> (R4).
 halt_reason() { lane_halt_reason; }
 hold_record() { story_write "$1" "$2"; }
+# story_branch — origin_check's branch (#91): the story's manifest Branch.
+story_branch() { row_field "$CUR_ID" branch; }
 
 # ---- Session slots (#39 AC27, AC28; D19-D25) ----
 # slot_halt — a wait ends only on a halt (D22): lane_halt in a lane, the stop file for the final step.
