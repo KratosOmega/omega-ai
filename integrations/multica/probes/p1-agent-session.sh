@@ -43,7 +43,7 @@ mc runtime profile list --output json | grep -q omega-probe-agent || {
 }
 printf '{"OMEGA_PROJECT": "%s"}' "$P1" | unverified "agent env set --custom-env-stdin" \
   mc agent env set "$AID" --custom-env-stdin
-echo "waiting 30 s for the daemon's profile refresh (a changed command or a pinned set-path needs a daemon restart: Multica.app, Settings, Daemon, Restart)"
+echo "waiting 30 s for the daemon's profile refresh (a changed command or a pinned set-path needs a daemon restart; Multica.app has no restart button: multica daemon restart --profile <name from ls ~/.multica/profiles>)"
 sleep 30
 
 ID="$(printf '%s' 'Run `pwd` and `git status --porcelain`. Write both outputs to a file under your Multica workdir and post it with `multica issue comment add <this issue> --content-file <file> --allow-external-file`. Then finish.' \

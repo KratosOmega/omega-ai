@@ -52,7 +52,7 @@ Flags:
 | `--roots <dir[,dir...]>` | Project folders the bridge may read run files from. |
 | `--cli <path>` | The Multica CLI, if not the one in Multica.app or on PATH. |
 | `--python <path>` | The interpreter the bridge service uses. Default is the system Python. |
-| `--daemon-id <id>` | Needed only when several Multica daemons serve both runtimes. Install tells you. |
+| `--daemon-id <id>` | The daemon whose runtimes install waits for and binds the agent to. Default is this Mac's, read from `~/.multica/daemon.id`; pass it to use another Mac's, or when that file is missing and several daemons serve both runtimes (install tells you). |
 | `--agent <name>` | Create a game-dev agent with this name on the "omega game-dev" runtime. |
 | `--project <dir>` | The agent's project. Needed with `--agent`, and only with it. |
 | `--poll-seconds <5-300>` | How often the bridge polls. Default is 15. |
@@ -248,8 +248,15 @@ listing the status changes and unit events it held back.
 - An agent runs an old command instead of `omega-multica-agent` (its sessions miss
   the omega context): a per-machine path pinned with `multica runtime profile set-path`
   beats the profile's command. Remove it with `multica runtime profile unset-path
-  <profile id>`, then restart the daemon: Multica.app, Settings, Daemon, Restart.
-  Quitting the app does not restart the daemon unless "Auto-stop on quit" is on.
+  <profile id>`, then restart the daemon (see the next item).
+- This machine's "omega game-dev" and "claude (multica)" runtimes stay offline after
+  install: the daemon looks up their commands only when it starts, so one started before
+  install linked them into `~/.local/bin` skipped both (its log says `skip custom runtime
+  profile: command not found on PATH`). Multica.app has no restart button, and quitting it
+  does not restart the daemon unless "Auto-stop on quit" is on. Restart it with the bundled CLI:
+  `"/Applications/Multica.app/Contents/Resources/app.asar.unpacked/resources/bin/multica"
+  --profile desktop-api.multica.ai daemon restart` (the profile is named after the server;
+  `ls ~/.multica/profiles` lists it).
 - A command got no reply: check the poll time (15 seconds by default), that you posted
   as yourself, that the issue is not assigned to an agent, and that it is under 10 minutes old.
 - Do not run `multica-bridge once` while the service is running if you can avoid it: both write
