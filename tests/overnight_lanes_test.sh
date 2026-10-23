@@ -1896,7 +1896,8 @@ test_lanes_final_gate_reads_run_config() {
   use_gate true
   assert_eq "--fixed-fps 60" "$(cat "$CALLS/fg.args" 2>/dev/null)" "the final gate sees the run's test_engine_args"
   assert_eq "$P" "$(cat "$CALLS/fg.sd" 2>/dev/null)" "with STUDIO_START_DIR = the start checkout"
-  assert_missing "$P/.claude/worktrees/integration-demo/.studio/config.json" "the integration worktree has no config of its own"
+  assert_status 0 "the fixture: origin/integration/demo exists" -- git -C "$P" rev-parse -q --verify origin/integration/demo
+  assert_eq "" "$(git -C "$P" ls-tree origin/integration/demo .studio/config.json)" "and carries no config of its own"
 }
 # #82: the landing's studio-gate merge gets STUDIO_START_DIR too.
 test_lanes_merge_gate_gets_start_dir() {
@@ -3767,6 +3768,21 @@ test_lanes_direct_setup_fail_note() {
   assert_contains "$(last_lanes_dir)/report.md" "^Final note: .*worktree setup failed — exit [0-9]" "the note is not empty"
 }
 
+# #82: every runner-side studio-setup (preflight, final integration, direct progress) gets STUDIO_START_DIR.
+test_lanes_setup_gets_start_dir() {
+  LANES_CONFIG='{"worktree_setup": "case $(pwd -P) in */setup-preflight-*) k=pf;; */integration-*) k=fi;; *) k=;; esac; [ -z $k ] || echo ${STUDIO_START_DIR:-unset} > '"$TMP"'/sd-$k"}'; export LANES_CONFIG
+  rm -f "$TMP/sd-pf" "$TMP/sd-fi" "$TMP/sd-pd"
+  lanes_fixture ssd integration A:-
+  run_lanes start "$MFP"
+  assert_eq "$P" "$(cat "$TMP/sd-pf" 2>/dev/null)" "setup_preflight's studio-setup sees STUDIO_START_DIR"
+  assert_eq "$P" "$(cat "$TMP/sd-fi" 2>/dev/null)" "final_integration's studio-setup sees STUDIO_START_DIR"
+  LANES_CONFIG='{"merge_command": "scripts/merge.sh <pr>", "worktree_setup": "case $(pwd -P) in */progress-*) echo ${STUDIO_START_DIR:-unset} > '"$TMP"'/sd-pd;; esac"}'; LANES_PROGRESS=1; export LANES_CONFIG LANES_PROGRESS
+  lanes_fixture ssdd direct A:-
+  printf 'progress\n' > "$SCEN/progress"
+  run_lanes start "$MFP"
+  assert_eq "$P" "$(cat "$TMP/sd-pd" 2>/dev/null)" "progress_direct's studio-setup sees STUDIO_START_DIR"
+}
+
 test_lanes_gate_command_final() {
   LANES_CONFIG='{"gate_command": "echo gc >> '"'$TMP/calls-gcf/gc'"'; exit 0"}'; export LANES_CONFIG
   lanes_fixture gcf integration A:-
@@ -5020,7 +5036,7 @@ run_tests test_stub_waitexist_and_run_token test_lanes_setup_preflight_refuses_l
   test_lanes_final_step_no_delivery test_lanes_deadline \
   test_lanes_stop_at_done_never_lands test_lanes_stop_held_by_operator test_lanes_stop_pending_never_holds \
   test_lanes_gate_repair_own_stop_holds test_lanes_directive_cap_holds test_lanes_hold_during_last_unit_lands_and_clears \
-  test_lanes_next_adopted_planned test_lanes_context_preflight test_lanes_check_unit_first test_lanes_adopt_sync_fail_holds test_lanes_setup_fail_holds test_lanes_setup_fail_final_red test_lanes_setup_silent_fail_final_red test_lanes_setup_fail_path_specials test_lanes_direct_setup_fail_note test_lanes_gate_command_final test_lanes_gate_command_finish_red_repair test_lanes_report_adopted_lines test_lanes_adopt_seeded_runs_rest test_lanes_adopt_round_trip \
+  test_lanes_next_adopted_planned test_lanes_context_preflight test_lanes_check_unit_first test_lanes_adopt_sync_fail_holds test_lanes_setup_fail_holds test_lanes_setup_fail_final_red test_lanes_setup_silent_fail_final_red test_lanes_setup_fail_path_specials test_lanes_direct_setup_fail_note test_lanes_setup_gets_start_dir test_lanes_gate_command_final test_lanes_gate_command_finish_red_repair test_lanes_report_adopted_lines test_lanes_adopt_seeded_runs_rest test_lanes_adopt_round_trip \
   test_lanes_per_run_lock_paths test_lanes_excludes_before_lock test_lanes_two_runs_each_own_lock \
   test_lanes_status_run_not_live test_lanes_manifest_refuses_live_single test_lanes_lock_race_single_vs_manifest \
   test_lanes_reg_write_keeps_live_sibling test_lanes_detach_with_other_run_live test_lanes_units_get_start_dir \
