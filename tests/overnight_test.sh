@@ -119,7 +119,17 @@ date +%s > "$CALLS/$n.t1"
 exit "$code"
 STUB
 printf '#!/bin/sh\nexec claude "$@"\n' > "$FAKE/claude-gd"
-printf '#!/bin/sh\nexit "${GH_STATUS:-0}"\n' > "$FAKE/gh"
+# The fake gh: `auth status [-h H]` logs its argv to $CALLS/gh.argv, prints a "Token scopes:" line
+# ($GH_SCOPES; default 'repo', 'workflow'; "-" prints none), and exits $GH_STATUS.
+cat > "$FAKE/gh" <<'STUB'
+#!/bin/sh
+[ -z "${CALLS:-}" ] || printf '%s\n' "$*" >> "$CALLS/gh.argv"
+case "$1 ${2:-}" in
+  "auth status")
+    if [ "${GH_SCOPES:-}" != - ]; then printf '  - Token scopes: %s\n' "${GH_SCOPES:-'repo', 'workflow'}"; fi ;;
+esac
+exit "${GH_STATUS:-0}"
+STUB
 # What gatereg runs: a process whose argv names studio-gate, as unit_reap and
 # the idle watchdog require of a registered gate.
 printf '#!/bin/sh\nwhile :; do sleep 1; done\n' > "$FAKE/fake-studio-gate"
@@ -428,6 +438,76 @@ test_overnight_preflight_refusals() {
   fixture r6; STUB_VERSION_STATUS=1; export STUB_VERSION_STATUS
   refuse_case "claude-gd --version fails" "claude-gd"; unset STUB_VERSION_STATUS
   fixture r7; GH_STATUS=1; export GH_STATUS; refuse_case "gh not authenticated" "gh auth status"; unset GH_STATUS
+}
+
+# ---- #90: the preflight's push check (the gh token's workflow scope) ----
+# push_fixture NAME [WORKFLOWS] — a fixture whose push URL is https://github.com/t/t.git (fetch stays
+# local), gh as the credential helper; WORKFLOWS=1 pushes .github/workflows/ci.yml to origin/main.
+push_fixture() {
+  fixture "$1"
+  ( cd "$P" && git remote set-url --push origin https://github.com/t/t.git \
+      && git config credential.https://github.com.helper '!gh auth git-credential' ) >/dev/null
+  [ "${2:-}" = 1 ] || return 0
+  ( cd "$P" && mkdir -p .github/workflows && echo 'on: push' > .github/workflows/ci.yml \
+      && git add -A && git -c user.name=t -c user.email=t@t commit -qm ci \
+      && git update-ref refs/remotes/origin/main HEAD ) >/dev/null
+}
+PUSH_FIX="Fix: gh auth refresh -h github.com -s workflow"
+test_overnight_push_check_refuses_without_workflow() {
+  push_fixture pk1 1
+  GH_SCOPES="'repo'"; export GH_SCOPES
+  run_start
+  assert_eq 2 "$RS_STATUS" "a token without the workflow scope: exit 2"
+  assert_contains "$RS_ERR" "$PUSH_FIX" "names the fix"
+  assert_contains "$RS_ERR" "gh token for github.com lacks the workflow scope, and this repo has .github/workflows" "names the cause"
+  assert_missing "$P/.studio/reports" "no run directory"
+  assert_eq 0 "$(calls)" "no session"
+  run_start --dry-run
+  unset GH_SCOPES
+  assert_eq 2 "$RS_STATUS" "--dry-run refuses the same"
+  assert_contains "$RS_ERR" "$PUSH_FIX" "and prints the same line"
+}
+test_overnight_push_check_ok_line() {
+  push_fixture pk2 1
+  run_start --dry-run
+  assert_eq 0 "$RS_STATUS" "a token with the workflow scope passes"
+  assert_contains "$RS_OUT" "^push: gh token for github.com has the workflow scope$" "the ok line"
+  assert_contains "$CALLS/gh.argv" "^auth status -h github.com$" "gh is asked about the push host"
+}
+test_overnight_push_check_no_workflows() {
+  push_fixture pk3
+  GH_SCOPES="'repo'"; export GH_SCOPES
+  run_start --dry-run
+  unset GH_SCOPES
+  assert_eq 0 "$RS_STATUS" "no workflows: the scope is not needed"
+  assert_contains "$RS_OUT" "^push: no .github/workflows — workflow scope not needed$" "the not-needed line"
+}
+test_overnight_push_check_ssh() {
+  push_fixture pk4 1
+  ( cd "$P" && git remote set-url --push origin git@github.com:t/t.git )
+  GH_SCOPES="'repo'"; export GH_SCOPES
+  run_start --dry-run
+  unset GH_SCOPES
+  assert_eq 0 "$RS_STATUS" "an SSH origin passes"
+  assert_contains "$RS_OUT" "^push: origin is SSH — no token scope applies$" "the SSH line"
+  assert_contains "$CALLS/gh.argv" "^auth status$" "gh auth status runs with no -h"
+}
+test_overnight_push_check_unknown_scopes() {
+  push_fixture pk5 1
+  GH_SCOPES=-; export GH_SCOPES
+  run_start --dry-run
+  unset GH_SCOPES
+  assert_eq 0 "$RS_STATUS" "unreadable scopes do not refuse"
+  assert_contains "$RS_OUT" "^push: cannot read gh token scopes for github.com — make sure the token may write workflows$" "the cannot-read line"
+}
+test_overnight_push_check_other_helper() {
+  push_fixture pk6 1
+  ( cd "$P" && git config credential.https://github.com.helper osxkeychain )
+  GH_SCOPES="'repo'"; export GH_SCOPES
+  run_start --dry-run
+  unset GH_SCOPES
+  assert_eq 0 "$RS_STATUS" "another credential helper does not refuse"
+  assert_contains "$RS_OUT" "^push: git does not push to github.com through gh's credential helper — cannot check the workflow scope$" "the helper line"
 }
 
 test_overnight_preflight_all_failures() {
@@ -2682,6 +2762,8 @@ run_tests test_overnight_setup_preflight_single test_overnight_help_setup_prefli
   test_overnight_stop_no_run test_overnight_inhibitor test_overnight_no_inhibitor \
   test_overnight_help test_overnight_unit_caps test_events_contract_doc test_overnight_dry_run \
   test_overnight_preflight_refusals test_overnight_preflight_all_failures \
+  test_overnight_push_check_refuses_without_workflow test_overnight_push_check_ok_line test_overnight_push_check_no_workflows \
+  test_overnight_push_check_ssh test_overnight_push_check_unknown_scopes test_overnight_push_check_other_helper \
   test_overnight_config_refusals test_overnight_deny_file_required \
   test_overnight_lock test_overnight_first_use_ignores \
   test_overnight_start_args test_overnight_reclaim_race test_overnight_reclaim_finds_live_lock \

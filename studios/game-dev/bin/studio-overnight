@@ -621,7 +621,13 @@ preflight() {
   if ! { command -v claude-gd >/dev/null 2>&1 && claude-gd --version >/dev/null 2>&1; }; then
     refuse "claude-gd not found or not working"
   fi
-  gh auth status >/dev/null 2>&1 || refuse "gh auth status failed — log in first"
+  # #90: an https origin asks gh about its own host; any other origin keeps the plain check.
+  push_host
+  if [ "$PUSH_KIND" = https ]; then
+    gh auth status -h "$PUSH_HOST" >/dev/null 2>&1 || refuse "gh auth status failed — log in first"
+  else
+    gh auth status >/dev/null 2>&1 || refuse "gh auth status failed — log in first"
+  fi
   if [ ! -f "$DENY_FILE" ] || ! grep -Evq '^[[:space:]]*(#|$)' "$DENY_FILE"; then
     refuse "$DENY_FILE: no deny rules"
   fi
@@ -684,9 +690,63 @@ preflight() {
     # AC5: a single-plan run excludes every live run, per-run locks included.
     refuse "$RECHECK_WHY"
   fi
+  # A manifest run's push check is lanes_start's (it needs the target branch too).
+  [ -n "$_pf_mf" ] || [ -z "$DEFAULT_BRANCH" ] || push_check "$DEFAULT_BRANCH"
   env_line
   [ -n "$_pf_mf" ] || [ "$FAILED" -eq 0 ] || exit 2
 }
+# push_host — #90: sets PUSH_URL (origin's push URL), PUSH_KIND (https | ssh | other)
+# and, for https, PUSH_HOST. https://[user@]host[:port]/… is https; git@host:… and
+# ssh://[user@]host/… are ssh.
+push_host() {
+  PUSH_URL="$(git -C "$START_DIR" remote get-url --push origin 2>/dev/null)" || PUSH_URL=""
+  PUSH_HOST=""
+  case "$PUSH_URL" in
+    https://*)
+      PUSH_KIND=https
+      _ph="${PUSH_URL#https://}"; _ph="${_ph%%/*}"; _ph="${_ph##*@}"; PUSH_HOST="${_ph%%:*}" ;;
+    ssh://*|*@*:*) PUSH_KIND=ssh ;;
+    *) PUSH_KIND=other ;;
+  esac
+  [ -n "$PUSH_HOST" ] || [ "$PUSH_KIND" != https ] || PUSH_KIND=other
+}
+
+# push_check BASE… — #90: a push that touches .github/workflows is rejected unless
+# the token has the workflow scope. Needs push_host's PUSH_HOST/PUSH_KIND. Refuses
+# when some origin/BASE has workflows, git pushes through gh's credential helper
+# and gh reports scopes without workflow; otherwise prints one stdout line.
+push_check() {
+  case "$PUSH_KIND" in
+    ssh) echo "push: origin is SSH — no token scope applies"; return 0 ;;
+    other) echo "push: origin $PUSH_URL is not https or ssh — not checked"; return 0 ;;
+  esac
+  _pc_wf=0
+  for _pc_b in "$@"; do
+    git -C "$START_DIR" cat-file -e "refs/remotes/origin/$_pc_b:.github/workflows" 2>/dev/null && _pc_wf=1
+  done
+  if [ "$_pc_wf" -eq 0 ]; then
+    echo "push: no .github/workflows — workflow scope not needed"; return 0
+  fi
+  _pc_h="$(git -C "$START_DIR" config --get-urlmatch credential.helper "https://$PUSH_HOST" 2>/dev/null)"
+  case "$_pc_h" in
+    *"gh auth git-credential"*) ;;
+    *) echo "push: git does not push to $PUSH_HOST through gh's credential helper — cannot check the workflow scope"; return 0 ;;
+  esac
+  # The active account's "Token scopes:" line; with no account lines, the first one.
+  _pc_sc="$(gh auth status -h "$PUSH_HOST" 2>&1 | awk '
+    /Active account:/ { acct = 1; act = ($0 ~ /Active account: true/); next }
+    /Token scopes:/ && !done && (!acct || act) { sub(/^.*Token scopes:[ \t]*/, ""); v = $0; done = 1 }
+    END { if (done) print v }')"
+  case "$_pc_sc" in
+    ''|none) echo "push: cannot read gh token scopes for $PUSH_HOST — make sure the token may write workflows"; return 0 ;;
+  esac
+  _pc_sc="$(printf '%s' "$_pc_sc" | tr -d "' ")"
+  case ",$_pc_sc," in
+    *,workflow,*) echo "push: gh token for $PUSH_HOST has the workflow scope" ;;
+    *) refuse "gh token for $PUSH_HOST lacks the workflow scope, and this repo has .github/workflows — a push that touches them is rejected. Fix: gh auth refresh -h $PUSH_HOST -s workflow" ;;
+  esac
+}
+
 # env_line [RUN_PID] — studio-env's readout on stdout: a summary line, and a
 # warning block when the machine is short of something. Never fails, never
 # blocks. The preflight prints it on stdout too (stderr is the refusals').

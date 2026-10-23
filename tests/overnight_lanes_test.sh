@@ -409,7 +409,9 @@ pr_file() {
   esac
 }
 case "$1 ${2:-}" in
-  "auth status") exit 0 ;;
+  "auth status")
+    if [ "${GH_SCOPES:-}" != - ]; then printf '  - Token scopes: %s\n' "${GH_SCOPES:-'repo', 'workflow'}"; fi
+    exit "${GH_STATUS:-0}" ;;
   "pr create")
     shift 2; _d=0; _b=""; _h=""; _t=""; _bf=""
     while [ "$#" -gt 0 ]; do
@@ -2393,6 +2395,25 @@ test_lanes_detach_strips_env() {
   assert_eq 1 "$([ -n "$_dl" ] && echo 1 || echo 0)" "the detached log is under reports"
   _dr="$(ls -d "$P"/.studio/reports/overnight-demo-[0-9]* 2>/dev/null | tail -n 1)"
   assert_eq 1 "$([ -L "$_dr/runner.log" ] && echo 1 || echo 0)" "the run dir links runner.log"
+}
+test_lanes_push_check_target_workflows() {
+  lanes_fixture pkt integration A:-
+  ( cd "$P" && git worktree add -q --detach "$TMP/pkt-wt" origin/main \
+      && cd "$TMP/pkt-wt" && mkdir -p .github/workflows && echo 'on: push' > .github/workflows/ci.yml \
+      && git add -A && git -c user.name=t -c user.email=t@t commit -qm ci \
+      && git push -q origin HEAD:refs/heads/integration/demo && cd "$P" && git worktree remove --force "$TMP/pkt-wt" \
+      && git remote set-url --push origin https://github.com/t/t.git \
+      && git config credential.https://github.com.helper '!gh auth git-credential' ) >/dev/null 2>&1
+  GH_SCOPES="'repo'"; export GH_SCOPES
+  run_lanes start --dry-run "$MFP"
+  assert_eq 2 "$LS_STATUS" "the target has workflows and the token lacks the scope: refused"
+  assert_contains "$LS_ERR" "Fix: gh auth refresh -h github.com -s workflow" "names the fix"
+  run_lanes start --detach "$MFP"
+  unset GH_SCOPES
+  assert_eq 2 "$LS_STATUS" "--detach refuses in the foreground"
+  assert_contains "$LS_ERR" "Fix: gh auth refresh -h github.com -s workflow" "with the fix line"
+  assert_missing "$P/.studio/overnight.lock" "no child, no lock"
+  assert_eq 0 "$(calls)" "no session"
 }
 test_lanes_detach_refusal_in_foreground() {
   lanes_fixture detr direct A:-                        # direct without merge_command
@@ -4902,7 +4923,7 @@ run_tests test_stub_waitexist_and_run_token test_lanes_setup_preflight_refuses_l
   test_lanes_direct_merge_timeout_after_merge_lands test_lanes_direct_merge_timeout_term_ignored \
   test_lanes_status_dead_old_lock_not_masking test_lanes_status_per_story test_lanes_report_every_ending test_lanes_report_on_lane_crash \
   test_lanes_done_marker test_lanes_status_reaps_dead_runner test_lanes_reap_names_final_pr \
-  test_lanes_detach_strips_env test_lanes_detach_refusal_in_foreground test_lanes_detach_child_refusal_surfaces \
+  test_lanes_detach_strips_env test_lanes_push_check_target_workflows test_lanes_detach_refusal_in_foreground test_lanes_detach_child_refusal_surfaces \
   test_lanes_detach_timeout_lock_held_points_at_status test_lanes_detach_timeout_no_lock_ends_child \
   test_lanes_detach_poll_keeps_budget test_lanes_detach_poll_rejects_bad_value \
   test_lanes_detach_slow_child_takes_lock test_lanes_detach_lock_without_marker_not_started test_lanes_detach_empty_ps_stat_polls_again \
