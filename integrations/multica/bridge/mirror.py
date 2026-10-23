@@ -76,6 +76,12 @@ def event_writes(st, ev, superseded: bool = False):
         nw = notice_writes(st, ev, superseded)
         # the macOS banner goes first: it is the one alert that still works when Multica is down
         return [w for w in nw if w[0] == "banner"] + out + [w for w in nw if w[0] != "banner"]
+    if e == "hold_reminder":   # #92: once per hold; no status, held-set or banner change (the runner raised one)
+        body = notice.reminder_body("-" if single else s, ev.get("why") or "?", ev.get("until"))
+        out = [("comment", "run", mc.PREFIX + body)]
+        if st["request"].get("issue"):
+            out.append(("kickoff", "request", notice.kickoff_text(body)))
+        return out
     if e == "story_synced":
         if ev.get("refs"):
             return [say("synced %s (%s)" % (", ".join(map(str, ev.get("refs") or [])), str(ev.get("sha", "?"))[:7]))]

@@ -58,6 +58,17 @@ def hold_body(story: str, why, until, issue, run: str) -> str:
     return "\n".join([head, until_line(until), multica, term])
 
 
+def reminder_body(story: str, why, until) -> str:
+    """The once-per-hold reminder text (#92) without the leading `studio: `. `until` formats as in
+    `until_line`; a value that does not parse is shown raw."""
+    head = "the run is still held" if story == "-" else "story %s still held" % story
+    try:
+        when = "%s (%s UTC)" % (time.strftime("%Y-%m-%d %H:%M %Z", time.localtime(parse_ts(until))), until)
+    except (ValueError, TypeError, AttributeError):
+        when = until if until is not None else "?"
+    return "%s — stops at %s unless resumed. Why: %s" % (head, when, why)
+
+
 def expiry_body(story: str, why) -> str:
     who = "the run" if story == "-" else "story %s" % story
     return "%s stopped — hold ran out with no reply. Why: %s" % (who, why)

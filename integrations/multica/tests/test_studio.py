@@ -197,7 +197,7 @@ class StudioTest(BridgeCase):
         self.assertEqual(studio.parse_event(j({"v": 1}))[0], "unknown")
         for k in studio.KNOWN_EVENTS:
             self.assertEqual(studio.parse_event(j(ev(k)))[0], "ok")
-        self.assertEqual(len(studio.KNOWN_EVENTS), 12)
+        self.assertEqual(len(studio.KNOWN_EVENTS), 13)
 
     def _so(self, name):
         d = os.path.join(self.tmp, "so-" + name)
