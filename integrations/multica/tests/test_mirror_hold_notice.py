@@ -237,6 +237,17 @@ class HoldNoticeTest(MirrorCase):
         self.assertEqual(self.run_status(), ["in_progress", "blocked", "in_progress"])
         self.assertEqual(len(self.kick()), 1)
 
+    def test_banner_first_survives_multica_outage(self):                       # final review: banner first
+        self.begin()
+        self.board.fault("issue comment add", exit=1, stderr="503 service unavailable", contains=self.RI, count=1)
+        self.run.append(held("A"))
+        with self.assertRaises(mc.TransientError):
+            self.poll()
+        self.assertEqual(len(self.banners()), 1)
+        self.poll()
+        self.assertEqual(len(self.banners()), 1)
+        self.assertEqual(len(self.kick()), 1)
+
     def test_state_without_held_key_polls(self):                               # AC12
         self.begin()
         st = self.state.load_run(self.paths, self.key(self.run))
@@ -258,6 +269,7 @@ class HoldNoticeTest(MirrorCase):
         self.assertEqual(len(notices), 1)
         self.assertIn("Multica: A has no issue — use the terminal.", notices[0])
         self.assertIn("blocked", self.run_status())                 # the AC12 change, pinned on purpose
+        self.assertIn("blocked", [c[3] for c in self.status_calls() if c[2] == self.RI])   # catch-up lands blocked
 
     def test_hands_off_run_issue_still_notifies_kickoff(self):                 # RF1
         self.begin()

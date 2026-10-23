@@ -12,7 +12,7 @@ from .state import parse_ts
 
 NOTICE_TAIL = "Notify only: reply with one short line. Run no command; never resume, stop, say to or hold a story."
 # The runner's hold-expiry stop: `<why> (held <h>h<m>m, no reply)`, at the very end of the why.
-_EXPIRY = re.compile(r"\(held \d+h\d+m, no reply\)\Z")
+_EXPIRY = re.compile(r" \(held \d+h\d+m, no reply\)\Z")
 
 
 def until_line(until) -> str:

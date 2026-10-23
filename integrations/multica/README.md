@@ -233,7 +233,9 @@ Rules that catch people out:
   the ending and the report path. In a manifest run it also goes Blocked while any
   story is held, and back to In Progress when none is.
 - Hold notice: when a story is held (or a hold expires), the bridge posts a comment
-  starting `studio: [notify only]` on the Run issue and on your request issue. It names
+  starting `studio: [notify only]` on your request issue, and a plain `studio: story B held: …`
+  comment on the Run issue (manifest runs; a single-plan run has no separate Run notice, its Run
+  issue is the story and gets the usual `held:` line). It names
   the story, why it is held and how to answer (`/say`, `/resume`, `/stop`). The marker
   means the comment is a notice only, never a command. The operator's Mac also shows a
   macOS banner. An unassigned (queued) kickoff wakes no agent; the banner is then the only alert.

@@ -73,7 +73,9 @@ def event_writes(st, ev, superseded: bool = False):
             out.append(say("held: %s — until %s — /say, /resume or /stop" % (ev.get("why", "?"), ev.get("until", "?"))))
         elif state_ in ("stopped", "skipped"):
             out.append(say("%s: %s" % (state_, ev.get("why", "?"))))
-        return out + notice_writes(st, ev, superseded)
+        nw = notice_writes(st, ev, superseded)
+        # the macOS banner goes first: it is the one alert that still works when Multica is down
+        return [w for w in nw if w[0] == "banner"] + out + [w for w in nw if w[0] != "banner"]
     if e == "story_synced":
         if ev.get("refs"):
             return [say("synced %s (%s)" % (", ".join(map(str, ev.get("refs") or [])), str(ev.get("sha", "?"))[:7]))]

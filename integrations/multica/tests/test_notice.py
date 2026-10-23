@@ -36,7 +36,7 @@ class NoticeTextTest(unittest.TestCase):
         yes = ["stop: need art (held 8h0m, no reply)", "no progress on T3 (held 0h30m, no reply)",
                "x (held 24h0m, no reply)"]
         no = ["stopped by operator", "stop: need art", "stopped by user (was held: x (held 1h0m, no reply))",
-              "x (held 8m, no reply)", "x (held 8h0m, no reply) ", "", None]
+              "x (held 8m, no reply)", "x(held 8h0m, no reply)", "x (held 8h0m, no reply) ", "", None]
         for w in yes:
             self.assertTrue(notice.is_expiry(w), w)
         for w in no:
@@ -103,6 +103,7 @@ class NoticeCliTest(BridgeCase):
         self.assertEqual(self.board.calls("issue comment add")[0]["argv"][:5],
                          ["issue", "comment", "add", "OMEG-1", "--content-stdin"])
         self.assertIn("no-mention:", self.board.comments("OMEG-1")[0]["content"])
+        self.assertTrue(self.board.comments("OMEG-1")[0]["content"].startswith("studio: [notify only] "))   # AC4
         for bad in ("studio: held: x", "[notify only] x", " studio: [notify only] x"):
             with self.assertRaises(ValueError):
                 self.cli.add_notice("OMEG-1", bad)
