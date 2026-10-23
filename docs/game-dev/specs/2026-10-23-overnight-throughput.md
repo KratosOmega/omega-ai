@@ -1,6 +1,6 @@
 # Overnight throughput on the Mac mini: parallel tracks, machine-tuned caps, checkpoint suites, isolation-safe commands — design
 
-Status: Draft (awaiting operator approval).
+Status: Approved by the operator in chat, 2026-10-23. Plan: `../plans/2026-10-23-overnight-throughput.md`.
 Branch: `feat/overnight-throughput`, worktree `../omega-ai-throughput`, based on `origin/fix/overnight-push-gaps`
 (PR #93), because both change `studio-overnight`'s preflight and the execute skill.
 Issues: none filed yet for this work (the operator decides). Related: PR #93 (#90-#92, push gaps), and #95
