@@ -653,10 +653,13 @@ A finish records operator messages at §0's recording point and commits them wit
      adding `--draft` when `omega-mode show` lists `autopilot`, when
      `omega-mode show` fails (it exits 1 without `CLAUDE_CODE_SESSION_ID`;
      an unknown mode counts as autopilot), or when step 1 ended red.
-   - In an interactive finish (outside `--one`): no `origin` remote,
-     `gh auth status` failing, a rejected push (never force-push) or a failed
-     `gh pr create`: keep the body file, say which failed, print the body
-     path, and continue; under `--one`, §8's push rule applies.
+   - `gh auth status` failing or a failed `gh pr create`, in every mode
+     (`--one` included): keep the body file, say which failed, print the
+     body path, and continue.
+   - No `origin` remote or a rejected push (never force-push), outside `--one`
+     (an interactive finish): keep the body file, say which failed, print
+     the body path, and continue; under `--one`, a missing `origin`
+     counts as a failed push and §8's push rule applies.
      Never merge: no session merges into `main` (the default branch) in any run mode; the runner lands.
 5. **State.** `studio-state ledger "shipped <PR url, or the branch name when there is no PR>"`;
    commit the ledger
@@ -808,7 +811,8 @@ runs exactly one unit, writes its state, commits, pushes, and ends the turn.
   earlier `Ruling: push rejected` line is a record only; it is not a stop and
   not a reason to skip a push.
 - **Every stop** (§0's preconditions and isolation stops, §6's hard-stop
-  list, §7 step 1's exit 2 and exit 3, a red gate under a lane): run
+  list, §7 step 1's exit 2 and exit 3, a red gate under a lane, a failed push
+  (§8's push rule)): run
   `studio-state ledger "Stop: <reason>"`, one line, reason first. Where:
   - Once §0 step (c) has recorded `branch` — or a resume has entered the
     feature checkout its recorded `branch` names — in the feature checkout,
