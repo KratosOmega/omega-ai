@@ -436,6 +436,124 @@ test_brief_validate_relative_to_caller() {
   assert_eq 0 "$st" "from docs/: plan.md is found, docs/spec.md resolves from the root"
 }
 
+# tracks_plan FILE [T3-extra-line] — four tasks: T1 a.gd, T2 a.gd+b.gd, T3 x.js, T4 x.js.
+tracks_plan() {
+  cat > "$1" <<PLAN
+# Plan
+### Task 1: one
+Spec: docs/s.md:L1
+Files: a.gd
+### Task 2: two
+Spec: docs/s.md:L1
+Files: a.gd, b.gd
+### Task 3: three
+Spec: docs/s.md:L1
+Files: x.js
+${2:-}
+### Task 4: four
+Spec: docs/s.md:L1
+Files: x.js
+PLAN
+}
+test_tracks_two_groups() {
+  Q="$TMP/trk1"; mkdir -p "$Q"; tracks_plan "$Q/plan.md"
+  sh "$BRIEF" tracks "$Q/plan.md" > "$TMP/t.out" 2> "$TMP/t.err"; st=$?
+  assert_eq 0 "$st" "tracks exits 0"
+  assert_eq "tracks: 2
+track 1: T1 T2 — 2 tasks — files: a.gd, b.gd
+track 2: T3 T4 — 2 tasks — files: x.js" "$(cat "$TMP/t.out")" "two tracks, exact output"
+  sh "$BRIEF" tracks > /dev/null 2>&1; st=$?
+  assert_eq 2 "$st" "no plan argument exits 2"
+  sh "$BRIEF" tracks "$Q/none.md" > /dev/null 2>&1; st=$?
+  assert_eq 2 "$st" "a missing plan exits 2"
+}
+test_tracks_after_joins() {
+  Q="$TMP/trk2"; mkdir -p "$Q"; tracks_plan "$Q/plan.md" "After: T2"
+  assert_eq "tracks: 1" "$(sh "$BRIEF" tracks "$Q/plan.md" | sed -n 1p)" "After: T2 on T3 joins the tracks"
+  tracks_plan "$Q/plan.md"
+  # the edge counts in either direction: T1 names T4 (forward) only for tracks, not validate
+  sed 's/^Files: a.gd$/Files: a.gd\nAfter: T4/' "$Q/plan.md" > "$Q/p2.md"
+  assert_eq "tracks: 1" "$(sh "$BRIEF" tracks "$Q/p2.md" | sed -n 1p)" "an After: edge joins in either direction"
+}
+test_tracks_normalizes_paths() {
+  Q="$TMP/trk3"; mkdir -p "$Q"
+  cat > "$Q/plan.md" <<'PLAN'
+### Task 1: a
+Files: ./a.gd  
+### Task 2: b
+Files: res://a.gd
+### Task 3: c
+Files: `a.gd`
+PLAN
+  sh "$BRIEF" tracks "$Q/plan.md" > "$TMP/t.out"
+  assert_eq "tracks: 1
+track 1: T1 T2 T3 — 3 tasks — files: a.gd" "$(cat "$TMP/t.out")" "./a.gd, res://a.gd, \`a.gd\` are one path"
+}
+test_tracks_ignores_backlog_and_fences() {
+  Q="$TMP/trk4"; mkdir -p "$Q"; tracks_plan "$Q/plan.md"
+  cat >> "$Q/plan.md" <<'PLAN'
+
+```
+### Task 9: fenced
+Files: a.gd
+After: T1
+```
+
+## Backlog
+### Task 5: later
+Files: x.js
+PLAN
+  sh "$BRIEF" tracks "$Q/plan.md" > "$TMP/t.out"
+  assert_eq "tracks: 2
+track 1: T1 T2 — 2 tasks — files: a.gd, b.gd
+track 2: T3 T4 — 2 tasks — files: x.js" "$(cat "$TMP/t.out")" "fenced and backlog tasks change nothing"
+  # a fenced Files: line inside a real task is ignored too
+  cat > "$Q/p2.md" <<'PLAN'
+### Task 1: a
+Files: a.gd
+```
+Files: x.js
+```
+### Task 2: b
+Files: x.js
+PLAN
+  assert_eq "tracks: 2" "$(sh "$BRIEF" tracks "$Q/p2.md" | sed -n 1p)" "a fenced Files: line in a task is ignored"
+}
+test_tracks_deterministic() {
+  Q="$TMP/trk5"; mkdir -p "$Q"; tracks_plan "$Q/plan.md"
+  sh "$BRIEF" tracks "$Q/plan.md" > "$TMP/t1.out"; sh "$BRIEF" tracks "$Q/plan.md" > "$TMP/t2.out"
+  assert_eq "$(cat "$TMP/t1.out")" "$(cat "$TMP/t2.out")" "two runs, identical stdout"
+}
+test_validate_after_forward_fails() {
+  Q="$TMP/va1"; mkdir -p "$Q"; printf 'l1\n' > "$Q/s.md"
+  printf '### Task 1: a\nSpec: s.md:L1\n### Task 2: b\nSpec: s.md:L1\nAfter: T3\n### Task 3: c\nSpec: s.md:L1\n' > "$Q/plan.md"
+  ( cd "$Q" && sh "$BRIEF" validate plan.md ) > /dev/null 2> "$TMP/v.err"; st=$?
+  assert_eq 1 "$st" "a forward After: fails"
+  assert_contains "$TMP/v.err" '^studio-brief: task 2: After: T3 is not an earlier task above ## Backlog$' "names it"
+  printf '### Task 1: a\nSpec: s.md:L1\nAfter: T1\n' > "$Q/plan.md"
+  ( cd "$Q" && sh "$BRIEF" validate plan.md ) > /dev/null 2> "$TMP/v.err"; st=$?
+  assert_eq 1 "$st" "a self After: fails"
+}
+test_validate_after_unknown_fails() {
+  Q="$TMP/va2"; mkdir -p "$Q"; printf 'l1\n' > "$Q/s.md"
+  printf '### Task 1: a\nSpec: s.md:L1\n### Task 2: b\nSpec: s.md:L1\nAfter: T9\n' > "$Q/plan.md"
+  ( cd "$Q" && sh "$BRIEF" validate plan.md ) > /dev/null 2> "$TMP/v.err"; st=$?
+  assert_eq 1 "$st" "an unknown After: fails"
+  assert_contains "$TMP/v.err" '^studio-brief: task 2: After: T9 is not an earlier task above ## Backlog$' "names it"
+  printf '### Task 2: b\nSpec: s.md:L1\nAfter: T1\n## Backlog\n### Task 1: a\nSpec: s.md:L1\n' > "$Q/plan.md"
+  ( cd "$Q" && sh "$BRIEF" validate plan.md ) > /dev/null 2> "$TMP/v.err"; st=$?
+  assert_eq 1 "$st" "a backlog After: fails"
+}
+test_validate_after_ok() {
+  Q="$TMP/va3"; mkdir -p "$Q"; printf 'l1\n' > "$Q/s.md"
+  printf '### Task 1: a\nSpec: s.md:L1\n### Task 2: b\nSpec: s.md:L1\nAfter: T1\n' > "$Q/plan.md"
+  ( cd "$Q" && sh "$BRIEF" validate plan.md ) > "$TMP/v.out" 2> "$TMP/v.err"; st=$?
+  assert_eq 0 "$st" "an earlier After: passes"
+  printf '### Task 1: a\nSpec: s.md:L1\n### Task 2: b\nSpec: s.md:L1\n' > "$Q/plan.md"
+  ( cd "$Q" && sh "$BRIEF" validate plan.md ) > "$TMP/v.out" 2> "$TMP/v.err"; st=$?
+  assert_eq 0 "$st" "a plan with no After: still passes"
+}
+
 DET="$REPO_ROOT/studios/game-dev/bin/godot-cmd.awk"
 # godot_md FILE [OUT] — the detector's md output (rows, or OUT) for FILE.
 godot_md() { LC_ALL=C awk -v mode=md ${2:+-v out=$2} -f "$DET" "$1"; }
@@ -752,4 +870,4 @@ test_brief_rewrite_file() {
   assert_eq 0 "$(ls "$TMP/rf" | grep -c nope)" "and creates nothing"
 }
 
-run_tests test_godot_cmd_md_finds_bare_forms test_godot_cmd_md_span_edges test_godot_cmd_md_multiline test_brief_task test_brief_final test_brief_refusals test_brief_missing_sections test_brief_directives_task test_brief_directives_final test_brief_directive_text_not_ruling test_brief_directive_edge_cases test_brief_no_directives_no_part test_brief_context_appended test_brief_context_cap test_brief_context_missing_file test_brief_context_no_glob test_brief_final_plan_acceptance test_brief_check_verb test_brief_check_uses_truth_region test_brief_final_reads_check_rulings test_brief_original_plan_item test_brief_usage_names_check test_brief_single_line_item test_brief_validate_good_plan test_brief_validate_reports_all test_brief_validate_duplicate_task test_brief_validate_missing_plan_and_no_state test_brief_validate_relative_to_caller test_brief_rewrite_wraps_only test_brief_task_check_final_rewritten test_brief_validate_godot_form test_brief_missing_detector test_brief_broken_detector test_brief_rewrite_no_tmpdir test_brief_rewrite_file
+run_tests test_godot_cmd_md_finds_bare_forms test_godot_cmd_md_span_edges test_godot_cmd_md_multiline test_brief_task test_brief_final test_brief_refusals test_brief_missing_sections test_brief_directives_task test_brief_directives_final test_brief_directive_text_not_ruling test_brief_directive_edge_cases test_brief_no_directives_no_part test_brief_context_appended test_brief_context_cap test_brief_context_missing_file test_brief_context_no_glob test_brief_final_plan_acceptance test_brief_check_verb test_brief_check_uses_truth_region test_brief_final_reads_check_rulings test_brief_original_plan_item test_brief_usage_names_check test_brief_single_line_item test_brief_validate_good_plan test_brief_validate_reports_all test_brief_validate_duplicate_task test_brief_validate_missing_plan_and_no_state test_brief_validate_relative_to_caller test_brief_rewrite_wraps_only test_brief_task_check_final_rewritten test_brief_validate_godot_form test_brief_missing_detector test_brief_broken_detector test_brief_rewrite_no_tmpdir test_brief_rewrite_file test_tracks_two_groups test_tracks_after_joins test_tracks_normalizes_paths test_tracks_ignores_backlog_and_fences test_tracks_deterministic test_validate_after_forward_fails test_validate_after_unknown_fails test_validate_after_ok
