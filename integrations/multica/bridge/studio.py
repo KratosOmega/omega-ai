@@ -16,7 +16,7 @@ from .state import parse_ts
 VERB_TIMEOUT = 30
 KNOWN_EVENTS = frozenset({"run_started", "story_listed", "story_state", "unit_started", "unit_ended",
                           "story_synced", "session_wait", "message_queued", "message_delivered",
-                          "message_requeued", "control", "run_ended"})
+                          "message_requeued", "control", "run_ended", "hold_reminder"})
 _log = logging.getLogger("bridge.studio")
 _TASK = re.compile(r"^[A-Za-z0-9-]+$")
 _WORKDIR = re.compile(r"^([a-z0-9]+-\d+)-[0-9a-f]{12}$", re.I)
