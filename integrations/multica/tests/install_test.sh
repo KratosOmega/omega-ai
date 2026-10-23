@@ -292,6 +292,39 @@ b["runtimes"] = [{"id": "rt-%s-%s" % (d, k), "profile_id": p, "daemon_id": "daem
   assert_contains_line "runtime-id=rt-2-omega" "$(argcheck)" "the agent is bound to daemon-2's omega runtime"
 }
 
+# two_daemons_board ONLINE… — daemon-1 and daemon-2 each have both profiles' runtimes,
+# online only on the daemons named; ~/.multica/daemon.id says this Mac is daemon-2.
+two_daemons_board() {
+  boardpy "on = '$*'.split()"'
+b["auto_runtime"] = False
+b["runtime_profiles"] = [{"id": "rp-o", "command_name": "omega-multica-agent"}, {"id": "rp-c", "command_name": "claude-multica"}]
+b["runtimes"] = [{"id": "rt-%s-%s" % (d, k), "profile_id": p, "daemon_id": "daemon-" + d,
+                  "status": "online" if "daemon-" + d in on else "offline", "name": "Claude (host-%s)" % d}
+                 for d in ("1", "2") for k, p in (("omega", "rp-o"), ("claude", "rp-c"))]'
+  mkdir -p "$HOME/.multica"
+  printf 'daemon-2\n' > "$HOME/.multica/daemon.id"
+}
+
+test_install_defaults_to_this_macs_daemon() {
+  reset
+  two_daemons_board daemon-1 daemon-2
+  inst --agent gd --project "$PROJ"
+  assert_eq 0 "$RC" "another Mac's daemon also serves both profiles: exit 0"
+  assert_contains_line "runtime-id=rt-2-omega" "$(argcheck)" "the agent is bound to this Mac's omega runtime"
+}
+
+test_install_this_macs_daemon_offline_fails() {
+  reset
+  two_daemons_board daemon-1
+  fast_sleep on
+  inst
+  fast_sleep off
+  assert_eq 1 "$RC" "only another Mac's daemon serves both profiles: exit 1"
+  assert_contains "$TMP/err" "this Mac's daemon (daemon-2)" "stderr names this Mac's daemon"
+  assert_contains "$TMP/err" 'multica daemon restart --profile' "stderr names the daemon restart"
+  assert_contains "$TMP/err" '--daemon-id' "stderr names --daemon-id for another Mac"
+}
+
 # assert_contains_line LINE TEXT MSG — TEXT has a line equal to LINE.
 assert_contains_line() {
   TESTS_RUN=$((TESTS_RUN + 1))
@@ -794,7 +827,8 @@ run_tests test_install_project_with_comma_or_newline_refused test_install_drops_
   test_install_rerun_changes_nothing test_install_token_prompt_once test_install_new_token \
   test_install_token_rejected test_install_property_archived_refused test_install_property_wrong_type_refused \
   test_install_not_admin_refused test_install_runtime_wait_times_out \
-  test_install_multiple_daemons_needs_daemon_id test_install_agent_args test_install_agent_archived_skipped \
+  test_install_multiple_daemons_needs_daemon_id test_install_defaults_to_this_macs_daemon \
+  test_install_this_macs_daemon_offline_fails test_install_agent_args test_install_agent_archived_skipped \
   test_install_selftest_file_access_reported test_install_selftest_sees_the_project_root test_install_selftest_timeout test_install_python_too_old \
   test_install_foreign_symlink_refused test_install_usage test_uninstall_removes \
   test_uninstall_profiles_refused_while_bound test_uninstall_profiles_deletes test_uninstall_purge \

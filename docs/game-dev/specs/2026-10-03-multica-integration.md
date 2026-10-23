@@ -858,8 +858,9 @@ stands in for them.
       `coalesced-comments-v1`). Nothing in the design depends on that reply.
     - A per-machine override (`multica runtime profile set-path`) beats the
       profile's command name, and a command or path change reaches the daemon
-      only after a daemon restart (Multica.app, Settings, Daemon, Restart). The
-      Desktop-managed daemon keeps running when the app quits unless "Auto-stop
+      only after a daemon restart (`multica daemon restart --profile <name>`;
+      Multica.app has no restart button). The Desktop-managed daemon keeps
+      running when the app quits unless "Auto-stop
       on quit" is on. The first two probe runs hit a stale planning-phase
       override, so their P1 and P4 results were void and were re-run.
 18. **P2 (a sub-issue under an agent-assigned issue starts no run): pass.**

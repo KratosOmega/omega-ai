@@ -278,8 +278,9 @@ approval page in `artifacts/`.
   D1a-D1g in the plan: P1, P2, P3, P4 and P7 ran and passed. P5 and P6 were not
   run because the projects live outside `~/Documents`, so the plan's defaults are
   in use. Finding from P1: a per-machine `runtime profile set-path` override beats
-  the profile's command, and command changes need a daemon restart (Settings,
-  Daemon, Restart); README and install now say so.
+  the profile's command, and command changes need a daemon restart (`multica
+  daemon restart --profile <name>`; the app has no restart button); README and
+  install now say so.
 - The live install check (spec milestone gate step 4) passed on 2026-10-04
   (spec References item 24). Say, resume, the end-of-run Done status and the
   single "sub-issues closed" wakeup all worked. The deviations: the test project
