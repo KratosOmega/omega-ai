@@ -683,7 +683,7 @@ preflight() {
   # #59 R2: the idle watchdog (run_unit). Its seconds seams are whole numbers >= 1.
   cfg idle_minutes 20 0 120 int
   [ -z "${IDLE_MINUTES:-}" ] || IDLE_MINUTES="$(printf '%s\n' "$IDLE_MINUTES" | awk '{ print $1 + 0 }')"   # D3
-  for _pf_v in STUDIO_OVERNIGHT_IDLE_SECONDS STUDIO_OVERNIGHT_IDLE_POLL_SECONDS; do
+  for _pf_v in STUDIO_OVERNIGHT_IDLE_SECONDS STUDIO_OVERNIGHT_IDLE_POLL_SECONDS STUDIO_OVERNIGHT_NOTIFY_SECONDS; do
     eval "_pf_x=\${$_pf_v:-1}"
     case "$_pf_x" in ''|*[!0-9]*) refuse "$_pf_v must be a whole number of seconds (1 or more), got $_pf_x" ;;
       *) [ "$_pf_x" -ge 1 ] || refuse "$_pf_v must be a whole number of seconds (1 or more), got $_pf_x" ;; esac
@@ -1125,6 +1125,7 @@ hold_wait() {
     if [ "$_hw_rd" = 0 ] && [ "$_hw_now" -ge "$_hw_rm" ] && [ "$_hw_now" -lt "$_hw_dl" ]; then
       _hw_rd=1; run_event hold_reminder "story=${CUR_ID:--}" "until=$(iso_utc "$_hw_dl")" "why=$_hw_why"
       notify_operator "$_hw_who still held in $_hw_run — stops at $(hhmm_local "$(iso_utc "$_hw_dl")") unless resumed: $_hw_why"
+      _hw_now=$(date +%s)
     fi
     if [ "$_hw_now" -ge "$_hw_dl" ]; then ENDING="$_hw_why (held $(hm "$HOLD_SECS"), no reply)"; return 1; fi
     sleep "${STUDIO_OVERNIGHT_POLL_SECONDS:-5}"

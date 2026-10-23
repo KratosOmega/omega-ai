@@ -519,6 +519,7 @@ exit "$rc"
 STUB
 # A fake caffeinate: lives until the -w pid dies (no real keep-awake in tests).
 printf '#!/bin/sh\nwhile kill -0 "$3" 2>/dev/null; do sleep 1; done\n' > "$FAKE/caffeinate"
+printf '#!/bin/sh\nexit 0\n' > "$FAKE/terminal-notifier"   # a detached child strips STUDIO_*: no real banner
 chmod +x "$FAKE"/*
 PATH="$FAKE:$PATH"; STUB_STATE_BIN="$STATE_BIN"
 export PATH STUB_STATE_BIN

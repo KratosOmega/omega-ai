@@ -148,6 +148,7 @@ STUB
 printf '#!/bin/sh\nwhile :; do sleep 1; done\n' > "$FAKE/fake-studio-gate"
 # A fake caffeinate: records its argv and pid, then lives until the -w pid dies.
 printf '#!/bin/sh\nprintf "%%s\\n" "$*" > "$CALLS/caffeinate.args"\necho "$$" > "$CALLS/caffeinate.pid"\nwhile kill -0 "$3" 2>/dev/null; do sleep 1; done\n' > "$FAKE/caffeinate"
+printf '#!/bin/sh\nexit 0\n' > "$FAKE/terminal-notifier"   # a detached child strips STUDIO_*: no real banner
 chmod +x "$FAKE"/*
 export PATH="$FAKE:$PATH" STUB_STATE_BIN="$STATE_BIN" STUB_RUNNER="$RUNNER" STUB_PLUGIN="$REPO_ROOT/studios/game-dev"
 # The suites test today's endings: hold_minutes 0 (spec milestone gate 1).
@@ -1907,16 +1908,15 @@ test_overnight_hold_deadline() {
 # #92: a hold raises one banner at its start and one reminder at 25% left. A logging
 # notifier appends its text ($1) to $CALLS/notify.
 test_overnight_hold_notifies_once() {
-  fixture hnf; holds_on 60
+  fixture hnf; holds_on 8
   STUDIO_OVERNIGHT_NOTIFY_CMD='printf "%s\n" "$1" >> "$CALLS/notify"'; export STUDIO_OVERNIGHT_NOTIFY_CMD
-  scenario "$ISO1" "wtledger Stop: need art"
-  start_bg; wait_held 60; sleep 2
-  assert_eq 1 "$(wc -l < "$CALLS/notify" | tr -d ' ')" "one banner at the hold's start"
+  scenario "$ISO1" "wtledger Stop: need art" "sleep 9; inbox; task 2/2; wtledger T2 complete b..c" \
+           "wtledger final review done" "wtledger shipped https://x/pull/3; stage idle; task -"
+  start_bg; wait_held 60
+  verb resume -; bg_end 90 "the run ends"
+  assert_eq 1 "$(wc -l < "$CALLS/notify" | tr -d ' ')" "one banner: the start; a resume before the reminder cancels it"
   assert_contains "$CALLS/notify" "^run held in overnight-[0-9-]*: stop: need art — until [0-9][0-9]:[0-9][0-9]$" "the banner text"
-  verb resume -; sleep 2
-  assert_not_contains "$CALLS/notify" "still held" "a resume before the reminder: no reminder (a re-hold may add its own banner)"
   assert_not_contains "$R/events.jsonl" '"event":"hold_reminder"' "and no reminder event"
-  verb stop -; bg_end 20 "the run ends"
   STUDIO_OVERNIGHT_NOTIFY_CMD=': '; holds_off
 }
 test_overnight_hold_reminder_before_expiry() {
@@ -1955,6 +1955,10 @@ test_overnight_notify_hang_capped() {
   assert_contains "$(last_run_dir)/report.md" "^Ending: stop: need art (held 0h0m, no reply)$" "the same ending"
   assert_contains "$TMP/rs.err" "notify failed: timed out" "the cap is reported"
   STUDIO_OVERNIGHT_NOTIFY_CMD=': '; unset STUDIO_OVERNIGHT_NOTIFY_SECONDS; holds_off
+}
+test_overnight_notify_seconds_refused() {
+  fixture nsr; STUDIO_OVERNIGHT_NOTIFY_SECONDS=x; export STUDIO_OVERNIGHT_NOTIFY_SECONDS
+  refuse_case "bad notify cap" "STUDIO_OVERNIGHT_NOTIFY_SECONDS must be a whole number"; unset STUDIO_OVERNIGHT_NOTIFY_SECONDS
 }
 # D9: the hold wait at its production 5 s poll (the knob unset). The deadline is 3 s,
 # so the first poll after it is the one at 5 s; the lower bound holds under any load.
@@ -2925,7 +2929,7 @@ run_tests test_overnight_setup_preflight_single test_overnight_help_setup_prefli
   test_overnight_new_stop_holds_again \
   test_overnight_hold_deadline test_overnight_hold_default_poll \
   test_overnight_hold_notifies_once test_overnight_hold_reminder_before_expiry \
-  test_overnight_notify_failure_not_fatal test_overnight_notify_hang_capped \
+  test_overnight_notify_failure_not_fatal test_overnight_notify_hang_capped test_overnight_notify_seconds_refused \
   test_overnight_stop_beats_resume \
   test_overnight_resume_wins_at_deadline \
   test_overnight_requeue_then_hold \
