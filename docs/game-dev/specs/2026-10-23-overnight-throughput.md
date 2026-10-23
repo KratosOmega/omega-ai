@@ -56,8 +56,10 @@ still runs.
 ## Anti-goals (failure even if it works)
 
 - Any weaker gate: a skipped reviewer, a skipped finish gate, fewer tests, or a red suite that ships.
-- A change in behaviour on a slow machine that nobody asked for. Every new automatic value works out to today's
-  value on the old 4-core laptop, or is off.
+- A change in behaviour on a slow machine that nobody asked for. On the old 4-core laptop with phoenix's measured
+  times, every new automatic value works out to today's value, or is off. An automatic value comes from the
+  machine's core count or from the project's own measured `gate.times`, never from a constant tuned for one
+  machine. A project whose suite is fast gets the faster behaviour on any machine, because it measured it.
 - A split that makes two parallel stories edit the same file, or one story use an interface another story is still
   building.
 - A new way for a run to hold overnight on something the preflight could have checked.
@@ -85,8 +87,14 @@ itself.
 
 - `studio-brief validate` checks it: every named task exists above `## Backlog` and comes before this one. A forward
   or unknown reference fails the plan, naming the line.
-- `/game-dev:plan` §2 documents the line. §7's SDD pre-flight conflict scan ("an interface one task assumes another
-  changes") writes each such finding as an `After:` line, as well as recording it in `## Decisions`.
+- `/game-dev:plan` §2 documents the line. For a manifest story, §7's SDD pre-flight conflict scan (files two tasks
+  both write, an interface one task assumes another changes) moves to §6, before `studio-brief tracks` runs. It
+  writes each interface finding as an `After:` line, as well as recording it in `## Decisions`. Then the split sees
+  every known dependency. §7 keeps the question sweep. Designer's call: the reviewer found that §7 runs after
+  approval, which would be too late for the split.
+- A cross-sibling dependency found after a split (by §7's sweep, or by a later review) is never written as `After:`,
+  which `validate` would refuse. It becomes a manifest Depends on between the two siblings: the later sibling
+  depends on the earlier one. That serializes them, which is safe.
 - A plan without `After:` lines stays valid: its tracks then come from shared files alone.
 
 ### A2. `studio-brief tracks <plan>`
@@ -109,9 +117,15 @@ story.
 
 1. Run `studio-brief tracks <plan>`. Propose a split when it prints at least two tracks with at least 3 tasks each.
    Fold tracks smaller than that into the track they share an acceptance criterion with, or into track 1.
-2. Every acceptance criterion is assigned to the track whose tasks implement it. An AC that tasks in two tracks both
-   implement ties those tracks together: they become one track. Two stories that each own half of one AC are never
-   produced.
+2. Every acceptance criterion is assigned to the track whose tasks implement it. The planner judges this from the
+   tasks' `Spec:` citations and their text; it is not computed.
+   - A **feature AC** that tasks in two tracks both implement ties those tracks: they become one track. Two stories
+     that each own half of one feature are never produced.
+   - A **cross-cutting AC** that no single task implements and that holds for the whole change goes to **every**
+     sibling, and does not tie tracks. Examples: "the suite is green", "no regressions", "a PROGRESS entry".
+   - The original's `## Stories` row is narrowed to track 1's ACs, and each sibling gets its own row. When the spec
+     has no `## Stories` table, the split creates one with every sibling's row, since `studio-brief final` reads it
+     (`studio-brief:440`). Designer's call.
 3. The approval stop gains one line and one more reply:
    `Plan at <path>: N tasks, K cut to backlog. Splits into S stories that run in parallel: <id> (T…), <id>-2 (T…), ….
    Reply **approve** (split), **approve one** (keep one story), or name the task to change.`
@@ -138,12 +152,17 @@ story.
 
 ### A4. One chain warns, and backfill is offered
 
-- `studio-overnight start`, `--dry-run` and `--detach` print one line (stdout, never a refusal) when the run has
-  exactly one chain: `chains: 1 — a hold idles this run until you answer; add an independent story to keep the
-  machine busy`.
-- Autopilot step 5 ("Ask how to start"): when `--dry-run` printed that line, the start question gains a third option
-  ahead of the two existing ones, **add a backfill story**. It returns to step 1's story list and adds one row with
-  Depends on `-`, then runs the planning loop for that row only. The two start options are unchanged.
+- **One lane in effect** means that at most one story can run at a time: the run has one chain, or
+  `max_lanes` is 1, or it is a single-plan run. Chains that only wait on each other are not analysed: the chain count
+  and `max_lanes` decide. Designer's call.
+- In that case `studio-overnight start`, `--dry-run` and `--detach` print one line (stdout, never a refusal):
+  `one lane: a hold idles this run until you answer; add an independent story to keep the machine busy`.
+- Autopilot offers the backfill **in step 3, before the first seed**, after the overlap check. The check uses the
+  same rule over the manifest rows, so nothing is seeded twice and `Docs:` is written once. The offer is one
+  `AskUserQuestion`: **add a backfill story** returns to step 1's story list for one new row with Depends on `-`,
+  then the planning loop for that row only, then step 3 again from the top for all rows; **run as is** goes on.
+  Step 3's seeding already writes each row once per pass, and a half-done row's `task` is never reset. Designer's
+  call: the reviewer found that step 5 comes after seeding and the `Docs:` commit.
 
 ## Part B — Required tools (rank 2, remainder)
 
@@ -167,10 +186,12 @@ row's plan):
 - A bare name: `command -v <name>`, under the PATH the sessions will have (the runner's PATH, which the shim built).
 - A version: `<name> --version` with a 10 s cap, stdout and stderr together. The first `[0-9]+\.[0-9]+(\.[0-9]+)?`
   token is the version, compared numerically field by field.
-- A path item: when `worktree_setup` is configured, it is checked in the preflight's scratch worktree after the setup
-  has run there, because that is what a new story worktree will look like. Otherwise it is checked in the start
-  checkout. If the setup preflight cannot hold a check, the builder moves this one to a second scratch step and says
-  so in the PR.
+- A path item: when `worktree_setup` is configured, `start` and `--detach` check it in the preflight's scratch
+  worktree after the setup has run there, because that is what a new story worktree will look like. Both do so in
+  the foreground, before anything detaches, so a refusal is seen at once. `--dry-run` never runs the setup
+  (`studio-overnight:2007-2010`). It checks path items in the start checkout and prints
+  `requires <item>: checked in the start checkout; start re-checks it after worktree_setup`. Without
+  `worktree_setup`, every mode checks the start checkout. Designer's call.
 - Refusals, through `refuse` (exit 2), one line per miss, naming the source:
   `requires ffmpeg (plan docs/game-dev/plans/x.md): not on PATH` ·
   `requires python3>=3.10 (config): found 3.9.6`.
@@ -187,10 +208,11 @@ Two new verbs in `studios/game-dev/bin/`, so no skill writes `cd <node dir> && s
 
 - `studio-vitest [--dir <node dir>] [-t <pattern>] [<file or dir>…]`. It changes into the node dir inside the
   script, then execs `studio-gate vitest -- npx vitest run --minWorkers=1 --maxWorkers=<W> <args…>`.
-  - **W is 2** when every positional is an existing file (at most 3), so the run stays short-lane eligible exactly as
-    today, by `gate-class.sh`'s unchanged whitelist.
-  - **Otherwise W is `node_workers`**: a directory, more than three files, or the whole suite. Such a run is
-    exclusive in the main lane, so more workers slow no one else.
+  - **W is 2** when there is at least one positional and every positional is an existing file, of any number. Such
+    a run stays short-lane eligible exactly as today, by `gate-class.sh`'s unchanged whitelist, which puts no limit
+    on the file count (`gate-class.sh:105-118`). Any test file list is classed today as it is.
+  - **Otherwise W is `node_workers`**: any directory, or no positional (the whole suite). Such a run is already
+    exclusive in the main lane today, so more workers slow no one else.
 - `studio-tsc [--dir <node dir>]` execs `studio-gate tsc -- npx tsc --noEmit` from the node dir.
 - The node dir is `--dir`, else `.studio/config.json` `node_dir`, else `.` when it holds `package.json`. Otherwise
   exit 2 with `studio-vitest: no node dir — set node_dir in .studio/config.json or pass --dir`. The verbs pass the
@@ -211,12 +233,14 @@ the mini, a hung suite then burns up to an hour before the gate kills it.
   unchanged), and `gate.times` holds at least 5 rows for this `who` with rc 0 in the `main` lane: cap =
   clamp(ceil(F × p95 hold / 60), 15, STUDIO_GATE_MINUTES) minutes. F is `overnight.gate_cap_factor`.
 - **`gate_cap_factor`**: `overnight` key, integer 0-10, default 4; 0 turns the learned cap off. With phoenix's
-  numbers that is about 20 min for `studio-test` (p95 about 290 s) and about 32 min for `functional`.
+  current numbers that is about 20 min for `studio-test` (p95 about 290 s). `functional` has only 2 rc-0 rows, so it
+  keeps today's cap until it has 5.
 - The 15 min floor covers a first import (24-130 s on phoenix) and any cold-cache run. The short slot's own 5-min cap
   is unchanged. `setup` is never capped, as today.
 - When the learned cap fires, the 124 message names it: `gate: <who> ran past its learned cap of N min (F × p95 of
   the last M runs) — stopped`. Execute's handling of exit 124 is unchanged.
-- The preflight prints the learned caps it would apply: `gate caps: studio-test 20 min, functional 32 min (×4 p95)`.
+- The preflight prints the learned caps it would apply, and names each `who` still on the default:
+  `gate caps: studio-test 20 min (×4 p95); default 60 min for functional, vitest (fewer than 5 runs)`.
 
 ## Part D — Checkpoint suite (rank 6)
 
@@ -225,8 +249,12 @@ the mini, a hung suite then burns up to an hour before the gate kills it.
 - **`suite_every`**: `overnight` key, integer 0-20 or `"auto"` (the default). `auto` = 4 when the median hold of the
   last 10 rc-0 `studio-test` rows in `gate.times` is at most 8 min, else 0 (off). Fewer than 3 such rows also gives
   0. The runner resolves the value once at start, prints `suite checkpoint: every 4 tasks (median suite 4.5 min)`
-  (or `off — …`), and exports `STUDIO_SUITE_EVERY` into every story's launch env, single-plan included.
+  (or `off — …`), and exports `STUDIO_SUITE_EVERY` into every **manifest** story's launch env.
   On the old laptop (median 20 min) auto is off.
+- **Manifest runs only.** A single-plan run has no gate-repair loop (`studio-overnight:1757-1820`; `gate_repairs` is
+  lanes-only, `:446`), so a red checkpoint there would be a new way to hold. The runner never sets
+  `STUDIO_SUITE_EVERY` for a single-plan run, and the preflight prints `suite checkpoint: off — single-plan run`.
+  Designer's call: the reviewer found the single-plan path has no repair.
 - In a task unit (execute §8, `--one`), after the task is complete and its §6 writes are committed: when
   `STUDIO_SUITE_EVERY` = K > 0, the task's `Verify:` has no `suite`, and the story ledger holds at least K
   `T<n> complete` lines since its last `suite green` line (or since its `base` line), the unit runs `studio-test` in
@@ -274,8 +302,13 @@ Claude Code's worktree isolation refuses, in an isolated session's Bash call (me
   with git's message on a failure, and 2 on usage or a missing `STUDIO_DOCS_REV`. Execute §0's four
   `git checkout $STUDIO_DOCS_REV -- …` forms become this verb.
 - `studio-state ledger "adopt-base $(git rev-parse HEAD)"` and every other `$(…)`-inside-a-git-or-ledger form the
-  skills prescribe becomes two calls (read the value, then write it), or a verb flag where one exists. The builder
-  lists each rewrite in the PR.
+  skills prescribe becomes two calls (read the value, then write it), or a verb flag where one exists.
+- **Compound git forms.** Every `git add … && git commit …` (and any other `&&`, `;` or `|` chain with git) that the
+  execute, plan, autopilot, review, playtest and retro skills prescribe becomes separate calls, written as numbered
+  steps: run `git add …`, then run `git commit …`. Execute alone has them at lines 236, 552, 662, 810, 858 and 983.
+  The meaning is unchanged: a failed `git add` stops before the commit, as `&&` did. The builder lists each rewrite
+  in the PR, and every pin these rewrites break is updated. Designer's call: Goal 5 covers them, so they are in
+  scope.
 
 ### E2. The shell-form rule in every brief
 
@@ -290,7 +323,8 @@ to the orchestrator:
 ### E3. A guard against regressions
 
 A contract test fails when a skill or agent file under `studios/` or `shared/omega/` prescribes
-`bash "$(sdd-script`, `git checkout $STUDIO_DOCS_REV`, or `cd <node dir> && studio-gate`.
+`bash "$(sdd-script`, `git checkout $STUDIO_DOCS_REV`, `cd <node dir> && studio-gate`, or a backticked command that
+chains `git` with `&&`, `;` or `|`.
 
 ## What is left to the builder
 
@@ -307,13 +341,18 @@ A contract test fails when a skill or agent file under `studios/` or `shared/ome
    `<stem>-<k>.md`.
 3. An AC that two tracks both implement merges those tracks. Correctness wins over parallelism.
 4. The minimum track size for a split is 3 tasks. It is not a config key.
-5. Backfill is an offer at start, never automatic.
+5. Backfill is an offer in autopilot step 3, before seeding, never automatic. "One lane in effect" is one chain,
+   `max_lanes` 1, or a single-plan run.
 6. `requires` checks refuse a missing tool or one too old. An unreadable version only warns.
 7. `node_workers` auto is max(2, physical cores / 2). The short-lane whitelist does not change.
 8. The learned gate cap is factor 4, floor 15 min, runner sessions only.
-9. `suite_every` auto is every 4 tasks when the median suite is at most 8 min. A red checkpoint gets one inline fix
-   and then the existing gate-repair loop, sharing its budget.
+9. `suite_every` auto is every 4 tasks when the median suite is at most 8 min, **in manifest runs only**. A red
+   checkpoint gets one inline fix and then the existing gate-repair loop, sharing its budget.
 10. Cucumber `--parallel` is a phoenix follow-up, not in this repository.
+11. For a manifest story, the conflict scan moves from plan §7 to §6, before the split. A cross-sibling dependency
+    found later becomes a manifest Depends on.
+12. A cross-cutting AC goes to every sibling. Only a feature AC ties tracks.
+13. Every compound git command the skills prescribe is split into separate calls (Part E).
 
 ## Acceptance criteria
 
@@ -325,16 +364,18 @@ A contract test fails when a skill or agent file under `studios/` or `shared/ome
    naming. Pinned by a contract test.
 4. A manifest fixture whose story was split into `<id>` and `<id>-2`: `studio-overnight next` classifies both
    `planned`, and `--dry-run` shows two chains.
-5. A one-chain manifest's `--dry-run` prints the `chains: 1` line and still exits 0. A two-chain manifest does not
-   print it.
-6. The autopilot skill offers **add a backfill story** when that line was printed. Pinned.
+5. `--dry-run` prints the `one lane:` line, and still exits 0, for a one-chain manifest, for a two-chain manifest
+   with `max_lanes` 1, and for a single-plan run. A two-chain manifest with `max_lanes` 0 does not print it.
+6. The autopilot skill offers **add a backfill story** in step 3, before the first seed, under the same rule. Pinned.
 7. A plan with `Requires: nosuchtool-xyz` makes `start`, `--dry-run` and `--detach` exit 2 naming the tool and the
    plan. No unit or run dir is created.
 8. `Requires: sh>=999` refuses with the found version. A stub tool whose `--version` prints no number warns and
    passes. A config `requires` item behaves the same, naming `(config)`. A bad item is a refusal.
-9. With `worktree_setup` configured, a path item is checked in the scratch worktree after setup.
-10. `studio-vitest a.test.ts` runs the gate with `--maxWorkers=2` and is classed `short` by
-    `studio-gate --classify`. `studio-vitest tests/dir` runs with `--maxWorkers=<node_workers>` and is exclusive.
+9. With `worktree_setup` configured, `start` checks a path item in the scratch worktree after setup. `--dry-run`
+   checks it in the start checkout and prints the re-check note.
+10. `studio-vitest a.test.ts`, and the same with five files, run the gate with `--maxWorkers=2` and are classed
+    `short` by `studio-gate --classify`. `studio-vitest tests/dir` and a bare `studio-vitest` run with
+    `--maxWorkers=<node_workers>` and are exclusive.
     A missing node dir exits 2 with the message.
 11. `node_workers: "auto"` gives 2 on a stubbed 4-core machine and 6 on a stubbed 12-core one. An out-of-range value
     is a refusal.
@@ -342,14 +383,16 @@ A contract test fails when a skill or agent file under `studios/` or `shared/ome
     clamp(ceil(4 × p95 / 60), 15, STUDIO_GATE_MINUTES). A run past it exits 124 with the learned-cap message. With
     fewer rows, or `gate_cap_factor` 0, or no `STUDIO_GATE_MINUTES`, behaviour is today's.
 13. `suite_every: "auto"` resolves to 4 with a fixture median of 4.5 min and to 0 with 20 min, and the preflight
-    prints the line. `STUDIO_SUITE_EVERY` is in a lane story's launch env.
+    prints the line. `STUDIO_SUITE_EVERY` is in a lane story's launch env, and never in a single-plan run's.
 14. The execute skill text holds the checkpoint rule, the `suite green` line, the red-checkpoint steps, the
     `fix(suite)` pattern and the `Stop: gate red — checkpoint after T<n>` form. Pinned.
 15. A lane fixture whose task unit writes `Stop: gate red — checkpoint after T2 — …` at task 2/4 runs one gate-repair
     unit, then a task unit for T3 (not T2 again), and never a finish in between.
 16. `sdd-run review-package <args>` runs the same script `sdd-script review-package` names, with the arguments.
     `studio-docs-sync` commits only when something changed, and `--new` adds the ledger.
-17. The regression contract (E3) finds none of the refused forms in `studios/` or `shared/omega/`, and the E2
-    sentence is in execute §2. Pinned.
+17. The regression contract (E3) finds none of the refused forms in `studios/` or `shared/omega/`, compound git
+    chains included, and the E2 sentence is in execute §2. Pinned.
 18. `studio-overnight --help` lists `suite_every`, `gate_cap_factor`, and the top-level `node_workers`, `node_dir`
     and `requires`. `tests/run_all.sh` is green, and `docs/game-dev/PROGRESS.md` has the entry.
+19. The plan skill runs the conflict scan in §6 before `studio-brief tracks` for a manifest story, and a dependency
+    across siblings found later becomes a manifest Depends on. Pinned.
