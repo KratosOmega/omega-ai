@@ -14,6 +14,14 @@ approval page in `artifacts/`.
 
 ## Log
 
+### 2026-10-23 — Direct merge is recommended; runs are planned for parallel lanes
+
+- Autopilot's mode question lists **direct** first, marked Recommended: each story merges into `main` on its own once done. Without `merge_command`, integration stays first and recommended.
+- A new **dependencies** question: **maximize parallelism** (recommended) proposes the smallest Depends on set, so independent stories get their own lanes; **chain** is the old one-after-another layout. Under maximize, `0` lanes (one per chain) is recommended.
+- Before seeding, an overlap check compares the `Files:` of every pair of stories that would run in parallel. Each pair sharing a file asks to add a dependency or keep parallel.
+- Brainstorm's `## Stories` Depends on copies the manifest's.
+- Unchanged: the gate lock still runs one test or gate at a time (plus the short slot). Measured on phoenix 2026-10-22, one lane held the gate ~52% of the time, so lanes beyond ~2 queue on it; gate slots are a separate follow-up.
+
 ### 2026-10-22 — Holds reach the operator; plans measure before approval (#85, #86)
 
 - #85: a hold used to be silent on the phone. In a manifest run the Run issue now goes Blocked while any story is held and back to In Progress when none is.

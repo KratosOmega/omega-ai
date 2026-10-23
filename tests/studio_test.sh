@@ -506,6 +506,7 @@ test_plan_brainstorm_check_id() {
     else _fail "$f: check-id is the first step after entering ($_a, $_b)"; fi
   done
   assert_contains "$BR" "The \`Story\` cells are the manifest's own ids" "the Stories table copies the manifest's ids"
+  assert_contains "$BR" "The \`Depends on\` cells copy the" "the Stories table copies the manifest's dependencies"
   for f in "$PL" "$BR"; do
     # §0 points at the <slug>/<id> steps (check-id included), which run first.
     _p="$(grep -n -F -m1 -- 'run that form'"'"'s steps first' "$f" | cut -d: -f1)"

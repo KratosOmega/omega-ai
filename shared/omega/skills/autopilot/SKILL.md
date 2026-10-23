@@ -67,15 +67,20 @@ session (it is on `PATH` only inside a `claude-gd` session).
    - "new run", or no run listed: a new run.
 
    A new run:
-   - Ask one `AskUserQuestion` with two questions (three for a `godot4` project), each option with its one-line consequence:
-     - **integration or direct** — integration: each story is tested once by its own gate, one full gate runs at the end, one PR to land in the morning; direct: one merge-command gate per story (the project's own gate; 15–20 minutes each on phoenix), each story lands on `main` overnight.
+   - Ask one `AskUserQuestion` with three questions (four for a `godot4` project), each option with its one-line consequence:
+     - **direct or integration** — direct (listed first, marked Recommended): each story is merged into `main` on its own as soon as it is done, through one merge-command gate per story (the project's own gate; 15–20 minutes each on phoenix); integration: each story is tested once by its own gate, one full gate runs at the end, one PR to land in the morning.
+       Direct needs `merge_command` in the main checkout's `.studio/config.json`; without one, list integration first and mark it Recommended, and direct's line says it needs `merge_command`.
        An `integration slug=<slug>` line in `omega-mode show` pre-selects integration with that slug.
-     - **how many lanes** — lanes are parallel dependency chains, while tests still run one at a time. The answer is `.studio/config.json`'s `overnight.max_lanes` (`0` = one lane per chain).
+     - **dependencies** — **maximize parallelism** (listed first, marked Recommended): each story depends only on the stories it needs (below), so independent stories run in parallel lanes; **chain**: each story depends on the row before it, one lane, one story at a time.
+     - **how many lanes** — lanes are parallel dependency chains, while tests still run one at a time. The answer is `.studio/config.json`'s `overnight.max_lanes` (`0` = one lane per chain; list `0` first, marked Recommended, under maximize parallelism).
         It must be an integer from 0 to 8 (the runner's range); refuse any other answer and ask again.
         Write it only in the run worktree (see *The run worktree*), never in the main checkout: merge it into the existing file, so every other key is kept (`merge_command` included): `python3 -c 'import json,os,sys; p=".studio/config.json"; c=json.load(open(p)) if os.path.exists(p) else {}; c.setdefault("overnight", {})["max_lanes"]=int(sys.argv[1]); sys.argv[2]=="on" and [c.setdefault(k, v) for k, v in {"test_engine_args": "--fixed-fps 60", "user_dir": "per-worktree", "gate_short_lane": "on"}.items()]; os.makedirs(".studio", exist_ok=True); open(p,"w").write(json.dumps(c, indent=2)+"\n")' <n> <on|off>`; with no `.studio/config.json`, it writes the file. `<on|off>` is the short-lane answer; a project that is not `godot4` passes `off`, which leaves the file as the lane count alone would.
      - **short lane** (asked only when the engine is `godot4`) — **on**: sets (keeping any value the project already has) `test_engine_args "--fixed-fps 60"`, `user_dir "per-worktree"` and `gate_short_lane "on"`; short checks run beside a whole suite in their own slot, GUT runs frame-paced, and every story worktree gets its own `user://`. **off**: today's single gate lock.
    - **The slug and a fetch, before the story list.** Settle the run slug now (from `/omega:autopilot <slug>` or an `integration slug=<slug>` line; with neither, ask for it before the story list) and check it: the slug must match `^[A-Za-z0-9._-]+$`, not `off`, not all digits, not used by a live or stopped run. A done record is archived: `mv <root>/.studio/runs/<slug> <root>/.studio/runs/<slug>.$(date -u +%Y%m%dT%H%M%SZ)`. Then run `git fetch origin`, so the story ids below are checked against a fresh `origin/<default>`.
    - Then ask the story list: each story's id, branch, ticket (`-` when none) and the earlier rows it depends on. Refuse and re-ask an id or branch that another run uses (AC8: a live or stopped run's story id or branch).
+     Propose each row's dependencies by the dependencies answer, and let the user change them:
+     - maximize parallelism: the smallest set. A row depends on an earlier row only when it needs that row's code, data or interface (from the tickets and what the user says each story does), or when the two will change the same files. Otherwise it is `-`. Say in one line per dependency why it is there.
+     - chain: each row after the first depends on the row before it.
      **Story ids are never reused in a project** (a ledger is keyed by its id and outlives the run). Propose each id by default: the ticket when it matches `^[A-Za-z0-9._-]+$` (`KAN-1541`; rows sharing a ticket get `KAN-1541-1`, `KAN-1541-2`), otherwise `<slug>-S<n>` (a ticket such as `#56` or a URL does not fit). Check every id, proposed or typed, from the main checkout: `studio-overnight check-id <id> --ticket <t> --slug <slug> --plan - --branch <Branch>` (`<t>` the row's ticket, or `-`; `<Branch>` the row's branch: a half-done story carried over from an earlier run on its own branch keeps its id). Exit 1: refuse and re-ask with its message and its suggested id, as for an id another run uses; a suggestion that is already another row's id in this list is not used: propose the next id by the rule above and check it. Exit 2: stop and print its output — a usage or environment problem, not a taken id (an id or slug off the pattern, or `origin/HEAD` not set: `git remote set-head origin --auto`).
      A story whose branch already exists (local or `origin/<Branch>`) is half-done.
      In the same question, ask each story's **source plan** and **source spec** (a path, or `-` for none): a story with source plan `-` is a fresh story, unchanged. Refuse and re-ask a path that is not repo-relative, not normalized (no `./`, no `..`) or not tracked (`git ls-files --error-unmatch`).
@@ -94,8 +99,8 @@ session (it is on `PATH` only inside a `claude-gd` session).
      ```
      # Run: <slug>
 
-     Mode: integration            # or: direct
-     Target: integration/<slug>   # direct: the default branch
+     Mode: direct                 # or: integration
+     Target: <default>            # integration: integration/<slug>
      Docs: -
      Goal: <one line: what the run delivers>
 
@@ -146,6 +151,12 @@ session (it is on `PATH` only inside a `claude-gd` session).
 
    The question sweep for manifest stories belongs to `/game-dev:plan` (it writes `## Decisions` and ledgers `Decisions swept <id>`); this skill does not repeat it.
 3. **Seed every story** once every row is `planned`, in manifest order. Every `studio-state` call below runs with `STUDIO_STORY=<id>`.
+   - **Overlap check, before the first seed.** Two rows run in parallel when neither depends on the other, directly or through other rows (under chain, no pair does, and there is nothing to check).
+     For each such pair, compare the files their plans' tasks above `## Backlog` name on `Files:`. A file both plans name is an overlap.
+     Show each overlapping pair with its shared files, at most 4 pairs per `AskUserQuestion`:
+     - **add a dependency**: the later row depends on the earlier one, and starts from `origin/<Target>` after the earlier one lands;
+     - **keep parallel**: the later landing merges over the earlier one, and a conflict gets the runner's one repair unit.
+     Write each added dependency into the later row's Depends on cell, and into that story's `## Stories` row when its spec has one. Both are committed with the `planned` commit below.
    - Check that the run worktree has `.studio/run` before the first seed (write it as in step 1 when missing): `studio-adopt seed` finds the story's run through it, and falls back to the committed manifest only with a note.
    - A `plan` story that was adopted (its `<id>.md` holds `verdict plan`): first, with `STUDIO_STORY=<id>`, `studio-state ledger "adopted <original> -> <new plan>"` (`<new plan>` from `next`'s `plan=`), before the seeding below
      — ledgered from the run worktree, never from the main checkout (`studio-state ledger` writes the ledger of the checkout the shell is in).

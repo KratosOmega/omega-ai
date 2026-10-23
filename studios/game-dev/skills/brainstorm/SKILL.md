@@ -259,7 +259,9 @@ The `Acceptance criteria` cell holds comma-separated AC numbers or ranges
 final` prints exactly those numbered items.
 
 The `Story` cells are the manifest's own ids, copied exactly (`KAN-1541`,
-`<slug>-S1`); never invent or renumber one.
+`<slug>-S1`); never invent or renumber one. The `Depends on` cells copy the
+manifest row's Depends on (`none` for `-`); never add a dependency the
+manifest does not have.
 
 Every section states a decision. A section that reads as a possibility is
 not finished. A bounded spec writes `n/a` in a section that does not apply
