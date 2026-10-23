@@ -14,6 +14,21 @@ approval page in `artifacts/`.
 
 ## Log
 
+### 2026-10-23 — A run that cannot push stops at once; holds remind (#90, #91, #92)
+
+- Incident (phoenix bat-sonic-rings, Mac.lan): the gh token on the new machine had scopes `gist, read:org, repo`, no `workflow`. Unit T19 edited `.github/workflows/web-tools-tests.yml`, and GitHub refuses a push that touches a workflow file without that scope.
+- `start --dry-run` and `--detach` both passed. T19-T30 (12 units, ~8 h) each wrote `Ruling: push rejected …` and went on, as the execute skill said to; 50 commits stayed local, and the runner counted every unit as `progress`.
+- T31 wrote `Stop: push rejected …`; the hold reached Multica only, and nobody saw it for 4 idle hours.
+- Fix 1 (#90): the preflight reads the gh token's scopes. A token without `workflow`, on a repo with `.github/workflows`, is refused: `gh auth refresh -h <host> -s workflow`.
+- Fix 2 (#91): under `--one`, a rejected push is a `Stop: push rejected — <git's last error line>`, never a `Ruling:`. The runner backs it up: a unit whose work is not on origin ends held, not progress, with `stop: push not on origin — <branch> <local sha> vs origin <sha or "none">`.
+- Fix 3 (#92): the runner itself raises a macOS banner when a hold starts, and once more when 25% of the hold is left (2 h before an 8 h hold ends), with a new `hold_reminder` event (see `overnight-events.md`). The bridge turns `hold_reminder` into a reminder notice on the Run issue and the kickoff issue, so the kickoff agent wakes a second time.
+- Limits:
+  - No @-mention: every bridge comment uses the operator's own token, so it would be a self-mention that Multica is not expected to notify (and needs an AC18 carve-out). The agent-assigned kickoff (#85) stays the wake path.
+  - On a Mac where the #85 bridge also runs, the hold banner can show twice (runner and bridge).
+  - An old bridge skips `hold_reminder` with one warning log line until it is reinstalled.
+- Note: kickoff texts should resolve the project path on the target machine (OMEG-118 carried `/Users/xinli/...` from the other laptop). Follow-up.
+- Install is pending: merge and reinstall once every active overnight run has ended.
+
 ### 2026-10-23 — Direct merge is recommended; runs are planned for parallel lanes
 
 - Autopilot's mode question lists **direct** first, marked Recommended: each story merges into `main` on its own once done. Without `merge_command`, integration stays first and recommended.
