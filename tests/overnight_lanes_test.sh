@@ -2405,6 +2405,21 @@ test_lanes_detach_strips_env() {
   _dr="$(ls -d "$P"/.studio/reports/overnight-demo-[0-9]* 2>/dev/null | tail -n 1)"
   assert_eq 1 "$([ -L "$_dr/runner.log" ] && echo 1 || echo 0)" "the run dir links runner.log"
 }
+test_lanes_detach_shows_push_warning() {
+  lanes_fixture dpw integration A:-
+  ( cd "$P" && git worktree add -q --detach "$TMP/dpw-wt" origin/main \
+      && cd "$TMP/dpw-wt" && mkdir -p .github/workflows && echo 'on: push' > .github/workflows/ci.yml \
+      && git add -A && git -c user.name=t -c user.email=t@t commit -qm ci \
+      && git push -q origin HEAD:refs/heads/integration/demo && cd "$P" && git worktree remove --force "$TMP/dpw-wt" \
+      && git remote set-url --push origin https://github.com/t/t.git \
+      && git config credential.https://github.com.helper store ) >/dev/null 2>&1
+  st=0; ( cd "$P" && sh "$RUNNER" start --detach "$MFP" ) > "$TMP/dpw.out" 2> "$TMP/dpw.err" || st=$?
+  assert_eq 0 "$st" "a push warning does not stop the detached start"
+  assert_contains "$TMP/dpw.out" "^detached: pid [0-9]*, log " "the detach still parses the checked commit and starts"
+  assert_contains "$TMP/dpw.err" "^push: git does not push to github.com through gh's credential helper" "the push warning reaches the foreground (stderr)"
+  wait_for "[ -f '$CALLS/1.fullenv' ]" 60
+  detach_stop
+}
 test_lanes_push_check_target_workflows() {
   lanes_fixture pkt integration A:-
   ( cd "$P" && git worktree add -q --detach "$TMP/pkt-wt" origin/main \
@@ -4966,7 +4981,7 @@ run_tests test_stub_waitexist_and_run_token test_lanes_setup_preflight_refuses_l
   test_lanes_direct_merge_timeout_after_merge_lands test_lanes_direct_merge_timeout_term_ignored \
   test_lanes_status_dead_old_lock_not_masking test_lanes_status_per_story test_lanes_report_every_ending test_lanes_report_on_lane_crash \
   test_lanes_done_marker test_lanes_status_reaps_dead_runner test_lanes_reap_names_final_pr \
-  test_lanes_detach_strips_env test_lanes_push_check_target_workflows test_lanes_detach_refusal_in_foreground test_lanes_detach_child_refusal_surfaces \
+  test_lanes_detach_strips_env test_lanes_detach_shows_push_warning test_lanes_push_check_target_workflows test_lanes_detach_refusal_in_foreground test_lanes_detach_child_refusal_surfaces \
   test_lanes_detach_timeout_lock_held_points_at_status test_lanes_detach_timeout_no_lock_ends_child \
   test_lanes_detach_poll_keeps_budget test_lanes_detach_poll_rejects_bad_value \
   test_lanes_detach_slow_child_takes_lock test_lanes_detach_lock_without_marker_not_started test_lanes_detach_empty_ps_stat_polls_again \

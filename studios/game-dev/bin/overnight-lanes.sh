@@ -2087,9 +2087,9 @@ lanes_start() {
   if mf_load "$_ls_mf"; then mf_check; fi
   [ "$FAILED" -eq 0 ] || exit 2
   # #90: one push check for the run — the default branch and the target (once when equal).
-  # --check prints the checked commit only, so the check's decision line is dropped there.
+  # --check prints the checked commit only on stdout (detach parses it), so the decision line goes to stderr there.
   _ls_pb="$DEFAULT_BRANCH"; [ "$MF_TARGET" = "$DEFAULT_BRANCH" ] || _ls_pb="$DEFAULT_BRANCH $MF_TARGET"
-  if [ "$_ls_chk" -eq 1 ]; then push_check $_ls_pb >/dev/null; else push_check $_ls_pb; fi
+  if [ "$_ls_chk" -eq 1 ]; then push_check $_ls_pb >&2; else push_check $_ls_pb; fi
   [ "$FAILED" -eq 0 ] || exit 2
   run_paths "$MF_SLUG"
   build_chains

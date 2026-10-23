@@ -79,7 +79,7 @@ def event_writes(st, ev, superseded: bool = False):
     if e == "hold_reminder":   # #92: once per hold; no status, held-set or banner change (the runner raised one)
         body = notice.reminder_body("-" if single else s, ev.get("why") or "?", ev.get("until"))
         out = [("comment", "run", mc.PREFIX + body)]
-        if st["request"].get("issue"):
+        if st["request"].get("issue") and not superseded:   # a hold already over gets its Run-issue record only
             out.append(("kickoff", "request", notice.kickoff_text(body)))
         return out
     if e == "story_synced":
@@ -542,7 +542,7 @@ def apply_events(ctx, st):
             if ev["event"] == "story_state" and ev.get("state") not in STATUS:
                 ctx.log.warning("run %s: unknown story state %r left the status unchanged", st["key"], ev.get("state"))
             hold = ev["event"] == "story_state" and ev.get("state") == "held"
-            if not _apply_one(ctx, st, start, ev, superseded=hold and _superseded(lines, i, ev)):
+            if not _apply_one(ctx, st, start, ev, superseded=(hold or ev["event"] == "hold_reminder") and _superseded(lines, i, ev)):
                 return                                    # retried on the next poll
             if ev["event"] == "run_ended":
                 st["ended"] = True

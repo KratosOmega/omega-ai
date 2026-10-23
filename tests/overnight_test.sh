@@ -454,6 +454,7 @@ test_overnight_preflight_refusals() {
   fixture r6; STUB_VERSION_STATUS=1; export STUB_VERSION_STATUS
   refuse_case "claude-gd --version fails" "claude-gd"; unset STUB_VERSION_STATUS
   fixture r7; GH_STATUS=1; export GH_STATUS; refuse_case "gh not authenticated" "gh auth status"; unset GH_STATUS
+  push_fixture r7h; GH_STATUS=1; export GH_STATUS; refuse_case "gh not authenticated for an https origin" "gh auth status -h github.com failed — log in first"; unset GH_STATUS
 }
 
 # ---- #90: the preflight's push check (the gh token's workflow scope) ----
@@ -2237,6 +2238,13 @@ test_overnight_origin_check_skips_default_branch() {
   assert_eq onmain "$(git -C "$P" log -1 --format=%s)" "with a commit origin does not have"
   assert_eq "progress progress" "$(unit_col 7 | cut -d' ' -f1-2)" "the default branch in place is never checked (§7 step 4)"
 }
+test_overnight_origin_check_single_branch_clone() {
+  fixture ocsb
+  ( cd "$P" && git config remote.origin.fetch '+refs/heads/main:refs/remotes/origin/main' )
+  scenario "$ISO1" "task 2/2"; run_start
+  assert_eq "progress progress" "$(unit_col 7 | cut -d' ' -f1-2)" "a single-branch clone: a pushed isolating unit is progress (fetch names its ref)"
+  assert_not_contains "$(last_run_dir)/report.md" "push not on origin" "no false hold"
+}
 test_overnight_origin_check_noprog_not_checked() {
   fixture ocn; scenario "$ISO1" "unpushed" "pushwt; task 2/2"; run_start
   assert_eq "progress noprog progress" "$(unit_col 7 | cut -d' ' -f1-3)" "an unpushed commit with no progress is a retry, not a stop; the pushed unit is progress"
@@ -2838,6 +2846,7 @@ FAKE
 # exclusive-scan: test_overnight_claim_without_run_dir in (d) the one-second watchdog and an elapsed ceiling on the whole run
 # exclusive-scan: test_overnight_hold_on_feature_stop in (c) the stop must end the held run within one hold poll, an elapsed upper bound that a loaded machine breaks
 # exclusive-scan: test_overnight_stop_held_by_operator in (c) the stop must end the operator-held run within one hold poll, an elapsed upper bound that a loaded machine breaks
+# exclusive-scan: test_overnight_notify_hang_capped out (d) the one-second cap only has to fire on a 30-second notifier, and the elapsed bound is 30 s, so a loaded machine does not break it
 # exclusive-scan: test_overnight_hold_config_refused out (d) the values are refused at start, nothing runs against a clock
 # exclusive-scan: test_inbox_lock_failures out (d) a lock wait that only gives up; the result is the same however slowly it runs
 # exclusive-scan: test_inbox_lock_busy in (d) lock contention timed against the wait the code under test is given
@@ -2951,7 +2960,7 @@ run_tests test_overnight_setup_preflight_single test_overnight_help_setup_prefli
   test_overnight_requeue_retire \
   test_overnight_origin_check_holds_unpushed test_overnight_origin_check_ends_without_holds \
   test_overnight_origin_check_resume_after_push test_overnight_origin_check_skips_default_branch \
-  test_overnight_origin_check_noprog_not_checked \
+  test_overnight_origin_check_noprog_not_checked test_overnight_origin_check_single_branch_clone \
   test_status_two_runs_blocks_oldest_first test_status_run_not_live test_status_registry_root_once \
   test_watch_run_selects test_stop_two_runs_refuses test_stop_run_writes_own_flag test_stop_all_writes_each_flag \
   test_stop_story_unchanged test_verbs_channel_resolution_by_story test_verbs_channel_run_flag_slug_or_basename \

@@ -240,6 +240,15 @@ class HoldNoticeTest(MirrorCase):
         self.assertEqual(self.kick()[k:], [notice.kickoff_text(text)])
         self.assertEqual(self.run_status(), ["in_progress", "blocked"])
 
+    def test_reminder_superseded_hold_no_kickoff(self):
+        self.begin()
+        self.add(held("A"), self.reminder("A"), state_("A", "running"), poll=False)
+        self.assertEqual(self.kick(), [])
+        text = notice.reminder_body("A", "w", U)
+        runc = self.comments_on(self.RI)
+        self.assertEqual(runc.count("studio: " + text), 1)
+        self.assertEqual(self.saved()["held"], [])
+
     # ----- once per event (AC10), superseded (AC11), old state (AC12) --------
 
     def test_banner_once_per_event_across_restart(self):                       # AC10

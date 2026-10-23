@@ -628,7 +628,7 @@ preflight() {
   # #90: an https origin asks gh about its own host; any other origin keeps the plain check.
   push_host
   if [ "$PUSH_KIND" = https ]; then
-    gh auth status -h "$PUSH_HOST" >/dev/null 2>&1 || refuse "gh auth status failed — log in first"
+    gh auth status -h "$PUSH_HOST" >/dev/null 2>&1 || refuse "gh auth status -h $PUSH_HOST failed — log in first"
   else
     gh auth status >/dev/null 2>&1 || refuse "gh auth status failed — log in first"
   fi
@@ -880,7 +880,7 @@ origin_check() {
   [ "$_oc_b" != "${DEFAULT_BRANCH:-}" ] || return 0
   [ "$(git -C "$FEATURE_DIR" symbolic-ref -q --short HEAD 2>/dev/null)" = "$_oc_b" ] || return 0
   _oc_h="$(git -C "$FEATURE_DIR" rev-parse --short=7 HEAD 2>/dev/null)"
-  if ! sp_git -C "$FEATURE_DIR" fetch -q origin "$_oc_b" >/dev/null 2>&1; then
+  if ! sp_git -C "$FEATURE_DIR" fetch -q origin "+refs/heads/$_oc_b:refs/remotes/origin/$_oc_b" >/dev/null 2>&1; then
     _oc_rc=0; git -C "$FEATURE_DIR" ls-remote -q --exit-code origin "refs/heads/$_oc_b" >/dev/null 2>&1 || _oc_rc=$?
     if [ "$_oc_rc" = 2 ]; then ORIGIN_WHY="push not on origin — $_oc_b $_oc_h vs origin none"
     else ORIGIN_WHY="push not on origin — $_oc_b fetch failed"; fi
@@ -982,7 +982,7 @@ notify_operator() {
       1) terminal-notifier -title studio-overnight -message "$_no_t" & ;;
       2) osascript -e "display notification \"$_no_t2\" with title \"studio-overnight\"" & ;;
     esac
-    _no_p=$!; echo "$_no_p" > "$_no_f.pid"; wait "$_no_p"; echo "$?" > "$_no_f.st"
+    _no_p=$!; echo "$_no_p" > "$_no_f.pid"; wait "$_no_p"; echo "$?" > "$_no_f.st.tmp"; mv "$_no_f.st.tmp" "$_no_f.st"
   ) >/dev/null 2>&1 &
   _no_sp=$!
   _no_i=0; _no_max=$(( ${STUDIO_OVERNIGHT_NOTIFY_SECONDS:-10} * 5 ))
@@ -995,7 +995,7 @@ notify_operator() {
     kill "$(cat "$_no_f.pid" 2>/dev/null)" 2>/dev/null; kill "$_no_sp" 2>/dev/null
   fi
   wait "$_no_sp" 2>/dev/null
-  rm -f "$_no_f.pid" "$_no_f.st"
+  rm -f "$_no_f.pid" "$_no_f.st" "$_no_f.st.tmp"
   [ -z "$_no_w" ] || say "notify failed: $_no_w"
   return 0
 }
