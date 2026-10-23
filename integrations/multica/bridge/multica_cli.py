@@ -12,6 +12,7 @@ import subprocess
 CLI_TIMEOUT = 60
 RUN_ISSUES_MAX_PAGES = 50
 PREFIX = "studio: "
+NOTICE_PREFIX = "studio: [notify only] "
 KEYCHAIN_SERVICE = "omega-multica-bridge"
 SECURITY = os.environ.get("OMEGA_MULTICA_SECURITY", "/usr/bin/security")   # test hook (R46)
 _ENVELOPE_KEYS = ("issues", "comments", "runs", "data", "items", "rows")
@@ -267,10 +268,18 @@ class Cli:
             args += ["--parent", parent]
         return self.call(args, stdin=self._clean(text))
 
+    def add_notice(self, ident: str, text: str) -> dict:
+        """The narrow AC17 carve-out for hold notices, deliberately without _guard: the one comment the bridge
+        writes on a request issue, refused unless the text starts with NOTICE_PREFIX. set_status and add_comment
+        there stay guarded. See docs/game-dev/specs/2026-10-22-hold-notice-and-plan-probes.md."""
+        if not text.startswith(NOTICE_PREFIX):
+            raise ValueError("a notice must start with %r" % NOTICE_PREFIX)
+        return self.call(["issue", "comment", "add", ident, "--content-stdin"], stdin=self._clean(text))
+
     def create_wakeup(self, issue: str, until_issue: str, state: str, agent_id: str, expires: str,
                       instruction: str) -> dict:
         """The AC17 carve-out, deliberately without _guard: a wakeup rule is neither a comment nor a status, starts
-        no run when created, and is the bridge's one write on a request issue.
+        no run when created, and is a bridge write on a request issue (add_notice is the other).
         See docs/game-dev/specs/2026-10-19-queued-kickoff-wake-design.md."""
         return self.call(["issue", "wakeup", "create", issue, "--until-issue", until_issue,
                           "--until-issue-state", state, "--agent-id", agent_id, "--mode", "once",
