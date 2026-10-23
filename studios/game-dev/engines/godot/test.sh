@@ -18,6 +18,8 @@
 # Config (.studio/config.json, else $STUDIO_START_DIR's): "test_engine_args" —
 # flat string of engine flags put after --headless; allowlisted to
 # `--fixed-fps <1-1000>`, anything else exits 1 (#71). Not used for the import.
+# Byte collation: under a UTF-8 locale macOS sh matches [a-z] by collation (A-Y too).
+unset LC_ALL; LC_COLLATE=C
 set -u
 
 HERE="$(cd "$(dirname "$0")" && pwd)"

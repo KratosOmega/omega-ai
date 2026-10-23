@@ -11,6 +11,8 @@
 # the manifest; never writes either. It redefines stop_requested,
 # spent_all, spent, run_populate, lock_recheck and the session_* slot calls
 # (#39 D19) for manifest mode.
+# Byte collation: under a UTF-8 locale macOS sh matches [a-z] by collation (A-Y too).
+unset LC_ALL; LC_COLLATE=C
 [ -n "${SELF_DIR:-}" ] || { echo "overnight-lanes.sh: sourced by studio-overnight" >&2; exit 2; }
 . "$SELF_DIR/overnight-ids.sh"   # story ids (#56): ids_check, used by mf_check and lanes_next
 

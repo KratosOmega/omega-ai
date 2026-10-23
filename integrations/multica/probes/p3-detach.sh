@@ -7,6 +7,8 @@
 #   launch  read STUDIO_RUN_ORIGIN first (as cmd_start does, R52), then start
 #           `child` detached the way studio-overnight --detach does
 #   child   write a registry-form entry, then a heartbeat every 10 s, 15 min
+# Byte collation: under a UTF-8 locale macOS sh matches [a-z] by collation (A-Y too).
+unset LC_ALL; LC_COLLATE=C
 D="$(cd "$(dirname "$0")" && pwd -P)"
 
 # origin_ok VALUE — AC1a's rule (R53), copied: 1-200 bytes of A-Za-z0-9._:-,

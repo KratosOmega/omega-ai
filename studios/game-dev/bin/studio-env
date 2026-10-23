@@ -21,6 +21,8 @@
 # in <dir> (uname, sysctl.vm.loadavg, sysctl.hw.ncpu,
 # sysctl.kern.memorystatus_vm_pressure_level, sysctl.vm.swapusage,
 # proc.loadavg, nproc, proc.meminfo, df, pmset, ps) instead of running it.
+# Byte collation: under a UTF-8 locale macOS sh matches [a-z] by collation (A-Y too).
+unset LC_ALL; LC_COLLATE=C
 set -u
 
 FIX="${STUDIO_ENV_FIXTURE:-}"

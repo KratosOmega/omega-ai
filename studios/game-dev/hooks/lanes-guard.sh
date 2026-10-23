@@ -15,6 +15,8 @@
 #
 # Exit 0 on every path and print nothing to allow: unparseable input, a missing
 # isolate.sh, or any error never blocks a call. No jq, no python, no lib/.
+# Byte collation: under a UTF-8 locale macOS sh matches [a-z] by collation (A-Y too).
+unset LC_ALL; LC_COLLATE=C
 trap 'exit 0' EXIT
 ISO="$(dirname "$0")/../engines/godot/isolate.sh"
 [ -f "$ISO" ] || exit 0

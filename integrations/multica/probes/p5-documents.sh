@@ -14,6 +14,8 @@
 # $RES/results.txt, $RES/cleanup.txt. Lasting: a Documents grant for Multica
 # (and the reset, if you choose it).
 # Usage: MULTICA_PROBE_RUNTIME_PROFILE=<id> sh p5-documents.sh
+# Byte collation: under a UTF-8 locale macOS sh matches [a-z] by collation (A-Y too).
+unset LC_ALL; LC_COLLATE=C
 . "$(dirname "$0")/lib.sh"
 need_runtime_profile
 need_agent

@@ -6,6 +6,8 @@
 # overnight-runs.sh. The caller sets STATE_ROOT, SESS_ME, SESS_RUN and
 # SESS_START_CAP. A slot's owner file: lane= session= run= unit= (D20).
 
+# Byte collation: under a UTF-8 locale macOS sh matches [a-z] by collation (A-Y too).
+unset LC_ALL; LC_COLLATE=C
 sess_init() { SESS_DIR="$STATE_ROOT/.studio/sessions"; SESS_MX="$STATE_ROOT/.studio/sessions.mutex"; SESS_SLOT=""; SESS_WAIT=""; }
 sess_cap() {
   _sc="$(sed -n 's/.*"max_sessions"[[:space:]]*:[[:space:]]*\([^,}[:space:]]*\).*/\1/p' "$STATE_ROOT/.studio/config.json" 2>/dev/null | head -n 1)"

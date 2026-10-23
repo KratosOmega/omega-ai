@@ -21,6 +21,8 @@
 # a usage error, no session id, or an invalid session id, mode name or pair.
 #
 # Self-contained on purpose: in copy mode the plugin root has no lib/.
+# Byte collation: under a UTF-8 locale macOS sh matches [a-z] by collation (A-Y too).
+unset LC_ALL; LC_COLLATE=C
 set -u
 # The kv loop below word-splits a line on spaces; never let it glob one too.
 set -f

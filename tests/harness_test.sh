@@ -157,7 +157,7 @@ test_env_scrub() {
   _out="$(env STUDIO_STORY=s STUDIO_RUN_DIR=r OMEGA_AUTOPILOT=1 CLAUDE_CODE_SESSION_ID=c CLAUDE_CONFIG_DIR=d \
     CLAUDECODE=1 GIT_DIR=g TESTS_ONLY=t TEST_SHARD=1/2 ${TEST_SH:-sh} -c '. "$1/tests/assert.sh"; env' sh "$REPO_ROOT" \
     | grep -E '^(STUDIO_STORY|STUDIO_RUN_DIR|OMEGA_AUTOPILOT|CLAUDE_CODE_SESSION_ID|CLAUDE_CONFIG_DIR|CLAUDECODE|GIT_DIR|TESTS_ONLY|TEST_SHARD)=' \
-    | sed 's/=.*//' | sort | tr '\n' ' ')"
+    | sed 's/=.*//' | LC_ALL=C sort | tr '\n' ' ')"
   assert_eq "TESTS_ONLY TEST_SHARD " "$_out" "sourcing scrubs context variables and keeps TESTS_ONLY and TEST_*"
 }
 

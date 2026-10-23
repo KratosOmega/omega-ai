@@ -107,6 +107,16 @@ test_event_usage() {
     chmod 755 "$R"
   fi
 }
+# Under a UTF-8 locale macOS sh (bash 3.2) matches [a-z] by collation, so A-Y fall
+# inside it; the event and keys must stay ASCII lower-case there too.
+test_event_usage_utf8_locale() {
+  fresh
+  _l="$(utf8_locale)"
+  if [ -z "$_l" ]; then TESTS_RUN=$((TESTS_RUN + 1)); _pass "no UTF-8 locale installed: nothing to check"; return; fi
+  assert_status 2 "an upper-case event under $_l" -- env LC_ALL="$_l" sh "$EV" "$R" Bad
+  assert_status 2 "an upper-case key under $_l" -- env LC_ALL="$_l" sh "$EV" "$R" ok Key=x
+  assert_missing "$R/events.jsonl" "bad usage under $_l writes nothing"
+}
 test_event_minimal_path() {
   fresh
   mkdir -p "$TMP/mini"
@@ -116,4 +126,5 @@ test_event_minimal_path() {
 }
 
 run_tests test_event_line_shape test_event_escaping test_event_backslash_portable test_event_cut_500 test_event_utf8_cut \
-  test_event_line_cap_4k test_event_numbers_null_arrays test_event_usage test_event_minimal_path
+  test_event_line_cap_4k test_event_numbers_null_arrays test_event_usage test_event_usage_utf8_locale \
+  test_event_minimal_path

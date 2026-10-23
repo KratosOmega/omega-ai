@@ -6,6 +6,8 @@
 # (AC6); the registry is only a view. Everything here reads, except mx_*.
 
 # runs_kv KEY FILE — the value of the first KEY= line.
+# Byte collation: under a UTF-8 locale macOS sh matches [a-z] by collation (A-Y too).
+unset LC_ALL; LC_COLLATE=C
 runs_kv() { sed -n "s/^$1=//p" "$2" 2>/dev/null | head -n 1; }
 # runs_lock_live FILE — pid= is alive, not a zombie, and its args name studio-overnight.
 runs_lock_live() {

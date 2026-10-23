@@ -4747,9 +4747,10 @@ test_lanes_fixture_copy_equals_build() {
     done
     _eq_d="$(diff -r "$TMP/eqn/A" "$TMP/eqn/B" 2>&1)"
     assert_eq "" "$_eq_d" "a copied fixture's tree (git-ignored files too) equals a fresh build's [$_eq_lbl]"
-    assert_eq "$(git -C "$TMP/eqB" log --all --format='%T %s' | grep -v ' manifest$')" "$(git -C "$TMP/eqA" log --all --format='%T %s' | grep -v ' manifest$')" "the same commits (tree and subject; the manifest commit apart) [$_eq_lbl]"
+    # Sorted: commits made in the same second tie in git log's date order, either way round.
+    assert_eq "$(git -C "$TMP/eqB" log --all --format='%T %s' | grep -v ' manifest$' | LC_ALL=C sort)" "$(git -C "$TMP/eqA" log --all --format='%T %s' | grep -v ' manifest$' | LC_ALL=C sort)" "the same commits (tree and subject; the manifest commit apart) [$_eq_lbl]"
     assert_eq "$(git -C "$TMP/eqB.git" for-each-ref --format='%(refname)')" "$(git -C "$TMP/eqA.git" for-each-ref --format='%(refname)')" "the bare origins hold the same refs [$_eq_lbl]"
-    assert_eq "$(git -C "$TMP/eqB.git" log --all --format='%T %s' | grep -v ' manifest$')" "$(git -C "$TMP/eqA.git" log --all --format='%T %s' | grep -v ' manifest$')" "the bare origins hold the same commits [$_eq_lbl]"
+    assert_eq "$(git -C "$TMP/eqB.git" log --all --format='%T %s' | grep -v ' manifest$' | LC_ALL=C sort)" "$(git -C "$TMP/eqA.git" log --all --format='%T %s' | grep -v ' manifest$' | LC_ALL=C sort)" "the bare origins hold the same commits [$_eq_lbl]"
     assert_eq "" "$(git -C "$TMP/eqA" status --porcelain)$(git -C "$TMP/eqB" status --porcelain)" "both trees are clean [$_eq_lbl]"
     assert_eq "$(git -C "$TMP/eqA" rev-parse HEAD)" "$(git -C "$TMP/eqA" rev-parse origin/run/demo)" "origin/run/demo is HEAD in the copy [$_eq_lbl]"
     assert_eq "$TMP/eqA.git" "$(git -C "$TMP/eqA" remote get-url origin)" "the copy's origin is its own bare repo [$_eq_lbl]"
