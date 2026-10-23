@@ -227,6 +227,7 @@ block_write() {
     && printf 'BLOCKED %s %s: ticks — expected 12, got 13 — fixtures/frozen.json\n' "$id" "$blockchk" > "tests/$blockchk.pending" \
     && { [ -f "$_bf" ] || printf '# demo — blocked checks\n\nA run names a failed check against a pinned reference and carries on. It never resolves a block itself: the author rules.\n' > "$_bf"; } \
     && printf '\n## %s B1 — %s — OPEN\n- **Where:** tests/%s.pending, fixtures/frozen.json\n- **Expected / actual:** ticks: 12 vs 13\n- **Task:** T%s, 2026-10-23\n' "$id" "$blockchk" "$blockchk" "$_bk" >> "$_bf" \
+    && { [ -z "${STUB_BLOCKS_PAD:-}" ] || { printf '\n'; head -c "$STUB_BLOCKS_PAD" /dev/zero | tr '\0' x; printf '\n'; } >> "$_bf"; } \
     && st ledger "T$_bk Block: $blockchk — ticks: 12 vs 13 — blocks $_bf" \
     && git add "tests/$blockchk.pending" "$_bf" ".studio/ledger/$id.md" && git commit -qm "block($id): $blockchk"
 }
@@ -3256,15 +3257,34 @@ test_lanes_push_rejected_first_unit_holds() {
 test_lanes_block_carries_on() {
   LANES_TASKS=2; export LANES_TASKS
   lanes_fixture blk integration A:-
-  printf 'block ring_ticks; auto\nauto\nauto\nauto\n' > "$SCEN/A"
+  printf 'block ring_ticks; auto\nauto\nruling final Block: golden — a: 1 vs 2 — blocks docs/game-dev/playtests/demo-blocks.md; auto\nauto\n' > "$SCEN/A"
   run_lanes start "$MFP"
   assert_eq 0 "$LS_STATUS" "the run is done"
   assert_eq "1 A-T1 progress," "$(story_rows A | cut -c1-16)" "the Block unit is progress"
+  assert_contains "$GH/body-1" "^- [0-9-]* T1 Block: ring_ticks — ticks: 12 vs 13 — blocks docs/game-dev/playtests/demo-blocks.md$" "the final PR body lists the Block line"
+  assert_contains "$GH/body-1" "^- [0-9-]* final Block: golden — a: 1 vs 2 — blocks docs/game-dev/playtests/demo-blocks.md$" "a final-prefixed Block line is in the body"
+  assert_contains "$GH/body-1" "^## Blocks file$" "the body has a Blocks file section"
+  assert_contains "$GH/body-1" "^### docs/game-dev/playtests/demo-blocks.md$" "one heading per distinct blocks path"
+  assert_eq 1 "$(grep -c '^### docs/game-dev/playtests/demo-blocks.md$' "$GH/body-1")" "the path is listed once"
+  assert_contains "$GH/body-1" "^## A B1 — ring_ticks — OPEN$" "the blocks file's content is in the body"
+  assert_contains "$(last_lanes_dir)/report.md" "^- [0-9-]* T1 Block: ring_ticks" "the report lists the Block line"
   assert_contains "$(last_lanes_dir)/stories/A" "^landed" "A lands"
   git -C "$P" fetch -q origin
   assert_eq 1 "$(git -C "$P" show origin/A-b:tests/ring_ticks.pending | grep -c "^BLOCKED A ring_ticks:")" "the pending marker is on A's branch"
   assert_eq 1 "$(git -C "$P" show origin/A-b:docs/game-dev/playtests/demo-blocks.md | grep -c "^## A B1 — ring_ticks — OPEN")" "the blocks entry is on A's branch"
   assert_not_contains "$(last_lanes_dir)/events.jsonl" '"story":"A","state":"held"' "A was never held"
+}
+# #94: a blocks file over 20000 bytes is cut in the final PR body, with a pointer.
+test_lanes_blocks_file_capped() {
+  LANES_TASKS=2; STUB_BLOCKS_PAD=30000; export LANES_TASKS STUB_BLOCKS_PAD
+  lanes_fixture bcap integration A:-
+  printf 'block ring_ticks; auto\nauto\nauto\nauto\n' > "$SCEN/A"
+  run_lanes start "$MFP"
+  unset STUB_BLOCKS_PAD
+  assert_eq 0 "$LS_STATUS" "the run is done"
+  assert_contains "$GH/body-1" "^(truncated — read docs/game-dev/playtests/demo-blocks.md on the branch)$" "the cut is named"
+  _bc="$(sed -n '/^### docs\/game-dev\/playtests\/demo-blocks.md$/,$p' "$GH/body-1" | wc -c | tr -d ' ')"
+  assert_eq 1 "$([ "$_bc" -ge 20000 ] && [ "$_bc" -lt 25000 ] && echo 1 || echo 0)" "the Blocks file section is cut to 20000..25000 bytes ($_bc)"
 }
 # #94: a missing tool is still a Stop, and still holds.
 test_lanes_missing_tool_still_stops() {
@@ -5081,7 +5101,7 @@ run_tests test_stub_waitexist_and_run_token test_lanes_setup_preflight_refuses_l
   test_lanes_stop_queued_story test_lanes_stop_running_story test_lanes_stop_waiting_story \
   test_lanes_hold_waiting_story_holds_at_start test_lanes_hold_running_then_resume test_lanes_run_stop_held_was_held \
   test_lanes_push_rejected_first_unit_holds test_lanes_origin_check_localcommit_holds \
-  test_lanes_block_carries_on test_lanes_missing_tool_still_stops \
+  test_lanes_block_carries_on test_lanes_blocks_file_capped test_lanes_missing_tool_still_stops \
   test_lanes_final_step_no_delivery test_lanes_deadline \
   test_lanes_stop_at_done_never_lands test_lanes_stop_held_by_operator test_lanes_stop_pending_never_holds \
   test_lanes_gate_repair_own_stop_holds test_lanes_directive_cap_holds test_lanes_hold_during_last_unit_lands_and_clears \
