@@ -637,7 +637,7 @@ Everything else stays as it is:
 2. **Blocks file entry.** Append one entry to the blocks file: the path on
    the `blocks: <path>` line that `studio-brief task <n>` prints (every task
    prints the same path; a check, final or gate unit runs
-   `studio-brief task 1` for it). A missing file is created with the header
+   `studio-brief task 1` for it, §8 Inputs). A missing file is created with the header
    `# <slug> — blocked checks` and the line
    `A run names a failed check against a pinned reference and carries on. It never resolves a block itself: the author rules.`
    The entry:
@@ -661,7 +661,8 @@ Everything else stays as it is:
 4. **Commit and complete.** Commit the marker, the blocks file and the
    ledger with the task's commits, then complete the task as §4a rule 6 and
    §6 say: `studio-state set task n/N` and the `T<n> complete` line. The
-   pending check is not a red test, and it meets §3's "then passes" and §4's
+   pending check is not a red test (the framework reports it as pending or
+   skipped, not failed), and it meets §3's "then passes" and §4's
    `unit` item: the reviewer checks the marker instead.
    No `Stop:` line is written. Under `--one` the unit pushes and ends as
    progress; the next unit takes the next task (§8: still never more than
@@ -805,9 +806,8 @@ A finish records operator messages at §0's recording point and commits them wit
    Under `--one`, see §8.
 7. **Report**, in this order: the PR link (or the saved body path and the
    reason; on the default branch, that the work is committed locally); the
-   play list, under `Play before merging`;
-   the rulings, each with its cost if wrong, and the Blocks;
-   the producer's gate result (milestone `<a> → <b>`, the missing
+   play list, under `Play before merging`; the rulings, each with its cost
+   if wrong, and the Blocks; the producer's gate result (milestone `<a> → <b>`, the missing
    list, or PROGRESS skipped); the final review verdict line; the gate
    line; and the last line, verbatim:
 
@@ -869,6 +869,8 @@ runs exactly one unit, writes its state, commits, pushes, and ends the turn.
     implementer's brief: `commits already on the branch for this task: <first>..<last> — check and finish them; do not start over`;
   - `studio-brief task <n>` ends with a `blocks: <path>` line: that path is
     the blocks file (§6a step 2), and it goes in the implementer's brief (§2);
+    a check unit, a final-review unit and a gate repair (§11) also read the
+    `blocks:` line of `studio-brief task 1`, only when a Block occurs (§6a);
   - it never reads the plan or the spec whole, and
     never runs SDD's pre-flight conflict scan
     (the plan session ran it, and its rulings are in `## Decisions`);

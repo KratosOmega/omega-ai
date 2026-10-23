@@ -498,8 +498,9 @@ test_skill_execute_block_outcome() {
   TESTS_RUN=$((TESTS_RUN + 1))
   if [ -n "$_r" ] && [ -n "$_b" ] && [ "$_r" -le "$_b" ]; then _pass "§7 step 4: ## Blocks follows ## Rulings"
   else _fail "§7 step 4: ## Blocks follows ## Rulings ($_r <= $_b)"; fi
-  assert_contains "$S" "the rulings, each with its cost if wrong, and the Blocks" "§7 step 7: the report lists the Blocks"
+  assert_contains "$S" "^   if wrong, and the Blocks; the producer's gate result" "§7 step 7: the report lists the Blocks"
   assert_eq 1 "$(sed -n '/^## 8\. One unit/,/^## 9\. /p' "$S" | grep -c '`blocks: <path>`')" "§8 Inputs: the blocks: line names the file"
+  assert_eq 1 "$(sed -n '/^- \*\*Inputs:\*\*$/,/^- \*\*Which unit:\*\*/p' "$S" | grep -c '`blocks:` line of `studio-brief task 1`, only when a Block occurs (§6a)')" "§8 Inputs: check, final and gate units read task 1's blocks: line only on a Block"
   assert_eq 1 "$(sed -n '/^## 8\. One unit/,/^### Operator messages/p' "$S" | grep -c '`check Block:')" "§8: the check unit's Block has prefix check"
   assert_contains "$S" 'A Block is not a stop (§6a)' "§8 says a Block is not a stop"
   assert_contains "$S" 'a conflict in a blocks file' "§9 keeps both sides of a blocks file"
