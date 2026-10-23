@@ -487,6 +487,10 @@ Environment:
 Test hooks (tests only; never set them for a real run; --detach strips them):
   STUDIO_OVERNIGHT_POLL_SECONDS — test hook: a whole number of seconds between
                      a lane's polls of a wait or a lock (default 5)
+  STUDIO_OVERNIGHT_NOTIFY_CMD — shell text run as `sh -c "$CMD" notify TEXT` for a
+                     hold's banner and reminder (else terminal-notifier, else
+                     osascript on macOS); tests set it to `: `
+  STUDIO_OVERNIGHT_NOTIFY_SECONDS — test hook: the notifier's cap (default 10)
   STUDIO_OVERNIGHT_SLOT_POLL_SECONDS — test hook: seconds between a unit's
                      tries for a session slot (default 2)
   STUDIO_OVERNIGHT_LAND_HOOK — test hook: shell text evaluated after a landing's
@@ -679,7 +683,7 @@ preflight() {
   # #59 R2: the idle watchdog (run_unit). Its seconds seams are whole numbers >= 1.
   cfg idle_minutes 20 0 120 int
   [ -z "${IDLE_MINUTES:-}" ] || IDLE_MINUTES="$(printf '%s\n' "$IDLE_MINUTES" | awk '{ print $1 + 0 }')"   # D3
-  for _pf_v in STUDIO_OVERNIGHT_IDLE_SECONDS STUDIO_OVERNIGHT_IDLE_POLL_SECONDS; do
+  for _pf_v in STUDIO_OVERNIGHT_IDLE_SECONDS STUDIO_OVERNIGHT_IDLE_POLL_SECONDS STUDIO_OVERNIGHT_NOTIFY_SECONDS; do
     eval "_pf_x=\${$_pf_v:-1}"
     case "$_pf_x" in ''|*[!0-9]*) refuse "$_pf_v must be a whole number of seconds (1 or more), got $_pf_x" ;;
       *) [ "$_pf_x" -ge 1 ] || refuse "$_pf_v must be a whole number of seconds (1 or more), got $_pf_x" ;; esac
@@ -954,6 +958,47 @@ state_event() {
 }
 # iso_utc EPOCH — EPOCH as YYYY-MM-DDTHH:MM:SSZ (GNU date -d, else BSD -r).
 iso_utc() { date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -r "$1" +%Y-%m-%dT%H:%M:%SZ; }
+# notify_operator TEXT — a desktop banner for the operator (#92). The command
+# is STUDIO_OVERNIGHT_NOTIFY_CMD run as `sh -c "$CMD" notify TEXT`, else
+# terminal-notifier, else (Darwin) osascript. It runs in the background and is
+# killed after STUDIO_OVERNIGHT_NOTIFY_SECONDS (default 10, a test knob), so a
+# hung notifier never stalls a hold. A failure is one `notify failed: <why>`
+# line; it always returns 0.
+notify_operator() {
+  _no_t="$1"; _no_f="${RUN_DIR:-${TMPDIR:-/tmp}}/.notify.$$${CUR_ID:-}"; rm -f "$_no_f.pid" "$_no_f.st"
+  _no_w=""
+  if [ -n "${STUDIO_OVERNIGHT_NOTIFY_CMD:-}" ]; then
+    _no_n=0
+  elif command -v terminal-notifier >/dev/null 2>&1; then
+    _no_n=1
+  elif [ "$(uname -s)" = Darwin ] && command -v osascript >/dev/null 2>&1; then
+    _no_n=2; _no_t2="$(printf '%s' "$_no_t" | tr -d '\\' | tr '"' "'")"
+  else
+    return 0
+  fi
+  (
+    case "$_no_n" in
+      0) sh -c "$STUDIO_OVERNIGHT_NOTIFY_CMD" notify "$_no_t" & ;;
+      1) terminal-notifier -title studio-overnight -message "$_no_t" & ;;
+      2) osascript -e "display notification \"$_no_t2\" with title \"studio-overnight\"" & ;;
+    esac
+    _no_p=$!; echo "$_no_p" > "$_no_f.pid"; wait "$_no_p"; echo "$?" > "$_no_f.st"
+  ) >/dev/null 2>&1 &
+  _no_sp=$!
+  _no_i=0; _no_max=$(( ${STUDIO_OVERNIGHT_NOTIFY_SECONDS:-10} * 5 ))
+  while [ ! -f "$_no_f.st" ] && [ "$_no_i" -lt "$_no_max" ]; do sleep 0.2; _no_i=$((_no_i + 1)); done
+  if [ -f "$_no_f.st" ]; then
+    _no_s="$(cat "$_no_f.st")"
+    [ "$_no_s" = 0 ] || _no_w="exit $_no_s"
+  else
+    _no_w="timed out"
+    kill "$(cat "$_no_f.pid" 2>/dev/null)" 2>/dev/null; kill "$_no_sp" 2>/dev/null
+  fi
+  wait "$_no_sp" 2>/dev/null
+  rm -f "$_no_f.pid" "$_no_f.st"
+  [ -z "$_no_w" ] || say "notify failed: $_no_w"
+  return 0
+}
 # ---- Operator messages and holds (#27; spec AC13-14, AC17-27) ----
 # requeue_check — after each unit: each story or retire message the unit
 # claimed (inbox/<story>/delivered/<UNIT_TAG>/) is checked against the
@@ -1067,6 +1112,8 @@ hold_wait() {
   _hw_dl=$(( $(date +%s) + HOLD_SECS ))
   hold_record "$1" "held $_hw_why until $(iso_utc "$_hw_dl")"
   say "${CUR_ID:+$CUR_ID }held: $_hw_why — say / resume / stop ${CUR_ID:--}"
+  _hw_who="${CUR_ID:-run}"; _hw_run="$(basename "$RUN_DIR")"; _hw_rm=$(( _hw_dl - HOLD_SECS / 4 )); _hw_rd=0
+  notify_operator "$_hw_who held in $_hw_run: $_hw_why — until $(hhmm_local "$(iso_utc "$_hw_dl")")"
   while :; do
     if stop_requested; then ENDING="$(halt_reason) (was held: $_hw_why)"; return 1; fi
     if ctl_take "$1" stop; then
@@ -1074,7 +1121,13 @@ hold_wait() {
       return 1
     fi
     if ctl_take "$1" resume; then hold_record "$1" running; ENDING=""; return 0; fi
-    if [ "$(date +%s)" -ge "$_hw_dl" ]; then ENDING="$_hw_why (held $(hm "$HOLD_SECS"), no reply)"; return 1; fi
+    _hw_now=$(date +%s)
+    if [ "$_hw_rd" = 0 ] && [ "$_hw_now" -ge "$_hw_rm" ] && [ "$_hw_now" -lt "$_hw_dl" ]; then
+      _hw_rd=1; run_event hold_reminder "story=${CUR_ID:--}" "until=$(iso_utc "$_hw_dl")" "why=$_hw_why"
+      notify_operator "$_hw_who still held in $_hw_run — stops at $(hhmm_local "$(iso_utc "$_hw_dl")") unless resumed: $_hw_why"
+      _hw_now=$(date +%s)
+    fi
+    if [ "$_hw_now" -ge "$_hw_dl" ]; then ENDING="$_hw_why (held $(hm "$HOLD_SECS"), no reply)"; return 1; fi
     sleep "${STUDIO_OVERNIGHT_POLL_SECONDS:-5}"
   done
 }
