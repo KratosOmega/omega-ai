@@ -123,14 +123,16 @@ commits not yet on the integration branch.
    the procedure, not the mode: do not run `omega-mode set local-merge`.
    When `omega-mode show` lists `autopilot`, the PR stays open and `finish`
    stops here, saying so.
-6. `git switch main 2>/dev/null || git switch --detach origin/main`
-   (`main` is often checked out in another worktree). Delete the
-   integration branch where it still exists — `local-merge`'s merge may
-   already have removed it with `--delete-branch`: `git ls-remote
-   --exit-code --heads origin integration/<slug> >/dev/null 2>&1 && git
-   push origin --delete integration/<slug>`; `git show-ref --verify
-   --quiet refs/heads/integration/<slug> && git branch -D
-   integration/<slug>`. Then `omega-mode clear integration`.
+6. `git switch main`; when it fails because `main` is checked out in
+   another worktree, run `git switch --detach origin/main` instead.
+   Delete the integration branch where it still exists — `local-merge`'s
+   merge may already have removed it with `--delete-branch`. Run
+   `git ls-remote --exit-code --heads origin integration/<slug>`: on exit 0,
+   run `git push origin --delete integration/<slug>`; on exit 2 the remote
+   branch is gone, so skip the push. Then run
+   `git show-ref --verify --quiet refs/heads/integration/<slug>`: on exit 0,
+   run `git branch -D integration/<slug>`; otherwise skip it. Each is its
+   own call. Then `omega-mode clear integration`.
 
 ## What this changes, and what it never changes
 

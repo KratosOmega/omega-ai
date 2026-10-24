@@ -644,8 +644,8 @@ test_skill_contracts() {
     "$fn"
     ran=$((ran + 1))
   done
-  # Bump when a skill is added.
-  assert_eq 7 "$ran" "seven skill contracts ran"
+  # Bump when a skill or a contract is added.
+  assert_eq 8 "$ran" "seven skill contracts and the isolation-forms contract ran"
 }
 
 

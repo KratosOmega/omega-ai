@@ -278,7 +278,7 @@ When the split applies (step 3), stop with this instead:
 On approval: change the plan's `Status:` line to `Approved`, run
 `studio-state ledger "plan approved <plan path>"`, then commit the plan, the
 spec and the state that must travel with them into the execution worktree —
-`git add <spec path> <plan path> .studio/ledger .studio/config.json && git commit -m "docs(plans): approve <topic>"`
+`git add <spec path> <plan path> .studio/ledger .studio/config.json`, then, only when it succeeded, `git commit -m "docs(plans): approve <topic>"` (two calls)
 (a no-op for an already-committed, unchanged spec; it captures the spec
 approved in §0).
 
@@ -330,7 +330,7 @@ and in the same session, before anything is printed:
    a substitute. Ask all of them, three or four per `AskUserQuestion`, until
    none is left, and write each answer into `## Decisions`.
 3. Run `studio-state ledger "Decisions swept <id>"`, then commit the plan and
-   `.studio/ledger`: `git add <plan path> .studio/ledger && git commit -m "docs(plans): sweep <id>"`.
+   `.studio/ledger`: `git add <plan path> .studio/ledger`, then, only when it succeeded, `git commit -m "docs(plans): sweep <id>"` (two calls).
 4. Print `/clear`, then the command `studio-overnight next` prints. The plan
    does not print `/game-dev:execute` for a manifest story. Do not invoke
    anything yourself.

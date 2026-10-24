@@ -257,7 +257,7 @@ test_execute_contract() {
              'final|gate|review' 'final fix wave' 'A task is complete' 'final review done' 'studio-lint' \
              'subagent_type: "game-dev:producer"' 'gh pr create' '[-][-]draft' 'local, default branch' \
              'Play before merging' 'studio-state set stage idle' 'new run clears' \
-             'studio-state set branch "$(git branch' 'before the fast-forward' 'ledger "base' \
+             'studio-state set branch "<that name>"' 'before the fast-forward' 'ledger "base' \
              "from the feature's worktree" 'set task 0/' 'N/N' 'SDD ledger — plan:' \
              'Next: play the list; merge when it passes; report failures with /game-dev:playtest <what failed>; /clear before the next feature\.'; do
     assert_contains "$E" "$lit" "execute carries: $lit"
@@ -798,7 +798,7 @@ test_execute_adopt() {
   assert_contains "$E" 'the paths a `Context:` header lists, each present in the run.s docs' "§0 docs sync takes the Context paths (AC18)"
   assert_contains "$E" 'ledger and any$' "and on the new-branch path"
   assert_contains "$E" '`Context:` paths from `\$STUDIO_DOCS_REV`' "the new-branch sync names the Context paths"
-  assert_contains "$E" 'studio-state ledger "adopt-base $(git rev-parse HEAD)"' "a not-started adopted story records its base (AC9)"
+  assert_contains "$E" 'studio-state ledger "adopt-base <that sha>"' "a not-started adopted story records its base (AC9)"
   assert_contains "$E" 'run `studio-setup` from the worktree root' "setup on every entry (AC19)"
   assert_eq 1 "$([ "$(section_count "$E" '^## 0[.] ' 'run `studio-setup` from the worktree root')" -ge 2 ] && echo 1 || echo 0)" "lane and single-plan entries both run it"
   assert_contains "$E" 'Stop: worktree setup failed — exit <n> — log <path>' "a failed setup stops"

@@ -110,7 +110,7 @@ session (it is on `PATH` only inside a `claude-gd` session).
      ```
 
    - Write the pointer: `printf '%s\n' docs/runs/<slug>.md > .studio/run`.
-     Commit the manifest and the lane count on `run/<slug>`: `git add docs/runs/<slug>.md .studio/config.json .studio/ledger/<id>.md … && git commit -m "docs(run): <slug> manifest"` (every story's ledger, so the source lines are committed) — a dirty `config.json` or ledger would stop each story's first unit at execute §0's clean-tree check.
+     Commit the manifest and the lane count on `run/<slug>`: `git add docs/runs/<slug>.md .studio/config.json .studio/ledger/<id>.md …`, then, only when it succeeded, `git commit -m "docs(run): <slug> manifest"` (two calls; every story's ledger, so the source lines are committed) — a dirty `config.json` or ledger would stop each story's first unit at execute §0's clean-tree check.
    - Check *Does not fit* now, before any planning stage.
    - **Adopt (step 1a)** — a story with a source plan was planned outside the studio (for example with superpowers). Each step below says what it does as it runs it, and the plan is converted, never rewritten. In order:
      1. `studio-adopt inspect <id> --branch <Branch> --plan <original>` reads the evidence (the plan's tasks, the SDD ledger, the commits on the branch) and prints it, changing nothing. A mismatch stops that story with inspect's line.
