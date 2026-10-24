@@ -1365,7 +1365,7 @@ story_ledger_text() {
       || { [ -n "$_sl_sha" ] && { git -C "$START_DIR" show "$_sl_sha^2:$_sl_f" || git -C "$START_DIR" show "$_sl_sha:$_sl_f"; }; }
     fi; } 2>/dev/null
 }
-story_ledger_lines() { story_ledger_text "$1" | grep -E '^- [0-9-]+ (([^ ]+ )?Ruling: |P[0-9]+ Play: )'; }
+story_ledger_lines() { story_ledger_text "$1" | grep -E '^- [0-9-]+ (([^ ]+ )?(Ruling|Block): |P[0-9]+ Play: )'; }
 # story_units_table ID — ID's rows of every lane's units.tsv (the label is
 # `<id>-<unit label>`) as a markdown table; `(no units)` when none ran.
 story_units_table() {
@@ -1756,12 +1756,15 @@ final_pr_open() {
 
 # final_body FILE HEAD — the final PR's body, assembled with git and sed (no
 # session): per landed story a `## <id>` section with its spec's `## Purpose`
-# at the Docs revision, its ledger's `Ruling:` and `P<k> Play:` lines (from
-# origin/<Branch>; a deleted branch's from its merge commit's second parent,
-# a fast-forward's from the commit itself) and its merge sha; `## Not
-# landed` with every other story's ending; the gate line.
+# at the Docs revision, its ledger's `Ruling:`, `Block:` and `P<k> Play:`
+# lines (from origin/<Branch>; a deleted branch's from its merge commit's
+# second parent, a fast-forward's from the commit itself) and its merge sha;
+# `## Not landed` with every other story's ending; `## Blocks file` with
+# each distinct `— blocks <path>` file read from FINAL_W (regular files
+# only; a symlink, a missing file or an escaping path gets a note), cut at
+# 20000 bytes; the gate line.
 final_body() {
-  _fb_nl=""
+  _fb_nl=""; _fb_bp=""
   {
     for _fb_id in $(cut -f1 "$MF_ROWS" | awk '!seen[$0]++'); do
       _fb_s="$(story_get "$_fb_id")"
@@ -1774,13 +1777,38 @@ final_body() {
       printf '## %s\n\n' "$_fb_id"
       git -C "$START_DIR" show "$MF_DOCS:$(row_field "$_fb_id" spec)" 2>/dev/null \
         | awk '/^## / { p = ($0 ~ /^## Purpose[ \t]*$/); next } p'
-      { git -C "$START_DIR" show "refs/remotes/origin/$_fb_b:.studio/ledger/$_fb_id.md" 2>/dev/null \
+      _fb_ll="$({ git -C "$START_DIR" show "refs/remotes/origin/$_fb_b:.studio/ledger/$_fb_id.md" 2>/dev/null \
           || git -C "$START_DIR" show "$_fb_sha^2:.studio/ledger/$_fb_id.md" 2>/dev/null \
           || git -C "$START_DIR" show "$_fb_sha:.studio/ledger/$_fb_id.md" 2>/dev/null; } \
-        | grep -E '^- [0-9-]+ (([^ ]+ )?Ruling: |P[0-9]+ Play: )'
+        | grep -E '^- [0-9-]+ (([^ ]+ )?(Ruling|Block): |P[0-9]+ Play: )')"
+      [ -z "$_fb_ll" ] || printf '%s\n' "$_fb_ll"
+      _fb_bp="$_fb_bp$(printf '%s\n' "$_fb_ll" | grep -E '^- [0-9-]+ ([^ ]+ )?Block: ' | sed -n 's/.* — blocks //p')
+"
       printf '\nMerge: %s\n\n' "$_fb_sha"
     done
     [ -z "$_fb_nl" ] || printf '## Not landed\n\n%s\n' "$_fb_nl"
+    _fb_bp="$(printf '%s\n' "$_fb_bp" | awk 'NF && !seen[$0]++')"
+    if [ -n "$_fb_bp" ]; then
+      printf '## Blocks file\n\n'
+      printf '%s\n' "$_fb_bp" | while IFS= read -r _fb_p; do
+        case "$_fb_p" in /*|../*|*/../*|*..) continue ;; esac
+        printf '### %s\n\n' "$_fb_p"
+        # a regular file whose real parent stays inside FINAL_W (no symlink out)
+        _fb_pw="$(cd "$FINAL_W" 2>/dev/null && pwd -P)"
+        _fb_pd="$(cd "$FINAL_W/$(dirname "$_fb_p")" 2>/dev/null && pwd -P)"
+        case "$_fb_pd" in
+          "$_fb_pw"|"$_fb_pw"/*) [ -f "$FINAL_W/$_fb_p" ] && [ ! -L "$FINAL_W/$_fb_p" ] && _fb_ok=1 || _fb_ok=0 ;;
+          *) _fb_ok=0 ;;
+        esac
+        if [ "$_fb_ok" -eq 0 ]; then
+          printf '(not on the branch as a regular file — read %s on the branch)\n\n' "$_fb_p"
+        elif [ "$(wc -c < "$FINAL_W/$_fb_p" 2>/dev/null | tr -d ' ')" -gt 20000 ] 2>/dev/null; then
+          head -c 20000 "$FINAL_W/$_fb_p"; printf '\n(truncated — read %s on the branch)\n\n' "$_fb_p"
+        else
+          cat "$FINAL_W/$_fb_p" 2>/dev/null; printf '\n'
+        fi
+      done
+    fi
     printf 'Gate: %s on %s (studio-test, studio-lint, studio-run --seconds 10)\n' "$FINAL_GATE" "$2"
     [ -z "$FINAL_NOTE" ] || printf '\nFailure: %s\n' "$FINAL_NOTE"
   } > "$1"
