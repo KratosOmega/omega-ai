@@ -346,6 +346,8 @@ if [ -n "$CAP_SECS" ] && [ -z "${STUDIO_GATE_SECONDS:-}" ] && [ -n "$ROOT" ]; th
   case "${STUDIO_GATE_CAP_FACTOR:-}" in ''|*[!0-9]*) ;; *) LEARNED_F="$(decimal "$STUDIO_GATE_CAP_FACTOR")" ;; esac
   [ "$LEARNED_F" -le 10 ] || LEARNED_F=4
   LEARNED_MIN="$(gate_learned_cap "$ROOT/.studio/gate.times" "$WHO" "$LEARNED_F" "$CAP_MIN")"
+  # A learned value the run cap clamped (>= CAP_MIN) learned nothing: today's cap and message.
+  [ -z "$LEARNED_MIN" ] || [ "$LEARNED_MIN" -lt "$CAP_MIN" ] || LEARNED_MIN=""
   if [ -n "$LEARNED_MIN" ]; then
     LEARNED_M="$(gate_times_holds "$ROOT/.studio/gate.times" "$WHO" | tail -n 50 | wc -l | tr -d ' ')"
     CAP_SECS=$((LEARNED_MIN * 60))

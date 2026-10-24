@@ -809,7 +809,7 @@ test_lanes_chain_rule() {
   assert_contains "$LS_OUT" "Bash(git push \* main)" "the deny rules are expanded"
   assert_eq 4 "$(grep -c "claude-gd -p" "$LS_OUT")" "one launch line per chain"
   assert_contains "$LS_OUT" "^deny: [0-9][0-9]* rules$" "the deny rule count"
-  assert_contains "$LS_OUT" "^allow: 10 rules$" "the allow rule count"
+  assert_contains "$LS_OUT" "^allow: $(grep -Evc '^[[:space:]]*(#|$)' "$REPO_ROOT/studios/game-dev/bin/overnight-allow.txt") rules$" "the allow rule count is the allow file's non-comment, non-blank lines"
   assert_eq 0 "$(calls)" "dry run launches no session"
   assert_missing "$P/.studio/overnight.lock" "dry run takes no lock"
   assert_missing "$P/.studio/runs/demo/lock" "nor a per-run lock"
@@ -1643,6 +1643,28 @@ test_suite_every_auto_off_slow() {
   suite_dry '' 10 1200
   assert_contains "$LS_OUT" "^suite checkpoint: off — median suite 20.0 min$" "20 min: off"
 }
+# suite_dry_secs TAG SECS… — a manifest dry run whose gate.times holds one main-lane studio-test row per SECS, oldest first.
+suite_dry_secs() {
+  _sds_t="$1"; shift
+  lanes_fixture "svs$$-$_sds_t" integration A:- B:A
+  for _sds_s in "$@"; do seed_suite_times "$P/.studio/gate.times" 1 "$_sds_s"; done
+  run_lanes start --dry-run "$MFP"
+}
+test_suite_every_newest_ten_window() {
+  suite_dry_secs win 1200 1200 1200 1200 1200 1200 1200 1200 1200 1200 270 270 270 270 270 270 270 270 270 270
+  assert_eq 0 "$LS_STATUS" "dry run exits 0 $(cat "$LS_ERR")"
+  assert_contains "$LS_OUT" "^suite checkpoint: every 4 tasks (median suite 4.5 min)$" "10 old slow rows, then 10 fast ones: only the newest 10 count"
+}
+test_suite_every_median_boundary() {
+  suite_dry_secs even 400 480 481 600
+  assert_contains "$LS_OUT" "^suite checkpoint: off — median suite 8.0 min$" "the even median 480.5 s is over 480: off (not truncated to 480)"
+  suite_dry_secs one 481 481 481
+  assert_contains "$LS_OUT" "^suite checkpoint: off — median suite 8.0 min$" "481 s is off"
+  suite_dry_secs exact 480 480 480
+  assert_contains "$LS_OUT" "^suite checkpoint: every 4 tasks (median suite 8.0 min)$" "exactly 480 s is on"
+  suite_dry_secs under 400 480 480 600
+  assert_contains "$LS_OUT" "^suite checkpoint: every 4 tasks (median suite 8.0 min)$" "an even median of exactly 480 is on"
+}
 test_suite_every_few_rows() {
   suite_dry '' 2 270
   assert_contains "$LS_OUT" "^suite checkpoint: off — fewer than 3 suite runs$" "2 rows: off"
@@ -1663,6 +1685,7 @@ test_suite_every_config() {
   assert_contains "$LS_ERR" "suite_every" "naming the key"
   suite_dry '{"overnight": {"suite_every": ""}}' 0 0
   assert_eq 2 "$LS_STATUS" "a quoted empty value is a refusal"
+  assert_contains "$LS_ERR" 'config overnight.suite_every must be a number from 0 to 20 (int), got ""$' "naming the key and the empty value"
 }
 test_lanes_suite_every_env() {
   lanes_fixture sveenv integration A:-
@@ -5074,7 +5097,7 @@ run_tests test_stub_waitexist_and_run_token test_lanes_setup_preflight_refuses_l
   test_lanes_land_second_conflict_stops test_lanes_land_repair_no_progress test_lanes_direct_refused_then_repaired test_lanes_direct_merged_never_repairs test_lanes_direct_merge_timeout \
   test_lanes_land_once_explicit_branch test_lanes_land_idempotent \
   test_lanes_land_crash_after_push test_lanes_land_lock_reclaim test_lanes_land_shipped_resume \
-  test_lanes_gate_never_overlaps test_lanes_gate_repair_then_lands test_lanes_gate_repair_cap test_suite_every_auto_on test_suite_every_auto_off_slow test_suite_every_few_rows test_suite_every_config test_lanes_suite_every_env test_lanes_checkpoint_red_repairs_then_next_task \
+  test_lanes_gate_never_overlaps test_lanes_gate_repair_then_lands test_lanes_gate_repair_cap test_suite_every_auto_on test_suite_every_auto_off_slow test_suite_every_newest_ten_window test_suite_every_median_boundary test_suite_every_few_rows test_suite_every_config test_lanes_suite_every_env test_lanes_checkpoint_red_repairs_then_next_task \
   test_lanes_gate_repair_same_stop_twice test_lanes_gate_repairs_zero test_lanes_gate_hard_stops_no_repair \
   test_lanes_gate_repair_no_progress test_lanes_gate_repair_model_and_no_log test_lanes_gate_repair_budget test_lanes_gate_repair_halt \
   test_lanes_sync_clean_merge_no_session test_lanes_sync_skips test_lanes_sync_integration_two_refs \

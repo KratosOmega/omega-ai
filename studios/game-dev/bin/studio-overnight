@@ -455,18 +455,15 @@ Config: .studio/config.json "overnight" (defaults, ranges):
                                     main-lane passes of the same command in .studio/gate.times
                                     (STUDIO_GATE_CAP_FACTOR; at least 15 min, never past the cap
                                     above, nothing learned under 5 runs); 0 = off; "auto" = 4
-  suite_every          auto  auto|0-20 lanes: run the whole suite after every K completed tasks (a checkpoint;
-                                    a red one goes to the gate-repair loop); 0 = off; auto = 4 when
+  suite_every          auto  auto|0-20 lanes: run the whole suite after every K completed tasks
+                                    (a checkpoint; a red one goes to the gate-repair loop);
+                                    0 = off; auto = 4 when
                                     the median of the last 10 main-lane suite runs in .studio/gate.times
                                     is 8 min or less (3 runs at least), else off. Single-plan runs: off
   gate_repairs         2     0-3      lanes: gate-repair units per story after a red finish gate,
                                     each followed by a fresh finish (the full gate again);
                                     0 = a red gate stops the story
   kill_grace_seconds   30    5-120    TERM-to-KILL grace
-  node_workers         auto  auto|1-32 vitest workers for a whole-suite run (studio-vitest): auto =
-                                    max(2, physical cores / 2); a run naming only existing files stays at 2
-  node_dir             ""             the node project dir, from the project root (studio-vitest, studio-tsc);
-                                    unset = the current dir when it holds package.json
   max_lanes            0     0-8      lane processes (0 = one per chain)
   max_sessions         6     1-8      claude sessions running at once across every live run
                                     in the project (read from the main checkout's config)
@@ -479,15 +476,23 @@ Config: .studio/config.json "overnight" (defaults, ranges):
                                     0 = a stop rule ends the story at once (no holds)
   directive_chars      4000  500-16000 cap on a story's active + pending directive text
 A value present but out of range or not a number is a refusal.
-Top level of config.json: "merge_command" — a command line containing <pr>,
-its first word an executable file under the checkout.
+Top level of config.json (not under "overnight"):
+  merge_command        ""             a command line containing <pr>, its first word an
+                                    executable file under the checkout
+  node_workers         auto  auto|1-32 vitest workers for a whole-suite run (studio-vitest):
+                                    auto = max(2, physical cores / 2); a run naming only
+                                    existing files stays at 2. Refused at start when bad
+  node_dir             ""             the node project dir, from the project root
+                                    (studio-vitest, studio-tsc); unset = the current dir
+                                    when it holds package.json
 
 Deny rules: $DENY_FILE
   one --disallowedTools rule per line.
 
 Allow rules: $ALLOW_FILE
-  one --allowedTools rule per line (the gate verbs and the gated Godot form);
-  no file or no rules: no --allowedTools.
+  one --allowedTools rule per line: studio-test, studio-run, studio-vitest, studio-tsc,
+  sdd-run, studio-docs-sync and the gated Godot forms; no file or no rules: no
+  --allowedTools.
 
 The morning report is written to .studio/reports/overnight-<ts>/report.md on
 every ending (manifest mode: overnight-<slug>-<ts>/report.md, a section per
@@ -698,6 +703,10 @@ preflight() {
   cfg retries 1 0 3 int
   cfg gate_repairs 2 0 3 int
   cfg gate_cap_factor 4 0 10 int auto
+  # node_workers is a top-level key read by studio-vitest through gate-class.sh:
+  # refuse here, by the same function, what it would refuse inside a unit at night.
+  _pf_nw="$( cd "$START_DIR" && STUDIO_START_DIR="$START_DIR" && . "$SELF_DIR/gate-class.sh" && gate_node_workers 2>&1 >/dev/null )" \
+    || refuse "$_pf_nw"
   cfg hold_minutes 480 0 1440 int
   cfg directive_chars 4000 500 16000 int
   hold_overrides
@@ -804,21 +813,35 @@ caps_env() {
 }
 # caps_readout — one `gate caps:` stdout line: each who with 5 or more
 # main-lane passes in gate.times and the run cap studio-gate learns for it
-# (gate_learned_cap), then the rest at the default cap. Nothing without history.
+# (gate_learned_cap), then the rest at the default cap. A who is listed only
+# with a well-formed rc-0 main-lane row (gate_times_holds); a learned value the
+# run cap clamps (>= GATE_MIN) is no learned cap, as in studio-gate. Nothing
+# without history.
 caps_readout() {
   session_caps
   _cr_f="$STATE_ROOT/.studio/gate.times"
   _cr_whos="$(awk 'NF == 8 && $2 != "setup" && !seen[$2]++ { print $2 }' "$_cr_f" 2>/dev/null)"
+  _cr_ok=""
+  for _cr_w in $_cr_whos; do
+    [ -z "$(gate_times_holds "$_cr_f" "$_cr_w")" ] || _cr_ok="$_cr_ok $_cr_w"
+  done
+  _cr_whos="$_cr_ok"
   [ -n "$_cr_whos" ] || return 0
   if [ "${GATE_CAP_FACTOR:-4}" = 0 ]; then echo "gate caps: learned caps off (gate_cap_factor 0)"; return 0; fi
-  _cr_l=""; _cr_d=""
+  _cr_l=""; _cr_d=""; _cr_k=""
   for _cr_w in $_cr_whos; do
     _cr_c="$(gate_learned_cap "$_cr_f" "$_cr_w" "${GATE_CAP_FACTOR:-4}" "$GATE_MIN")"
+    [ -z "$_cr_c" ] || [ "$_cr_c" -lt "$GATE_MIN" ] || { _cr_k="${_cr_k:+$_cr_k, }$_cr_w"; continue; }
     if [ -n "$_cr_c" ]; then _cr_l="${_cr_l:+$_cr_l, }$_cr_w $_cr_c min (×${GATE_CAP_FACTOR:-4} p95)"
     else _cr_d="${_cr_d:+$_cr_d, }$_cr_w"; fi
   done
   [ -z "$_cr_d" ] || _cr_d="default $GATE_MIN min for $_cr_d (fewer than 5 runs)"
-  echo "gate caps: $_cr_l${_cr_l:+${_cr_d:+; }}$_cr_d"
+  [ -z "$_cr_k" ] || _cr_k="default $GATE_MIN min for $_cr_k (the learned cap reaches it)"
+  _cr_o="$_cr_l"
+  for _cr_x in "$_cr_d" "$_cr_k"; do
+    [ -z "$_cr_x" ] || _cr_o="$_cr_o${_cr_o:+; }$_cr_x"
+  done
+  echo "gate caps: $_cr_o"
 }
 
 # suite_every_resolve [MANIFEST] — sets SUITE_EVERY (an integer; the interval
@@ -843,10 +866,10 @@ suite_every_resolve() {
     { h[NR] = $1 }
     END { if (NR < 3) { print "few"; exit }
           m = (NR % 2) ? h[(NR + 1) / 2] : (h[NR / 2] + h[NR / 2 + 1]) / 2
-          printf "%d %.1f\n", m, m / 60 }')"
+          printf "%s %.1f\n", (m <= 480) ? "on" : "off", m / 60 }')"
   case "$_se_m" in
     few) SUITE_NOTE="off — fewer than 3 suite runs" ;;
-    *) if [ "${_se_m%% *}" -le 480 ]; then SUITE_EVERY=4; SUITE_NOTE="every 4 tasks (median suite ${_se_m#* } min)"
+    *) if [ "${_se_m%% *}" = on ]; then SUITE_EVERY=4; SUITE_NOTE="every 4 tasks (median suite ${_se_m#* } min)"
        else SUITE_NOTE="off — median suite ${_se_m#* } min"; fi ;;
   esac
 }
@@ -1530,7 +1553,8 @@ reg_end() {
 
 # start_session ARGS — the session in the background, its pid in CPID. Its
 # env words are LAUNCH_ENV (manifest mode: the story's, story_launch_env),
-# else the caps then OMEGA_AUTOPILOT=1; STUDIO_GATE_HELD never reaches a session (D17).
+# else the caps then OMEGA_AUTOPILOT=1; STUDIO_GATE_HELD never reaches a session (D17), nor an operator-shell
+# STUDIO_SUITE_EVERY (only a manifest story's LAUNCH_ENV sets it).
 # Under a lane (LDIR set) the pid is also written to LDIR/cpid. The session
 # starts in UNIT_CWD when set (manifest mode's final-step units), else where
 # the story's pointer is (story_dir: START_DIR until a hand-off, #42).
@@ -1539,7 +1563,7 @@ reg_end() {
 # the run's start dir, for every unit (AC30, D42).
 start_session() {
   set -m 2>/dev/null || true   # own process group: a terminal Ctrl-C reaches only the runner (D6; a lane subshell too, D1c)
-  ( cd "${UNIT_CWD:-$(story_dir)}" && unset STUDIO_GATE_HELD && eval "export ${LAUNCH_ENV:-$(caps_env) OMEGA_AUTOPILOT=1}" \
+  ( cd "${UNIT_CWD:-$(story_dir)}" && unset STUDIO_GATE_HELD STUDIO_SUITE_EVERY && eval "export ${LAUNCH_ENV:-$(caps_env) OMEGA_AUTOPILOT=1}" \
       && STUDIO_UNIT_TAG="$UNIT_TAG" && export STUDIO_UNIT_TAG \
       && STUDIO_RUN_DIR="$RUN_DIR" && export STUDIO_RUN_DIR \
       && STUDIO_START_DIR="$START_DIR" && export STUDIO_START_DIR && exec claude-gd -p "$@" ) \

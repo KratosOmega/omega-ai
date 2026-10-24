@@ -583,6 +583,17 @@ test_gate_learned_cap_factor_and_setup() {
   assert_eq 0 "$(lanes_done c)" "setup: no learned cap"
   assert_not_contains "$TMP/err.c" 'ran past' "setup: no cap line"
 }
+# A history whose learned cap is clamped to STUDIO_GATE_MINUTES (here 10: the 15 min floor is
+# clamped down to it) is no learned cap: the plain 10 min cap applies, so the 3 s floor seam,
+# which only a learned cap uses, does not stop a 6 s run (before: the clamped 10 was learned).
+# exclusive-scan: test_gate_learned_cap_clamped_is_today out (d) every run is a 1 s run under a cap that cannot fire
+test_gate_learned_cap_clamped_is_today() {
+  lanes_repo lcapc
+  seed_probe 5 1
+  lanes_bg k "$LR" -- env STUDIO_GATE_MINUTES=10 STUDIO_GATE_LEARNED_FLOOR_SECONDS=3 sh "$LANES_GATE" probe -- sh -c 'sleep 6'
+  assert_eq 0 "$(lanes_done k)" "a clamped learned cap is no learned cap: the run passes under the plain cap"
+  assert_not_contains "$TMP/err.k" 'ran past' "no cap line"
+}
 # exclusive-scan: test_gate_learned_cap_production_default out (d) a 2 s run under a 15 min floor
 test_gate_learned_cap_production_default() {
   assert_contains "$BIN/studio-gate" 'STUDIO_GATE_LEARNED_FLOOR_SECONDS:-900' "the floor defaults to 900 s"
@@ -836,4 +847,5 @@ run_tests test_lanes_beside_shareable test_lanes_never_beside_exclusive test_lan
   test_lanes_busy_mutex_first_poll_names_slot_holder test_lanes_own_pid_lane_is_stale \
   test_lanes_stale_own_demote_file_ignored test_lanes_late_signal_no_rerun_line test_lanes_leak_sticky_across_demote \
   test_lanes_phys_cores_read_once test_lanes_short_cap_equal_run_cap_is_124 \
-  test_gate_learned_cap_fires test_gate_learned_cap_production_default test_gate_learned_cap_factor_and_setup
+  test_gate_learned_cap_fires test_gate_learned_cap_production_default test_gate_learned_cap_factor_and_setup \
+  test_gate_learned_cap_clamped_is_today

@@ -42,6 +42,7 @@ for a in "$@"; do printf '%s\n' "$a"; done > "$CALLS/$n.argv"
 pwd -P > "$CALLS/$n.pwd"
 printf '%s %s\n' "${STUDIO_UNIT_TAG:-unset}" "${STUDIO_RUN_DIR:-unset}" > "$CALLS/$n.chan"
 printf '%s\n' "${OMEGA_AUTOPILOT:-unset}" > "$CALLS/$n.env"
+printf '%s\n' "${STUDIO_SUITE_EVERY:-unset}" > "$CALLS/$n.suite"
 printf '%s %s %s\n' "${BASH_DEFAULT_TIMEOUT_MS:-unset}" "${BASH_MAX_TIMEOUT_MS:-unset}" "${STUDIO_GATE_MINUTES:-unset}" > "$CALLS/$n.caps"
 root="$(sh "$STUB_STATE_BIN" root)"
 cp "$root/.studio/overnight.lock" "$CALLS/$n.lock" 2>/dev/null
@@ -528,6 +529,32 @@ test_overnight_caps_readout() {
   assert_eq 2 "$RS_STATUS" "11 is a refusal"
   assert_contains "$RS_ERR" "gate_cap_factor" "naming the key"
 }
+test_overnight_caps_readout_clamped_and_short() {
+  push_fixture cr2
+  _cr_i=0; while [ "$_cr_i" -lt 5 ]; do printf '1000 slowwho 3000 0 0 main exclusive -\n' >> "$P/.studio/gate.times"; _cr_i=$((_cr_i + 1)); done
+  _cr_i=0; while [ "$_cr_i" -lt 5 ]; do printf '1000 shortwho 5 0 0 short short -\n1000 failwho 5 1 0 main exclusive -\n' >> "$P/.studio/gate.times"; _cr_i=$((_cr_i + 1)); done
+  printf '1000 studio-test 290 0 0 main exclusive -\n' >> "$P/.studio/gate.times"
+  run_start --dry-run
+  assert_eq 0 "$RS_STATUS" "dry run exits 0"
+  assert_not_contains "$RS_OUT" "slowwho [0-9]* min (" "a learned value clamped to the run cap is not listed as learned"
+  assert_contains "$RS_OUT" "default 45 min for .*slowwho" "it keeps the default cap"
+  assert_not_contains "$RS_OUT" "shortwho" "a who with only short rows is not listed"
+  assert_not_contains "$RS_OUT" "failwho" "nor one with only rc != 0 rows"
+  assert_contains "$RS_OUT" "default 45 min for .*studio-test" "a who with one good row is listed at the default"
+}
+test_overnight_node_workers_preflight() {
+  for _nw in 33 '"x"' 0; do
+    fixture "nw$(printf '%s' "$_nw" | tr -cd 'a-z0-9')" "{ \"node_workers\": $_nw }"
+    run_start --dry-run
+    assert_eq 2 "$RS_STATUS" "node_workers $_nw is refused at preflight"
+    assert_contains "$RS_ERR" "^studio-overnight: gate: node_workers must be auto or 1-32, got $(printf '%s' "$_nw" | tr -d '"')\$" "the gate's own message for $_nw"
+  done
+  for _nw in '"auto"' '"8"' 8; do
+    fixture "nwok$(printf '%s' "$_nw" | tr -cd 'a-z0-9')" "{ \"node_workers\": $_nw }"
+    run_start --dry-run
+    assert_eq 0 "$RS_STATUS" "node_workers $_nw is accepted"
+  done
+}
 test_suite_every_single_plan_off() {
   push_fixture se1
   _se_i=0; while [ "$_se_i" -lt 10 ]; do printf '1000 studio-test 270 0 0 main exclusive -\n' >> "$P/.studio/gate.times"; _se_i=$((_se_i + 1)); done
@@ -536,11 +563,30 @@ test_suite_every_single_plan_off() {
   assert_contains "$RS_OUT" "^suite checkpoint: off — single-plan run$" "single-plan run: off"
   assert_not_contains "$RS_OUT" "STUDIO_SUITE_EVERY" "no launch env word"
 }
+test_single_plan_unit_lacks_suite_every() {
+  fixture sev1; done_scenario
+  STUDIO_SUITE_EVERY=4; export STUDIO_SUITE_EVERY
+  run_start
+  unset STUDIO_SUITE_EVERY
+  assert_eq 0 "$RS_STATUS" "the run ends 0"
+  assert_eq "unset" "$(cat "$CALLS/1.suite" 2>/dev/null)" "an operator-shell STUDIO_SUITE_EVERY does not reach a single-plan unit"
+}
 test_help_lists_new_keys() {
   sh "$RUNNER" --help > "$TMP/help2.txt" 2>&1
   for w in "suite_every  *auto  *auto|0-20" "gate_cap_factor  *4  *0-10" "node_workers  *auto  *auto|1-32" "node_dir  *\"\""; do
     assert_contains "$TMP/help2.txt" "$w" "help lists $w"
   done
+  # node_workers and node_dir are top-level keys (AC15): under the top-level note, not the overnight block.
+  sed -n '/^Config: /,/^A value present but out of range/p' "$TMP/help2.txt" > "$TMP/help-ov.txt"
+  sed -n '/^Top level of config.json/,/^Deny rules/p' "$TMP/help2.txt" > "$TMP/help-top.txt"
+  assert_not_contains "$TMP/help-ov.txt" "node_workers" "node_workers is not in the overnight block"
+  assert_not_contains "$TMP/help-ov.txt" "node_dir" "node_dir is not in the overnight block"
+  assert_contains "$TMP/help-top.txt" "node_workers  *auto  *auto|1-32" "node_workers is in the top-level block"
+  assert_contains "$TMP/help-top.txt" "node_dir  *\"\"" "node_dir is in the top-level block"
+  assert_contains "$TMP/help2.txt" "studio-test, studio-run, studio-vitest, studio-tsc," "the allow rules line names the verbs"
+  assert_contains "$TMP/help2.txt" "sdd-run, studio-docs-sync and the gated Godot forms" "all of them"
+  assert_not_contains "$TMP/help2.txt" "the gate verbs" "not just the gate verbs"
+  assert_eq 0 "$(cat "$TMP/help-ov.txt" "$TMP/help-top.txt" | awk 'length > 110' | grep -c .)" "no config help line is wider than 110 columns"
 }
 test_overnight_push_check_ok_line() {
   push_fixture pk2 1
@@ -741,7 +787,8 @@ test_overnight_launch_allow_rules() {
   a="$CALLS/1.argv"
   sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' "$REPO_ROOT/studios/game-dev/bin/overnight-allow.txt" | grep -v '^#' | grep . > "$TMP/allow.txt"
   N="$(grep -c . "$TMP/allow.txt")"
-  assert_eq 10 "$N" "the allow file holds the ten rules"
+  assert_eq "$(grep -Evc '^[[:space:]]*(#|$)' "$REPO_ROOT/studios/game-dev/bin/overnight-allow.txt")" "$N" "the rule count is the allow file's non-comment, non-blank lines"
+  assert_eq 1 "$([ "$N" -gt 0 ] && echo 1 || echo 0)" "the allow file holds rules"
   assert_eq 1 "$(grep -cx -- '--allowedTools' "$a")" "--allowedTools appears once"
   _ai="$(grep -nx -- '--allowedTools' "$a" | cut -d: -f1)"; [ -n "$_ai" ] || _ai=0
   _di="$(grep -nx -- '--disallowedTools' "$a" | cut -d: -f1)"
@@ -2949,7 +2996,7 @@ run_tests test_overnight_setup_preflight_single test_overnight_help_setup_prefli
   test_overnight_stop_no_run test_overnight_inhibitor test_overnight_no_inhibitor \
   test_overnight_help test_overnight_unit_caps test_events_contract_doc test_overnight_dry_run \
   test_overnight_preflight_refusals test_overnight_preflight_all_failures \
-  test_overnight_push_check_refuses_without_workflow test_overnight_push_check_ok_line test_single_plan_one_lane_note test_overnight_caps_readout test_suite_every_single_plan_off test_help_lists_new_keys test_overnight_cfg_quoted_values_opt_in test_overnight_push_check_no_workflows \
+  test_overnight_push_check_refuses_without_workflow test_overnight_push_check_ok_line test_single_plan_one_lane_note test_overnight_caps_readout test_overnight_caps_readout_clamped_and_short test_overnight_node_workers_preflight test_suite_every_single_plan_off test_single_plan_unit_lacks_suite_every test_help_lists_new_keys test_overnight_cfg_quoted_values_opt_in test_overnight_push_check_no_workflows \
   test_overnight_push_check_ssh test_overnight_push_check_unknown_scopes test_overnight_push_check_other_helper \
   test_overnight_config_refusals test_overnight_deny_file_required \
   test_overnight_lock test_overnight_first_use_ignores \
