@@ -385,6 +385,11 @@ that exits 124 is `Stop: gate timed out`; a targeted vitest runs as
 tsc as `cd <node dir> && studio-gate tsc -- npx tsc --noEmit` — the `cd` outside the gate,
 never `sh -c` inside it; the whole suite runs only when `Verify:` includes `suite`".
 
+Every implementer and fixer brief also carries "a check that disagrees with
+a pinned reference: §6a's Block procedure, not a fix and not a stop", with
+§6a's definition, steps 1, 2 and 5, and the blocks file's path pasted under
+it. The agent reports each Block it met; you write its ledger line (§6a step 3).
+
 ## 3. Verify rules (both modes)
 
 `Verify:` is one kind or several joined with `+` (`unit+playtest`). Every
@@ -433,6 +438,8 @@ orchestrator can judge the report:
   `get_node()` by string in `_process` / `_physics_process`; anything else
   is a profiler question, not a review finding.
 - For `unit`: the test exists, fails without the change, passes with it.
+- For a Block (§6a): a Block's pending marker covers only the failing assertions.
+- For a Block (§6a): the pinned reference is unchanged in the commit range.
 
 Findings are one line each, severity-tagged.
 
@@ -491,6 +498,8 @@ This overrides `superpowers:subagent-driven-development`'s fix loop (rounds 1–
    clean, its last round was accepted under rule 3, or what remains is
    parked under rule 4. A `Review: final` task is complete once its implementer's tests pass
    (the summary line it pasted); it gets no review here, and its findings fold into the final review (§5).
+   A Block (§6a) never holds a task: its check is pending, not red, so the
+   task completes by this rule once everything else is green. It is not parked.
 
 ## 5. Final review
 
@@ -526,6 +535,8 @@ the last task's review. Under `--one`, see §8: a task unit never starts it.
      a finding of the original severity;
    - SDD's deferred-minor and parked lines — triage which must be fixed
      before merge;
+   - the story's `Block:` lines (§6a), with the instruction
+     "report each open Block in the verdict; never a fix-wave item; a change to a pinned reference is Critical";
    - "Gate-enforced findings are must-fix": a finding about anything the
      gate checks — line length, docs budgets, any check under `tests/` —
      whatever its severity, is never ruled `leave`, deferred or parked;
@@ -548,6 +559,9 @@ the last task's review. Under `--one`, see §8: a task unit never starts it.
    running that test file: `studio-test --file <path>`.
    Re-review per §4a rule 3 (a Minor-only wave is never re-reviewed); never
    a third pass (§4a rule 4).
+   The wave never takes a Block: an open Block stays pending for the author.
+   A check the wave itself finds against a pinned reference is a new Block
+   (§6a, prefix `final`).
 6. `studio-state ledger "final review done"`, then commit the ledger:
    `git add .studio/ledger && git commit -m "chore(studio): ledger"`. The
    finish then starts from a clean ledger, so a re-run after a stop in §7
@@ -578,6 +592,99 @@ security-sensitive operation; a plan too broken to follow; no Godot binary
 ask-first side effects; no session merges anything in any run mode:
 nothing is merged into `main` (the default branch) by a session, and under
 a lane the runner lands the story. Everything else is a ruling.
+A check that disagrees with a pinned reference is neither a stop nor a
+plan too broken to follow: it is a Block (§6a).
+
+## 6a. Blocks
+
+A **Block** is a check whose result disagrees with a **pinned reference** the
+unit must not change: a frozen fixture, a golden, an approved value or a
+capture. A reference is pinned when the plan, its `## Decisions`, its
+`## Global Constraints` or the spec says it is frozen, approved, golden or a
+capture, or when the plan's task says a difference "blocks" (or "BLOCKS").
+
+A plan that says a difference blocks is a plan that works: it asks for this
+procedure. The check goes pending, the finding is written down for the
+author, and the story carries on. A Block never holds a story and is never
+a `Stop:`.
+
+Everything else stays as it is:
+
+- A failing check against a reference that is not pinned is ordinary work:
+  fix the code, TDD as usual.
+- A check that cannot run at all is a Stop, never a Block, even when it
+  compares against a pinned reference. These join §6's stop list (under
+  `--one`, §8's stop rule):
+  - A missing tool: a tool not on PATH (`ffmpeg: command not found`), an
+    interpreter that cannot import, the engine missing;
+  - setup failed, a push rejected, a gate timed out.
+- When it is unclear whether a reference is pinned, it is not a Block:
+  record a `Ruling:` and fix the code, or Stop when the fix would change the
+  reference.
+
+**Procedure.** For each Block, in order:
+
+1. **Pending marker.** Mark pending only the failing assertions — one test
+   or case, never a whole file or suite — with the framework's own pending
+   or skip, and the reason
+   `BLOCKED <story> <check>: <key> — expected <a>, got <b> — <where>`:
+   - GUT: `pending("BLOCKED …")`, then `return`;
+   - vitest/jest: `it.skip("BLOCKED … <title>")`;
+   - pytest: `pytest.skip("BLOCKED …")`.
+
+   Every other assertion stays live. `<story>` is `$STUDIO_STORY`, else the
+   feature slug; `<check>` is the test's name.
+2. **Blocks file entry.** Append one entry to the blocks file: the path on
+   the `blocks: <path>` line that `studio-brief task <n>` prints (every task
+   prints the same path; a check, final or gate unit runs
+   `studio-brief task 1` for it, §8 Inputs). A missing file is created with the header
+   `# <slug> — blocked checks` and the line
+   `A run names a failed check against a pinned reference and carries on. It never resolves a block itself: the author rules.`
+   The entry:
+
+   ```
+   ## <story> B<k> — <check> — OPEN
+   - **Where:** <test file:line, and the reference's path>
+   - **Check:** <what it asserts>
+   - **Expected / actual:** <key>: <reference value> vs <produced value>
+   - **Why it is pinned:** <the plan/spec line that freezes it>
+   - **Task:** T<n>, <YYYY-MM-DD>
+   - **Options for the author:** <one line each, when the unit can see them>
+   ```
+
+   `<k>` is the next number among this story's `## <story> B<k>` entries:
+   each story numbers its own, so parallel lanes never renumber each other.
+3. **Ledger.**
+   `studio-state ledger "T<n> Block: <check> — <key>: <a> vs <b> — blocks <path>"`.
+   The prefix is `check` in a check unit, `final` in the final fix wave and
+   `gate` in a gate repair (§11) or a `fix(gate)` round (§7 step 1).
+4. **Commit and complete.** Commit the marker, the blocks file and the
+   ledger with the task's commits, then complete the task as §4a rule 6 and
+   §6 say: `studio-state set task n/N` and the `T<n> complete` line. The
+   pending check is not a red test (the framework reports it as pending or
+   skipped, not failed), and it meets §3's "then passes" and §4's
+   `unit` item: the reviewer checks the marker instead.
+   No `Stop:` line is written. Under `--one` the unit pushes and ends as
+   progress; the next unit takes the next task (§8: still never more than
+   one).
+   A check unit, the final fix wave or a gate repair commits the same way
+   and ends as it would on green (`check done …`, `final review done`,
+   `Repair: gate — …`).
+5. **Never.**
+   Never regenerate, re-capture, loosen, re-approve or edit the pinned reference to get green,
+   and never widen the pending marker beyond the failing assertions. Either
+   is a Critical review finding.
+
+**Where it applies:**
+
+- a task's implementer or fixer (§2, §4a);
+- the check unit (§8);
+- the final fix wave (§5 step 5);
+- a gate repair (§11): a red finish gate whose failure is a pinned-reference
+  mismatch.
+
+The runner never reads a `Block:` line as an outcome: like a ruling, it is
+a record for the reader, and it reaches the PR body (§7 step 4).
 
 ## 7. Finish
 
@@ -644,9 +751,14 @@ A finish records operator messages at §0's recording point and commits them wit
      repository's metadata, never committed. It holds, in order: the spec's
      `## Purpose`; `## Acceptance criteria` as a `- [ ]` checklist;
      `## Play before merging` (the play list); `## Rulings` (every `Ruling:`
-     line of the feature ledger, in order, each with its cost if wrong); the
+     line of the feature ledger, in order, each with its cost if wrong);
+     `## Blocks` (every `Block:` line of the feature ledger, in order; then,
+     for each distinct `— blocks <path>` in those lines, the path and that
+     file's `## <story> B<k>` entries for this story; `(none)` when there is
+     no `Block:` line); the
      final review verdict line; the gate line
      (`Gate: studio-test <summary> · studio-lint <exit and summary> · studio-run <exit>`).
+     A PR with Blocks is still ready unless another rule makes it a draft.
    - Then `git push -u origin <branch>`, then `gh pr view --json url` on the
      branch: when a PR exists, it is the PR (no second one). Otherwise
      `gh pr create --base <base> --title "<spec title>" --body-file <body file>`,
@@ -695,7 +807,7 @@ A finish records operator messages at §0's recording point and commits them wit
 7. **Report**, in this order: the PR link (or the saved body path and the
    reason; on the default branch, that the work is committed locally); the
    play list, under `Play before merging`; the rulings, each with its cost
-   if wrong; the producer's gate result (milestone `<a> → <b>`, the missing
+   if wrong, and the Blocks; the producer's gate result (milestone `<a> → <b>`, the missing
    list, or PROGRESS skipped); the final review verdict line; the gate
    line; and the last line, verbatim:
 
@@ -755,6 +867,10 @@ runs exactly one unit, writes its state, commits, pushes, and ends the turn.
     or reviewer reports name; a check unit reads only `studio-brief check <k>` (k from `task`);
   - a task unit whose §0 sync reported `T<k+1> in progress: <first>..<last>` adds to the
     implementer's brief: `commits already on the branch for this task: <first>..<last> — check and finish them; do not start over`;
+  - `studio-brief task <n>` ends with a `blocks: <path>` line: that path is
+    the blocks file (§6a step 2), and it goes in the implementer's brief (§2);
+    a check unit, a final-review unit and a gate repair (§11) also read the
+    `blocks:` line of `studio-brief task 1`, only when a Block occurs (§6a);
   - it never reads the plan or the spec whole, and
     never runs SDD's pre-flight conflict scan
     (the plan session ran it, and its rulings are in `## Decisions`);
@@ -789,6 +905,9 @@ runs exactly one unit, writes its state, commits, pushes, and ends the turn.
 
   A finding it cannot fix, or a red gate it cannot make green:
   `studio-state ledger "Stop: check — <reason>"`, committed as stops are. `k` never changes.
+  A check that disagrees with a pinned reference is not such a finding: it is
+  a Block (§6a), ledgered `check Block: <check> — <key>: <a> vs <b> — blocks <path>`,
+  and the unit goes on to `check done …`.
 - **Cutting SDD's loop:** invoke SDD as §1 says. Once the task is complete
   (§4a rule 6) and §6's writes are done (`set task n/N`, the `T<n> complete`
   line, the ledger committed), no next implementer is dispatched, and when
@@ -831,6 +950,13 @@ runs exactly one unit, writes its state, commits, pushes, and ends the turn.
     on the re-run.
 
   Then end the turn.
+- **A Block is not a stop (§6a).** A check that disagrees with a pinned
+  reference writes a `Block:` line (§6a step 3), never `Stop:`, even when
+  the plan says the run "BLOCKS" on it. The unit marks only that check
+  pending, appends its blocks-file entry, finishes its work (a task:
+  `set task n/N` and `T<n> complete`), commits, pushes and ends as progress.
+  A check that cannot run (a missing tool, an interpreter that cannot
+  import) is still a stop.
 - **§7 step 6, headless:** `ExitWorktree` `action: "keep"` runs as written.
   The "started in the feature worktree" note and the `Next:` line are
   skipped, because no human reads this session.
@@ -905,6 +1031,9 @@ a `Stop:` line (§8's stop rule).
   `STUDIO_REPAIR=red:<log path>` means the merge command refused: read the
   landing log at that path. Dispatch one fresh fixer (§5 step 5's owning
   role) with the conflict, or with the failing output from the log.
+- **Blocks files** (§6a): in either form, a conflict in a blocks file
+  (`*-blocks.md`) is resolved by keeping both sides' entries, the target's
+  (or `<ref>`'s) first; entries are never renumbered.
 - **Gate:** the story's gate, §7 step 1, through `studio-test` (which holds the gate lock).
   This unit overrides §7's lane rule that the gate runs once: it runs up to three times.
   The same fixer (or a fresh one given the failing output) fixes between runs.
@@ -975,6 +1104,10 @@ then launches a fresh finish, which runs the full gate once (§7).
   failure, the Stop line's failing line is the failure.
 - **Fix:** dispatch one fresh fixer (§5 step 5's owning role) with the
   failing output. It commits `fix(gate): <summary>`.
+- **A pinned-reference mismatch** (a red test that disagrees with a pinned
+  reference) is a Block, not a fix: §6a's procedure with prefix `gate`,
+  `gate Block: <check> — <key>: <a> vs <b> — blocks <path>`. The verify run
+  below then sees it pending, and the unit records its `Repair:` line.
 - **Verify what failed, not the whole gate:** when the Stop names `gate_command`,
   verify with the command that failed: `studio-setup gate`; otherwise
   `studio-test --file <path>[,<path>…]` with every
