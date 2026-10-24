@@ -106,10 +106,13 @@ cfg_raw() {
   [ -f "$CONFIG" ] || return 0
   sed -n 's/.*"'"$1"'"[[:space:]]*:[[:space:]]*\([^,}[:space:]]*\).*/\1/p' "$CONFIG" | head -n 1
 }
-# cfg KEY DEFAULT MIN MAX int|dec — sets the variable named by KEY's upper
+# cfg KEY DEFAULT MIN MAX int|dec [auto] — sets the variable named by KEY's upper
 # case; a present value outside the range or of the wrong kind is a refusal.
+# A number may be quoted ("6"); with `auto` the value "auto" means DEFAULT.
 cfg() {
   _v="$(cfg_raw "$1")"
+  case "$_v" in '"'*'"') _v="${_v#\"}"; _v="${_v%\"}" ;; esac
+  [ "${6:-}" != auto ] || [ "$_v" != auto ] || _v=""
   [ -n "$_v" ] || _v="$2"
   case "$5" in
     int) printf '%s' "$_v" | grep -Eq '^[0-9]+$' ;;
@@ -443,6 +446,10 @@ Config: .studio/config.json "overnight" (defaults, ranges):
   gate_command         ""             command the finish gate runs after the tests
                                     (studio-setup gate); no backslash. Unset = none
   retries              1     0-3      retries of an unchanged unit
+  gate_cap_factor      4     0-10     a gate run is stopped at this factor x the p95 of the last 50
+                                    main-lane passes of the same command in .studio/gate.times
+                                    (STUDIO_GATE_CAP_FACTOR; at least 15 min, never past the cap
+                                    above, nothing learned under 5 runs); 0 = off; "auto" = 4
   gate_repairs         2     0-3      lanes: gate-repair units per story after a red finish gate,
                                     each followed by a fresh finish (the full gate again);
                                     0 = a red gate stops the story
@@ -580,6 +587,8 @@ REPORTS="$STATE_ROOT/.studio/reports"
 RUN_SLUG=""   # a manifest run's slug (run_paths); empty for a single-plan run
 # The project's live runs (#39): runs_live, runs_match, runs_stop_of, mx_*.
 . "$SELF_DIR/overnight-runs.sh"
+# gate_times_holds, gate_learned_cap: the readout of the gate caps studio-gate will learn.
+. "$SELF_DIR/gate-times.sh"
 # The project-wide session cap (#39 AC27): sess_*; slots are taken by manifest units only (D19).
 . "$SELF_DIR/overnight-sessions.sh"
 
@@ -679,6 +688,7 @@ preflight() {
   gate_room_check
   cfg retries 1 0 3 int
   cfg gate_repairs 2 0 3 int
+  cfg gate_cap_factor 4 0 10 int auto
   cfg hold_minutes 480 0 1440 int
   cfg directive_chars 4000 500 16000 int
   hold_overrides
@@ -702,6 +712,7 @@ preflight() {
   [ -n "$_pf_mf" ] || [ -z "$DEFAULT_BRANCH" ] || push_check "$DEFAULT_BRANCH"
   # A4: a single-plan run is one lane by definition.
   [ -n "$_pf_mf" ] || echo "one lane: a hold idles this run until you answer; add an independent story to keep the machine busy"
+  caps_readout
   env_line
   [ -n "$_pf_mf" ] || [ "$FAILED" -eq 0 ] || exit 2
 }
@@ -777,8 +788,26 @@ session_caps() {
 # caps_env — the caps as launch env words, each KEY='value' (sq).
 caps_env() {
   session_caps
-  printf 'BASH_DEFAULT_TIMEOUT_MS=%s BASH_MAX_TIMEOUT_MS=%s STUDIO_GATE_MINUTES=%s' \
-    "$(sq "$CMD_MS")" "$(sq "$MAX_MS")" "$(sq "$GATE_MIN")"
+  printf 'BASH_DEFAULT_TIMEOUT_MS=%s BASH_MAX_TIMEOUT_MS=%s STUDIO_GATE_MINUTES=%s STUDIO_GATE_CAP_FACTOR=%s' \
+    "$(sq "$CMD_MS")" "$(sq "$MAX_MS")" "$(sq "$GATE_MIN")" "$(sq "${GATE_CAP_FACTOR:-4}")"
+}
+# caps_readout — one `gate caps:` stdout line: each who with 5 or more
+# main-lane passes in gate.times and the run cap studio-gate learns for it
+# (gate_learned_cap), then the rest at the default cap. Nothing without history.
+caps_readout() {
+  session_caps
+  _cr_f="$STATE_ROOT/.studio/gate.times"
+  _cr_whos="$(awk 'NF == 8 && $2 != "setup" && !seen[$2]++ { print $2 }' "$_cr_f" 2>/dev/null)"
+  [ -n "$_cr_whos" ] || return 0
+  if [ "${GATE_CAP_FACTOR:-4}" = 0 ]; then echo "gate caps: learned caps off (gate_cap_factor 0)"; return 0; fi
+  _cr_l=""; _cr_d=""
+  for _cr_w in $_cr_whos; do
+    _cr_c="$(gate_learned_cap "$_cr_f" "$_cr_w" "${GATE_CAP_FACTOR:-4}" "$GATE_MIN")"
+    if [ -n "$_cr_c" ]; then _cr_l="${_cr_l:+$_cr_l, }$_cr_w $_cr_c min (×${GATE_CAP_FACTOR:-4} p95)"
+    else _cr_d="${_cr_d:+$_cr_d, }$_cr_w"; fi
+  done
+  [ -z "$_cr_d" ] || _cr_d="default $GATE_MIN min for $_cr_d (fewer than 5 runs)"
+  echo "gate caps: $_cr_l${_cr_l:+${_cr_d:+; }}$_cr_d"
 }
 
 # gate_room_check — a warning (never a refusal) when the slowest of the last

@@ -317,7 +317,7 @@ test_overnight_help() {
            "STUDIO_OVERNIGHT_INBOX_WAIT — test hook" "events.jsonl" "next tool call" \
            "deny-rules \[--dir" "STUDIO_RUN_ORIGIN" \
            "STUDIO_GATE_MINUTES" "min(45, session_minutes/3)" "min(60, session_minutes/2)" \
-           "idle_minutes .*0-120" "STUDIO_OVERNIGHT_IDLE_SECONDS — test hook" "STUDIO_OVERNIGHT_IDLE_POLL_SECONDS — test hook"; do
+           "gate_cap_factor .*0-10" "STUDIO_GATE_CAP_FACTOR" "idle_minutes .*0-120" "STUDIO_OVERNIGHT_IDLE_SECONDS — test hook" "STUDIO_OVERNIGHT_IDLE_POLL_SECONDS — test hook"; do
     assert_contains "$TMP/help.txt" "$w" "help names $w"
   done
   assert_contains "$REPO_ROOT/docs/game-dev/overnight-events.md" "deny-rules" "the contract doc lists deny-rules"
@@ -392,7 +392,7 @@ test_overnight_unit_caps() {
   run_start
   assert_eq "1800000 5400000 45" "$(cat "$CALLS/1.caps")" "90 (default): 30 / 90 / 45"
   run_start --dry-run
-  assert_contains "$RS_OUT" "BASH_DEFAULT_TIMEOUT_MS='1800000' BASH_MAX_TIMEOUT_MS='5400000' STUDIO_GATE_MINUTES='45' OMEGA_AUTOPILOT=1 claude-gd -p '/game-dev:execute --one'" "the dry-run line carries the caps before OMEGA_AUTOPILOT"
+  assert_contains "$RS_OUT" "BASH_DEFAULT_TIMEOUT_MS='1800000' BASH_MAX_TIMEOUT_MS='5400000' STUDIO_GATE_MINUTES='45' STUDIO_GATE_CAP_FACTOR='4' OMEGA_AUTOPILOT=1 claude-gd -p '/game-dev:execute --one'" "the dry-run line carries the caps before OMEGA_AUTOPILOT"
 }
 test_overnight_dry_run() {
   fixture dry
@@ -490,6 +490,32 @@ test_single_plan_one_lane_note() {
   assert_eq 0 "$RS_STATUS" "dry run exits 0"
   assert_contains "$RS_OUT" "^one lane: a hold idles this run until you answer; add an independent story to keep the machine busy$" "single-plan run: the one-lane line"
 }
+test_overnight_caps_readout() {
+  push_fixture cr1
+  _cr_i=0; while [ "$_cr_i" -lt 5 ]; do printf '1000 studio-test 290 0 0 main exclusive -\n' >> "$P/.studio/gate.times"; _cr_i=$((_cr_i + 1)); done
+  printf '1000 vitest 5 0 0 short short -\n1000 vitest 5 0 0 main exclusive -\n' >> "$P/.studio/gate.times"
+  run_start --dry-run
+  assert_eq 0 "$RS_STATUS" "dry run exits 0"
+  assert_contains "$RS_OUT" "^gate caps: studio-test 20 min (×4 p95); default 45 min for vitest (fewer than 5 runs)$" "learned caps, then the defaults"
+  assert_contains "$RS_OUT" "STUDIO_GATE_CAP_FACTOR='4' OMEGA_AUTOPILOT=1" "the launch env carries the factor"
+  assert_eq 1 "$(awk '/^one lane:/ { o = NR } /^gate caps:/ { c = NR } END { print (o && c == o + 1) ? 1 : 0 }' "$RS_OUT")" "the readout follows the one-lane line"
+  cap_cfg() { printf '%s\n' "$1" > "$P/.studio/config.json"; ( cd "$P" && git add -A && git -c user.name=t -c user.email=t@t commit -qm cfg ) >/dev/null 2>&1; }
+  cap_cfg '{ "overnight": { "gate_cap_factor": 0 } }'
+  run_start --dry-run
+  assert_eq 0 "$RS_STATUS" "factor 0 is allowed"
+  assert_contains "$RS_OUT" "^gate caps: learned caps off (gate_cap_factor 0)$" "off line"
+  assert_contains "$RS_OUT" "STUDIO_GATE_CAP_FACTOR='0'" "and the env word says 0"
+  cap_cfg '{ "overnight": { "gate_cap_factor": "auto" } }'
+  run_start --dry-run
+  assert_contains "$RS_OUT" "STUDIO_GATE_CAP_FACTOR='4'" "auto reads as the default"
+  cap_cfg '{ "overnight": { "gate_cap_factor": "6" } }'
+  run_start --dry-run
+  assert_contains "$RS_OUT" "STUDIO_GATE_CAP_FACTOR='6'" "a quoted number is accepted"
+  cap_cfg '{ "overnight": { "gate_cap_factor": 11 } }'
+  run_start --dry-run
+  assert_eq 2 "$RS_STATUS" "11 is a refusal"
+  assert_contains "$RS_ERR" "gate_cap_factor" "naming the key"
+}
 test_overnight_push_check_ok_line() {
   push_fixture pk2 1
   run_start --dry-run
@@ -557,7 +583,7 @@ test_overnight_deny_file_required() {
   # The runner reads overnight-deny.txt beside itself: run a copy whose
   # sibling deny file holds only comments.
   fixture deny
-  mkdir -p "$TMP/denybin"; cp "$RUNNER" "$STATE_BIN" "$REPO_ROOT/studios/game-dev/bin/overnight-channel.sh" "$REPO_ROOT/studios/game-dev/bin/overnight-runs.sh" "$REPO_ROOT/studios/game-dev/bin/overnight-sessions.sh" "$REPO_ROOT/studios/game-dev/bin/overnight-progress.sh" "$REPO_ROOT/studios/game-dev/bin/studio-env" "$TMP/denybin/"
+  mkdir -p "$TMP/denybin"; cp "$RUNNER" "$STATE_BIN" "$REPO_ROOT/studios/game-dev/bin/overnight-channel.sh" "$REPO_ROOT/studios/game-dev/bin/overnight-runs.sh" "$REPO_ROOT/studios/game-dev/bin/gate-times.sh" "$REPO_ROOT/studios/game-dev/bin/overnight-sessions.sh" "$REPO_ROOT/studios/game-dev/bin/overnight-progress.sh" "$REPO_ROOT/studios/game-dev/bin/studio-env" "$TMP/denybin/"
   printf '# only a comment\n\n' > "$TMP/denybin/overnight-deny.txt"
   RS_STATUS=0; ( cd "$P" && sh "$TMP/denybin/studio-overnight" start ) > "$TMP/rs.out" 2> "$TMP/rs.err" || RS_STATUS=$?
   assert_eq 2 "$RS_STATUS" "a deny file with no rules refuses"
@@ -2897,7 +2923,7 @@ run_tests test_overnight_setup_preflight_single test_overnight_help_setup_prefli
   test_overnight_stop_no_run test_overnight_inhibitor test_overnight_no_inhibitor \
   test_overnight_help test_overnight_unit_caps test_events_contract_doc test_overnight_dry_run \
   test_overnight_preflight_refusals test_overnight_preflight_all_failures \
-  test_overnight_push_check_refuses_without_workflow test_overnight_push_check_ok_line test_single_plan_one_lane_note test_overnight_push_check_no_workflows \
+  test_overnight_push_check_refuses_without_workflow test_overnight_push_check_ok_line test_single_plan_one_lane_note test_overnight_caps_readout test_overnight_push_check_no_workflows \
   test_overnight_push_check_ssh test_overnight_push_check_unknown_scopes test_overnight_push_check_other_helper \
   test_overnight_config_refusals test_overnight_deny_file_required \
   test_overnight_lock test_overnight_first_use_ignores \

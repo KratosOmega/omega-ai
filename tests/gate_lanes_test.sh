@@ -7,14 +7,15 @@
 # (tests/gate_lanes_fixture.sh). Every order is event-driven: a run holds on a
 # file, the test waits for a mark or a `gate: waiting` line, then releases.
 # Test-only knobs set here (lanes_init): STUDIO_GATE_POLL_SECONDS=0.1
-# (production 1), STUDIO_GATE_LOADAVG and STUDIO_GATE_PHYS_CORES (production:
+# (production 1), STUDIO_GATE_LEARNED_FLOOR_SECONDS (production 900, set in
+# test_gate_learned_cap_fires only), STUDIO_GATE_LOADAVG and STUDIO_GATE_PHYS_CORES (production:
 # the machine is read).
 set -u
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 . "$REPO_ROOT/tests/assert.sh"
 . "$REPO_ROOT/tests/gate_times_rows.sh"
 unset STUDIO_START_DIR STUDIO_GATE_HELD STUDIO_GATE_LANE STUDIO_GATE_DEMOTE STUDIO_UNIT_TAG \
-      STUDIO_GATE_MINUTES STUDIO_GATE_SECONDS
+      STUDIO_GATE_MINUTES STUDIO_GATE_SECONDS STUDIO_GATE_LEARNED_FLOOR_SECONDS STUDIO_GATE_CAP_FACTOR
 BIN="$REPO_ROOT/studios/game-dev/bin"
 mk_tmp gate_lanes_test
 trap 'rm_tmp "$TMP"' EXIT
@@ -551,6 +552,34 @@ test_lanes_short_cap_production_default() {
   assert_eq 1 "$(starts w)" "no re-run"
 }
 
+# ---- the learned cap (overnight throughput, Task 5) ----
+# seed_probe N SECS — N main-lane rc-0 rows of `probe` in the project's gate.times.
+seed_probe() { _sp_i=0; while [ "$_sp_i" -lt "$1" ]; do printf '1000 probe %s 0 0 main exclusive -\n' "$2" >> "$(gtf)"; _sp_i=$((_sp_i + 1)); done; }
+# exclusive-scan: test_gate_learned_cap_fires in (a) a 3 s test floor must stop a 20 s run (the learned value is 15 min)
+test_gate_learned_cap_fires() {
+  lanes_repo lcap
+  seed_probe 5 1
+  lanes_bg p "$LR" -- env STUDIO_GATE_MINUTES=60 STUDIO_GATE_LEARNED_FLOOR_SECONDS=3 sh "$LANES_GATE" probe -- sh -c 'sleep 20'
+  assert_eq 124 "$(lanes_done p)" "the learned cap stops the run"
+  assert_contains "$TMP/err.p" '^gate: probe ran past its learned cap of 15 min (4 × p95 of the last 5 runs) — stopped$' "the learned-cap line"
+  assert_not_contains "$TMP/err.p" 'ran past [0-9]* min' "not the plain cap line"
+  assert_eq "124 main exclusive" "$(rows probe | tail -n 1)" "a 124 row"
+}
+# exclusive-scan: test_gate_learned_cap_production_default out (d) a 2 s run under a 15 min floor
+test_gate_learned_cap_production_default() {
+  assert_contains "$BIN/studio-gate" 'STUDIO_GATE_LEARNED_FLOOR_SECONDS:-900' "the floor defaults to 900 s"
+  assert_contains "$BIN/studio-gate" '^#.*STUDIO_GATE_LEARNED_FLOOR_SECONDS (default 900)' "the seam is named in the header"
+  lanes_repo lcapd
+  seed_probe 5 1
+  lanes_bg q "$LR" -- env STUDIO_GATE_MINUTES=60 sh "$LANES_GATE" probe -- sh -c 'sleep 2'
+  assert_eq 0 "$(lanes_done q)" "a 2 s run under the production 15 min floor exits 0"
+  assert_not_contains "$TMP/err.q" 'ran past' "no cap line"
+  # An explicit STUDIO_GATE_SECONDS stays the cap, learned or not.
+  lanes_bg r "$LR" -- env STUDIO_GATE_MINUTES=60 STUDIO_GATE_SECONDS=2 sh "$LANES_GATE" probe -- sh -c 'sleep 15'
+  assert_eq 124 "$(lanes_done r)" "STUDIO_GATE_SECONDS binds"
+  assert_contains "$TMP/err.r" '^gate: probe ran past 60 min — stopped$' "the plain line"
+}
+
 # exclusive-scan: test_lanes_demote_reruns_once out (d) order only: event waits on the hand-off line and marks
 test_lanes_demote_reruns_once() {
   lanes_repo dem; A="$(lanes_wt A)"; B="$(lanes_wt B)"
@@ -772,7 +801,7 @@ test_lanes_short_cap_equal_run_cap_is_124() {
 
 TESTS_EXCLUSIVE="test_lanes_waiting_messages test_lanes_signal_after_command_keeps_rc \
   test_lanes_short_cap_reruns_in_main test_lanes_short_cap_under_run_cap_is_124 test_lanes_short_cap_term_ignorer \
-  test_lanes_late_signal_no_rerun_line test_lanes_short_cap_equal_run_cap_is_124"
+  test_lanes_late_signal_no_rerun_line test_lanes_short_cap_equal_run_cap_is_124 test_gate_learned_cap_fires"
 run_tests test_lanes_beside_shareable test_lanes_never_beside_exclusive test_lanes_drain_and_no_starvation \
   test_lanes_three_way_never_overlaps_exclusive test_lanes_same_worktree_gut_goes_main \
   test_lanes_node_beside_suite_same_worktree test_lanes_second_node_same_worktree_waits \
@@ -788,4 +817,5 @@ run_tests test_lanes_beside_shareable test_lanes_never_beside_exclusive test_lan
   test_lanes_short_cap_term_ignorer test_lanes_demote_then_signal_no_rerun \
   test_lanes_busy_mutex_first_poll_names_slot_holder test_lanes_own_pid_lane_is_stale \
   test_lanes_stale_own_demote_file_ignored test_lanes_late_signal_no_rerun_line test_lanes_leak_sticky_across_demote \
-  test_lanes_phys_cores_read_once test_lanes_short_cap_equal_run_cap_is_124
+  test_lanes_phys_cores_read_once test_lanes_short_cap_equal_run_cap_is_124 \
+  test_gate_learned_cap_fires test_gate_learned_cap_production_default

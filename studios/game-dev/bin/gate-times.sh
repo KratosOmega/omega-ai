@@ -7,6 +7,36 @@
 # newest 20000 lines. The rewrite runs under the reclaim mutex (mutex_take /
 # mutex_drop, defined by the sourcing script) when it can be had within ~5 s;
 # otherwise unlocked, as before #71, so a release is never blocked.
+#
+# gate_times_holds FILE WHO — the only reader of gate.times rows for timing: the
+# hold seconds (field 3) of WHO's well-formed rows, oldest first, one per line.
+# Well-formed: exactly 8 fields, a numeric hold, rc 0 and lane `main` or
+# `main:<reason>` (a short-slot run is niced and says nothing of a main run).
+# Any other line (an old 4-field row, garbage) is skipped, never an error.
+#
+# gate_learned_cap FILE WHO FACTOR MAXMIN — a run cap in whole minutes learned
+# from WHO's history, or nothing. It prints clamp(ceil(FACTOR x p95 / 60), 15,
+# MAXMIN), p95 by nearest rank over the newest 50 gate_times_holds rows; MAXMIN
+# wins over the 15 floor. Nothing is printed with fewer than 5 rows, FACTOR 0
+# or not a whole number, or MAXMIN empty, 0 or not a whole number.
+gate_times_holds() {
+  awk -v w="$2" 'NF == 8 && $2 == w && $3 ~ /^[0-9]+$/ && $4 == 0 && ($6 == "main" || $6 ~ /^main:/) { print $3 + 0 }' "$1" 2>/dev/null
+}
+gate_learned_cap() {
+  case "${3:-}" in ''|*[!0-9]*) return 0 ;; esac
+  case "${4:-}" in ''|*[!0-9]*) return 0 ;; esac
+  [ "$3" -gt 0 ] && [ "$4" -gt 0 ] || return 0
+  gate_times_holds "$1" "$2" | tail -n 50 | sort -n | awk -v f="$3" -v mx="$4" '
+    { h[NR] = $1 }
+    END {
+      if (NR < 5) exit
+      r = int((NR * 95 + 99) / 100)
+      m = int((f * h[r] + 59) / 60)
+      if (m < 15) m = 15
+      if (m > mx) m = mx
+      print m
+    }'
+}
 gate_times_append() {
   _ga_f="$1"; shift
   _ga_row="$*"; _ga_now="$1"; _ga_i=0; _ga_lk=0

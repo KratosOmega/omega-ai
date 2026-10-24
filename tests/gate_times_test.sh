@@ -135,8 +135,80 @@ test_gate_times_mutex_fallback() {
   kill "$_sp" 2>/dev/null; wait "$_sp" 2>/dev/null
 }
 
+# ---- gate_times_holds / gate_learned_cap (overnight throughput, Task 5) ----
+# lcap_rows FILE WHO LANE RC SECS… — one 8-field row per SECS.
+lcap_rows() {
+  _lr_f="$1"; _lr_w="$2"; _lr_l="$3"; _lr_r="$4"; shift 4
+  for _lr_s in "$@"; do printf '1000 %s %s %s 0 %s exclusive -\n' "$_lr_w" "$_lr_s" "$_lr_r" "$_lr_l" >> "$_lr_f"; done
+}
+# cap FILE WHO FACTOR MAXMIN — gate_learned_cap in a fresh sh that sources gate-times.sh.
+cap() { sh -c '. "$1/gate-times.sh"; gate_learned_cap "$2" "$3" "$4" "$5"' sh "$BIN" "$1" "$2" "$3" "$4"; }
+holds() { sh -c '. "$1/gate-times.sh"; gate_times_holds "$2" "$3"' sh "$BIN" "$1" "$2"; }
+
+test_gate_times_holds_filters_and_orders() {
+  F="$TMP/holds.times"; : > "$F"
+  lcap_rows "$F" w main 0 11 22
+  lcap_rows "$F" w main:demoted 0 33
+  lcap_rows "$F" w short 0 44
+  lcap_rows "$F" w main 1 55
+  lcap_rows "$F" other main 0 66
+  printf '1 w 77 0\ngarbage\n\n1 w x 0 0 main exclusive -\n' >> "$F"
+  assert_eq "11 22 33" "$(holds "$F" w | tr '\n' ' ' | sed 's/ $//')" "main and main:* rc-0 8-field rows of w, oldest first"
+  assert_eq "" "$(holds "$TMP/absent.times" w)" "no file: nothing"
+}
+
+test_learned_cap_needs_five_rows() {
+  F="$TMP/lc5.times"; : > "$F"
+  lcap_rows "$F" w main 0 60 60 60 60
+  assert_eq "" "$(cap "$F" w 4 60)" "4 rows print nothing"
+  lcap_rows "$F" w main 0 60
+  assert_eq "15" "$(cap "$F" w 4 60)" "5 rows print a value"
+}
+
+test_learned_cap_p95_and_clamp() {
+  F="$TMP/lcp.times"; : > "$F"
+  lcap_rows "$F" w main 0 60 60 60 60 290
+  assert_eq "20" "$(cap "$F" w 4 60)" "4 x p95 290 s = 19.3 min, rounded up to 20"
+  F="$TMP/lcf.times"; : > "$F"
+  lcap_rows "$F" w main 0 30 30 30 30 30
+  assert_eq "15" "$(cap "$F" w 4 60)" "the floor is 15 min"
+  F="$TMP/lcm.times"; : > "$F"
+  lcap_rows "$F" w main 0 1200 1200 1200 1200 1200
+  assert_eq "60" "$(cap "$F" w 4 60)" "the ceiling is MAXMIN"
+  assert_eq "45" "$(cap "$F" w 4 45)" "a MAXMIN below the floor-or-learned value binds"
+  assert_eq "10" "$(cap "$F" w 4 10)" "a MAXMIN below the floor binds"
+  F="$TMP/lcn.times"; : > "$F"
+  lcap_rows "$F" w main 0 3000 3000 3000 3000 3000
+  lcap_rows "$F" w main 0 60 60 60 60 60 60 60 60 60 60 60 60 60 60 60 60 60 60 60 60 60 60 60 60 60 60 60 60 60 60 60 60 60 60 60 60 60 60 60 60 60 60 60 60 60 60 60 60 60 60
+  assert_eq "15" "$(cap "$F" w 4 60)" "only the newest 50 rows count"
+}
+
+test_learned_cap_skips_bad_rows() {
+  F="$TMP/lcb.times"; : > "$F"
+  lcap_rows "$F" w main 0 60 60 60 60
+  printf '1 w 9999 0\n' >> "$F"
+  lcap_rows "$F" w short 0 9999
+  lcap_rows "$F" w main 1 9999 9999
+  printf 'garbage line\n' >> "$F"
+  assert_eq "" "$(cap "$F" w 4 60)" "four good rows; the bad ones are skipped, not counted"
+  lcap_rows "$F" w main:demoted 0 290
+  assert_eq "20" "$(cap "$F" w 4 60)" "a main:<reason> row counts; the rest still do not"
+  assert_eq "" "$(cap "$F" nobody 4 60)" "another who has no rows"
+}
+
+test_learned_cap_factor_zero() {
+  F="$TMP/lc0.times"; : > "$F"
+  lcap_rows "$F" w main 0 600 600 600 600 600
+  assert_eq "" "$(cap "$F" w 0 60)" "factor 0 prints nothing"
+  assert_eq "" "$(cap "$F" w 4 0)" "MAXMIN 0 prints nothing"
+  assert_eq "" "$(cap "$F" w 4 '')" "MAXMIN empty prints nothing"
+  assert_eq "" "$(cap "$F" w x 60)" "a non-numeric factor prints nothing"
+}
+
 # exclusive-scan: test_gate_times_mutex_fallback in (a) asserts the fallback returns inside 15 s
 TESTS_EXCLUSIVE="test_gate_times_mutex_fallback"
 run_tests test_gt_rows_rejects_wrong_rc test_gate_times_row_shape test_gate_times_wait_recorded \
   test_gate_times_keeps_4_field_rows test_gate_times_14_day_retention test_gate_times_line_cap \
-  test_gate_times_concurrent_no_loss test_gate_times_mutex_fallback
+  test_gate_times_concurrent_no_loss test_gate_times_mutex_fallback \
+  test_gate_times_holds_filters_and_orders test_learned_cap_needs_five_rows test_learned_cap_p95_and_clamp \
+  test_learned_cap_skips_bad_rows test_learned_cap_factor_zero
