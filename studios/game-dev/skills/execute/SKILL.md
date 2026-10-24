@@ -413,7 +413,10 @@ kind listed binds the implementer:
 - `visual` — the implementer reports what to look at and where. Record it as
   `studio-state ledger "T<n> Visual: <text>"`.
 - `suite` — the implementer also runs the whole suite (`studio-test`) before
-  reporting and pastes its summary line.
+  reporting and pastes its summary line. When it is green, the task unit
+  records it for the checkpoint count (§8):
+  `studio-state ledger "suite green T<n> <full sha>"`, `<full sha>` being
+  `git rev-parse HEAD`.
 
 A task that introduces or changes a tunable value (a cooldown, a window, a
 speed, a curve) always includes `unit`: the number is tested, the feel is
@@ -510,7 +513,7 @@ the last task's review. Under `--one`, see §8: a task unit never starts it.
 2. Build the verify-prior-fixes list from the scopes reserved for fix
    commits. With `<merge-base>` = `git merge-base <base> HEAD`, run
    `git log --format='%h %s' <merge-base>..HEAD` and keep the lines that
-   match `^[0-9a-f]+ fix\((T[0-9]+|final|gate|review|B[0-9]+)\)` (`grep -E`).
+   match `^[0-9a-f]+ fix\((T[0-9]+|final|gate|review|suite|B[0-9]+)\)` (`grep -E`).
    A plan task's own `fix(…)` commit — a bug-fix feature — is not on the
    list.
 3. Dispatch `game-dev:reviewer` with `subagent_type: "game-dev:reviewer"`
@@ -804,8 +807,33 @@ runs exactly one unit, writes its state, commits, pushes, and ends the turn.
   line, the ledger committed), no next implementer is dispatched, and when
   n = N §5 is not started.
   This overrides SDD's instruction to continue to the next task.
+- **Checkpoint suite** (a task unit under a lane only): `STUDIO_SUITE_EVERY`
+  is the runner's interval K (`0` or unset = off; a single-plan run never
+  has it). After the task is complete and §6's writes are committed, when
+  K > 0, this task's `Verify:` has no `suite` (that run already records
+  `suite green`, §3), and the story ledger holds at least K
+  `T<n> complete` lines since its last `suite green` line (or since its
+  `base` line, when it has none), run `studio-test` in the foreground, as §0
+  says the gate runs. A resumed story whose old `T<n> complete` lines have
+  no `suite green` line counts from its `base` line, so its first
+  checkpoint comes at once.
+  - Green: `studio-state ledger "suite green T<n> <full sha>"` (`<full sha>`
+    is `git rev-parse HEAD`), then commit the ledger, push, and end the unit.
+  - Red: one fresh fixer of this task's `Role:` (§2's dispatch rule), with
+    §4a rule 2's brief, the failing tests' output and the range since the last
+    `suite green` line (or `base`). It commits `fix(suite): <summary>` and
+    verifies with `studio-test --file` on the failing files, up to two
+    rounds. Then `studio-test` once more. Green: record `suite green` as
+    above, commit, push, end the unit.
+  - Still red: `studio-state ledger "Stop: gate red — checkpoint after T<n> — <failing line>"`,
+    committed as stops are (§8's stop rule). The runner's gate-repair loop
+    takes it (§11), counted against the same `overnight.gate_repairs`, and
+    the story then resumes at the next task: `task` already counts this one.
+  - The task stays complete throughout: its own tests passed and it was
+    reviewed. A checkpoint never re-opens it.
 - **What each unit writes:**
-  - a task: the task's commits, `task n/N`, the `T<n>` ledger lines, then
+  - a task: the task's commits, `task n/N`, the `T<n>` ledger lines, a
+    checkpoint's `suite green` line or `fix(suite)` commits when one ran, then
     `git push -u origin <branch>`;
   - the final review: the `fix(final)` commits, the `Review: final` and
     `final review done` lines committed, then the push;
@@ -979,7 +1007,10 @@ then launches a fresh finish, which runs the full gate once (§7).
 - **Operator messages** are recorded here, after entering (see §8, Operator messages).
 - **Preconditions:** `stage execute`, no `shipped` line in the feature
   ledger, its latest `Stop:` line is a `gate red` one, and `STUDIO_REPAIR`
-  starts with `gate:`.
+  starts with `gate:`. They also hold in the middle of a story: a red
+  checkpoint suite (§8) ends with `Stop: gate red — checkpoint after T<n> — …`
+  while `task` is below `N`. Repair it the same way; the runner then resumes
+  at the next task, and the finish gate is still run once at the end.
 - **Read the failure:** the `Stop: gate red — <failing command and line>`
   line names the red command. For `studio-test`, read the failing tests'
   names and output from the log at `<log>` (for `gate_command`, the log the Stop

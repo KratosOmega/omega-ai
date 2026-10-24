@@ -718,6 +718,17 @@ test_execute_gate_repair() {
   assert_not_contains "$E" '`/game-dev:execute --land`, in the story.s worktree' "§9 names the checkout the runner starts it in"
 }
 
+# Checkpoint suites (overnight throughput D1-D2): execute's task unit runs the suite every K tasks in lanes.
+test_execute_checkpoint_rules() {
+  E="$REPO_ROOT/studios/game-dev/skills/execute/SKILL.md"
+  assert_contains "$E" 'STUDIO_SUITE_EVERY' "the task unit reads the interval"
+  assert_contains "$E" 'suite green T<n> <full sha>' "the ledger line a green suite records"
+  assert_contains "$E" 'fix(suite): <summary>' "the checkpoint fixer's commit"
+  assert_contains "$E" 'Stop: gate red — checkpoint after T<n> — <failing line>' "a red checkpoint's stop"
+  assert_contains "$E" 'A checkpoint never re-opens it' "the task stays complete"
+  assert_eq 1 "$(grep -cF 'fix\((T[0-9]+|final|gate|review|suite|B[0-9]+)\)' "$E" | awk '{ print ($1 > 0) }')" "the final reviewer verifies checkpoint fixes"
+}
+
 # section_count FILE HEADING_RE PATTERN — matches of PATTERN between the
 # `## ` heading matching HEADING_RE and the next `## ` heading.
 section_count() {
@@ -924,4 +935,4 @@ run_tests test_plugin_manifests test_skill_frontmatter test_agent_frontmatter \
   test_no_ship_references test_superpowers_requires_referenced test_no_last_playtest_callers \
   test_execute_one_contract test_router_overnight_lock test_execute_lanes test_execute_lane_gate_foreground test_execute_command_caps_text test_docs_59_wording test_agent_gameplay_programmer_file_runs test_short_lane_unit_rule_text test_execute_land_and_progress test_execute_gate_repair test_execute_operator_messages test_execute_adopt test_final_wave_contracts \
   test_plan_brainstorm_lanes test_execute_sync_repair_form test_execute_peers_brief_rule test_plan_brainstorm_slug_form test_plan_brainstorm_check_id \
-  test_sdd_script_references test_execute_task_brief_rewritten test_plan_gated_godot_forms test_plan_probe_rule test_plan_split_rules
+  test_sdd_script_references test_execute_checkpoint_rules test_execute_task_brief_rewritten test_plan_gated_godot_forms test_plan_probe_rule test_plan_split_rules

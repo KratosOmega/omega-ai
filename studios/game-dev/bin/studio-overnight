@@ -455,6 +455,10 @@ Config: .studio/config.json "overnight" (defaults, ranges):
                                     main-lane passes of the same command in .studio/gate.times
                                     (STUDIO_GATE_CAP_FACTOR; at least 15 min, never past the cap
                                     above, nothing learned under 5 runs); 0 = off; "auto" = 4
+  suite_every          auto  auto|0-20 lanes: run the whole suite after every K completed tasks (a checkpoint;
+                                    a red one goes to the gate-repair loop); 0 = off; auto = 4 when
+                                    the median of the last 10 main-lane suite runs in .studio/gate.times
+                                    is 8 min or less (3 runs at least), else off. Single-plan runs: off
   gate_repairs         2     0-3      lanes: gate-repair units per story after a red finish gate,
                                     each followed by a fresh finish (the full gate again);
                                     0 = a red gate stops the story
@@ -718,6 +722,8 @@ preflight() {
   # A4: a single-plan run is one lane by definition.
   [ -n "$_pf_mf" ] || echo "one lane: a hold idles this run until you answer; add an independent story to keep the machine busy"
   caps_readout
+  suite_every_resolve "$_pf_mf"
+  echo "suite checkpoint: $SUITE_NOTE"
   env_line
   [ -n "$_pf_mf" ] || [ "$FAILED" -eq 0 ] || exit 2
 }
@@ -813,6 +819,36 @@ caps_readout() {
   done
   [ -z "$_cr_d" ] || _cr_d="default $GATE_MIN min for $_cr_d (fewer than 5 runs)"
   echo "gate caps: $_cr_l${_cr_l:+${_cr_d:+; }}$_cr_d"
+}
+
+# suite_every_resolve [MANIFEST] — sets SUITE_EVERY (an integer; the interval
+# of the checkpoint suites) and SUITE_NOTE (its readout). A single-plan run
+# (no MANIFEST) is always 0: it has no gate-repair loop to take a red
+# checkpoint. Config is 0-20 or "auto" (cfg's opt-in), which is 4 when the
+# median of the newest 10 well-formed main-lane studio-test rows
+# (gate_times_holds) is 480 s or less and there are 3 or more, else 0.
+suite_every_resolve() {
+  SUITE_EVERY=0; SUITE_NOTE="off — single-plan run"
+  _se_auto=0
+  case "$(cfg_raw suite_every)" in ''|'"auto"') _se_auto=1 ;; esac
+  [ "$_se_auto" = 1 ] || cfg suite_every 0 0 20 int auto
+  [ -n "${1:-}" ] || return 0
+  if [ "$_se_auto" = 0 ]; then
+    SUITE_EVERY="$(printf '%s\n' "${SUITE_EVERY:-0}" | awk '{ print $1 + 0 }')"
+    if [ "$SUITE_EVERY" -gt 0 ]; then SUITE_NOTE="every $SUITE_EVERY tasks"; else SUITE_NOTE="off — suite_every 0"; fi
+    return 0
+  fi
+  SUITE_EVERY=0
+  _se_m="$(gate_times_holds "$STATE_ROOT/.studio/gate.times" studio-test | tail -n 10 | sort -n | awk '
+    { h[NR] = $1 }
+    END { if (NR < 3) { print "few"; exit }
+          m = (NR % 2) ? h[(NR + 1) / 2] : (h[NR / 2] + h[NR / 2 + 1]) / 2
+          printf "%d %.1f\n", m, m / 60 }')"
+  case "$_se_m" in
+    few) SUITE_NOTE="off — fewer than 3 suite runs" ;;
+    *) if [ "${_se_m%% *}" -le 480 ]; then SUITE_EVERY=4; SUITE_NOTE="every 4 tasks (median suite ${_se_m#* } min)"
+       else SUITE_NOTE="off — median suite ${_se_m#* } min"; fi ;;
+  esac
 }
 
 # gate_room_check — a warning (never a refusal) when the slowest of the last

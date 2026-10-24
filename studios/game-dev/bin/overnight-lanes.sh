@@ -388,10 +388,12 @@ chain_waits() { awk -F'\t' -v k="$1" '$1 == k { print $2; exit }' "$CHAINS"; }
 # story_launch_env ID — the env words of a unit launch for story ID (spec
 # 686-687), each KEY='value' with the value single-quoted (sq):
 # OMEGA_AUTOPILOT STUDIO_RUN (abs RUN_DIR/manifest.md) STUDIO_STORY
-# STUDIO_DOCS_REV, then the command caps from caps_env (see studio-overnight).
+# STUDIO_DOCS_REV, then the command caps from caps_env (see studio-overnight)
+# and STUDIO_SUITE_EVERY (the checkpoint-suite interval; 0 = off; manifest
+# stories only, a single-plan run has no gate-repair loop to take a red one).
 story_launch_env() {
-  printf 'OMEGA_AUTOPILOT=%s STUDIO_RUN=%s STUDIO_STORY=%s STUDIO_DOCS_REV=%s %s' \
-    "$(sq 1)" "$(sq "$RUN_DIR/manifest.md")" "$(sq "$1")" "$(sq "$MF_DOCS")" "$(caps_env)"
+  printf 'OMEGA_AUTOPILOT=%s STUDIO_RUN=%s STUDIO_STORY=%s STUDIO_DOCS_REV=%s %s STUDIO_SUITE_EVERY=%s' \
+    "$(sq 1)" "$(sq "$RUN_DIR/manifest.md")" "$(sq "$1")" "$(sq "$MF_DOCS")" "$(caps_env)" "$(sq "${SUITE_EVERY:-0}")"
 }
 
 # story_first_label ID — the label of ID's next unit from its studio state

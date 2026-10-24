@@ -528,6 +528,20 @@ test_overnight_caps_readout() {
   assert_eq 2 "$RS_STATUS" "11 is a refusal"
   assert_contains "$RS_ERR" "gate_cap_factor" "naming the key"
 }
+test_suite_every_single_plan_off() {
+  push_fixture se1
+  _se_i=0; while [ "$_se_i" -lt 10 ]; do printf '1000 studio-test 270 0 0 main exclusive -\n' >> "$P/.studio/gate.times"; _se_i=$((_se_i + 1)); done
+  run_start --dry-run
+  assert_eq 0 "$RS_STATUS" "dry run exits 0"
+  assert_contains "$RS_OUT" "^suite checkpoint: off — single-plan run$" "single-plan run: off"
+  assert_not_contains "$RS_OUT" "STUDIO_SUITE_EVERY" "no launch env word"
+}
+test_help_lists_new_keys() {
+  sh "$RUNNER" --help > "$TMP/help2.txt" 2>&1
+  for w in "suite_every  *auto  *auto|0-20" "gate_cap_factor  *4  *0-10" "node_workers  *auto  *auto|1-32" "node_dir  *\"\""; do
+    assert_contains "$TMP/help2.txt" "$w" "help lists $w"
+  done
+}
 test_overnight_push_check_ok_line() {
   push_fixture pk2 1
   run_start --dry-run
@@ -2935,7 +2949,7 @@ run_tests test_overnight_setup_preflight_single test_overnight_help_setup_prefli
   test_overnight_stop_no_run test_overnight_inhibitor test_overnight_no_inhibitor \
   test_overnight_help test_overnight_unit_caps test_events_contract_doc test_overnight_dry_run \
   test_overnight_preflight_refusals test_overnight_preflight_all_failures \
-  test_overnight_push_check_refuses_without_workflow test_overnight_push_check_ok_line test_single_plan_one_lane_note test_overnight_caps_readout test_overnight_cfg_quoted_values_opt_in test_overnight_push_check_no_workflows \
+  test_overnight_push_check_refuses_without_workflow test_overnight_push_check_ok_line test_single_plan_one_lane_note test_overnight_caps_readout test_suite_every_single_plan_off test_help_lists_new_keys test_overnight_cfg_quoted_values_opt_in test_overnight_push_check_no_workflows \
   test_overnight_push_check_ssh test_overnight_push_check_unknown_scopes test_overnight_push_check_other_helper \
   test_overnight_config_refusals test_overnight_deny_file_required \
   test_overnight_lock test_overnight_first_use_ignores \
