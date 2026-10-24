@@ -257,6 +257,7 @@ EOF_MC
     # #56 R3: the backstop. The row's Branch: a story carried over keeps its id (FI1).
     [ -z "$_mck_db" ] \
       || ids_check "$_id" "$_tkt" "$MF_SLUG" "$_plan" "$_mck_db" "$MF_ROWS" refuse "$_mck_br" < /dev/null || :
+    _show=""; _stg=""
     if [ ! -f "$STATE_ROOT/.studio/stories/$_id.md" ]; then
       refuse "$_id: no story file (.studio/stories/$_id.md; studio-state init with STUDIO_STORY=$_id)"
     else
@@ -303,6 +304,8 @@ EOF_MC
       printf '%s\n' "$_id: plan task has no Spec: line ($_t)"
     done > "$MF_TMP/spec-refusals"
     while IFS= read -r _l; do refuse "$_l"; done < "$MF_TMP/spec-refusals"
+    # Go/no-go spikes, for a story not yet started (stage plan): studio-overnight's spike_report.
+    [ "$_stg" != plan ] || spike_report "$_id: " "$MF_TMP/plan" "$_plan" "$_show"
     # D40: each Context: path (a comma list in the header) is in the Docs revision.
     set -f   # a `*` in a Context path is a name, not a glob
     for _cx in $(sed -n '/^## /q; s/^Context:[[:space:]]*//p' "$MF_TMP/plan" | head -n 1 | tr ',' '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//'); do

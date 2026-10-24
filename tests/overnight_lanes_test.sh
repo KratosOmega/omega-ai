@@ -888,6 +888,45 @@ test_lanes_manifest_refusals() {
   assert_not_contains "$LS_ERR" "A: plan" "a good plan raises nothing"
 }
 
+# Go/no-go spikes: each story's `Spike:` task needs a `spike T<n> pass <plan>`
+# line in that story's ledger; warn by default, refuse with spike_check refuse.
+# lf_spikes — A's and B's task 1 become spikes, B's is ledgered passed; Docs: moves.
+lf_spikes() {
+  for _id in A B; do
+    printf 'Spike: AC1 — studio-gate godot -- Godot --path . --script res://tools/scratch/%s.gd\n' "$_id" \
+      >> "$P/docs/game-dev/plans/2026-10-01-$_id.md"
+  done
+  ( cd "$P" && STUDIO_STORY=B sh "$STATE_BIN" ledger "spike T1 pass docs/game-dev/plans/2026-10-01-B.md" \
+      && git add -A && git commit -qm spikes && git push -q origin run/demo ) >/dev/null 2>&1
+  _rev="$(git -C "$P" rev-parse HEAD)"
+  sed -i.bak "s/^Docs: .*/Docs: $_rev/" "$P/$MFP"; rm -f "$P/$MFP.bak"
+  ( cd "$P" && git commit -qam docs && git push -q origin run/demo ) >/dev/null 2>&1
+}
+test_lanes_preflight_spikes() {
+  lanes_fixture spikew integration A:- B:-
+  lf_spikes
+  run_lanes start --dry-run "$MFP"
+  assert_eq 0 "$LS_STATUS" "an unrun spike warns by default: the dry run still exits 0"
+  assert_contains "$LS_ERR" "warning — A: spike T1 has no ledgered result (### Task 1: t)" "names the story and the task"
+  assert_contains "$LS_ERR" 'studio-state ledger "spike T1 pass|fail docs/game-dev/plans/2026-10-01-A.md"' "and the ledger line"
+  assert_not_contains "$LS_ERR" "B: spike" "a story whose spike passed says nothing"
+  LANES_CONFIG='{ "overnight": { "spike_check": "refuse" } }'; export LANES_CONFIG
+  lanes_fixture spiker integration A:- B:-
+  lf_spikes
+  run_lanes start --dry-run "$MFP"
+  assert_eq 2 "$LS_STATUS" "spike_check refuse refuses the run"
+  assert_contains "$LS_ERR" "^studio-overnight: A: spike T1 has no ledgered result" "the refusal names the story"
+  assert_not_contains "$LS_ERR" "B: spike" "and only the story with the gap"
+  # A last result of fail warns; a story already at stage execute is not checked.
+  lanes_fixture spikef integration A:- B:-
+  lf_spikes
+  ( cd "$P" && STUDIO_STORY=B sh "$STATE_BIN" ledger "spike T1 fail docs/game-dev/plans/2026-10-01-B.md" \
+      && STUDIO_STORY=A sh "$STATE_BIN" set stage execute && git add -A && git commit -qm x ) >/dev/null 2>&1
+  run_lanes start --dry-run "$MFP"
+  assert_contains "$LS_ERR" "warning — B: spike T1 failed (ledgered) (### Task 1: t)" "a later fail wins"
+  assert_not_contains "$LS_ERR" "A: spike" "a story at stage execute is not checked"
+}
+
 # Final fix wave: a task the producer moved under ## Backlog keeps its heading
 # but is not run, so preflight never asks it for a Spec: line; a task above
 # the backlog still is.
@@ -5347,7 +5386,7 @@ run_tests test_stub_waitexist_and_run_token test_lanes_setup_preflight_refuses_l
   test_lanes_detach_setup_preflight_runs_once test_lanes_detach_tools_after_setup test_lanes_setup_checked_env_binds_to_sha \
   test_lanes_one_lane_note_one_chain test_lanes_one_lane_note_max_lanes_1 test_lanes_no_note_two_chains test_lanes_split_siblings_planned \
   test_lanes_chain_rule test_lanes_manifest_refusals test_lanes_branch_default_or_target_refused test_lanes_conflicts_lock_without_start test_lanes_preflight_backlog_tasks test_lanes_manifest_header_refusals \
-  test_lanes_preflight_story_checks test_lanes_preflight_story_state test_lanes_docs_unreachable \
+  test_lanes_preflight_story_checks test_lanes_preflight_story_state test_lanes_preflight_spikes test_lanes_docs_unreachable \
   test_lanes_git_too_old test_lanes_sourced_only test_lanes_next \
   test_lanes_next_all_planned_and_ambiguous test_lanes_next_plan_before_autopilot \
   test_lanes_next_whole_line_ledger \

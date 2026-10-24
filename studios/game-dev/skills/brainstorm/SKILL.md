@@ -215,7 +215,11 @@ Sprites, animations, sounds this needs, and who makes them. `n/a` when none.
 - Visual: what the user looks at with no automated check.
 
 ## Risks
-What could sink this and the cheapest way to find out early. `n/a` when none.
+What could sink this and the cheapest way to find out early. When an
+acceptance criterion's failure is a BLOCK or returns the story to brainstorm,
+name its go/no-go check here, and say whether it runs unattended from scratch
+files with no committed code (a script through `studio-gate`). If it does,
+the plan runs it before approval (`game-dev:plan` §6). `n/a` when none.
 
 ## Not doing
 An explicit list. Anything cut in step 4 goes here with a one-line reason.

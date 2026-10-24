@@ -477,6 +477,10 @@ Config: .studio/config.json "overnight" (defaults, ranges):
                                     0 = a stop rule ends the story at once (no holds)
   directive_chars      4000  500-16000 cap on a story's active, pending and delivered
                                     directive text (retiring ones not counted)
+  spike_check          warn  warn|refuse a plan task with a Spike: line (a go/no-go check the
+                                    plan stage runs before approval) needs its last
+                                    "spike T<n> pass|fail <plan>" ledger line to be a pass:
+                                    warn = a preflight warning; refuse = start and --dry-run refuse
 A value present but out of range or not a number is a refusal.
 Top level of config.json (not under "overnight"):
   merge_command        ""             a command line containing <pr>, its first word an
@@ -733,6 +737,11 @@ preflight() {
     || refuse "$_pf_nw"
   cfg hold_minutes 480 0 1440 int
   cfg directive_chars 4000 500 16000 int
+  cfg_str spike_check warn '^(warn|refuse)$'
+  # A run not yet started (stage plan); a manifest run checks each story in mf_check.
+  if [ -z "$_pf_mf" ] && [ "$_stage" = plan ] && [ -f "$START_DIR/${plan:-/}" ]; then
+    spike_report "" "$START_DIR/$plan" "$plan" "$(start_state show 2>/dev/null)"
+  fi
   hold_overrides
   cfg kill_grace_seconds 30 5 120 int
   GRACE="${KILL_GRACE_SECONDS:-30}"
@@ -761,6 +770,40 @@ preflight() {
   env_line
   [ -n "$_pf_mf" ] || [ "$FAILED" -eq 0 ] || exit 2
 }
+# spike_report WHO PLANFILE PLAN SHOW — go/no-go spikes: the plan stage runs each
+# task's `Spike:` check before approval and ledgers `spike T<n> pass|fail PLAN`.
+# One line per `Spike:` task above ## Backlog in PLANFILE (fenced blocks skipped, as
+# studio-brief does) whose last such line (a note may follow PLAN) in
+# SHOW (the story's `studio-state show`) is missing or a fail, prefixed by WHO (a
+# manifest story's `<id>: `): a warning, or a refusal with spike_check refuse.
+spike_report() {
+  _sr_g="$(awk '
+      /^```/ { f = !f; next }
+      f { next }
+      /^### Task [0-9]/ { t = $0; n = $3; sub(/[^0-9].*/, "", n); next }
+      /^## Backlog/ { exit }
+      /^## / { t = ""; next }
+      /^Spike:/ && t != "" && !(n in seen) { seen[n] = 1; print n "\t" t }
+    ' "$2" | while IFS='	' read -r _sr_n _sr_t; do
+      _sr_r="$(printf '%s\n' "$4" | SR_T="T$_sr_n" SR_P="$3" awk '
+        $1 == "-" && $3 == "spike" && $4 == ENVIRON["SR_T"] && ($5 == "pass" || $5 == "fail") \
+          && $6 == ENVIRON["SR_P"] { r = $5 }
+        END { print r }')"
+      case "$_sr_r" in
+        (pass) ;;
+        (fail) printf '%sspike T%s failed (ledgered) (%s) — revise the spec before a run\n' "$1" "$_sr_n" "$_sr_t" ;;
+        (*) printf '%sspike T%s has no ledgered result (%s) — run it before approval, then studio-state ledger "spike T%s pass|fail %s"\n' \
+             "$1" "$_sr_n" "$_sr_t" "$_sr_n" "$3" ;;
+      esac
+    done)"
+  [ -n "$_sr_g" ] || return 0
+  while IFS= read -r _sr_l; do
+    if [ "${SPIKE_CHECK:-warn}" = refuse ]; then refuse "$_sr_l"; else say "warning — $_sr_l"; fi
+  done <<EOF_SR
+$_sr_g
+EOF_SR
+}
+
 # push_host — #90: sets PUSH_URL (origin's push URL), PUSH_KIND (https | ssh | other)
 # and, for https, PUSH_HOST. https://[user@]host[:port]/… is https; git@host:… and
 # ssh://[user@]host/… are ssh.

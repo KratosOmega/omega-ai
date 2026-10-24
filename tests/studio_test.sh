@@ -176,6 +176,32 @@ test_brainstorm_skill_contract() {
   assert_contains "$S/brainstorm/SKILL.md" 'studio-state set stage brainstorm' "brainstorm's stage command sits on one line"
 }
 
+# Go/no-go spikes (phoenix m59-copy-rect): a cheap, automatable check whose
+# failure blocks the story runs at plan time, before approval, and is ledgered.
+test_plan_spike_contract() {
+  PL="$REPO_ROOT/studios/game-dev/skills/plan/SKILL.md"
+  BR="$REPO_ROOT/studios/game-dev/skills/brainstorm/SKILL.md"
+  AP="$REPO_ROOT/shared/omega/skills/autopilot/SKILL.md"
+  for lit in 'Spike: AC<n> — <command>' '^\*\*Go/no-go spikes\.\*\*' \
+    'studio-state ledger "spike T<n> pass <plan path>"' 'studio-state ledger "spike T<n> fail <plan path>"' \
+    'A failed spike never reaches the approval stop' 'revise the spec with the user' \
+    'A windowed run through `studio-gate godot -- …` is unattended' \
+    'overnight.spike_check' 're-record each `spike` ledger line' 'track 1 included' \
+    'spike again for every `Spike:` task that is new or whose number changed' \
+    'is repo-relative, as a manifest' 'its `Status:` line reads `Approved`'; do
+    assert_contains "$PL" "$lit" "plan says: $lit"
+  done
+  _g="$(grep -n -F -m1 -- '**Go/no-go spikes.**' "$PL" | cut -d: -f1)"
+  _s="$(grep -n -F -m1 -- '**Stop** with:' "$PL" | cut -d: -f1)"
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if [ -n "$_g" ] && [ -n "$_s" ] && [ "$_g" -lt "$_s" ]; then _pass "plan runs spikes before the approval stop"
+  else _fail "plan runs spikes before the approval stop ($_g, $_s)"; fi
+  assert_contains "$BR" 'go/no-go check' "brainstorm's Risks name the go/no-go check"
+  assert_contains "$BR" 'the plan runs it before approval' "brainstorm hands the check to the plan"
+  assert_contains "$AP" 'every `Spike:` task' "autopilot's dry-run list names the spike check"
+  assert_contains "$AP" '`Decisions swept <id>` and this plan.s `spike T<n> pass|fail <plan>` lines are re-ledgered' "autopilot carries spike lines into the story ledger"
+}
+
 # Behaviour this review pass added to the router: reconciling with
 # `studio-state check`, treating an empty brainstorm as idle, the abandon
 # route, and the bug route starting from a failing test.
@@ -986,7 +1012,7 @@ test_plan_split_rules() {
 run_tests test_plugin_manifests test_skill_frontmatter test_agent_frontmatter \
   test_external_references_declared test_required_plugins_enabled test_bin_syntax \
   test_role_agents_exist test_stage_skill_contracts test_plan_skill_contract \
-  test_brainstorm_skill_contract \
+  test_brainstorm_skill_contract test_plan_spike_contract \
   test_studio_skill_contract test_game_dev_agent_roster test_stage_skills_dispatch_agents \
   test_stage_chain test_execute_contract test_agent_contracts test_feature_checkout_copies test_next_lines \
   test_review_contract test_on_demand_skills_keep_stage test_playtest_contract test_retro_contract \

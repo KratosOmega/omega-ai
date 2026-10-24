@@ -314,7 +314,7 @@ test_overnight_help() {
   for w in "start \[--dry-run\]" "status" "stop" "STUDIO_OVERNIGHT_SESSION_SECONDS" "overnight-deny.txt" "overnight-allow.txt" "report.md" \
            "run_usd .*0-5000" "max_lanes" "model_task" "model_final" "model_finish" "model_repair" "model_progress" "merge_command" "gate_repairs .*0-3" \
            "say <story>" "said <story>" "unsay <story> <id>" "hold <story>" "resume <story>" "stop <story>" "--run <run>" "hold_minutes .*0-1440" \
-           "directive_chars .*500-16000" "STUDIO_OVERNIGHT_HOLD_MINUTES — test hook" "STUDIO_OVERNIGHT_HOLD_SECONDS — test hook" \
+           "directive_chars .*500-16000" "spike_check .*warn|refuse" "STUDIO_OVERNIGHT_HOLD_MINUTES — test hook" "STUDIO_OVERNIGHT_HOLD_SECONDS — test hook" \
            "STUDIO_OVERNIGHT_INBOX_WAIT — test hook" "events.jsonl" "next tool call" \
            "deny-rules \[--dir" "STUDIO_RUN_ORIGIN" \
            "STUDIO_GATE_MINUTES" "min(45, session_minutes/3)" "min(60, session_minutes/2)" \
@@ -456,6 +456,63 @@ test_overnight_preflight_refusals() {
   refuse_case "claude-gd --version fails" "claude-gd"; unset STUB_VERSION_STATUS
   fixture r7; GH_STATUS=1; export GH_STATUS; refuse_case "gh not authenticated" "gh auth status"; unset GH_STATUS
   push_fixture r7h; GH_STATUS=1; export GH_STATUS; refuse_case "gh not authenticated for an https origin" "gh auth status -h github.com failed — log in first"; unset GH_STATUS
+}
+
+# ---- Go/no-go spikes: a plan's `Spike:` task needs a ledgered pass before a run ----
+# spike_plan — appends T1 (a spike) and a backlog spike T2 to $P's plan and commits.
+spike_plan() {
+  printf '\n### Task 1: camera check\nRole: game-dev:feel-tuner\nVerify: unit\nSpike: AC5 — studio-gate godot -- Godot --path . --script res://tools/scratch/cam.gd\n\n## Backlog\n\n### Task 2: later\nSpike: AC6 — studio-gate godot -- Godot --path . --script res://tools/scratch/b.gd\n' >> "$P/docs/plan.md"
+  ( cd "$P" && git add -A && git -c user.name=t -c user.email=t@t commit -qm spike ) >/dev/null 2>&1
+}
+# spike_ledger TEXT — a committed ledger line in $P.
+spike_ledger() {
+  ( cd "$P" && sh "$STATE_BIN" ledger "$1" && git add -A && git -c user.name=t -c user.email=t@t commit -qm ledger ) >/dev/null 2>&1
+}
+test_overnight_preflight_spikes() {
+  fixture sp1; spike_plan
+  run_start --dry-run
+  assert_eq 0 "$RS_STATUS" "an unrun spike warns by default: the dry run still exits 0"
+  assert_contains "$RS_ERR" 'warning — spike T1 has no ledgered result (### Task 1: camera check)' "the warning names the task"
+  assert_contains "$RS_ERR" 'studio-state ledger "spike T1 pass|fail docs/plan.md"' "and the ledger line that clears it"
+  assert_not_contains "$RS_ERR" "spike T2" "a backlog spike is not checked"
+  spike_ledger "spike T1 pass docs/plan.md"
+  run_start --dry-run
+  assert_not_contains "$RS_ERR" "spike" "a ledgered pass clears it"
+  spike_ledger "spike T1 fail docs/plan.md"
+  run_start --dry-run
+  assert_contains "$RS_ERR" "warning — spike T1 failed (ledgered)" "the last result wins: a later fail warns"
+  spike_ledger "spike T1 pass docs/plan.md"
+  run_start --dry-run
+  assert_not_contains "$RS_ERR" "spike" "a pass after the fail clears it"
+  fixture sp2; spike_plan
+  spike_ledger "spike T1 pass docs/plan.md.old"; spike_ledger "spike T11 pass docs/plan.md"
+  run_start --dry-run
+  assert_contains "$RS_ERR" "spike T1 has no ledgered result" "another plan's or task's pass does not count"
+  fixture sp3 '{ "overnight": { "spike_check": "refuse" } }'; spike_plan
+  refuse_case "spike_check refuse" "^studio-overnight: spike T1 has no ledgered result"
+  fixture sp4 '{ "overnight": { "spike_check": "refuse" } }'; spike_plan
+  spike_ledger "spike T1 pass docs/plan.md"
+  run_start --dry-run
+  assert_eq 0 "$RS_STATUS" "spike_check refuse passes a ledgered spike"
+  fixture sp5 '{ "overnight": { "spike_check": "block" } }'
+  refuse_case "spike_check bad value" "spike_check"
+  fixture sp6
+  run_start --dry-run
+  assert_not_contains "$RS_ERR" "spike" "a plan with no Spike: line says nothing"
+  # A fenced block in a task is code, not plan structure; a note after the path still matches.
+  fixture sp8 '{ "overnight": { "spike_check": "refuse" } }'
+  printf '\n### Task 1: fenced\n```gdscript\n## Backlog\n### Task 9: in code\nSpike: AC9 — not a spike\n```\n\n### Task 2. dotted\nSpike: AC2 — studio-gate godot -- Godot --path . --script res://tools/scratch/c.gd\n' >> "$P/docs/plan.md"
+  ( cd "$P" && git add -A && git -c user.name=t -c user.email=t@t commit -qm spike ) >/dev/null 2>&1
+  refuse_case "a spike after a fenced ## Backlog" "spike T2 has no ledgered result (### Task 2. dotted)"
+  assert_not_contains "$RS_ERR" "T9" "a fenced Spike: line is not a task's"
+  spike_ledger "spike T2  pass docs/plan.md (3 min, both drivers)"
+  run_start --dry-run
+  assert_eq 0 "$RS_STATUS" "a pass with extra blanks and a trailing note counts"
+  fixture sp7 '{ "overnight": { "spike_check": "refuse" } }'; spike_plan
+  ( cd "$P" && sh "$STATE_BIN" set stage execute ) >/dev/null 2>&1
+  run_start --dry-run
+  assert_eq 0 "$RS_STATUS" "a story already executing is not checked (the runner's holds own it)"
+  assert_not_contains "$RS_ERR" "spike" "and says nothing"
 }
 
 # ---- #90: the preflight's push check (the gh token's workflow scope) ----
@@ -3290,7 +3347,7 @@ run_tests test_overnight_setup_preflight_single test_overnight_tools_after_setup
   test_overnight_stop_file test_overnight_sigterm test_overnight_sigint test_overnight_sighup \
   test_overnight_stop_no_run test_overnight_inhibitor test_overnight_no_inhibitor \
   test_overnight_help test_overnight_unit_caps test_events_contract_doc test_overnight_dry_run \
-  test_overnight_preflight_refusals test_overnight_preflight_all_failures \
+  test_overnight_preflight_refusals test_overnight_preflight_spikes test_overnight_preflight_all_failures \
   test_overnight_push_check_refuses_without_workflow test_overnight_push_check_ok_line test_single_plan_one_lane_note test_overnight_caps_readout test_overnight_caps_readout_clamped_and_short test_overnight_node_workers_preflight test_suite_every_single_plan_off test_single_plan_unit_lacks_suite_every test_help_lists_new_keys test_overnight_cfg_quoted_values_opt_in test_overnight_push_check_no_workflows \
   test_overnight_push_check_ssh test_overnight_push_check_unknown_scopes test_overnight_push_check_other_helper \
   test_overnight_tools_missing_refuses test_overnight_tools_present_passes test_overnight_tools_venv_version \

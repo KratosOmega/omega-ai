@@ -33,7 +33,8 @@ description: Use when an approved spec exists and needs an implementation plan �
   stop with: "the main checkout's story `<spec>` is waiting: continue it in
   `<main checkout>`, or run `studio-state take <spec>` here".
 - `studio-state get spec` names a file that exists, and the ledger has a
-  `spec approved` line for it. If not, stop and say the spec must be approved
+  `spec approved` line for it, and its `Status:` line reads `Approved` (a
+  failed spike, §6, sets it back to draft). If not, stop and say the spec must be approved
   first (`/game-dev:brainstorm`). The user may approve it now in one word;
   then change the spec's `Status:` line to `Approved`, record
   `studio-state ledger "spec approved <path>"` and continue (the gate in §6
@@ -86,6 +87,10 @@ the self-review. Two studio rules override its defaults:
     shared files there; `studio-brief tracks` finds those itself.
     `studio-brief validate` fails a reference to an unknown task, to a task
     below `## Backlog`, or to this task or a later one, naming the line.
+  - `Spike: AC<n> — <command>` is optional and sits beside `Role:`. It marks
+    the task whose check is a go/no-go spike (§6): the acceptance criteria the
+    check decides (`AC5`, or `AC5, AC6`), then the gated command that runs it.
+    `studio-overnight start` finds the plan's spikes by this line.
   - A step that runs Godot writes the gated form: a script or import run as
     `studio-gate godot -- <Godot command>` (e.g.
     `studio-gate godot -- Godot --headless --path . --script res://tools/x.gd`),
@@ -183,15 +188,45 @@ result, run it now, before the approval stop:
 - Where the plan models the behaviour, port the engine's own algorithm; do
   not fit a formula.
 
-A probe that cannot run headless at plan time (it needs a window or the
+A probe that cannot run unattended at plan time (it needs a person or the
 Godot MCP) stays a run task, and the plan states what happens for each
-possible outcome.
+possible outcome. A windowed run through `studio-gate godot -- …` is unattended: it runs at plan time.
+
+**Go/no-go spikes.** A spike is a check that decides whether the spec is
+right. Its acceptance criterion makes a failure a BLOCK, or sends the story
+back to brainstorm (the spec's **Risks** name it as the go/no-go check). The
+check is also cheap, and runs unattended from scratch files with no committed
+code. Run every spike before the approval stop:
+
+1. Mark its task with a `Spike: AC<n> — <command>` line (§2).
+2. Run the command in the planning checkout, through the gated forms. Scratch
+   files go under an ignored or temporary path and are removed afterwards;
+   nothing is committed.
+3. Ledger the result, `studio-state ledger "spike T<n> pass <plan path>"` or
+   `studio-state ledger "spike T<n> fail <plan path>"`, and put the command
+   and its output in the plan as a measured input, as for a probe. `<plan path>`
+   is repo-relative, as a manifest's Plan cell writes it, never absolute.
+4. On a fail, do not ask for approval. Report the result, set the spec's
+   `Status:` back to `Draft (awaiting approval)`, and
+   revise the spec with the user through `/game-dev:brainstorm`, which
+   re-approves it. Re-plan from the revised spec and run the spike again.
+   A failed spike never reaches the approval stop.
+
+The execute-time task still runs its check. `studio-overnight start` and
+`--dry-run` warn when a `Spike:` task above `## Backlog` of a story at stage
+`plan` has no ledgered result for its plan, or its last result is a fail. With
+`overnight.spike_check: "refuse"` in `.studio/config.json` they refuse. A
+change at the approval stop that adds, removes or reorders tasks runs the
+spike again for every `Spike:` task that is new or whose number changed, and
+ledgers it under the new number, before the next stop. A check
+that needs a person (a look, a feel call) or the Godot MCP is not a spike: it
+stays a run task with every outcome stated.
 
 Run the writing-plans self-review (spec coverage, placeholder scan, name
 consistency). Additionally check: every acceptance criterion in the spec maps
 to a task; every `Verify: unit` task names a test file; every
 `Verify: playtest` task states its playtest item; every task has
-a `Spec:` line and a `Review:` line; every plan-time probe has a measured-input block, or is a run task with every outcome stated. Then run `studio-brief validate <plan path>`
+a `Spec:` line and a `Review:` line; every plan-time probe has a measured-input block, or is a run task with every outcome stated; every go/no-go spike has a `Spike:` line and a `spike T<n> pass <plan path>` ledger line. Then run `studio-brief validate <plan path>`
 and fix the plan until it exits 0: it checks every task's `Spec:` items (the
 file, the range, the heading) the way execute's brief will read them. It also fails on a bare Godot script/import run anywhere in the plan, naming the line and the gated form to write.
 
@@ -251,6 +286,10 @@ when you add one.
    - Set every plan's `Status:` to `Approved`. Run
      `studio-state ledger "plan approved <plan path>"` for every plan, and
      `STUDIO_STORY=<id> studio-state init` for each new id.
+   - Spike results move with their tasks: re-record each `spike` ledger line
+     whose task's plan or number changed, track 1 included, under its story,
+     plan path and new task number
+     (`STUDIO_STORY=<id> studio-state ledger "spike T<m> pass <plan path>"`).
    - §7's sweep runs once for the whole split: ask the questions once, write
      the answers into each plan's `## Decisions`, and record
      `Decisions swept <id>` for every id.
