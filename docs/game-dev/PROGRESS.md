@@ -14,6 +14,14 @@ approval page in `artifacts/`.
 
 ## Log
 
+### 2026-10-24 — Go/no-go spikes run at plan time, and the preflight checks them
+
+- Incident (phoenix m59-copy-rect, Multica OMEG-128/OMEG-129): the first Risk in story KAN-1723-4's spec said the double offset might cover the camera transform too. The spec named the cheapest check, a scratch windowed camera check (AC 5), and said to run it first. AC 5 made a failure a BLOCK that sends the story back to brainstorm, with no fallback. The plan was approved and queued without running it. T1 ran the check and it failed on both drivers (18432 of 24576 px black), so the story was held until a human ruled. The check takes ~3 min and runs unattended (a windowed Godot run through `studio-gate`). The runner and the unit behaved correctly: the gap was that a cheap, automatable go/no-go check ran after approval, not before.
+- Plan §6: a **go/no-go spike** is a check whose acceptance criterion makes a failure a BLOCK or a return to brainstorm, and that is cheap and runs unattended from scratch files with no committed code. A windowed run through `studio-gate godot -- …` counts as unattended. Each spike's task carries `Spike: AC<n> — <command>` (§2). The plan runs it before the approval stop and ledgers `spike T<n> pass|fail <plan path>`. On a fail the plan revises the spec with the user instead of asking for approval. A change at the stop runs a renumbered or new spike again, and a split re-records each spike line whose plan or task number changed (track 1 included). A failed spike sets the spec back to draft, and plan §0 then waits for brainstorm to re-approve it.
+- Brainstorm: the spec's **Risks** name the go/no-go check for such a criterion, and say whether it runs unattended; if it does, the plan runs it.
+- Preflight: `start`, `--dry-run` and the manifest preflight read each `Spike:` task above `## Backlog` of a story at stage `plan`. When its last `spike T<n> … <plan>` ledger line is missing or a fail they print a warning, or refuse with `overnight.spike_check: "refuse"`. A story already at `execute` is not checked. Autopilot re-ledgers spike lines into each story's ledger with the approval lines, and its readiness checklist fails on a spike warning and says how to close the gap.
+- Unchanged: the runner's hold/resume, and execute's check of a spike task (it still runs at execute time).
+
 ### 2026-10-23 — A pinned-reference mismatch blocks and carries on; the preflight checks tools; done follows a hand merge (#94, #95, #82)
 
 - Incident (phoenix bat-sonic-rings, Mac.lan): plan Task 46 said a difference "BLOCKS". The execute skill knew only `Stop:`, so the unit wrote `Stop: T46 BLOCK ...` and the lane held ~1 h until an operator sent `say` + `resume`. T34 held for a missing ffmpeg and a `.venv` built on python 3.9; `start` and `--dry-run` caught neither. #82: `final_gate` ran without `STUDIO_START_DIR`, and a final PR merged by hand left the record without `done`.
