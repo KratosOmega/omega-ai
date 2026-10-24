@@ -332,7 +332,8 @@ and in the same session, before anything is printed:
    acceptable patterns, what to do when a tool is missing, which of two
    libraries. An item the spec calls open stays in the sweep until
    `## Decisions` answers it; a committed file or a prior ledger entry is not
-   a substitute. Ask all of them, three or four per `AskUserQuestion`, until
+   a substitute. Ask all of them, three or four per `AskUserQuestion`, each
+   option with its Gains and Costs (CLAUDE.md's Decision Questions), until
    none is left, and write each answer into `## Decisions`.
 3. Run `studio-state ledger "Decisions swept <id>"`, then commit the plan and
    `.studio/ledger`: `git add <plan path> .studio/ledger`, then, only when it succeeded, `git commit -m "docs(plans): sweep <id>"` (two calls).

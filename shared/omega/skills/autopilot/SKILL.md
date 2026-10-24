@@ -67,7 +67,7 @@ session (it is on `PATH` only inside a `claude-gd` session).
    - "new run", or no run listed: a new run.
 
    A new run:
-   - Ask one `AskUserQuestion` with three questions (four for a `godot4` project), each option with its one-line consequence:
+   - Ask one `AskUserQuestion` with three questions (four for a `godot4` project), each option with its one-line consequence written as Gains and Costs (CLAUDE.md's Decision Questions):
      - **direct or integration** — direct (listed first, marked Recommended): each story is merged into `main` on its own as soon as it is done, through one merge-command gate per story (the project's own gate; 15–20 minutes each on phoenix); integration: each story is tested once by its own gate, one full gate runs at the end, one PR to land in the morning.
        Direct needs `merge_command` in the main checkout's `.studio/config.json`; without one, list integration first and mark it Recommended, and direct's line says it needs `merge_command`.
        An `integration slug=<slug>` line in `omega-mode show` pre-selects integration with that slug.
