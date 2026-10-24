@@ -14,6 +14,15 @@ approval page in `artifacts/`.
 
 ## Log
 
+### 2026-10-23 — A pinned-reference mismatch blocks and carries on; the preflight checks tools; done follows a hand merge (#94, #95, #82)
+
+- Incident (phoenix bat-sonic-rings, Mac.lan): plan Task 46 said a difference "BLOCKS". The execute skill knew only `Stop:`, so the unit wrote `Stop: T46 BLOCK ...` and the lane held ~1 h until an operator sent `say` + `resume`. T34 held for a missing ffmpeg and a `.venv` built on python 3.9; `start` and `--dry-run` caught neither. #82: `final_gate` ran without `STUDIO_START_DIR`, and a final PR merged by hand left the record without `done`.
+- Fix 1 (#94): execute 6a defines a Block (a check against a pinned reference): mark only the failing assertions pending with `BLOCKED ...`, append to the blocks file, write a ledger `Block:` line, complete the task as progress. Never edit the reference. `studio-brief task` gains a `blocks:` line; `studio-brief final` prints `Block:` lines. The PR body gets `## Blocks`; the runner lists Blocks in `report.md` and the final PR body.
+- Fix 2 (#95): `required_tools` in `.studio/config.json`. `start`, `--dry-run` and `--detach` refuse a missing, too old or non-running tool with its hint. Path entries are checked after `worktree_setup`. A path `cmd` may not hold `..`; `version_args` takes only letters, digits, blanks and `. _ = + / : , -`. No key, no change.
+- Fix 3 (#82): the runner exports `STUDIO_START_DIR` to every gate it launches, and `runs_settle` marks a record `done` when its final PR was merged by hand.
+- Limits: no existing stop became a block; no per-plan tool list yet; `required_tools` is matched at any depth of config.json, not only top level (parked: a nested key of that name is improbable); a fake Block that the final fix wave un-pends keeps its ledger line, so the final PR body still lists it; the wave's Ruling line explains it (parked).
+- Install is pending: install after #93 lands and pid 10051 has exited.
+
 ### 2026-10-23 — Overnight throughput: parallel tracks, machine-sized caps, checkpoint suites, plain git forms
 
 - Why: the studio moved from a 4-core i7-7700HQ MacBook to an M6 Mac mini (12 cores, 32 GB). The full phoenix GUT suite fell from a 20 min median to about 4.5 min, but the overnight run did not speed up in proportion. In the measured run (16.2 h wall) 7.4 h were a hold, about 20 of 22 runs were one story or a short chain, vitest was held to `--maxWorkers=2` (directory runs took 150-210 s), the gate cap was 60 min (13 times the suite), the ledgers held 13 `Stop: gate red` lines and 12 gate-repair units, and in 29 units worktree isolation refused 170 commands (about 17 min of retries). Every gate, reviewer and test that ran before still runs.

@@ -474,6 +474,50 @@ test_execute_one_contract() {
   assert_not_contains "$S" "before isolation leaves" "no 'before isolation' wording for the uncommitted stop"
 }
 
+# #94: a check that disagrees with a pinned reference is a Block (§6a): it goes
+# pending, is written down, and the unit ends as progress. A missing tool stays a
+# Stop. The #93 pins above are not repeated here.
+test_skill_execute_block_outcome() {
+  S="$REPO_ROOT/studios/game-dev/skills/execute/SKILL.md"
+  assert_contains "$S" '^## 6a\. Blocks$' "execute has §6a Blocks"
+  assert_eq 1 "$(sed -n '/^## 6\. State/,/^## 7\. Finish$/p' "$S" | grep -c '^## 6a\. Blocks$')" "§6a sits between §6 and §7"
+  assert_contains "$S" 'a check whose result disagrees with a \*\*pinned reference\*\*' "§6a defines a Block by a pinned reference"
+  assert_contains "$S" 'T<n> Block: <check> — <key>: <a> vs <b> — blocks <path>' "the Block ledger line"
+  assert_contains "$S" 'BLOCKED <story> <check>:' "the pending marker's reason"
+  assert_contains "$S" 'Never regenerate, re-capture, loosen, re-approve or edit the pinned reference' "a Block never touches the reference"
+  assert_eq 1 "$(sed -n '/^## 6a\. Blocks$/,/^## 7\. /p' "$S" | grep -c 'A missing tool')" "§6a's Stop list keeps a missing tool a Stop"
+  assert_eq 1 "$(sed -n '/^## 6a\. Blocks$/,/^## 7\. /p' "$S" | grep -c 'No `Stop:` line is written')" "§6a: a Block writes no Stop: line"
+  assert_contains "$S" "§6a's Block procedure, not a fix and not a stop" "§2: every implementer and fixer brief carries the Block rule"
+  assert_contains "$S" "a Block's pending marker covers only the failing assertions" "§4: the reviewer checks the marker's scope"
+  assert_contains "$S" "the pinned reference is unchanged in the commit range" "§4: the reviewer checks the reference is unchanged"
+  assert_contains "$S" "report each open Block in the verdict; never a fix-wave item; a change to a pinned reference is Critical" "§5 step 3: the final reviewer reports Blocks"
+  assert_contains "$S" "The wave never takes a Block" "§5 step 5: the fix wave never takes a Block"
+  assert_eq 1 "$(sed -n '/^4\. \*\*Push and PR\.\*\*/,/^5\. \*\*State\.\*\*/p' "$S" | grep -c '`## Blocks`')" "§7 step 4's body has ## Blocks"
+  _r="$(sed -n '/^4\. \*\*Push and PR\.\*\*/,/^5\. \*\*State\.\*\*/p' "$S" | grep -n '`## Rulings`' | head -n 1 | cut -d: -f1)"
+  _b="$(sed -n '/^4\. \*\*Push and PR\.\*\*/,/^5\. \*\*State\.\*\*/p' "$S" | grep -n '`## Blocks`' | head -n 1 | cut -d: -f1)"
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if [ -n "$_r" ] && [ -n "$_b" ] && [ "$_r" -le "$_b" ]; then _pass "§7 step 4: ## Blocks follows ## Rulings"
+  else _fail "§7 step 4: ## Blocks follows ## Rulings ($_r <= $_b)"; fi
+  assert_contains "$S" "^   if wrong, and the Blocks; the producer's gate result" "§7 step 7: the report lists the Blocks"
+  assert_eq 1 "$(sed -n '/^## 8\. One unit/,/^## 9\. /p' "$S" | grep -c '`blocks: <path>`')" "§8 Inputs: the blocks: line names the file"
+  assert_eq 1 "$(sed -n '/^- \*\*Inputs:\*\*$/,/^- \*\*Which unit:\*\*/p' "$S" | grep -c '`blocks:` line of `studio-brief task 1`, only when a Block occurs (§6a)')" "§8 Inputs: check, final and gate units read task 1's blocks: line only on a Block"
+  assert_eq 1 "$(sed -n '/^## 8\. One unit/,/^### Operator messages/p' "$S" | grep -c '`check Block:')" "§8: the check unit's Block has prefix check"
+  assert_contains "$S" 'A Block is not a stop (§6a)' "§8 says a Block is not a stop"
+  assert_contains "$S" 'a conflict in a blocks file' "§9 keeps both sides of a blocks file"
+  assert_eq 1 "$(sed -n '/^## 9\. /,/^## 10\. /p' "$S" | grep -c 'a conflict in a blocks file')" "the blocks-file conflict rule is in §9"
+  # A fake Block (a pending check whose reference is not pinned) is caught and fixed.
+  assert_eq 1 "$(sed -n '/^## 4\. /,/^## 4a\. /p' "$S" | grep -c '^- For a Block (§6a): its blocks-file entry.s \*\*Why it is pinned\*\* cites a plan,$')" \
+    "§4: the reviewer checks that Why it is pinned cites a line that freezes the reference"
+  assert_eq 1 "$(sed -n '/^## 4\. /,/^## 4a\. /p' "$S" | grep -c 'reference\. Without one it is a fake Block, a Critical finding')" "§4: a Block without one is a fake Block, Critical"
+  assert_eq 1 "$(sed -n '/^## 5\. /,/^## 6\. /p' "$S" | grep -c '"check each Block.s \*\*Why it is pinned\*\*')" "§5 step 3: the final reviewer checks Why it is pinned"
+  assert_eq 1 "$(sed -n '/^## 5\. /,/^## 6\. /p' "$S" | grep -c 'reference; a Block without one is a fake Block, a Critical finding";$')" "§5 step 3: a fake Block is Critical"
+  assert_eq 1 "$(sed -n '/^## 5\. /,/^## 6\. /p' "$S" | grep -c '^   the reference) is a fix-wave item: un-pend the test and fix the code\. A$')" "§5 step 5: a fake Block is a fix-wave item"
+  assert_eq 1 "$(sed -n '/^## 5\. /,/^## 6\. /p' "$S" | grep -c '^   genuine Block never is\.$')" "§5 step 5: a genuine Block never is"
+  assert_eq 1 "$(sed -n '/^## 6a\. Blocks$/,/^## 7\. /p' "$S" | grep -c 'Marking pending a check whose reference is not pinned is a Critical finding (a fake Block)\.')" "§6a step 5: a fake Block is Critical"
+  assert_eq 1 "$(sed -n '/^## 6a\. Blocks$/,/^## 7\. /p' "$S" | grep -c 'cannot import (the environment, not the code under$')" "§6a: an interpreter that cannot import is the environment's fault, not the code's"
+  assert_eq 1 "$(sed -n '/^## 11\. /,$p' "$S" | grep -c '`gate Block:')" "§11: a pinned-reference mismatch is a Block with prefix gate"
+}
+
 test_router_overnight_lock() {
   S="$REPO_ROOT/studios/game-dev/skills/studio/SKILL.md"
   assert_contains "$S" '`studio-overnight status`' "the router lists live runs with status"
@@ -946,6 +990,6 @@ run_tests test_plugin_manifests test_skill_frontmatter test_agent_frontmatter \
   test_review_contract test_on_demand_skills_keep_stage test_playtest_contract test_retro_contract \
   test_skill_review_playtest_ask_candidates test_skill_retro_resolves_story \
   test_no_ship_references test_superpowers_requires_referenced test_no_last_playtest_callers \
-  test_execute_one_contract test_router_overnight_lock test_execute_lanes test_execute_lane_gate_foreground test_execute_command_caps_text test_docs_59_wording test_agent_gameplay_programmer_file_runs test_short_lane_unit_rule_text test_execute_land_and_progress test_execute_gate_repair test_execute_operator_messages test_execute_adopt test_final_wave_contracts \
+  test_execute_one_contract test_skill_execute_block_outcome test_router_overnight_lock test_execute_lanes test_execute_lane_gate_foreground test_execute_command_caps_text test_docs_59_wording test_agent_gameplay_programmer_file_runs test_short_lane_unit_rule_text test_execute_land_and_progress test_execute_gate_repair test_execute_operator_messages test_execute_adopt test_final_wave_contracts \
   test_plan_brainstorm_lanes test_execute_sync_repair_form test_execute_peers_brief_rule test_plan_brainstorm_slug_form test_plan_brainstorm_check_id \
   test_sdd_script_references test_execute_checkpoint_rules test_execute_task_brief_rewritten test_plan_gated_godot_forms test_plan_probe_rule test_plan_split_rules

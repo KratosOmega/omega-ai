@@ -10,12 +10,18 @@
 #                           the `### Task <n>:` block, and every range on that
 #                           block's `Spec:` line, then the story ledger's active directives
 #                           (`Directive <id>:` lines not later retired) as a
-#                           part `==> <ledger>`
+#                           part `==> <ledger>`, then a last line
+#                           `blocks: <path>`: the run's blocks file (#94), from
+#                           the plan's Global Constraints `Blocks file: <path>`
+#                           item, else $STUDIO_RUN's `Blocks:` header, else
+#                           docs/game-dev/playtests/<slug>-blocks.md (<slug>:
+#                           $STUDIO_RUN's `# Run:`, else the plan's basename
+#                           less its date prefix and `.md`)
 #   studio-brief final      the spec's ## Acceptance criteria (only the story's
 #                           items when the spec has ## Stories), the story's
-#                           ## Stories row, the ledger's `Ruling: ` and
-#                           `minor (deferred)` lines (anchored at the line's
-#                           prefix), the active directives the same way as for
+#                           ## Stories row, the ledger's `Ruling: `,
+#                           `minor (deferred)` and `Block: ` lines (anchored at
+#                           the line's prefix), the active directives the same way as for
 #                           `task`, before `diff:`, and the line
 #                           `diff: git diff origin/<Target>...HEAD` (Target from
 #                           $STUDIO_RUN's `Target:` header, else origin/HEAD).
@@ -315,6 +321,36 @@ plan_head() {
   done
 }
 
+# blocks_path — the line `blocks: <path>` (#94): the first plan Global
+# Constraints item `Blocks file: <path>` (backticks stripped), else
+# $STUDIO_RUN's `Blocks:` header (trimmed like `Target:`), else
+# docs/game-dev/playtests/<slug>-blocks.md, <slug> being $STUDIO_RUN's `# Run:`
+# value, else the plan's basename less its date prefix and `.md`.
+blocks_path() {
+  _bp=""
+  _bp_r="$(section "$plan" "## Global Constraints" 1)"
+  if [ -n "$_bp_r" ]; then
+    # shellcheck disable=SC2086
+    set -- $_bp_r
+    _bp="$(sed -n "$1,$2p" "$plan" | sed -n 's/^[ 	]*[-*][ 	]*Blocks file:[ 	]*//p' | head -n 1 | tr -d '`' | sed -e 's/[ 	]*$//')"
+  fi
+  if [ -z "$_bp" ] && [ -n "${STUDIO_RUN:-}" ] && [ -f "$STUDIO_RUN" ]; then
+    _bp="$(sed -n 's/^Blocks:[ 	]*//p' "$STUDIO_RUN" | head -n 1 | sed -e 's/[ 	]#.*$//' -e 's/[ 	]*$//')"
+  fi
+  if [ -z "$_bp" ]; then
+    _bp_s=""
+    if [ -n "${STUDIO_RUN:-}" ] && [ -f "$STUDIO_RUN" ]; then
+      _bp_s="$(sed -n 's/^# Run:[ 	]*//p' "$STUDIO_RUN" | head -n 1 | sed -e 's/[ 	]#.*$//' -e 's/[ 	]*$//')"
+    fi
+    if [ -z "$_bp_s" ]; then
+      _bp_s="${plan##*/}"; _bp_s="${_bp_s%.md}"
+      _bp_s="$(printf '%s\n' "$_bp_s" | sed 's/^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}-//')"
+    fi
+    _bp="docs/game-dev/playtests/$_bp_s-blocks.md"
+  fi
+  printf 'blocks: %s\n' "$_bp"
+}
+
 # need_plan — set $plan from the state, or fail.
 need_plan() {
   plan="$(state_get plan)"
@@ -446,6 +482,7 @@ task)
   plan_head
   emit_task "$2" 1
   context_part
+  blocks_path
   ;;
 check)
   [ $# -eq 2 ] || usage
@@ -553,7 +590,7 @@ final)
   ledger="$(ledger_path)"
   if [ -f "$ledger" ]; then
     printf '==> %s\n' "$ledger"
-    grep -E '^- [0-9-]+ ((T[0-9]+|Task [0-9]+:|check) )?(Ruling: |minor \(deferred\))' "$ledger" || true
+    grep -E '^- [0-9-]+ ((T[0-9]+|Task [0-9]+:|check|final|gate) )?(Ruling: |minor \(deferred\)|Block: )' "$ledger" || true
   else
     printf '(no ledger at %s)\n' "$ledger"
   fi

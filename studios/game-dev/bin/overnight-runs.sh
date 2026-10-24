@@ -58,6 +58,54 @@ runs_match() { awk -F'\t' -v s="$1" '{ b = $5; sub(/.*\//, "", b) } $2 == s || b
 runs_record_open() { [ -f "$1/.studio/runs/$2/landed.tsv" ] && [ ! -f "$1/.studio/runs/$2/done" ]; }
 # runs_record_done ROOT SLUG — 0 when landed.tsv and done both exist.
 runs_record_done() { [ -f "$1/.studio/runs/$2/landed.tsv" ] && [ -f "$1/.studio/runs/$2/done" ]; }
+# runs_settle ROOT SLUG [--dry-run] — mark an open record done when every row has landed and its
+# final PR (RECORD/final = `<head> <url> <color>`) is MERGED per gh (#82); prints the line and
+# returns 0 then (--dry-run: only says so), 1 otherwise (silently, but for one stderr line when
+# gh cannot say). The only writer of done besides lanes_finish. All must hold, else the record
+# stays open (a resumed run may still land work the merged PR does not carry):
+#   - the run is not live (runs_live names no lock of SLUG);
+#   - every landed.tsv sha (field 3) is an ancestor of <head>, by git in ROOT (a story that
+#     landed after the final step is not in the PR; a missing object is a no);
+#   - <url> is https://… and `gh pr view <url> --json state,headRefOid` says MERGED with
+#     headRefOid = <head>. gh runs through tools_run (overnight-tools.sh, which the caller
+#     sources), capped at STUDIO_OVERNIGHT_TOOLS_SECONDS (default 10): a timeout is a failure.
+runs_settle() {
+  runs_record_open "$1" "$2" || return 1
+  _rt_d="$1/.studio/runs/$2"
+  _rt_h=""; _rt_u=""; [ ! -f "$_rt_d/final" ] || read -r _rt_h _rt_u _rt_x < "$_rt_d/final"
+  [ -n "$_rt_u" ] && [ -s "$_rt_d/rows.tsv" ] || return 1
+  cut -f1 "$_rt_d/rows.tsv" | awk -F'\t' -v l="$_rt_d/landed.tsv" '
+    BEGIN { while ((getline x < l) > 0) { split(x, a, "\t"); got[a[1]] = 1 } }
+    $1 != "" && !($1 in got) { bad = 1 } END { exit bad }' || return 1
+  runs_live "$1" | cut -f2 | grep -qxF -- "$2" && return 1
+  case "$_rt_h" in ''|*[!0-9a-f]*) return 1 ;; esac
+  # Every landing is in the PR's head; a sha that is empty or not a commit here is a no.
+  _rt_l="$(cut -f3 "$_rt_d/landed.tsv")"
+  while IFS= read -r _rt_c; do
+    case "$_rt_c" in ''|*[!0-9a-f]*) return 1 ;; esac
+    git -C "$1" merge-base --is-ancestor "$_rt_c" "$_rt_h" >/dev/null 2>&1 || return 1
+  done <<EOF
+$_rt_l
+EOF
+  # From the root, so gh's host and auth resolve from the repo. A URL that is not https, a gh
+  # that fails or times out, or one that prints no state or head, says so on stderr.
+  _rt_j=""
+  case "$_rt_u" in
+    https://*) _rt_j="$(cd "$1" && tools_run gh "pr view $_rt_u --json state,headRefOid" \
+                 && [ "$TOOLS_RC" = 0 ] && printf '%s\n' "$TOOLS_OUT")" || _rt_j="" ;;
+  esac
+  _rt_s="$(printf '%s\n' "$_rt_j" | sed -n 's/.*"state"[[:space:]]*:[[:space:]]*"\([A-Z]*\)".*/\1/p' | head -n 1)"
+  _rt_o="$(printf '%s\n' "$_rt_j" | sed -n 's/.*"headRefOid"[[:space:]]*:[[:space:]]*"\([0-9a-f]*\)".*/\1/p' | head -n 1)"
+  [ -n "$_rt_s" ] && [ -n "$_rt_o" ] \
+    || { printf 'run %s: cannot read the state of final PR %s — record left open\n' "$2" "$_rt_u" >&2; return 1; }
+  [ "$_rt_s" = MERGED ] && [ "$_rt_o" = "$_rt_h" ] || return 1
+  if [ "${3:-}" = --dry-run ]; then
+    printf 'run %s: final PR %s is merged — start marks the record done\n' "$2" "$_rt_u"
+  else
+    : > "$_rt_d/done" || return 1
+    printf 'run %s: final PR %s is merged — record marked done\n' "$2" "$_rt_u"
+  fi
+}
 # runs_rows ROOT SLUG [RUNDIR] — the run's rows.tsv: RUNDIR's, else the newest report of SLUG; 1 for none.
 runs_rows() {
   if [ -n "${3:-}" ]; then printf '%s\n' "$3/rows.tsv"; return 0; fi

@@ -487,6 +487,21 @@ Top level of config.json (not under "overnight"):
   node_dir             ""             the node project dir, from the project root
                                     (studio-vitest, studio-tsc); unset = the current dir
                                     when it holds package.json
+Top level of config.json: "required_tools" — the tools a run needs (#95):
+  [ { "cmd": "ffmpeg", "hint": "brew install ffmpeg" },
+    { "cmd": ".venv/bin/python", "min_version": "3.10", "hint": "python3.12 -m venv .venv" } ]
+  cmd (required): a name on PATH, or a path with a / relative to the checkout
+  (always run with version_args; it must exit 0). hint (required): the install
+  line every refusal ends with. min_version (optional, like 3.10): the first
+  N.N[.N] of the output of cmd version_args must be at least this. version_args
+  (optional, default --version; split on blanks; only letters, digits, blanks
+  and . _ = + / : , - — quotes and shell metacharacters are refused). A path
+  cmd must stay inside the worktree (no .. component). start and --dry-run refuse a
+  tool not found, not running (exit 124 past 10 s) or too old, and print one
+  "tools: …" line of the passes; a version that cannot be read is a warning.
+  With worktree_setup set, start probes path entries in its scratch worktree
+  after the setup; --dry-run probes them in the start checkout and says so.
+  String values only, no backslash; a malformed key is a refusal.
 
 Deny rules: $DENY_FILE
   one --disallowedTools rule per line.
@@ -518,6 +533,9 @@ Test hooks (tests only; never set them for a real run; --detach strips them):
                      hold's banner and reminder (else terminal-notifier, else
                      osascript on macOS); tests set it to `: `
   STUDIO_OVERNIGHT_NOTIFY_SECONDS — test hook: the notifier's cap (default 10)
+  STUDIO_OVERNIGHT_TOOLS_SECONDS — test hook: the cap on one required_tools
+                     probe run (default 10; a capped run is exit 124), and on
+                     the gh call that checks a record's final PR is merged
   STUDIO_OVERNIGHT_SLOT_POLL_SECONDS — test hook: seconds between a unit's
                      tries for a session slot (default 2)
   STUDIO_OVERNIGHT_LAND_HOOK — test hook: shell text evaluated after a landing's
@@ -603,6 +621,10 @@ REPORTS="$STATE_ROOT/.studio/reports"
 RUN_SLUG=""   # a manifest run's slug (run_paths); empty for a single-plan run
 # The project's live runs (#39): runs_live, runs_match, runs_stop_of, mx_*.
 . "$SELF_DIR/overnight-runs.sh"
+# The config's required_tools (#95): tools_check, run by the preflight in TOOLS_MODE
+# (start, or dry for --dry-run; cmd_start sets it before the preflight).
+. "$SELF_DIR/overnight-tools.sh"
+TOOLS_MODE=start
 # gate_times_holds, gate_learned_cap: the readout of the gate caps studio-gate will learn.
 . "$SELF_DIR/gate-times.sh"
 # The project-wide session cap (#39 AC27): sess_*; slots are taken by manifest units only (D19).
@@ -717,7 +739,7 @@ preflight() {
   # #59 R2: the idle watchdog (run_unit). Its seconds seams are whole numbers >= 1.
   cfg idle_minutes 20 0 120 int
   [ -z "${IDLE_MINUTES:-}" ] || IDLE_MINUTES="$(printf '%s\n' "$IDLE_MINUTES" | awk '{ print $1 + 0 }')"   # D3
-  for _pf_v in STUDIO_OVERNIGHT_IDLE_SECONDS STUDIO_OVERNIGHT_IDLE_POLL_SECONDS STUDIO_OVERNIGHT_NOTIFY_SECONDS; do
+  for _pf_v in STUDIO_OVERNIGHT_IDLE_SECONDS STUDIO_OVERNIGHT_IDLE_POLL_SECONDS STUDIO_OVERNIGHT_NOTIFY_SECONDS STUDIO_OVERNIGHT_TOOLS_SECONDS; do
     eval "_pf_x=\${$_pf_v:-1}"
     case "$_pf_x" in ''|*[!0-9]*) refuse "$_pf_v must be a whole number of seconds (1 or more), got $_pf_x" ;;
       *) [ "$_pf_x" -ge 1 ] || refuse "$_pf_v must be a whole number of seconds (1 or more), got $_pf_x" ;; esac
@@ -730,6 +752,7 @@ preflight() {
   fi
   # A manifest run's push check is lanes_start's (it needs the target branch too).
   [ -n "$_pf_mf" ] || [ -z "$DEFAULT_BRANCH" ] || push_check "$DEFAULT_BRANCH"
+  tools_check "$TOOLS_MODE" || true
   # A4: a single-plan run is one lane by definition.
   [ -n "$_pf_mf" ] || echo "one lane: a hold idles this run until you answer; add an independent story to keep the machine busy"
   caps_readout
@@ -1753,6 +1776,8 @@ write_report() {
     awk -F'\t' '{ printf "| %s | %s | %s | %s | %s | %s | %s |\n", $1, $2, $3, $4, $5, $6, $7 }' "$_tsv"
     printf '\n## Rulings\n\n'
     printf '%s\n' "$_ld" | grep -E '^- [0-9-]* ([^ ]+ )?Ruling: ' || echo '(none)'
+    printf '\n## Blocks\n\n'
+    printf '%s\n' "$_ld" | grep -E '^- [0-9-]* ([^ ]+ )?Block: ' || echo '(none)'
     printf '\n## Play list\n\n'
     printf '%s\n' "$_ld" | grep -E '^- [0-9-]* P[0-9]+ Play: ' || echo '(none)'
     _wr_m="$(msgs_left -)"
@@ -2018,6 +2043,7 @@ cmd_start() {
       *) [ -z "$_mf" ] || { usage >&2; exit 2; }; _mf="$_a" ;;
     esac
   done
+  [ "$_dr" -eq 0 ] || TOOLS_MODE=dry
   if [ "$_dt" -eq 1 ]; then
     { [ -n "$_mf" ] && [ "$_dr" -eq 0 ]; } || { usage >&2; exit 2; }
     detach_start "$_mf"
@@ -2203,13 +2229,19 @@ setup_preflight() {
     || sp_refuse "cannot mark the scratch worktree $SP_W"
   _sp_ef="$(mktemp "${TMPDIR:-/tmp}/setup-preflight.XXXXXX")" || { _sp_ef=""; sp_refuse "mktemp failed"; }
   # Background + wait: a trapped signal interrupts wait at once (D4).
-  ( cd "$SP_W" && exec sh "$SELF_DIR/studio-setup" ) > /dev/null 2> "$_sp_ef" &
+  ( cd "$SP_W" && STUDIO_START_DIR="$START_DIR" && export STUDIO_START_DIR && exec sh "$SELF_DIR/studio-setup" ) > /dev/null 2> "$_sp_ef" &
   SP_PID=$!
   _sp_rc=0; wait "$SP_PID" || _sp_rc=$?
   trap - INT TERM HUP
   SP_PID=""
   _sp_l="$(tail -n 1 "$_sp_ef" 2>/dev/null)"; rm -f "$_sp_ef"; _sp_ef=""
-  if [ "$_sp_rc" -eq 0 ]; then sp_remove; say "worktree_setup: green in a linked worktree"; return 0; fi
+  if [ "$_sp_rc" -eq 0 ]; then
+    # #95: the path entries of required_tools, probed where the setup built them.
+    # Their tools: lines go to stderr: under start --detach this runs in lanes_start
+    # --check, whose stdout detach reads as the checked commit alone.
+    tools_check "paths-in $SP_W" >&2 || { sp_remove; exit 2; }
+    sp_remove; say "worktree_setup: green in a linked worktree"; return 0
+  fi
   _sp_log=""
   case "$_sp_l" in
     *" — log "*)
@@ -2384,6 +2416,12 @@ status_reap_dead() {
 # looked. Returns 0 live, 1 not.
 project_status() {
   status_reap_dead
+  # #82: a merged final PR closes its record — not under `status --run` (detach's
+  # liveness poll), which asks gh nothing.
+  for _ps_z in "$STATE_ROOT"/.studio/runs/*/landed.tsv; do
+    [ -z "${RUN_SEL:-}" ] && [ -f "$_ps_z" ] || continue
+    _ps_z="${_ps_z%/landed.tsv}"; runs_settle "$STATE_ROOT" "${_ps_z##*/}" || :
+  done
   _ps_all="$(runs_live "$STATE_ROOT")"
   if [ -n "${RUN_SEL:-}" ]; then
     _ps_all="$(printf '%s\n' "$_ps_all" | runs_match "$RUN_SEL")"

@@ -124,6 +124,15 @@ export GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
 #                   runner error, exit 3)
 #   ruling <text>   modifier: ledgers <text> in the story worktree and
 #                   commits it, before auto runs
+#   block <check> [<file>]
+#                   modifier: in the story worktree, writes tests/<check>.pending
+#                   (`BLOCKED <id> <check>: ticks — expected 12, got 13 — ...`),
+#                   appends `## <id> B1 — <check> — OPEN` to <file> (default
+#                   docs/game-dev/playtests/demo-blocks.md; header if new),
+#                   ledgers `T<k> Block: <check> — ticks: 12 vs 13 — blocks
+#                   <that path>` (k = the next task), commits all, before auto
+#                   commits its task (it runs inside auto, once the worktree
+#                   exists, so it also works on a story's first unit)
 #   gatecmd         terminal: in the story worktree, runs `studio-setup gate`;
 #                   a red one ledgers and commits `Stop: gate red — <its
 #                   stderr line>` (execute §7's gate_command step)
@@ -216,6 +225,18 @@ BRANCH="$(awk -F'|' -v id="$id" '
 story_wt() { _w="$(st worktree 2>/dev/null)"; [ -n "$_w" ] && [ -d "$_w" ] && printf '%s\n' "$_w"; }
 commit_ledger() { git add ".studio/ledger/$id.md" && git commit -qm "ledger($id): $1"; }
 
+# block_write — the `block` action's work, in the story worktree (the cwd).
+block_write() {
+  _bf="${blockfile:-docs/game-dev/playtests/demo-blocks.md}"; _bk=$((k + 1))
+  mkdir -p tests "$(dirname "$_bf")" \
+    && printf 'BLOCKED %s %s: ticks — expected 12, got 13 — fixtures/frozen.json\n' "$id" "$blockchk" > "tests/$blockchk.pending" \
+    && { [ -f "$_bf" ] || printf '# demo — blocked checks\n\nA run names a failed check against a pinned reference and carries on. It never resolves a block itself: the author rules.\n' > "$_bf"; } \
+    && printf '\n## %s B1 — %s — OPEN\n- **Where:** tests/%s.pending, fixtures/frozen.json\n- **Expected / actual:** ticks: 12 vs 13\n- **Task:** T%s, 2026-10-23\n' "$id" "$blockchk" "$blockchk" "$_bk" >> "$_bf" \
+    && { [ -z "${STUB_BLOCKS_PAD:-}" ] || { printf '\n'; head -c "$STUB_BLOCKS_PAD" /dev/zero | tr '\0' x; printf '\n'; } >> "$_bf"; } \
+    && st ledger "T$_bk Block: $blockchk — ticks: 12 vs 13 — blocks $_bf" \
+    && git add "tests/$blockchk.pending" "$_bf" ".studio/ledger/$id.md" && git commit -qm "block($id): $blockchk"
+}
+
 auto() {
   spec="$(st get spec)"; plan="$(st get plan)"
   wt="$(story_wt)"
@@ -253,6 +274,7 @@ auto() {
   task="$(st get task)"; k="${task%/*}"; N="${task#*/}"
   case "$k" in ''|-|*[!0-9]*) k=0 ;; esac
   case "$N" in ''|-|*[!0-9]*) N=1 ;; esac
+  [ -z "$blockchk" ] || block_write
   frd="$(grep -c 'final review done$' ".studio/ledger/$id.md" 2>/dev/null)"
   if [ "$k" -lt "$N" ]; then
     k=$((k + 1)); f="${conflict:-$id-T$k.txt}"
@@ -285,7 +307,7 @@ push_to() {
     && printf '%s\n' "$1" > "$2" && git add "$2" && git commit -qm "$1 moves: $2" && git push -q origin "$1" ) >&2
   rm -rf "$_pd"
 }
-cost=1; code=0; terminal=0; conflict=""; post=""
+cost=1; code=0; terminal=0; conflict=""; post=""; blockchk=""; blockfile=""
 old_ifs="$IFS"; IFS=';'
 set -f; set -- $line; set +f
 IFS="$old_ifs"
@@ -356,6 +378,11 @@ for act in "$@"; do
                         || { st ledger "Stop: gate red — $_g"; commit_ledger gate-red; }; } ) ;;
     "ruling "*)       w="$(story_wt)"
                       ( cd "$w" && st ledger "${act#ruling }" && commit_ledger ruling ) ;;
+    "block "*)        blockchk="${act#block }"   # block CHECK [FILE]: FILE, the blocks file (default demo-blocks.md)
+                      case "$blockchk" in *" "*) blockfile="${blockchk#* }"; blockchk="${blockchk%% *}" ;; esac ;;
+    "symlink "*)      w="$(story_wt)"; _sl="${act#symlink }"
+                      ( cd "$w" && mkdir -p "$(dirname "${_sl% *}")" && ln -s "${_sl#* }" "${_sl% *}" \
+                        && git add "${_sl% *}" && git commit -qm "symlink: ${_sl% *}" ) ;;
     inbox)            printf '{"session_id":"s","hook_event_name":"SessionStart","source":"startup"}' \
                         | sh "$STUB_PLUGIN/hooks/operator-inbox.sh" > "$CALLS/$n.inbox" ;;
     "say "*)          sh "$STUB_RUNNER" say "$id" -- "${act#say }" > /dev/null 2>&1 ;;
@@ -391,8 +418,11 @@ printf '#!/bin/sh\nexec claude "$@"\n' > "$FAKE/claude-gd"
 # - pr create [--draft] --base B --head H [--title T] [--body…]: a new PR,
 #   prints https://gh.test/pr/<n>; --body-file F's content is saved as
 #   $GH/body-<n>.
-# - pr view <n|head> --json …: {"state":…,"isDraft":…,"number":n,
-#   "mergeCommit":{"oid":…}} (mergeCommit null before a merge); no PR -> exit 1.
+# - pr view <n|head|https://gh.test/pr/<n>> --json …: {"state":…,"isDraft":…,"number":n,
+#   "mergeCommit":{"oid":…}} (mergeCommit null before a merge); no PR -> exit 1,
+#   and so does any view while GH_FAIL_VIEW is set. When the --json fields name
+#   headRefOid, the object ends with "headRefOid": the PR file's headoid=, else
+#   origin's head of the PR's head branch (git ls-remote, from the cwd).
 #   A $GH/pr-<n>.pending file is appended to the PR file after the view (a
 #   GitHub read that lags the merge by one view).
 # - pr ready <n>: draft=0. pr edit <n> [--title T] [--body-file F]: records
@@ -404,6 +434,9 @@ printf '%s\n' "$*" >> "$GH/calls"
 get() { sed -n "s/^$1=//p" "$2" | tail -n 1; }
 # pr_file N|HEAD — the PR file for a number, or the newest PR with that head.
 pr_file() {
+  case "$1" in
+    https://gh.test/pr/*) set -- "${1##*/}" ;;
+  esac
   case "$1" in
     ''|*[!0-9]*) _pf=""
        for _f in "$GH"/pr-[0-9]*; do
@@ -436,11 +469,18 @@ case "$1 ${2:-}" in
     printf 'head=%s\nbase=%s\nstate=OPEN\ndraft=%s\noid=\ntitle=%s\n' "$_h" "$_b" "$_d" "$_t" > "$GH/pr-$_n"
     echo "https://gh.test/pr/$_n" ;;
   "pr view")
+    [ -z "${GH_FAIL_VIEW:-}" ] || { echo "gh: view failed" >&2; exit 1; }
     _f="$(pr_file "${3:-}")" || { echo "no pull requests found for ${3:-}" >&2; exit 1; }
     _o="$(get oid "$_f")"; if [ -n "$_o" ]; then _mc="{\"oid\":\"$_o\"}"; else _mc=null; fi
     if [ "$(get draft "$_f")" = 1 ]; then _dr=true; else _dr=false; fi
-    printf '{"state":"%s","isDraft":%s,"number":%s,"mergeCommit":%s}\n' \
-      "$(get state "$_f")" "$_dr" "${_f##*/pr-}" "$_mc"
+    _hr=""
+    case "$*" in
+      *headRefOid*) _ho="$(get headoid "$_f")"
+        [ -n "$_ho" ] || _ho="$(git ls-remote origin "refs/heads/$(get head "$_f")" 2>/dev/null | cut -f1)"
+        _hr=",\"headRefOid\":\"$_ho\"" ;;
+    esac
+    printf '{"state":"%s","isDraft":%s,"number":%s,"mergeCommit":%s%s}\n' \
+      "$(get state "$_f")" "$_dr" "${_f##*/pr-}" "$_mc" "$_hr"
     if [ -f "$_f.pending" ]; then cat "$_f.pending" >> "$_f"; rm -f "$_f.pending"; fi ;;
   "pr ready")
     _f="$(pr_file "${3:-}")" || exit 1
@@ -487,6 +527,7 @@ STUB
 cat > "$FAKE/merge-stub" <<'STUB'
 #!/bin/sh
 echo "s merge $(date +%s)" >> "$CALLS/gate.iv"
+[ -z "${MERGE_SD:-}" ] || printf '%s\n' "${STUDIO_START_DIR:-unset}" > "$CALLS/merge.sd"
 k=$(( $(cat "$CALLS/merge-count" 2>/dev/null || echo 0) + 1 )); echo "$k" > "$CALLS/merge-count"
 out="$(printf '%s\n' ${MERGE_OUTCOMES:-ok} | sed -n "${k}p")"; [ -n "$out" ] || out=ok
 f="$GH/pr-$1"; rc=0
@@ -2015,6 +2056,27 @@ test_lanes_final_step_once() {
   assert_eq 1 "$(prompt_calls '/game-dev:execute --progress' | grep -c .)" "and runs no second progress unit"
   use_gate true
 }
+# #82: the final gate reads the run worktree's config through STUDIO_START_DIR.
+test_lanes_final_gate_reads_run_config() {
+  LANES_CONFIG='{"test_engine_args": "--fixed-fps 60"}'; export LANES_CONFIG
+  lanes_fixture fgcfg integration A:-
+  use_gate ". '$BIN/gate-class.sh'; studio_cfg test_engine_args > '$CALLS/fg.args'; printf '%s\n' \"\${STUDIO_START_DIR:-unset}\" > '$CALLS/fg.sd'"
+  run_lanes start "$MFP"
+  use_gate true
+  assert_eq "--fixed-fps 60" "$(cat "$CALLS/fg.args" 2>/dev/null)" "the final gate sees the run's test_engine_args"
+  assert_eq "$P" "$(cat "$CALLS/fg.sd" 2>/dev/null)" "with STUDIO_START_DIR = the start checkout"
+  assert_status 0 "the fixture: origin/integration/demo exists" -- git -C "$P" rev-parse -q --verify origin/integration/demo
+  assert_eq "" "$(git -C "$P" ls-tree origin/integration/demo .studio/config.json)" "and carries no config of its own"
+}
+# #82: the landing's studio-gate merge gets STUDIO_START_DIR too.
+test_lanes_merge_gate_gets_start_dir() {
+  LANES_CONFIG='{"merge_command": "scripts/merge.sh <pr>"}'; export LANES_CONFIG
+  lanes_fixture mgsd direct A:-
+  MERGE_SD=1; export MERGE_SD
+  run_lanes start "$MFP"
+  unset MERGE_SD
+  assert_eq "$P" "$(cat "$CALLS/merge.sd" 2>/dev/null)" "the merge program sees STUDIO_START_DIR = the start checkout"
+}
 test_lanes_final_red_after_repair() {
   lanes_fixture finred integration A:-
   printf 'noop\n' > "$SCEN/final-repair"
@@ -2425,6 +2487,66 @@ test_lanes_done_marker() {
   assert_contains "$(last_lanes_dir)/report.md" "^Ending: partial: 1 landed, 0 stopped, 0 skipped; final PR red$" "a red final PR is not done"
   assert_contains "$(last_lanes_dir)/report.md" "^Final PR: https://gh.test/pr/1 (red)$" "the final PR is named red"
   assert_missing "$P/.studio/runs/demo/done" "no done marker"
+  # #82: the operator merges that red final PR by hand; start --dry-run says so, status marks the record done.
+  echo state=MERGED >> "$GH/pr-1"
+  run_lanes start --dry-run "$MFP"
+  assert_contains "$LS_OUT" "^run demo: final PR https://gh.test/pr/1 is merged — start marks the record done$" "dry-run names the settle"
+  assert_missing "$P/.studio/runs/demo/done" "dry-run writes no done"
+  _dm_n="$(grep -c '^pr view' "$GH/calls")"
+  ( cd "$P" && sh "$RUNNER" status --run demo ) >/dev/null 2>&1
+  assert_missing "$P/.studio/runs/demo/done" "status --run (detach's liveness poll) settles nothing"
+  assert_eq "$_dm_n" "$(grep -c '^pr view' "$GH/calls")" "and asks gh nothing"
+  ( cd "$P" && sh "$RUNNER" status ) >/dev/null 2>&1
+  assert_file "$P/.studio/runs/demo/done" "status marks a merged final PR's record done"
+}
+# #82: a real start settles a merged final PR's record and then refuses it as done; --check keeps stdout to the commit.
+test_lanes_settle_start_and_check() {
+  lanes_fixture settlest integration A:-
+  printf 'noop\n' > "$SCEN/final-repair"
+  use_gate "exit 1"
+  run_lanes start "$MFP"
+  use_gate true
+  echo state=MERGED >> "$GH/pr-1"
+  run_lanes start "$MFP"
+  assert_eq 2 "$LS_STATUS" "start refuses the settled record"
+  assert_contains "$LS_OUT" "^run demo: final PR https://gh.test/pr/1 is merged — record marked done$" "start names the settle"
+  assert_file "$P/.studio/runs/demo/done" "start marks the record done"
+  assert_contains "$LS_ERR" "run demo is done: archive its record first" "then refuses with the archive hint"
+  lanes_fixture settlechk integration A:-
+  # A record whose landing is in its final PR's head, which is the PR's headRefOid.
+  _sc_h="$(git -C "$P" rev-parse HEAD)"
+  printf 'head=x\nbase=y\nstate=MERGED\ndraft=0\noid=\ntitle=t\nheadoid=%s\n' "$_sc_h" > "$GH/pr-1"
+  mkdir -p "$P/.studio/runs/other"
+  printf 'Z\tb\n' > "$P/.studio/runs/other/rows.tsv"; printf 'Z\tt\t%s\t1\n' "$_sc_h" > "$P/.studio/runs/other/landed.tsv"
+  printf '%s https://gh.test/pr/1 red\n' "$_sc_h" > "$P/.studio/runs/other/final"
+  # The detach path runs lanes_start --check in the foreground and parses its stdout as a commit id: a settle line there would be refused.
+  st=0; ( cd "$P" && sh "$RUNNER" start --detach "$MFP" ) > "$TMP/dsc.out" 2> "$TMP/dsc.err" || st=$?
+  assert_eq 0 "$st" "the detached start accepts the check's stdout (the commit alone)"
+  assert_file "$P/.studio/runs/other/done" "the check settles the other record"
+  assert_contains "$TMP/dsc.err" "^run other: final PR https://gh.test/pr/1 is merged — record marked done$" "the settle line is on stderr"
+  assert_not_contains "$TMP/dsc.out" "run other" "and not on stdout"
+  wait_for "[ -f '$CALLS/1.fullenv' ]" 60
+  detach_stop
+}
+# #82: an unmerged final PR, a record with an unlanded story, or a gh failure leaves the record open.
+test_lanes_settle_keeps_open() {
+  lanes_fixture settleopen integration A:-
+  printf 'noop\n' > "$SCEN/final-repair"
+  use_gate "exit 1"
+  run_lanes start "$MFP"
+  use_gate true
+  ( cd "$P" && sh "$RUNNER" status ) >/dev/null 2>&1
+  assert_missing "$P/.studio/runs/demo/done" "an OPEN final PR stays open"
+  echo state=MERGED >> "$GH/pr-1"
+  GH_FAIL_VIEW=1; export GH_FAIL_VIEW
+  ( cd "$P" && sh "$RUNNER" status ) >/dev/null 2>"$TMP/st.err"
+  unset GH_FAIL_VIEW
+  assert_contains "$TMP/st.err" "^run demo: cannot read the state of final PR https://gh.test/pr/1 — record left open$" "a gh failure says so on stderr"
+  assert_missing "$P/.studio/runs/demo/done" "a gh failure changes nothing"
+  cp "$P/.studio/runs/demo/landed.tsv" "$TMP/landed.keep"; : > "$P/.studio/runs/demo/landed.tsv"
+  ( cd "$P" && sh "$RUNNER" status ) >/dev/null 2>&1
+  assert_missing "$P/.studio/runs/demo/done" "an unlanded story keeps the record open"
+  cp "$TMP/landed.keep" "$P/.studio/runs/demo/landed.tsv"
 }
 # AC16: a SIGKILLed runner. Its lane ends its story after the running unit;
 # `status` then sweeps every story with no ending and writes report.md.
@@ -3338,6 +3460,106 @@ test_lanes_push_rejected_first_unit_holds() {
   assert_eq 1 "$(story_calls A | wc -l | tr -d ' ')" "no second unit of A was launched"
   lholds_off
 }
+# #94: a unit that writes a Block (not a Stop) is progress; the lane is not held.
+test_lanes_block_carries_on() {
+  LANES_TASKS=2; export LANES_TASKS
+  lanes_fixture blk integration A:-
+  printf 'block ring_ticks; auto\nauto\nruling final Block: golden — a: 1 vs 2 — blocks docs/game-dev/playtests/demo-blocks.md; auto\nauto\n' > "$SCEN/A"
+  run_lanes start "$MFP"
+  assert_eq 0 "$LS_STATUS" "the run is done"
+  assert_eq "1 A-T1 progress," "$(story_rows A | cut -c1-16)" "the Block unit is progress"
+  assert_contains "$GH/body-1" "^- [0-9-]* T1 Block: ring_ticks — ticks: 12 vs 13 — blocks docs/game-dev/playtests/demo-blocks.md$" "the final PR body lists the Block line"
+  assert_contains "$GH/body-1" "^- [0-9-]* final Block: golden — a: 1 vs 2 — blocks docs/game-dev/playtests/demo-blocks.md$" "a final-prefixed Block line is in the body"
+  assert_contains "$GH/body-1" "^## Blocks file$" "the body has a Blocks file section"
+  assert_contains "$GH/body-1" "^### docs/game-dev/playtests/demo-blocks.md$" "one heading per distinct blocks path"
+  assert_eq 1 "$(grep -c '^### docs/game-dev/playtests/demo-blocks.md$' "$GH/body-1")" "the path is listed once"
+  assert_contains "$GH/body-1" "^## A B1 — ring_ticks — OPEN$" "the blocks file's content is in the body"
+  assert_contains "$(last_lanes_dir)/report.md" "^- [0-9-]* T1 Block: ring_ticks" "the report lists the Block line"
+  assert_contains "$(last_lanes_dir)/stories/A" "^landed" "A lands"
+  git -C "$P" fetch -q origin
+  assert_eq 1 "$(git -C "$P" show origin/A-b:tests/ring_ticks.pending | grep -c "^BLOCKED A ring_ticks:")" "the pending marker is on A's branch"
+  assert_eq 1 "$(git -C "$P" show origin/A-b:docs/game-dev/playtests/demo-blocks.md | grep -c "^## A B1 — ring_ticks — OPEN")" "the blocks entry is on A's branch"
+  assert_not_contains "$(last_lanes_dir)/events.jsonl" '"story":"A","state":"held"' "A was never held"
+}
+# #94: a blocks file over 20000 bytes is cut in the final PR body, with a pointer.
+test_lanes_blocks_file_capped() {
+  LANES_TASKS=2; STUB_BLOCKS_PAD=30000; export LANES_TASKS STUB_BLOCKS_PAD
+  lanes_fixture bcap integration A:-
+  printf 'block ring_ticks; auto\nauto\nauto\nauto\n' > "$SCEN/A"
+  run_lanes start "$MFP"
+  unset STUB_BLOCKS_PAD
+  assert_eq 0 "$LS_STATUS" "the run is done"
+  assert_contains "$GH/body-1" "^(truncated — read docs/game-dev/playtests/demo-blocks.md on the branch)$" "the cut is named"
+  _bc="$(sed -n '/^### docs\/game-dev\/playtests\/demo-blocks.md$/,$p' "$GH/body-1" | wc -c | tr -d ' ')"
+  assert_eq 1 "$([ "$_bc" -ge 20000 ] && [ "$_bc" -lt 25000 ] && echo 1 || echo 0)" "the Blocks file section is cut to 20000..25000 bytes ($_bc)"
+}
+# #94: the blocks file is read only as a regular file inside the worktree.
+test_lanes_blocks_file_not_followed() {
+  LANES_TASKS=2; export LANES_TASKS
+  lanes_fixture bsym integration A:-
+  mkdir -p "$TMP/outside"; printf 'TOPSECRET-OUTSIDE\n' > "$TMP/outside/secret.md"
+  printf 'auto\nauto\nsymlink docs/link.md %s/outside/secret.md; symlink docs/dir %s/outside; ruling T1 Block: s — a: 1 vs 2 — blocks docs/link.md; ruling T1 Block: d — a: 1 vs 2 — blocks docs/dir/secret.md; ruling T1 Block: m — a: 1 vs 2 — blocks docs/missing.md; ruling T1 Block: x — a: 1 vs 2 — blocks /etc/hostname; ruling T1 Block: y — a: 1 vs 2 — blocks ../x; ruling T1 Review: reworded the Block: x; auto\nauto\n' "$TMP" "$TMP" > "$SCEN/A"
+  run_lanes start "$MFP"
+  assert_eq 0 "$LS_STATUS" "the run is done"
+  assert_not_contains "$GH/body-1" "TOPSECRET-OUTSIDE" "a symlinked blocks file is not read"
+  assert_contains "$GH/body-1" "^### docs/link.md$" "the symlink path still has a heading"
+  assert_eq 3 "$(grep -c '^(not on the branch as a regular file — read ' "$GH/body-1")" "link, linked dir and missing file get the note (and nothing else does)"
+  assert_contains "$GH/body-1" "^(not on the branch as a regular file — read docs/link.md on the branch)$" "the note names the path"
+  assert_not_contains "$GH/body-1" "^### /etc/hostname$" "an absolute path gets no section"
+  assert_not_contains "$GH/body-1" "^### \.\./x$" "a .. path gets no section"
+  assert_not_contains "$(last_lanes_dir)/report.md" "reworded the Block:" "a mid-text Block: mention is not listed"
+}
+# #94: the blocks file is read only as content tracked at FINAL_W's HEAD: an untracked
+# .env that worktree_setup left in FINAL_W gets the note and never reaches the body. A
+# backticked path is the same path; a `gate Block:` line is listed like any Block line.
+test_lanes_blocks_file_tracked_only() {
+  LANES_TASKS=2; export LANES_TASKS
+  LANES_CONFIG='{"worktree_setup": "case $(pwd -P) in */integration-*) echo ENVSECRET-VALUE > .env;; esac"}'; export LANES_CONFIG
+  lanes_fixture btr integration A:-
+  printf 'block ring_ticks; auto\nruling T2 Block: env — a: 1 vs 2 — blocks .env; ruling T2 Block: bt — a: 1 vs 2 — blocks `docs/game-dev/playtests/demo-blocks.md`; ruling gate Block: golden — a: 1 vs 2 — blocks docs/game-dev/playtests/demo-blocks.md; auto\nauto\nauto\n' > "$SCEN/A"
+  run_lanes start "$MFP"
+  assert_eq 0 "$LS_STATUS" "the run is done"
+  assert_eq "ENVSECRET-VALUE" "$(cat "$P/.claude/worktrees/integration-demo/.env" 2>/dev/null)" "fixture: the setup left an untracked .env in FINAL_W"
+  assert_not_contains "$GH/body-1" "ENVSECRET" "an untracked file's content never reaches the body"
+  assert_contains "$GH/body-1" "^### \.env$" "the .env path has a heading"
+  assert_contains "$GH/body-1" "^(not on the branch as a regular file — read \.env on the branch)$" "and the note"
+  assert_contains "$GH/body-1" "^## A B1 — ring_ticks — OPEN$" "the tracked blocks file is still inlined"
+  assert_eq 1 "$(grep -c '^### docs/game-dev/playtests/demo-blocks.md$' "$GH/body-1")" "a backticked path is the same path: listed once"
+  assert_not_contains "$GH/body-1" '^### `' "no heading keeps the backticks"
+  assert_eq 1 "$(grep -c '^(not on the branch as a regular file' "$GH/body-1")" "only .env gets the note"
+  assert_contains "$GH/body-1" "^- [0-9-]* gate Block: golden — a: 1 vs 2 — blocks docs/game-dev/playtests/demo-blocks.md$" "the final PR body lists a gate Block line"
+  assert_contains "$(last_lanes_dir)/report.md" "^- [0-9-]* gate Block: golden — a: 1 vs 2 — blocks docs/game-dev/playtests/demo-blocks.md$" "the report lists a gate Block line"
+}
+# #94: the `## Blocks file` section holds at most 40000 bytes: from the first file that
+# would pass that, each remaining path is named with a pointer instead of inlined.
+test_lanes_blocks_file_total_cap() {
+  LANES_TASKS=2; STUB_BLOCKS_PAD=30000; export LANES_TASKS STUB_BLOCKS_PAD
+  lanes_fixture btc integration A:-
+  printf 'block ring_ticks; auto\nblock lap_count docs/game-dev/playtests/other-blocks.md; auto\nauto\nauto\n' > "$SCEN/A"
+  run_lanes start "$MFP"
+  unset STUB_BLOCKS_PAD
+  assert_eq 0 "$LS_STATUS" "the run is done"
+  assert_contains "$GH/body-1" "^### docs/game-dev/playtests/demo-blocks.md$" "the first path has a heading"
+  assert_contains "$GH/body-1" "^(truncated — read docs/game-dev/playtests/demo-blocks.md on the branch)$" "it is inlined, cut at 20000 bytes"
+  assert_contains "$GH/body-1" "^### docs/game-dev/playtests/other-blocks.md$" "the second path has a heading"
+  assert_contains "$GH/body-1" "^(not inlined — read docs/game-dev/playtests/other-blocks.md on the branch)$" "past the cap it is named, not inlined"
+  assert_not_contains "$GH/body-1" "^## A B1 — lap_count — OPEN$" "the second file's content is not in the body"
+  _btc="$(sed -n '/^## Blocks file$/,/^Gate: /p' "$GH/body-1" | sed '$d' | wc -c | tr -d ' ')"
+  assert_eq 1 "$([ "$_btc" -le 40200 ] && echo 1 || echo 0)" "the section stays within the cap plus the pointer lines ($_btc bytes)"
+}
+# #94: a missing tool is still a Stop, and still holds.
+test_lanes_missing_tool_still_stops() {
+  lanes_fixture mts integration A:-
+  lholds_on 120
+  printf 'auto\nstop ffmpeg not found on PATH (tools/convert_ambience.py)\n' > "$SCEN/A"
+  lanes_bg
+  wait_for 'is_held A' 60
+  assert_contains "$(last_lanes_dir)/stories/A" "^held stop: ffmpeg not found on PATH (tools/convert_ambience.py) until " "a missing tool holds A"
+  assert_eq "1 A-T1 progress,2 A-final-review stop," "$(story_rows A)" "the first unit is progress; the missing tool ends the next as stop"
+  lverb stop
+  wait_pid_or_fail "$RPID" 60 "the run ends"
+  lholds_off
+}
 # AC8: the old ahead shape — a unit that moves the task, then an unpushed commit.
 test_lanes_origin_check_localcommit_holds() {
   lanes_fixture olc integration A:-
@@ -3873,6 +4095,21 @@ test_lanes_direct_setup_fail_note() {
   run_lanes start "$MFP"
   assert_eq 0 "$(prompt_calls '/game-dev:execute --progress' | grep -c .)" "a signalled progress setup: no progress unit"
   assert_contains "$(last_lanes_dir)/report.md" "^Final note: .*worktree setup failed — exit [0-9]" "the note is not empty"
+}
+
+# #82: every runner-side studio-setup (preflight, final integration, direct progress) gets STUDIO_START_DIR.
+test_lanes_setup_gets_start_dir() {
+  LANES_CONFIG='{"worktree_setup": "case $(pwd -P) in */setup-preflight-*) k=pf;; */integration-*) k=fi;; *) k=;; esac; [ -z $k ] || echo ${STUDIO_START_DIR:-unset} > '"$TMP"'/sd-$k"}'; export LANES_CONFIG
+  rm -f "$TMP/sd-pf" "$TMP/sd-fi" "$TMP/sd-pd"
+  lanes_fixture ssd integration A:-
+  run_lanes start "$MFP"
+  assert_eq "$P" "$(cat "$TMP/sd-pf" 2>/dev/null)" "setup_preflight's studio-setup sees STUDIO_START_DIR"
+  assert_eq "$P" "$(cat "$TMP/sd-fi" 2>/dev/null)" "final_integration's studio-setup sees STUDIO_START_DIR"
+  LANES_CONFIG='{"merge_command": "scripts/merge.sh <pr>", "worktree_setup": "case $(pwd -P) in */progress-*) echo ${STUDIO_START_DIR:-unset} > '"$TMP"'/sd-pd;; esac"}'; LANES_PROGRESS=1; export LANES_CONFIG LANES_PROGRESS
+  lanes_fixture ssdd direct A:-
+  printf 'progress\n' > "$SCEN/progress"
+  run_lanes start "$MFP"
+  assert_eq "$P" "$(cat "$TMP/sd-pd" 2>/dev/null)" "progress_direct's studio-setup sees STUDIO_START_DIR"
 }
 
 test_lanes_gate_command_final() {
@@ -4830,6 +5067,31 @@ test_lanes_detach_setup_preflight_runs_once() {
   assert_contains "$(ls -d "$P"/.studio/reports/overnight-demo-detached-* | tail -n 1)" "worktree_setup: checked by start --detach at [0-9a-f]\{7\}$" "the child's log says it skipped the check"
   assert_eq "" "$(pf_wts)" "no scratch worktree"
 }
+# #95: --detach with worktree_setup and a path entry of required_tools. The scratch
+# worktree's probe prints its tools: lines on stderr, so detach's check stdout is the
+# commit alone: a pass detaches; a miss refuses in the foreground (exit 2, on stderr).
+test_lanes_detach_tools_after_setup() {
+  LANES_CONFIG='{"worktree_setup": "case $(pwd -P) in */setup-preflight-*) mkdir -p bin && echo echo tool 1.2 > bin/tool && echo echo ok > bin/plain && chmod +x bin/tool bin/plain;; esac", "required_tools": [{"cmd": "bin/tool", "min_version": "1.0", "hint": "build it"}, {"cmd": "bin/plain", "min_version": "1", "hint": "build plain"}]}'; export LANES_CONFIG
+  lanes_fixture dta integration A:-
+  st=0; ( cd "$P" && sh "$RUNNER" start --detach "$MFP" ) > "$TMP/dta.out" 2> "$TMP/dta.err" || st=$?
+  assert_eq 0 "$st" "detach: a path entry that passes in the scratch worktree detaches"
+  assert_contains "$TMP/dta.out" "^detached: pid [0-9]*, log " "the child was started"
+  assert_contains "$TMP/dta.err" "^tools: bin/tool 1.2, bin/plain found$" "the summary line is on stderr"
+  assert_contains "$TMP/dta.err" "^tools: bin/plain: cannot read a version from 'bin/plain --version' — check it by hand$" "and so is the warning line"
+  assert_not_contains "$TMP/dta.err" "unexpected commit" "detach parses the check's stdout as the commit alone"
+  wait_for "[ -f '$CALLS/1.fullenv' ]" 60
+  detach_stop
+  assert_eq "" "$(pf_wts)" "no scratch worktree"
+  LANES_CONFIG='{"worktree_setup": "case $(pwd -P) in */setup-preflight-*) mkdir -p bin && echo echo tool 0.9 > bin/tool && chmod +x bin/tool;; esac", "required_tools": [{"cmd": "bin/tool", "min_version": "1.0", "hint": "build it"}]}'; export LANES_CONFIG
+  lanes_fixture dtr integration A:-
+  st=0; ( cd "$P" && sh "$RUNNER" start --detach "$MFP" ) > "$TMP/dtr.out" 2> "$TMP/dtr.err" || st=$?
+  assert_eq 2 "$st" "detach: a path entry too old in the scratch worktree refuses in the foreground"
+  assert_contains "$TMP/dtr.err" "required tool bin/tool is 0.9, needs 1.0 or later — install: build it" "the refusal is on stderr"
+  assert_not_contains "$TMP/dtr.out" "^detached:" "no child was started"
+  assert_eq "" "$(ls "$P/.studio/reports" 2>/dev/null | grep '^overnight-demo-detached-')" "no detached child log"
+  assert_eq 0 "$(calls)" "no unit ran"
+  assert_eq "" "$(pf_wts)" "no scratch worktree"
+}
 test_lanes_setup_checked_env_binds_to_sha() {
   LANES_CONFIG='{"worktree_setup": "case $(pwd -P) in */setup-preflight-*) echo pf >> '"'$TMP/pf-env'"';; esac"}'; export LANES_CONFIG
   rm -f "$TMP/pf-env"
@@ -5082,7 +5344,7 @@ run_tests test_stub_waitexist_and_run_token test_lanes_setup_preflight_refuses_l
   test_lanes_setup_preflight_interrupt_cleans test_lanes_setup_preflight_sweeps_stale \
   test_lanes_setup_preflight_bad_config test_lanes_setup_preflight_timeout \
   test_lanes_detach_setup_preflight_refused test_lanes_detach_setup_preflight_interrupt \
-  test_lanes_detach_setup_preflight_runs_once test_lanes_setup_checked_env_binds_to_sha \
+  test_lanes_detach_setup_preflight_runs_once test_lanes_detach_tools_after_setup test_lanes_setup_checked_env_binds_to_sha \
   test_lanes_one_lane_note_one_chain test_lanes_one_lane_note_max_lanes_1 test_lanes_no_note_two_chains test_lanes_split_siblings_planned \
   test_lanes_chain_rule test_lanes_manifest_refusals test_lanes_branch_default_or_target_refused test_lanes_conflicts_lock_without_start test_lanes_preflight_backlog_tasks test_lanes_manifest_header_refusals \
   test_lanes_preflight_story_checks test_lanes_preflight_story_state test_lanes_docs_unreachable \
@@ -5104,13 +5366,13 @@ run_tests test_stub_waitexist_and_run_token test_lanes_setup_preflight_refuses_l
   test_lanes_sync_failed_merge_aborts test_lanes_sync_conflict_launches_repair test_lanes_sync_repair_stops test_lanes_sync_repair_budget \
   test_lanes_stalled_outcome \
   test_lanes_no_sync_before_repairs \
-  test_lanes_final_step_once test_lanes_final_red_after_repair \
+  test_lanes_final_step_once test_lanes_final_gate_reads_run_config test_lanes_merge_gate_gets_start_dir test_lanes_final_red_after_repair \
   test_lanes_final_repair_turns_green test_lanes_final_conflict test_lanes_final_resume_edits_pr \
   test_lanes_final_skipped_on_stop_or_nothing_landed test_lanes_final_stop_before_setup test_lanes_final_gate_default test_lanes_direct_progress_landing \
   test_lanes_final_dirty_unit_is_red test_lanes_final_unit_stop_pointer_invisible test_lanes_final_budget test_lanes_final_conflict_then_red test_lanes_final_gate_interrupted_not_recorded \
   test_lanes_direct_merge_timeout_after_merge_lands test_lanes_direct_merge_timeout_term_ignored \
   test_lanes_status_dead_old_lock_not_masking test_lanes_status_per_story test_lanes_report_every_ending test_lanes_report_on_lane_crash \
-  test_lanes_done_marker test_lanes_status_reaps_dead_runner test_lanes_reap_names_final_pr \
+  test_lanes_done_marker test_lanes_settle_keeps_open test_lanes_settle_start_and_check test_lanes_status_reaps_dead_runner test_lanes_reap_names_final_pr \
   test_lanes_detach_strips_env test_lanes_detach_shows_push_warning test_lanes_push_check_target_workflows test_lanes_detach_refusal_in_foreground test_lanes_detach_child_refusal_surfaces \
   test_lanes_detach_timeout_lock_held_points_at_status test_lanes_detach_timeout_no_lock_ends_child \
   test_lanes_detach_poll_keeps_budget test_lanes_detach_poll_rejects_bad_value \
@@ -5126,10 +5388,11 @@ run_tests test_stub_waitexist_and_run_token test_lanes_setup_preflight_refuses_l
   test_lanes_stop_queued_story test_lanes_stop_running_story test_lanes_stop_waiting_story \
   test_lanes_hold_waiting_story_holds_at_start test_lanes_hold_running_then_resume test_lanes_run_stop_held_was_held \
   test_lanes_push_rejected_first_unit_holds test_lanes_origin_check_localcommit_holds \
+  test_lanes_block_carries_on test_lanes_blocks_file_capped test_lanes_blocks_file_not_followed test_lanes_blocks_file_tracked_only test_lanes_blocks_file_total_cap test_lanes_missing_tool_still_stops \
   test_lanes_final_step_no_delivery test_lanes_deadline \
   test_lanes_stop_at_done_never_lands test_lanes_stop_held_by_operator test_lanes_stop_pending_never_holds \
   test_lanes_gate_repair_own_stop_holds test_lanes_directive_cap_holds test_lanes_hold_during_last_unit_lands_and_clears \
-  test_lanes_next_adopted_planned test_lanes_context_preflight test_lanes_check_unit_first test_lanes_adopt_sync_fail_holds test_lanes_setup_fail_holds test_lanes_setup_fail_final_red test_lanes_setup_silent_fail_final_red test_lanes_setup_fail_path_specials test_lanes_direct_setup_fail_note test_lanes_gate_command_final test_lanes_gate_command_finish_red_repair test_lanes_report_adopted_lines test_lanes_adopt_seeded_runs_rest test_lanes_adopt_round_trip \
+  test_lanes_next_adopted_planned test_lanes_context_preflight test_lanes_check_unit_first test_lanes_adopt_sync_fail_holds test_lanes_setup_fail_holds test_lanes_setup_fail_final_red test_lanes_setup_silent_fail_final_red test_lanes_setup_fail_path_specials test_lanes_direct_setup_fail_note test_lanes_setup_gets_start_dir test_lanes_gate_command_final test_lanes_gate_command_finish_red_repair test_lanes_report_adopted_lines test_lanes_adopt_seeded_runs_rest test_lanes_adopt_round_trip \
   test_lanes_per_run_lock_paths test_lanes_excludes_before_lock test_lanes_two_runs_each_own_lock \
   test_lanes_status_run_not_live test_lanes_manifest_refuses_live_single test_lanes_lock_race_single_vs_manifest \
   test_lanes_reg_write_keeps_live_sibling test_lanes_detach_with_other_run_live test_lanes_units_get_start_dir \
