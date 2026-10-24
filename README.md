@@ -142,8 +142,11 @@ stories as parallel lanes of dependency chains:
   shipped story into `integration/<slug>`, runs one full gate, and opens one
   draft PR into `main`; nothing reaches `main` until you land that PR.
   **direct**: the runner merges each story into `main` through the project's
-  `merge_command`, each dependent after its dependency. Sessions never merge in
-  either mode.
+  `merge_command`, each dependent after its dependency. It runs from the
+  story's worktree, where the PR branch is checked out, so a merge script that
+  checks `HEAD` sees the PR head; the script is that worktree's copy only when
+  it matches the start checkout's, and a story that changed it stops at
+  landing. Sessions never merge in either mode.
 - A story's finish runs its full gate once per session. A red gate is not the
   end: the runner launches a gate-repair session, which fixes the failure and
   re-runs only the failing tests, then a fresh finish, which runs the full gate

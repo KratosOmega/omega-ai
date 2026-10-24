@@ -484,7 +484,12 @@ Config: .studio/config.json "overnight" (defaults, ranges):
 A value present but out of range or not a number is a refusal.
 Top level of config.json (not under "overnight"):
   merge_command        ""             a command line containing <pr>, its first word an
-                                    executable file under the checkout
+                                    executable file under the checkout. Direct mode runs
+                                    it from the story's worktree (the PR branch checked
+                                    out; the start checkout when it is gone), that
+                                    checkout's copy of the program when it matches the
+                                    start checkout's; a copy the story changed is never
+                                    run and stops the landing
   node_workers         auto  auto|1-32 vitest workers for a whole-suite run (studio-vitest):
                                     auto = max(2, physical cores / 2); a run naming only
                                     existing files stays at 2. Refused at start when bad

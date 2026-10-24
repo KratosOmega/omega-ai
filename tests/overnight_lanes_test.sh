@@ -1558,6 +1558,72 @@ test_lanes_direct_merged_never_repairs() {
   assert_contains "$(last_lanes_dir)/stories/A" "^landed ${_oid:-none}$" "the second view lands it"
   assert_eq 1 "$(grep -c '^s merge' "$CALLS/gate.iv" 2>/dev/null)" "the merge command ran once"
 }
+# lanes_pre_guarded DIR — DIR/scripts/land.sh, a merge program shaped like a
+# real project's gate (phoenix's .github/scripts/merge.sh): it cds to its own
+# repo root, records it in $CALLS/land.root, and refuses unless that
+# checkout's HEAD is the PR's head; else it runs the stub merge program.
+# Committed on main (LANES_MAIN_PRE), so the run branch and every story
+# branch carry the same copy.
+lanes_pre_guarded() {
+  rm -rf "$1"; mkdir -p "$1/scripts"
+  { printf '#!/bin/sh\n'
+    printf 'cd "$(dirname "$0")/.." || exit 1\n'
+    printf 'pwd -P > "$CALLS/land.root"\n'
+    printf 'head="$(sed -n "s/^head=//p" "$GH/pr-$1" | tail -n 1)"; git fetch -q origin\n'
+    printf 'h="$(git rev-parse HEAD)"; want="$(git rev-parse "origin/$head")"\n'
+    printf '[ "$h" = "$want" ] || { echo "error: local HEAD ($h) is not PR #$1'"'"'s head ($want)."; exit 1; }\n'
+    printf 'exec sh %s "$@"\n' "'$FAKE/merge-stub'"
+  } > "$1/scripts/land.sh" && chmod +x "$1/scripts/land.sh"
+}
+# Bat-sonic-followups KAN-1627-2: a merge program that finds its repo root
+# from its own path ran as the start checkout's copy, so its HEAD guard read
+# the run worktree's HEAD, not the PR head, and refused every landing. The
+# runner runs the story checkout's copy, from that checkout, when it is the
+# same program as the start checkout's.
+test_lanes_direct_merge_runs_in_story_checkout() {
+  lanes_pre_guarded "$TMP/pre-msc"
+  LANES_MAIN_PRE="$TMP/pre-msc"; LANES_CONFIG='{"merge_command": "scripts/land.sh <pr>"}'; export LANES_MAIN_PRE LANES_CONFIG
+  lanes_fixture msc direct A:-
+  printf 'fakerepair\n' > "$SCEN/A.land"
+  run_lanes start "$MFP"
+  _wt="$(cd "$TMP_WT/A-b" 2>/dev/null && pwd -P)"
+  assert_eq "${_wt:-no-story-worktree}" "$(cat "$CALLS/land.root" 2>/dev/null)" "the merge program is the story worktree's copy"
+  assert_not_contains "$(ls "$(last_lanes_dir)"/lanes/*/A-land.log 2>/dev/null | head -n 1)" "is not PR" "its HEAD guard sees the PR head"
+  assert_eq 0 "$(land_calls)" "no repair unit"
+  assert_contains "$(last_lanes_dir)/stories/A" "^landed " "A lands"
+}
+# A story that changed the merge program: its copy is never run (it would
+# gate its own merge), nor the start checkout's (it would check the wrong
+# tree): the landing stops for a person, with no repair.
+test_lanes_direct_merge_program_changed_by_story() {
+  lanes_pre_guarded "$TMP/pre-mpc"
+  LANES_MAIN_PRE="$TMP/pre-mpc"; LANES_CONFIG='{"merge_command": "scripts/land.sh <pr>"}'; export LANES_MAIN_PRE LANES_CONFIG
+  lanes_fixture mpc direct A:-
+  printf 'conflict scripts/land.sh\n' > "$SCEN/A"; printf 'repair\n' > "$SCEN/A.land"
+  run_lanes start "$MFP"
+  assert_contains "$(last_lanes_dir)/stories/A" "^stopped landing failed (merge program scripts/land.sh in the story checkout differs from the start checkout's; not run — land PR #1 by hand)$" "the landing stops, naming why"
+  assert_missing "$CALLS/land.root" "neither copy of the merge program ran"
+  assert_eq 0 "$(land_calls)" "no repair unit"
+  assert_eq 0 "$(grep -c '^pr ready ' "$GH/calls" 2>/dev/null)" "the draft PR is left a draft"
+}
+# land_program WORD DIR, the merge command's program: an absolute path and a
+# plain CLI word are themselves; a file under the start checkout is the
+# landing checkout's identical copy, the start checkout's when that checkout
+# has none, and refused (1) when the copy differs or is not executable.
+test_lanes_land_program_resolution() {
+  _lp="$TMP/lp"; rm -rf "$_lp"; mkdir -p "$_lp/start/s" "$_lp/same/s" "$_lp/diff/s" "$_lp/noexec/s" "$_lp/none"
+  printf '#!/bin/sh\necho gate\n' > "$_lp/start/s/m.sh"; cp "$_lp/start/s/m.sh" "$_lp/same/s/m.sh"
+  cp "$_lp/start/s/m.sh" "$_lp/noexec/s/m.sh"; printf '#!/bin/sh\nexit 0\n' > "$_lp/diff/s/m.sh"
+  chmod +x "$_lp/start/s/m.sh" "$_lp/same/s/m.sh" "$_lp/diff/s/m.sh"; chmod -x "$_lp/noexec/s/m.sh"
+  _lp_r() { ( SELF_DIR="$BIN"; START_DIR="$_lp/start"; . "$BIN/overnight-lanes.sh"; land_program "$1" "$2"; echo "rc=$?" ) 2>&1 | tr '\n' ' '; }
+  assert_eq "$_lp/same/s/m.sh rc=0 " "$(_lp_r s/m.sh "$_lp/same")" "an identical copy in the landing checkout is run there"
+  assert_eq "$_lp/start/s/m.sh rc=0 " "$(_lp_r s/m.sh "$_lp/none")" "a checkout without the program runs the start checkout's"
+  assert_eq "$_lp/start/s/m.sh rc=0 " "$(_lp_r s/m.sh "$_lp/start")" "the start checkout itself runs its own"
+  assert_eq "rc=1 " "$(_lp_r s/m.sh "$_lp/diff")" "a changed copy is refused"
+  assert_eq "rc=1 " "$(_lp_r s/m.sh "$_lp/noexec")" "a copy that lost its executable bit is refused"
+  assert_eq "/usr/bin/env rc=0 " "$(_lp_r /usr/bin/env "$_lp/same")" "an absolute program is itself"
+  assert_eq "gh rc=0 " "$(_lp_r gh "$_lp/same")" "a plain CLI word is left to PATH"
+}
 # land_once ID BRANCH (Task 11's progress landing: a branch with no manifest
 # row) runs step 0 against BRANCH: already landed -> recorded, no new merge.
 test_lanes_land_once_explicit_branch() {
@@ -5395,7 +5461,7 @@ run_tests test_stub_waitexist_and_run_token test_lanes_setup_preflight_refuses_l
   test_lanes_docs_revision test_lanes_waiting_chain_starts_after_deps test_lanes_skip_on_stopped_dep \
   test_lanes_lane_kill9 test_lanes_end_sessions_spaced_path test_lanes_sigint test_lanes_runner_gone test_lanes_stop_file \
   test_lanes_land_clean_integration test_lanes_land_clean_direct test_lanes_land_conflict_one_repair \
-  test_lanes_land_second_conflict_stops test_lanes_land_repair_no_progress test_lanes_direct_refused_then_repaired test_lanes_direct_merged_never_repairs test_lanes_direct_merge_timeout \
+  test_lanes_land_second_conflict_stops test_lanes_land_repair_no_progress test_lanes_direct_refused_then_repaired test_lanes_direct_merged_never_repairs test_lanes_direct_merge_timeout test_lanes_direct_merge_runs_in_story_checkout test_lanes_direct_merge_program_changed_by_story test_lanes_land_program_resolution \
   test_lanes_land_once_explicit_branch test_lanes_land_idempotent \
   test_lanes_land_crash_after_push test_lanes_land_lock_reclaim test_lanes_land_shipped_resume \
   test_lanes_gate_never_overlaps test_lanes_gate_repair_then_lands test_lanes_gate_repair_cap test_suite_every_auto_on test_suite_every_auto_off_slow test_suite_every_newest_ten_window test_suite_every_median_boundary test_suite_every_few_rows test_suite_every_config test_lanes_suite_every_env test_lanes_checkpoint_red_repairs_then_next_task \

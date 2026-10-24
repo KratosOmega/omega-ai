@@ -618,12 +618,33 @@ merge_wait() {
   rmdir "$_mw_claim" 2>/dev/null
   [ "$_mw_to" = 0 ]
 }
+# land_program WORD DIR — the program land_once_direct runs for MERGE_COMMAND's
+# first word WORD from the landing checkout DIR, on stdout. An absolute WORD is
+# itself. A WORD naming a file under START_DIR (preflight's rule; resolved
+# against the checkout, never the cwd) is DIR/WORD when that copy is an
+# executable file with START_DIR's bytes — the start checkout's program,
+# placed where the PR head is checked out (DIR = START_DIR gives START_DIR's) —
+# and START_DIR/WORD when DIR has no such file (a branch cut before the program
+# existed); a DIR copy that differs returns 1. Any other WORD (a plain CLI such as gh)
+# is itself, for PATH.
+land_program() {
+  case "$1" in /*) printf '%s\n' "$1"; return 0 ;; esac
+  if [ ! -f "$START_DIR/$1" ]; then printf '%s\n' "$1"; return 0; fi
+  if [ ! -e "$2/$1" ]; then printf '%s\n' "$START_DIR/$1"; return 0; fi
+  [ -f "$2/$1" ] && [ -x "$2/$1" ] && cmp -s "$START_DIR/$1" "$2/$1" || return 1
+  printf '%s\n' "$2/$1"
+}
 # land_once_direct ID BRANCH — direct mode's land_once: step 0 the PR is
 # MERGED; step 1 `merge-tree` against origin/<default> (exit 1 = conflict);
 # step 2 `gh pr ready` for a draft, then MERGE_COMMAND with <pr> = the PR
-# number, its program from START_DIR (never the story's copy), run through
-# `studio-gate merge` from LAND_DIR when set (the direct progress landing's
-# worktree), else the story worktree (else START_DIR), stdin
+# number, run through `studio-gate merge` from the landing checkout: LAND_DIR
+# when set (the direct progress landing's worktree), else the story worktree
+# (else, when it is gone, START_DIR) — the checkout with the PR's branch, so a
+# merge program that checks HEAD or finds its repo root from its own path
+# sees the PR head (bat-sonic-followups KAN-1627-2). The program (land_program)
+# is that checkout's copy when it is byte-identical to START_DIR's; a copy the
+# branch changed is never run (it would gate its own merge): return 4 before
+# step 2, no repair. Stdin
 # /dev/null, output to LDIR/<id>-land.log (RUN_DIR outside a lane), under
 # session_minutes (merge_wait: a timeout ends it, then step 3 still runs:
 # a merge that landed before it hung is landed, anything else returns 4,
@@ -649,18 +670,21 @@ land_once_direct() {
     1) LAND_REPAIR=conflict; return 3 ;;
     *) LAND_WHY="merge-tree failed ($_ld_st)"; return 4 ;;
   esac
+  _ld_cmd="$(printf '%s\n' "$MERGE_COMMAND" | sed "s/<pr>/$_ld_n/g")"
+  _ld_w="${_ld_cmd%% *}"; _ld_a=""; [ "$_ld_cmd" = "$_ld_w" ] || _ld_a="${_ld_cmd#* }"
+  _ld_dir="${LAND_DIR:-$(feature_dir)}"
+  _ld_p="$(land_program "$_ld_w" "$_ld_dir")" || {
+    _ld_in="the story checkout"; [ -z "${LAND_DIR:-}" ] || _ld_in="$LAND_DIR"
+    LAND_WHY="merge program $_ld_w in $_ld_in differs from the start checkout's; not run — land PR #$_ld_n by hand"; return 4; }
   if [ "$PR_DRAFT" = 1 ]; then
     ( cd "$START_DIR" && gh pr ready "$_ld_n" ) >/dev/null 2>&1 || { LAND_WHY="gh pr ready $_ld_n failed"; return 4; }
   fi
   _ld_log="${LDIR:-$RUN_DIR}/$1-land.log"
-  _ld_cmd="$(printf '%s\n' "$MERGE_COMMAND" | sed "s/<pr>/$_ld_n/g")"
-  _ld_w="${_ld_cmd%% *}"; _ld_a=""; [ "$_ld_cmd" = "$_ld_w" ] || _ld_a="${_ld_cmd#* }"
-  _ld_dir="${LAND_DIR:-$(feature_dir)}"
   set -m 2>/dev/null || true   # own process group, as start_session's session
   ( cd "$_ld_dir" || exit 2
     set -f; set -- $_ld_a; set +f
     STUDIO_START_DIR="$START_DIR"; export STUDIO_START_DIR
-    exec sh "$SELF_DIR/studio-gate" merge -- "$START_DIR/$_ld_w" "$@" ) > "$_ld_log" 2>&1 < /dev/null &
+    exec sh "$SELF_DIR/studio-gate" merge -- "$_ld_p" "$@" ) > "$_ld_log" 2>&1 < /dev/null &
   _ld_pid=$!
   set +m 2>/dev/null || true
   _ld_to=""; merge_wait "$1" "$_ld_pid" || _ld_to="merge command timed out"
