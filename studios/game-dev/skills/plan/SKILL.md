@@ -212,7 +212,10 @@ when you add one.
    `track <k>: T… — <m> tasks — files: …` line per track. Propose a split when
    it prints at least two tracks with at least 3 tasks each. Fold tracks
    smaller than that into the track they share an acceptance criterion with,
-   or into track 1. With no such split, skip to the plain stop.
+   or into track 1. With no such split, skip to the plain stop. That also
+   applies when folding leaves one track, and when an acceptance criterion tie that folds everything.
+   `tracks` silently isolates a task with no single-line `Files:`:
+   a task shown as `files: -` must get its `Files:` line before a split is proposed.
 2. Assign every acceptance criterion to the track whose tasks implement it.
    Judge this from the tasks' `Spec:` citations and their text; it is not
    computed.
@@ -257,7 +260,9 @@ when you add one.
      number of stories.
 5. `studio-overnight next` then classifies every new row `planned`.
    Autopilot step 3's overlap check runs over the siblings like any other
-   parallel pair.
+   parallel pair. After a split, §7 items 1-3 are done (the sweep and its
+   commit ran in step 4): go to item 4. A second `git commit` with nothing
+   staged exits 1, so do not run it and do not stop there.
 
 Then run `studio-state set stage plan`, `studio-state set plan <plan path>`,
 `studio-state set task 0/N` (N = number of tasks outside the backlog), and

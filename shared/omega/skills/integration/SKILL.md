@@ -129,7 +129,7 @@ commits not yet on the integration branch.
    merge may already have removed it with `--delete-branch`. Run
    `git ls-remote --exit-code --heads origin integration/<slug>`: on exit 0,
    run `git push origin --delete integration/<slug>`; on exit 2 the remote
-   branch is gone, so skip the push. Then run
+   branch is gone, so skip the push; on any other exit, skip this step. Then run
    `git show-ref --verify --quiet refs/heads/integration/<slug>`: on exit 0,
    run `git branch -D integration/<slug>`; otherwise skip it. Each is its
    own call. Then `omega-mode clear integration`.

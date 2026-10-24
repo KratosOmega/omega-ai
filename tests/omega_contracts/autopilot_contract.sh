@@ -45,6 +45,7 @@ test_autopilot_contract() {
   assert_contains "$S" '\*\*dependencies\*\*' "phase 1 asks the dependencies"
   assert_contains "$S" '\*\*maximize parallelism\*\* (listed first, marked Recommended)' "maximize parallelism is recommended"
   assert_contains "$S" '\*\*chain\*\*: each story depends on the row before it' "chain is the other option"
+  assert_contains "$S" 'each row after the first depends on exactly one row, the one directly above it' "the one-chain rule matches the runner's chains"
   assert_contains "$S" 'chain: each row after the first depends on the row before it' "chain proposes the row before"
   assert_contains "$S" 'maximize parallelism: the smallest set' "maximize proposes the smallest dependency set"
   assert_contains "$S" 'how many lanes' "and the lane count"

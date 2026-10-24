@@ -825,6 +825,7 @@ runs exactly one unit, writes its state, commits, pushes, and ends the turn.
     verifies with `studio-test --file` on the failing files, up to two
     rounds. Then `studio-test` once more. Green: record `suite green` as
     above, commit, push, end the unit.
+  - Exit codes keep §7's lane meaning.
   - Still red: `studio-state ledger "Stop: gate red — checkpoint after T<n> — <failing line>"`,
     committed as stops are (§8's stop rule). The runner's gate-repair loop
     takes it (§11), counted against the same `overnight.gate_repairs`, and
@@ -984,8 +985,8 @@ there is no plan to read.
 
 ## 11. Gate repair (--gate-repair)
 
-The runner launches this unit under a lane when a story's finish stopped on
-a red gate (`Stop: gate red — …`, §7's lane rules) and the story has gate
+The runner launches this unit under a lane after a red finish gate or a red checkpoint (§8)
+(`Stop: gate red — …`, §7's lane rules) when the story has gate
 repairs left (`overnight.gate_repairs`): prompt
 `/game-dev:execute --gate-repair`, from the start checkout, with the
 story's env (`STUDIO_STORY`, `STUDIO_RUN`, `STUDIO_DOCS_REV`,
@@ -998,7 +999,7 @@ any miss is a `Stop:` line (§8's stop rule).
 
 A full gate can take most of a session, so this unit never runs it: it
 fixes, proves the fix on what failed, and records the repair. The runner
-then launches a fresh finish, which runs the full gate once (§7).
+then resumes the story: the next task, or a fresh finish, which runs the full gate once (§7).
 
 - **Enter the feature checkout** through `studio-state worktree`, first:
   the `Stop: gate red` line is in the feature checkout's ledger only, so
@@ -1036,7 +1037,7 @@ then launches a fresh finish, which runs the full gate once (§7).
   ledger (`git add .studio/ledger`, then, only when it succeeded,
   `git commit -m "chore(studio): gate repair"`, as two calls),
   then push the story branch (a rejected push: §8's push rule). The runner reads that `Repair:` line and
-  launches the fresh finish.
+  resumes the story: the next task, or a fresh finish.
 - **Red after three rounds:** `studio-state ledger "Stop: gate repair red — <failing line>"`,
   committed. It is a hard stop: the runner launches no further repair.
 - A git write whose stderr says `could not lock` or `cannot lock ref` is retried, as §0 and §7 do.

@@ -727,6 +727,13 @@ test_execute_checkpoint_rules() {
   assert_contains "$E" 'Stop: gate red — checkpoint after T<n> — <failing line>' "a red checkpoint's stop"
   assert_contains "$E" 'A checkpoint never re-opens it' "the task stays complete"
   assert_eq 1 "$(grep -cF 'fix\((T[0-9]+|final|gate|review|suite|B[0-9]+)\)' "$E" | awk '{ print ($1 > 0) }')" "the final reviewer verifies checkpoint fixes"
+  assert_contains "$E" "Exit codes keep §7's lane meaning[.]" "a checkpoint's exit codes are §7's"
+  assert_contains "$E" 'a red finish gate or a red checkpoint (§8)' "§11 takes a red checkpoint too"
+  assert_contains "$E" 'resumes the story: the next task, or a fresh finish' "§11: the runner resumes the story"
+  assert_not_contains "$E" 'launches a fresh finish' "§11 does not always launch a fresh finish"
+  assert_not_contains "$E" 'launches the fresh finish' "§11 does not always launch the fresh finish"
+  RV="$REPO_ROOT/studios/game-dev/skills/review/SKILL.md"
+  assert_eq 1 "$(grep -cF 'fix\((T[0-9]+|final|gate|review|suite|B[0-9]+)\)' "$RV" | awk '{ print ($1 > 0) }')" "review's verify-prior-fixes pattern agrees with execute §5 step 2"
 }
 
 # section_count FILE HEADING_RE PATTERN — matches of PATTERN between the
@@ -916,6 +923,11 @@ test_plan_split_rules() {
   _has "$PL" 'A **cross-cutting AC**' "cross-cutting AC"
   _has "$PL" 'docs(plans): approve <topic> (split <S>)' "split commit subject"
   _has "$PL" 'becomes a manifest Depends on' "later dependency becomes Depends on"
+  _has "$PL" 'now depends on the original and every sibling' "later row depends on the original and every sibling"
+  _has "$PL" 'a task shown as `files: -` must get its `Files:` line before a split is proposed' "a files: - task gets its Files: line first"
+  _has "$PL" 'After a split, §7 items 1-3 are done' "after a split the planner goes to §7 item 4"
+  _has "$PL" 'when folding leaves one track' "no split when folding leaves one track"
+  _has "$PL" 'when an acceptance criterion tie that folds everything' "no split when AC ties fold everything"
   _c="$(grep -n -F -m1 -- '**Conflict scan first.**' "$PL" | cut -d: -f1)"
   _t2="$(grep -n -F -m1 -- 'studio-brief tracks <plan>' "$PL" | cut -d: -f1)"
   TESTS_RUN=$((TESTS_RUN + 1))

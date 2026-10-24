@@ -10,6 +10,9 @@
 #   "git" followed by a space) and contains &&, ; or |  (so || counts)
 #   a $(...) inside such a span or line that runs git or `studio-state ledger`
 # Prose that only mentions git outside backticks is not scanned.
+# Exempt by design: studios/game-dev/engines/godot/GUIDE.md. Its `Install:` line is one
+# single line that engines/godot/test.sh:38 reads verbatim and prints only on exit 3 (a
+# hard stop). It is not a skill and stays as it is.
 
 # scan_forms DIR...: print "file:line: why" for each forbidden form under the .md files of DIR.
 scan_forms() {
@@ -68,11 +71,11 @@ studios/bad.md:7: bash \"\$(sdd-script" "$got" "the scanner flags every bad fixt
 
   # E2: the sentence is in execute section 2 and section 0.
   S="$REPO_ROOT/studios/game-dev/skills/execute/SKILL.md"
-  e2='Worktree isolation refuses some shell forms\. Run git as one plain command per Bash call\. Never `cd <dir> &&`'
-  assert_eq 2 "$(grep -c -E "$e2" "$S")" "execute carries the E2 sentence in section 0 and in section 2"
+  e2='Worktree isolation refuses some shell forms. Run git as one plain command per Bash call. Never `cd <dir> &&` before a command: the shell starts in the worktree, so use `git -C`, `npm --prefix`, or a verb'"'"'s `--dir`. No `$(…)` or `$VAR` in a git command: write the value. Write and edit files with the Write and Edit tools, not heredocs or inline scripts.'
+  assert_eq 2 "$(grep -cF -- "$e2" "$S")" "execute carries the whole E2 sentence in section 0 and in section 2"
   sec2="$(sed -n '/^## 2\. /,/^## 3\. /p' "$S")"
   case "$sec2" in
-    *'Worktree isolation refuses some shell forms. Run git as one plain command per Bash call.'*) _pass "E2 sentence is inside section 2" ;;
+    *"$e2"*) _pass "E2 sentence is inside section 2" ;;
     *) _fail "E2 sentence is inside section 2" ;;
   esac
 }
