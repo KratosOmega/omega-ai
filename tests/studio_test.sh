@@ -171,6 +171,8 @@ test_brainstorm_skill_contract() {
   assert_contains "$S/brainstorm/SKILL.md" "game-dev:game-designer" "brainstorm dispatches the game designer"
   assert_not_contains "$S/brainstorm/SKILL.md" "godot-brainstorming" "brainstorm does not hand a subagent an interactive skill"
   assert_contains "$S/brainstorm/SKILL.md" "docs(specs): approve" "brainstorm commits at the approval gate"
+  assert_contains "$S/brainstorm/SKILL.md" "mark the best" "brainstorm marks the best long-term approach"
+  assert_contains "$S/plan/SKILL.md" "option with its Gains and Costs" "plan's sweep states each option's Gains and Costs"
   assert_contains "$S/brainstorm/SKILL.md" 'studio-state set stage brainstorm' "brainstorm's stage command sits on one line"
 }
 

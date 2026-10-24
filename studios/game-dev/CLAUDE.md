@@ -38,3 +38,20 @@ should stay that way.
   physics tuning unrepeatable.
 - Prefer TileMapLayer for level geometry, and keep collision authored on the
   tileset rather than hand-placed per level.
+
+## Decision trade-offs
+
+Weigh each option's Gains and Costs (Decision Questions, above) the way a game
+studio does:
+
+- **Gains** — player experience (feel, readability, responsiveness), frame
+  budget on the target hardware, designer iteration speed (tunable in a
+  `Resource` without a programmer), how well it scales to the next ten
+  enemies, levels or abilities, and future debt avoided.
+- **Costs** — production time and tokens, risk to the current milestone gate,
+  frame or memory budget spent, art and content pipeline work, playtest risk
+  (feel judged only by playing), and debt taken on (a rewrite when the content
+  grows).
+
+Name the milestone gate when cutting: an option can be right for the prototype
+and wrong for the vertical slice, and the description says which.

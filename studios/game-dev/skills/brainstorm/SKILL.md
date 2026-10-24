@@ -76,8 +76,8 @@ upgrades the path; say so.
 
 Ask three or four related questions per `AskUserQuestion`, each written as a
 decision brief: the question, what is at stake if it is answered wrong, your
-recommendation, and the options. Cover, in this order, only what the request
-leaves open:
+recommendation, and the options, each with its Gains and Costs (CLAUDE.md's
+Decision Questions). Cover, in this order, only what the request leaves open:
 
 1. **Player intent** — what the player is trying to do when this is used,
    and in which ten-second loop it appears.
@@ -100,9 +100,11 @@ Read free-text answers carefully; they often override the offered options.
 
 ## 4. Approaches
 
-For bounded and architectural work, propose two or three approaches with
-trade-offs and lead with your recommendation. One `AskUserQuestion`. YAGNI:
-cut anything the milestone gate does not need before you present.
+For bounded and architectural work, propose two or three approaches, each
+with its Gains and Costs, lead with your recommendation and mark the best
+long-term one (CLAUDE.md's Decision Questions). One `AskUserQuestion`. YAGNI:
+cut anything the milestone gate does not need before you present; an approach
+that costs more for less debt is not cut.
 
 For the architectural path, dispatch `game-dev:game-designer`
 (`subagent_type: "game-dev:game-designer"`) with the draft spec, briefed:

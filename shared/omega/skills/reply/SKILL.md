@@ -74,13 +74,16 @@ Three parts, in order, nothing else:
 
 1. **The situation** — one line, what the user or player would hit.
 2. **The choices** — two or three, one line each, described by what each one
-   feels like to play or to use.
+   feels like to play or to use. Each also keeps its Gains and Costs
+   (CLAUDE.md's Decision Questions), costs as relative size — "about twice
+   the work", "a rewrite when abilities grow" — never as raw values.
 3. **The pick** — this session's recommendation and a one-line reason.
 
 ## 5. The cap
 
 Five short lines, or three bullets. Exactly one scenario. Longer means cut
-it and offer the rest — "want the deep version?".
+it and offer the rest — "want the deep version?". The Gains and Costs of a
+choice sit outside the cap; they are never cut to fit it.
 
 ## 6. The precision floor
 

@@ -23,6 +23,7 @@ test_reply_contract() {
   assert_contains "$S" "Config and" "reply bans config keys from the prose"
   assert_contains "$S" "Raw numbers used as" "reply bans raw threshold values"
   assert_contains "$S" "The pick" "reply's decision shape ends with the recommendation"
+  assert_contains "$S" "sit outside the cap" "reply never cuts a choice's Gains and Costs to fit the cap"
   assert_contains "$S" "Test results, counts and every verification claim" \
     "reply never restyles a test result"
   assert_contains "$S" "give it back in its own terms first" \

@@ -100,6 +100,8 @@ test_install_content() {
   assert_file "$TMP/gd/CLAUDE.md" "renders CLAUDE.md"
   assert_contains "$TMP/gd/CLAUDE.md" "Game Development Studio" "rendered CLAUDE.md carries studio content"
   assert_contains "$TMP/gd/CLAUDE.md" "Engineering Standards" "rendered CLAUDE.md carries the shared part"
+  assert_contains "$TMP/gd/CLAUDE.md" "(Best long-term)" "rendered CLAUDE.md carries the Decision Questions standard"
+  assert_contains "$TMP/gd/CLAUDE.md" "## Decision trade-offs" "rendered CLAUDE.md carries the studio's game trade-off lens"
   assert_contains "$TMP/gd/CLAUDE.md" "GENERATED" "rendered CLAUDE.md warns it is generated"
   assert_contains "$TMP/gd/CLAUDE.md" "^@memory/MEMORY.md" "rendered CLAUDE.md imports the studio memory"
   assert_file "$TMP/gd/settings.json" "copies settings.json"
