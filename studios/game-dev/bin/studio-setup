@@ -7,12 +7,16 @@
 #                         `studio-gate gate -- sh -c '<command>'`
 #   studio-setup --help   this text
 #
-# Run from any directory inside a worktree; it cds to the worktree's root.
-#
-# Config (.studio/config.json in the tree root, else in the state root):
+# Config: each key from .studio/config.json in the tree root, else in
+# $STUDIO_START_DIR (the run's start checkout), else in the state root
+# (tree -> $STUDIO_START_DIR -> STATE_ROOT; studio_cfg_by in gate-class.sh).
 #   worktree_setup          command line (a value containing a backslash is refused)
 #   worktree_setup_minutes  timeout, integer 1-120, default 20
 #   gate_command            command line (a backslash is refused)
+# Under a run ($STUDIO_START_DIR set) a worktree with no config of its own first
+# gets a copy of the run's, where git ignores the path (cfg_seed).
+#
+# Run from any directory inside a worktree; it cds to the worktree's root.
 #
 # worktree_setup: the timer starts once the gate lock is held (at launch when
 # there is no lock to take or the lock is already held through re-entry); a
@@ -29,7 +33,8 @@
 # Exit (setup): 0 ran green, marker matched, or worktree_setup unset (silent) ·
 #   1 failed or timed out, one stderr line
 #   `worktree setup failed — exit <n> — log <path>` (124 = timeout) ·
-#   2 usage or bad config.
+#   2 usage or bad config, or a run's config ($STUDIO_START_DIR) sets
+#   worktree_setup but this worktree resolves none (one stderr line).
 # Exit (gate): the command's status (129/130/143 pass through); 0 when unset.
 # Test hook: STUDIO_SETUP_TIMEOUT_SECONDS replaces minutes x 60.
 # Test hook: STUDIO_SETUP_POLL_SECONDS (1, 0.5, 0.2 or 0.1; default 1) — the poll of the lock wait, run loop and TERM grace; budgets stay in seconds.
@@ -39,7 +44,7 @@ unset LC_ALL; LC_COLLATE=C
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
 usage() {
-  sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 VERB=""
@@ -65,11 +70,15 @@ cd "$TOP" || exit 2
 STATE_ROOT="$(sh "$HERE/studio-state" root 2>/dev/null)" || STATE_ROOT="$TOP"
 [ -n "$STATE_ROOT" ] || STATE_ROOT="$TOP"
 
-# cfg_get KEY — the quoted string value of "KEY" (first match), from the tree's
-# .studio/config.json, else STATE_ROOT's (D8); cfg_num KEY — the bare token.
-CONF="$TOP/.studio/config.json"; [ -f "$CONF" ] || CONF="$STATE_ROOT/.studio/config.json"
-cfg_get() { [ -f "$CONF" ] && sed -n 's/.*"'"$1"'"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$CONF" | head -n 1; }
-cfg_num() { [ -f "$CONF" ] && sed -n 's/.*"'"$1"'"[[:space:]]*:[[:space:]]*\([^,}[:space:]]*\).*/\1/p' "$CONF" | head -n 1; }
+# The config resolver shared with studio-gate and the engine adapters
+# (studio_cfg_by, cfg_field, cfg_token) and the run's config seed (cfg_seed).
+. "$HERE/gate-class.sh"
+cfg_seed
+# cfg_get KEY — the quoted string value of "KEY" (first match); cfg_num KEY —
+# the bare token. Each key from the tree's .studio/config.json, else
+# $STUDIO_START_DIR's (the run's), else STATE_ROOT's (D8).
+cfg_get() { studio_cfg_by cfg_field "$1" "$STATE_ROOT"; }
+cfg_num() { studio_cfg_by cfg_token "$1" "$STATE_ROOT"; }
 
 ensure_reports() {
   mkdir -p .studio/reports
@@ -152,7 +161,16 @@ timed_gate() {
 }
 
 CMD="$(cfg_get worktree_setup)"
-[ -n "$CMD" ] || exit 0
+if [ -z "$CMD" ]; then
+  # A run whose config sets worktree_setup never skips it silently in a worktree
+  # that resolves none (the phoenix KAN-1723-2 gap): a loud exit 2.
+  if [ -n "${STUDIO_START_DIR:-}" ] && [ -n "$(cfg_field "$STUDIO_START_DIR/.studio/config.json" worktree_setup)" ]; then
+    printf "studio-setup: the run's config sets worktree_setup (%s), but this worktree resolves none — not skipping it silently\n" \
+      "$STUDIO_START_DIR/.studio/config.json" >&2
+    exit 2
+  fi
+  exit 0
+fi
 no_backslash worktree_setup "$CMD"
 MIN="$(cfg_num worktree_setup_minutes)"
 [ -n "$MIN" ] || MIN=20
