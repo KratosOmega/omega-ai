@@ -108,11 +108,16 @@ cfg_raw() {
 }
 # cfg KEY DEFAULT MIN MAX int|dec [auto] — sets the variable named by KEY's upper
 # case; a present value outside the range or of the wrong kind is a refusal.
-# A number may be quoted ("6"); with `auto` the value "auto" means DEFAULT.
+# Only a key passing `auto` as the sixth argument also accepts a quoted number
+# ("6") and the string "auto" (= DEFAULT); a quoted empty value ("") is refused
+# there too. Every other key takes only a bare number, quotes included in the
+# refusal text.
 cfg() {
   _v="$(cfg_raw "$1")"
-  case "$_v" in '"'*'"') _v="${_v#\"}"; _v="${_v%\"}" ;; esac
-  [ "${6:-}" != auto ] || [ "$_v" != auto ] || _v=""
+  if [ "${6:-}" = auto ]; then
+    case "$_v" in '"'?*'"') _v="${_v#\"}"; _v="${_v%\"}" ;; esac
+    [ "$_v" != auto ] || _v=""
+  fi
   [ -n "$_v" ] || _v="$2"
   case "$5" in
     int) printf '%s' "$_v" | grep -Eq '^[0-9]+$' ;;

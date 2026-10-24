@@ -565,6 +565,24 @@ test_gate_learned_cap_fires() {
   assert_not_contains "$TMP/err.p" 'ran past [0-9]* min' "not the plain cap line"
   assert_eq "124 main exclusive" "$(rows probe | tail -n 1)" "a 124 row"
 }
+# exclusive-scan: test_gate_learned_cap_factor_and_setup out (d) every run is a 1 s run under a cap that cannot fire
+test_gate_learned_cap_factor_and_setup() {
+  lanes_repo lcapf
+  seed_probe 5 1
+  printf '1000 setup 1 0 0 main exclusive -\n1000 setup 1 0 0 main exclusive -\n1000 setup 1 0 0 main exclusive -\n1000 setup 1 0 0 main exclusive -\n1000 setup 1 0 0 main exclusive -\n' >> "$(gtf)"
+  # Factor 0: no learned cap, so the 3 s floor seam never applies and the run passes.
+  lanes_bg a "$LR" -- env STUDIO_GATE_MINUTES=60 STUDIO_GATE_LEARNED_FLOOR_SECONDS=3 STUDIO_GATE_CAP_FACTOR=0 sh "$LANES_GATE" probe -- sh -c 'sleep 6'
+  assert_eq 0 "$(lanes_done a)" "factor 0: no learned cap"
+  assert_not_contains "$TMP/err.a" 'ran past' "factor 0: no cap line"
+  # Factor 11 reads as 4: the learned cap (15 min, 3 s seam) fires.
+  lanes_bg b "$LR" -- env STUDIO_GATE_MINUTES=60 STUDIO_GATE_LEARNED_FLOOR_SECONDS=3 STUDIO_GATE_CAP_FACTOR=11 sh "$LANES_GATE" probe -- sh -c 'sleep 20'
+  assert_eq 124 "$(lanes_done b)" "factor 11 falls back to 4"
+  assert_contains "$TMP/err.b" 'learned cap of 15 min (4 × p95 of the last [0-9]* runs)' "with factor 4 in the line"
+  # Who setup is exempt from any cap.
+  lanes_bg c "$LR" -- env STUDIO_GATE_MINUTES=60 STUDIO_GATE_LEARNED_FLOOR_SECONDS=3 sh "$LANES_GATE" setup -- sh -c 'sleep 6'
+  assert_eq 0 "$(lanes_done c)" "setup: no learned cap"
+  assert_not_contains "$TMP/err.c" 'ran past' "setup: no cap line"
+}
 # exclusive-scan: test_gate_learned_cap_production_default out (d) a 2 s run under a 15 min floor
 test_gate_learned_cap_production_default() {
   assert_contains "$BIN/studio-gate" 'STUDIO_GATE_LEARNED_FLOOR_SECONDS:-900' "the floor defaults to 900 s"
@@ -818,4 +836,4 @@ run_tests test_lanes_beside_shareable test_lanes_never_beside_exclusive test_lan
   test_lanes_busy_mutex_first_poll_names_slot_holder test_lanes_own_pid_lane_is_stale \
   test_lanes_stale_own_demote_file_ignored test_lanes_late_signal_no_rerun_line test_lanes_leak_sticky_across_demote \
   test_lanes_phys_cores_read_once test_lanes_short_cap_equal_run_cap_is_124 \
-  test_gate_learned_cap_fires test_gate_learned_cap_production_default
+  test_gate_learned_cap_fires test_gate_learned_cap_production_default test_gate_learned_cap_factor_and_setup

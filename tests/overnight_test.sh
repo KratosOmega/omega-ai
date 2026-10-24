@@ -490,6 +490,18 @@ test_single_plan_one_lane_note() {
   assert_eq 0 "$RS_STATUS" "dry run exits 0"
   assert_contains "$RS_OUT" "^one lane: a hold idles this run until you answer; add an independent story to keep the machine busy$" "single-plan run: the one-lane line"
 }
+test_overnight_cfg_quoted_values_opt_in() {
+  for _q in '"6"' '"auto"' '""'; do
+    fixture "cq$(printf '%s' "$_q" | tr -cd 'a-z0-9')" "{ \"overnight\": { \"retries\": $_q } }"
+    run_start --dry-run
+    assert_eq 2 "$RS_STATUS" "retries $_q is refused (not an opt-in key)"
+    assert_contains "$RS_ERR" "config overnight.retries must be a number from 0 to 3 (int), got $_q\$" "the refusal text is unchanged for $_q"
+  done
+  fixture cqe '{ "overnight": { "gate_cap_factor": "" } }'
+  run_start --dry-run
+  assert_eq 2 "$RS_STATUS" "gate_cap_factor \"\" is refused"
+  assert_contains "$RS_ERR" 'config overnight.gate_cap_factor must be a number from 0 to 10 (int), got ""$' "naming the empty value"
+}
 test_overnight_caps_readout() {
   push_fixture cr1
   _cr_i=0; while [ "$_cr_i" -lt 5 ]; do printf '1000 studio-test 290 0 0 main exclusive -\n' >> "$P/.studio/gate.times"; _cr_i=$((_cr_i + 1)); done
@@ -2923,7 +2935,7 @@ run_tests test_overnight_setup_preflight_single test_overnight_help_setup_prefli
   test_overnight_stop_no_run test_overnight_inhibitor test_overnight_no_inhibitor \
   test_overnight_help test_overnight_unit_caps test_events_contract_doc test_overnight_dry_run \
   test_overnight_preflight_refusals test_overnight_preflight_all_failures \
-  test_overnight_push_check_refuses_without_workflow test_overnight_push_check_ok_line test_single_plan_one_lane_note test_overnight_caps_readout test_overnight_push_check_no_workflows \
+  test_overnight_push_check_refuses_without_workflow test_overnight_push_check_ok_line test_single_plan_one_lane_note test_overnight_caps_readout test_overnight_cfg_quoted_values_opt_in test_overnight_push_check_no_workflows \
   test_overnight_push_check_ssh test_overnight_push_check_unknown_scopes test_overnight_push_check_other_helper \
   test_overnight_config_refusals test_overnight_deny_file_required \
   test_overnight_lock test_overnight_first_use_ignores \
