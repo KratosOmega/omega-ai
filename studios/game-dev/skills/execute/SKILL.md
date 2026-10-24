@@ -440,6 +440,10 @@ orchestrator can judge the report:
 - For `unit`: the test exists, fails without the change, passes with it.
 - For a Block (§6a): a Block's pending marker covers only the failing assertions.
 - For a Block (§6a): the pinned reference is unchanged in the commit range.
+- For a Block (§6a): its blocks-file entry's **Why it is pinned** cites a plan,
+  spec, `## Decisions` or `## Global Constraints` line that freezes that
+  reference. Without one it is a fake Block, a Critical finding: the check
+  is ordinary work.
 
 Findings are one line each, severity-tagged.
 
@@ -537,6 +541,9 @@ the last task's review. Under `--one`, see §8: a task unit never starts it.
      before merge;
    - the story's `Block:` lines (§6a), with the instruction
      "report each open Block in the verdict; never a fix-wave item; a change to a pinned reference is Critical";
+   - "check each Block's **Why it is pinned**: it cites a plan, spec,
+     `## Decisions` or `## Global Constraints` line that freezes that
+     reference; a Block without one is a fake Block, a Critical finding";
    - "Gate-enforced findings are must-fix": a finding about anything the
      gate checks — line length, docs budgets, any check under `tests/` —
      whatever its severity, is never ruled `leave`, deferred or parked;
@@ -560,6 +567,9 @@ the last task's review. Under `--one`, see §8: a task unit never starts it.
    Re-review per §4a rule 3 (a Minor-only wave is never re-reviewed); never
    a third pass (§4a rule 4).
    The wave never takes a Block: an open Block stays pending for the author.
+   A fake Block (step 3: its **Why it is pinned** cites no line that freezes
+   the reference) is a fix-wave item: un-pend the test and fix the code. A
+   genuine Block never is.
    A check the wave itself finds against a pinned reference is a new Block
    (§6a, prefix `final`).
 6. `studio-state ledger "final review done"`, then commit the ledger:
@@ -616,7 +626,8 @@ Everything else stays as it is:
   compares against a pinned reference. These join §6's stop list (under
   `--one`, §8's stop rule):
   - A missing tool: a tool not on PATH (`ffmpeg: command not found`), an
-    interpreter that cannot import, the engine missing;
+    interpreter that cannot import (the environment, not the code under
+    test), the engine missing;
   - setup failed, a push rejected, a gate timed out.
 - When it is unclear whether a reference is pinned, it is not a Block:
   record a `Ruling:` and fix the code, or Stop when the fix would change the
@@ -674,6 +685,7 @@ Everything else stays as it is:
    Never regenerate, re-capture, loosen, re-approve or edit the pinned reference to get green,
    and never widen the pending marker beyond the failing assertions. Either
    is a Critical review finding.
+   Marking pending a check whose reference is not pinned is a Critical finding (a fake Block).
 
 **Where it applies:**
 

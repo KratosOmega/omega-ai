@@ -10,6 +10,7 @@ HOME="$TMP/home"; export HOME; mkdir -p "$HOME"
 DUMMIES=""
 TAB="$(printf '\t')"
 . "$LIB"
+. "$REPO_ROOT/studios/game-dev/bin/overnight-tools.sh"   # tools_run: runs_settle's gh call goes through it
 # live_dummy — a live pid whose args name studio-overnight (DUMMY).
 live_dummy() { sh -c 'sleep 60; :' studio-overnight >/dev/null 2>&1 & DUMMY=$!; DUMMIES="$DUMMIES $DUMMY"; }
 dead_pid() { sh -c ':' & wait $!; DEAD=$!; }
@@ -73,19 +74,28 @@ test_runs_records() {
   runs_record_done "$R" done; assert_eq 0 $? "done"
   runs_record_open "$R" lockonly; assert_eq 1 $? "a lock alone is no record (D4)"
 }
-# runs_settle: a hand-made record and a PATH-first gh stub.
+# settle_repo DIR — DIR a git repo with two commits: C1, then its child C2.
+settle_repo() {
+  git init -q "$1" && git -C "$1" -c user.name=t -c user.email=t@t commit -q --allow-empty -m c1 \
+    && C1="$(git -C "$1" rev-parse HEAD)" \
+    && git -C "$1" -c user.name=t -c user.email=t@t commit -q --allow-empty -m c2 \
+    && C2="$(git -C "$1" rev-parse HEAD)"
+}
+# runs_settle: a hand-made record and a PATH-first gh stub. The landings (C1, C2) are in the
+# final PR's head (C2), and the stub's headRefOid is that head.
 test_runs_settle() {
-  R="$TMP/settle"; D="$R/.studio/runs/s"; mkdir -p "$D" "$TMP/ghbin"
-  printf 'A\tb\nB\tb\n' > "$D/rows.tsv"; printf 'A\tt\n' > "$D/landed.tsv"
-  printf 'abc https://gh.test/pr/7 red\n' > "$D/final"
+  R="$TMP/settle"; D="$R/.studio/runs/s"; settle_repo "$R"; mkdir -p "$D" "$TMP/ghbin"
+  printf 'A\tb\nB\tb\n' > "$D/rows.tsv"; printf 'A\tt\t%s\t1\n' "$C1" > "$D/landed.tsv"
+  printf '%s https://gh.test/pr/7 red\n' "$C2" > "$D/final"
   cat > "$TMP/ghbin/gh" <<'STUB'
 #!/bin/sh
-printf '{"state":"%s"}\n' "${GH_STATE:-MERGED}"
+printf '{"state":"%s","headRefOid":"%s"}\n' "${GH_STATE:-MERGED}" "$GH_HEAD"
 STUB
   chmod +x "$TMP/ghbin/gh"
+  GH_HEAD="$C2"; export GH_HEAD
   _op="$PATH"; PATH="$TMP/ghbin:$PATH"
   runs_settle "$R" s >/dev/null; assert_eq 1 $? "a story not landed: no settle"
-  printf 'B\tt\n' >> "$D/landed.tsv"
+  printf 'B\tt\t%s\t2\n' "$C2" >> "$D/landed.tsv"
   GH_STATE=OPEN; export GH_STATE
   runs_settle "$R" s >/dev/null 2>"$TMP/se.err"; assert_eq 1 $? "an OPEN PR: no settle"
   assert_eq "" "$(cat "$TMP/se.err")" "an OPEN PR says nothing"
@@ -101,7 +111,72 @@ STUB
   assert_missing "$D/done" "a gh failure writes nothing"
   rm -f "$D/done"; : > "$D/final"
   runs_settle "$R" s >/dev/null; assert_eq 1 $? "no final URL: no settle"
-  unset GH_STATE; PATH="$_op"
+  unset GH_STATE GH_HEAD; PATH="$_op"
+}
+# runs_settle trusts the merged PR only for the work it carries, and never for a live run:
+# each case below leaves the record open, and the last (all guards met) settles it.
+test_runs_settle_guards() {
+  R="$TMP/sg"; D="$R/.studio/runs/g"; settle_repo "$R"; mkdir -p "$D" "$TMP/sgbin"
+  printf 'A\tb\nB\tb\n' > "$D/rows.tsv"; printf 'A\tt\t%s\t1\nB\tt\t%s\t2\n' "$C1" "$C2" > "$D/landed.tsv"
+  cat > "$TMP/sgbin/gh" <<'STUB'
+#!/bin/sh
+printf '%s\n' "$*" >> "$GH_LOG"
+printf '{"state":"MERGED","headRefOid":"%s"}\n' "$GH_HEAD"
+STUB
+  chmod +x "$TMP/sgbin/gh"
+  GH_LOG="$TMP/sg.calls"; : > "$GH_LOG"; export GH_LOG GH_HEAD
+  _op="$PATH"; PATH="$TMP/sgbin:$PATH"
+  # A final step at C1 (A landed), merged by hand; then B landed at C2 and no new final step ran.
+  printf '%s https://gh.test/pr/8 red\n' "$C1" > "$D/final"; GH_HEAD="$C1"
+  runs_settle "$R" g >/dev/null 2>"$TMP/sg.err"; assert_eq 1 $? "a story landed after the final PR's head: no settle"
+  assert_missing "$D/done" "the record stays open (B is not in the merged PR)"
+  assert_eq "" "$(cat "$TMP/sg.err")" "silently"
+  # The PR's head moved past RECORD/final's head.
+  printf '%s https://gh.test/pr/8 red\n' "$C2" > "$D/final"; GH_HEAD="$C1"
+  runs_settle "$R" g >/dev/null 2>"$TMP/sg.err"; assert_eq 1 $? "headRefOid is not RECORD/final's head: no settle"
+  assert_missing "$D/done" "the record stays open"
+  # A head that is no commit here.
+  _rz="$(printf '%040d' 0)"
+  printf '%s https://gh.test/pr/8 red\n' "$_rz" > "$D/final"; GH_HEAD="$_rz"
+  runs_settle "$R" g >/dev/null 2>&1; assert_eq 1 $? "a missing object: no settle"
+  assert_missing "$D/done" "the record stays open"
+  # A live run of the slug: gh is not asked.
+  printf '%s https://gh.test/pr/8 red\n' "$C2" > "$D/final"; GH_HEAD="$C2"
+  live_dummy; printf 'pid=%s\nrun=%s\nstarted=2026-10-23T01:00:00Z\n' "$DUMMY" "$TMP/sg-run" > "$D/lock"
+  : > "$GH_LOG"
+  runs_settle "$R" g >/dev/null 2>&1; assert_eq 1 $? "a live run: no settle"
+  assert_missing "$D/done" "the live run's record stays open"
+  assert_eq "" "$(cat "$GH_LOG")" "and gh is not asked"
+  rm -f "$D/lock"
+  # A URL that is not https is never passed to gh.
+  printf '%s --repo=x red\n' "$C2" > "$D/final"
+  runs_settle "$R" g >/dev/null 2>"$TMP/sg.err"; assert_eq 1 $? "a URL that is not https: no settle"
+  assert_eq "run g: cannot read the state of final PR --repo=x — record left open" "$(cat "$TMP/sg.err")" "it says so on stderr"
+  assert_eq "" "$(cat "$GH_LOG")" "and gh is not asked"
+  # Every guard met.
+  printf '%s https://gh.test/pr/8 red\n' "$C2" > "$D/final"
+  assert_eq "run g: final PR https://gh.test/pr/8 is merged — record marked done" "$(runs_settle "$R" g)" "all guards met: settled"
+  assert_eq "pr view https://gh.test/pr/8 --json state,headRefOid" "$(cat "$GH_LOG")" "gh is asked for the state and the head"
+  unset GH_LOG GH_HEAD; PATH="$_op"
+}
+# exclusive-scan: test_runs_settle_gh_capped out (d) the one-second cap only has to fire before a gh that sleeps ten seconds answers MERGED; a late cap still leaves the record open
+# A gh that does not answer within the cap (STUDIO_OVERNIGHT_TOOLS_SECONDS, tools_run's) is a gh failure.
+test_runs_settle_gh_capped() {
+  R="$TMP/sgc"; D="$R/.studio/runs/c"; settle_repo "$R"; mkdir -p "$D" "$TMP/sgcbin"
+  printf 'A\tb\n' > "$D/rows.tsv"; printf 'A\tt\t%s\t1\n' "$C2" > "$D/landed.tsv"
+  printf '%s https://gh.test/pr/9 red\n' "$C2" > "$D/final"
+  cat > "$TMP/sgcbin/gh" <<'STUB'
+#!/bin/sh
+i=0; while [ "$i" -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
+printf '{"state":"MERGED","headRefOid":"%s"}\n' "$GH_HEAD"
+STUB
+  chmod +x "$TMP/sgcbin/gh"
+  GH_HEAD="$C2"; STUDIO_OVERNIGHT_TOOLS_SECONDS=1; export GH_HEAD STUDIO_OVERNIGHT_TOOLS_SECONDS
+  _op="$PATH"; PATH="$TMP/sgcbin:$PATH"
+  runs_settle "$R" c >/dev/null 2>"$TMP/sgc.err"; assert_eq 1 $? "a gh past the cap: no settle"
+  assert_eq "run c: cannot read the state of final PR https://gh.test/pr/9 — record left open" "$(cat "$TMP/sgc.err")" "it says so on stderr"
+  assert_missing "$D/done" "the record stays open"
+  unset GH_HEAD STUDIO_OVERNIGHT_TOOLS_SECONDS; PATH="$_op"
 }
 test_runs_rows_newest_report() {
   R="$TMP/rows"; mkdir -p "$R/.studio/reports/overnight-a-20261001-010101" "$R/.studio/reports/overnight-a-20261002-010101" \
@@ -188,6 +263,6 @@ TESTS_REAL_CLOCK="test_mutex_reap_race"
 # exclusive-scan: test_mutex_stale_reap_lock_broken in (a) asserts the take finishes inside a 5 s ceiling
 TESTS_EXCLUSIVE="test_mutex_stale_reap_lock_broken"
 run_tests test_runs_live_per_run_and_old_lock test_runs_live_skips_dead_and_single test_runs_match_slug_or_basename \
-  test_runs_stop_of test_runs_start_dir_lock_then_registry test_runs_records test_runs_settle test_runs_rows_newest_report \
+  test_runs_stop_of test_runs_start_dir_lock_then_registry test_runs_records test_runs_settle test_runs_settle_guards test_runs_settle_gh_capped test_runs_rows_newest_report \
   test_runs_worktree_of test_runs_plan_files_studio_form test_runs_plan_files_superpowers_form test_runs_plan_files_comma_line_list test_mx_take_drop_and_dead_owner \
   test_mutex_reap_race test_mutex_stale_reap_lock_broken

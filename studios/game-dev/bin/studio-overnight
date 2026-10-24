@@ -507,7 +507,8 @@ Test hooks (tests only; never set them for a real run; --detach strips them):
                      osascript on macOS); tests set it to `: `
   STUDIO_OVERNIGHT_NOTIFY_SECONDS — test hook: the notifier's cap (default 10)
   STUDIO_OVERNIGHT_TOOLS_SECONDS — test hook: the cap on one required_tools
-                     probe run (default 10; a capped run is exit 124)
+                     probe run (default 10; a capped run is exit 124), and on
+                     the gh call that checks a record's final PR is merged
   STUDIO_OVERNIGHT_SLOT_POLL_SECONDS — test hook: seconds between a unit's
                      tries for a session slot (default 2)
   STUDIO_OVERNIGHT_LAND_HOOK — test hook: shell text evaluated after a landing's
@@ -2134,7 +2135,9 @@ setup_preflight() {
   _sp_l="$(tail -n 1 "$_sp_ef" 2>/dev/null)"; rm -f "$_sp_ef"; _sp_ef=""
   if [ "$_sp_rc" -eq 0 ]; then
     # #95: the path entries of required_tools, probed where the setup built them.
-    tools_check "paths-in $SP_W" || { sp_remove; exit 2; }
+    # Their tools: lines go to stderr: under start --detach this runs in lanes_start
+    # --check, whose stdout detach reads as the checked commit alone.
+    tools_check "paths-in $SP_W" >&2 || { sp_remove; exit 2; }
     sp_remove; say "worktree_setup: green in a linked worktree"; return 0
   fi
   _sp_log=""
@@ -2311,8 +2314,10 @@ status_reap_dead() {
 # looked. Returns 0 live, 1 not.
 project_status() {
   status_reap_dead
-  for _ps_z in "$STATE_ROOT"/.studio/runs/*/landed.tsv; do   # #82: a merged final PR closes its record
-    [ -f "$_ps_z" ] || continue
+  # #82: a merged final PR closes its record — not under `status --run` (detach's
+  # liveness poll), which asks gh nothing.
+  for _ps_z in "$STATE_ROOT"/.studio/runs/*/landed.tsv; do
+    [ -z "${RUN_SEL:-}" ] && [ -f "$_ps_z" ] || continue
     _ps_z="${_ps_z%/landed.tsv}"; runs_settle "$STATE_ROOT" "${_ps_z##*/}" || :
   done
   _ps_all="$(runs_live "$STATE_ROOT")"

@@ -1760,9 +1760,11 @@ final_pr_open() {
 # lines (from origin/<Branch>; a deleted branch's from its merge commit's
 # second parent, a fast-forward's from the commit itself) and its merge sha;
 # `## Not landed` with every other story's ending; `## Blocks file` with
-# each distinct `— blocks <path>` file read from FINAL_W (regular files
-# only; a symlink, a missing file or an escaping path gets a note), cut at
-# 20000 bytes; the gate line.
+# each distinct `— blocks <path>` file (blanks and backticks trimmed) read
+# as tracked content at FINAL_W's HEAD (a regular blob only: a symlink, a
+# missing, untracked or ignored file, or an escaping path gets a note), cut
+# at 20000 bytes, the section at 40000 (from the first file that does not
+# fit, each remaining path gets a pointer instead); the gate line.
 final_body() {
   _fb_nl=""; _fb_bp=""
   {
@@ -1782,7 +1784,8 @@ final_body() {
           || git -C "$START_DIR" show "$_fb_sha:.studio/ledger/$_fb_id.md" 2>/dev/null; } \
         | grep -E '^- [0-9-]+ (([^ ]+ )?(Ruling|Block): |P[0-9]+ Play: )')"
       [ -z "$_fb_ll" ] || printf '%s\n' "$_fb_ll"
-      _fb_bp="$_fb_bp$(printf '%s\n' "$_fb_ll" | grep -E '^- [0-9-]+ ([^ ]+ )?Block: ' | sed -n 's/.* — blocks //p')
+      _fb_bp="$_fb_bp$(printf '%s\n' "$_fb_ll" | grep -E '^- [0-9-]+ ([^ ]+ )?Block: ' | sed -n 's/.* — blocks //p' \
+        | sed -e 's/^[[:blank:]`]*//' -e 's/[[:blank:]`]*$//')
 "
       printf '\nMerge: %s\n\n' "$_fb_sha"
     done
@@ -1790,23 +1793,34 @@ final_body() {
     _fb_bp="$(printf '%s\n' "$_fb_bp" | awk 'NF && !seen[$0]++')"
     if [ -n "$_fb_bp" ]; then
       printf '## Blocks file\n\n'
+      # _fb_room: the section's bytes left (GitHub caps a body at 65536 characters).
+      _fb_room=$((40000 - 16)); _fb_full=0
       printf '%s\n' "$_fb_bp" | while IFS= read -r _fb_p; do
         case "$_fb_p" in /*|../*|*/../*|*..) continue ;; esac
-        printf '### %s\n\n' "$_fb_p"
-        # a regular file whose real parent stays inside FINAL_W (no symlink out)
-        _fb_pw="$(cd "$FINAL_W" 2>/dev/null && pwd -P)"
-        _fb_pd="$(cd "$FINAL_W/$(dirname "$_fb_p")" 2>/dev/null && pwd -P)"
-        case "$_fb_pd" in
-          "$_fb_pw"|"$_fb_pw"/*) [ -f "$FINAL_W/$_fb_p" ] && [ ! -L "$FINAL_W/$_fb_p" ] && _fb_ok=1 || _fb_ok=0 ;;
-          *) _fb_ok=0 ;;
+        _fb_hd="### $_fb_p"
+        printf '%s\n\n' "$_fb_hd"
+        # Tracked content only: the blob at FINAL_W's HEAD (git never follows a symlink;
+        # a committed one is mode 120000), never a file in the worktree.
+        _fb_o="$(git --literal-pathspecs -c core.quotePath=false -C "$FINAL_W" ls-tree HEAD -- "$_fb_p" 2>/dev/null \
+          | awk -F'\t' -v p="$_fb_p" '$2 == p { split($1, a, " "); if (a[1] == "100644" || a[1] == "100755") print a[3]; exit }')"
+        _fb_n="$(git -C "$FINAL_W" cat-file -s "$_fb_o" 2>/dev/null)" || _fb_n=""
+        case "$_fb_o:$_fb_n" in
+          :*|*:|*:*[!0-9]*)
+            printf '(not on the branch as a regular file — read %s on the branch)\n\n' "$_fb_p"; continue ;;
         esac
-        if [ "$_fb_ok" -eq 0 ]; then
-          printf '(not on the branch as a regular file — read %s on the branch)\n\n' "$_fb_p"
-        elif [ "$(wc -c < "$FINAL_W/$_fb_p" 2>/dev/null | tr -d ' ')" -gt 20000 ] 2>/dev/null; then
-          head -c 20000 "$FINAL_W/$_fb_p"; printf '\n(truncated — read %s on the branch)\n\n' "$_fb_p"
-        else
-          cat "$FINAL_W/$_fb_p" 2>/dev/null; printf '\n'
+        _fb_k="$_fb_n"; _fb_t=""
+        [ "$_fb_n" -le 20000 ] || { _fb_k=20000; _fb_t="(truncated — read $_fb_p on the branch)"; }
+        # What this entry prints: the heading and a blank line, the content and a newline,
+        # and for a cut file the cut line and a blank line.
+        _fb_need=$(( $(printf '%s%s' "$_fb_hd" "$_fb_t" | wc -c) + 3 + _fb_k ))
+        [ -z "$_fb_t" ] || _fb_need=$((_fb_need + 2))
+        if [ "$_fb_full" -eq 1 ] || [ "$_fb_need" -gt "$_fb_room" ]; then
+          _fb_full=1
+          printf '(not inlined — read %s on the branch)\n\n' "$_fb_p"; continue
         fi
+        _fb_room=$((_fb_room - _fb_need))
+        git -C "$FINAL_W" cat-file blob "$_fb_o" 2>/dev/null | head -c "$_fb_k"; printf '\n'
+        [ -z "$_fb_t" ] || printf '%s\n\n' "$_fb_t"
       done
     fi
     printf 'Gate: %s on %s (studio-test, studio-lint, studio-run --seconds 10)\n' "$FINAL_GATE" "$2"
