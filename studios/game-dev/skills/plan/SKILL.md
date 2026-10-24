@@ -213,7 +213,7 @@ when you add one.
    it prints at least two tracks with at least 3 tasks each. Fold tracks
    smaller than that into the track they share an acceptance criterion with,
    or into track 1. With no such split, skip to the plain stop. That also
-   applies when folding leaves one track, and when an acceptance criterion tie that folds everything.
+   applies when folding leaves one track, and when acceptance criterion ties fold everything into one track.
    `tracks` silently isolates a task with no single-line `Files:`:
    a task shown as `files: -` must get its `Files:` line before a split is proposed.
 2. Assign every acceptance criterion to the track whose tasks implement it.

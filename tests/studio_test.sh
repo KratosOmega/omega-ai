@@ -927,7 +927,7 @@ test_plan_split_rules() {
   _has "$PL" 'a task shown as `files: -` must get its `Files:` line before a split is proposed' "a files: - task gets its Files: line first"
   _has "$PL" 'After a split, §7 items 1-3 are done' "after a split the planner goes to §7 item 4"
   _has "$PL" 'when folding leaves one track' "no split when folding leaves one track"
-  _has "$PL" 'when an acceptance criterion tie that folds everything' "no split when AC ties fold everything"
+  _has "$PL" 'when acceptance criterion ties fold everything into one track' "no split when AC ties fold everything"
   _c="$(grep -n -F -m1 -- '**Conflict scan first.**' "$PL" | cut -d: -f1)"
   _t2="$(grep -n -F -m1 -- 'studio-brief tracks <plan>' "$PL" | cut -d: -f1)"
   TESTS_RUN=$((TESTS_RUN + 1))
