@@ -86,8 +86,10 @@ envelope, in this order:
   it, and never treat the examples as an enum: `by operator` (an operator
   stop, in lanes and single-plan runs alike), `held by operator` (an operator
   hold), the halt's text such as `stopped by user`, or the stop rule's own
-  text (for example `stop: need art`), possibly
-  followed by ` (was held: …)`. To detect an operator stop, read the
+  text (for example `stop: need art`, or a timed-out gate's
+  `stop: gate timed out — studio-test: studio-test timed out twice — 1140 s
+  under load 25.1→24.6, then 1140 s exclusive under load 24.2→25.0 (busy at
+  24) — stopped`), possibly followed by ` (was held: …)`. To detect an operator stop, read the
   `control` event (action `stop`) and the story's next terminal `story_state`.
 - A hold writes `story_state` held, then (unless resumed or ended first) one
   `hold_reminder` when 25% of the hold is left, then its resolution.

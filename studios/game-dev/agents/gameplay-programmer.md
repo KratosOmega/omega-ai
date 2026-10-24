@@ -44,7 +44,8 @@ Pass `timeout: $BASH_MAX_TIMEOUT_MS` only on gate-routed commands
 command keeps the default cap. A command that its timeout moved to the
 background is hung: stop it with the tool that stops background tasks, and
 do not wait for it. A `studio-test` that exits 124 ran past the gate run
-cap: report it verbatim as `gate timed out — <command> ran past <n> min`;
+cap (the gate has already run it again if the machine was busy): report it as
+`gate timed out — <command>: <the gate's last stderr line, without "gate: ">`;
 it exits 124.
 
 For `Verify: playtest` and `Verify: visual` tasks: implement, commit (a task with no
