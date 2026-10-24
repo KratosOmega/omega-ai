@@ -60,7 +60,7 @@ runs_record_open() { [ -f "$1/.studio/runs/$2/landed.tsv" ] && [ ! -f "$1/.studi
 runs_record_done() { [ -f "$1/.studio/runs/$2/landed.tsv" ] && [ -f "$1/.studio/runs/$2/done" ]; }
 # runs_settle ROOT SLUG [--dry-run] — mark an open record done when every row has landed and its
 # final PR (RECORD/final, field 2) is MERGED per gh (#82); prints the line and returns 0 then
-# (--dry-run: only says so), 1 silently otherwise (gh failure included). The only writer of done
+# (--dry-run: only says so), 1 otherwise (silently, but for one stderr line when gh cannot say). The only writer of done
 # besides lanes_finish.
 runs_settle() {
   runs_record_open "$1" "$2" || return 1
@@ -70,7 +70,11 @@ runs_settle() {
   cut -f1 "$_rt_d/rows.tsv" | awk -F'\t' -v l="$_rt_d/landed.tsv" '
     BEGIN { while ((getline x < l) > 0) { split(x, a, "\t"); got[a[1]] = 1 } }
     $1 != "" && !($1 in got) { bad = 1 } END { exit bad }' || return 1
-  [ "$(gh pr view "$_rt_u" --json state 2>/dev/null | sed -n 's/.*"state"[[:space:]]*:[[:space:]]*"\([A-Z]*\)".*/\1/p' | head -n 1)" = MERGED ] || return 1
+  # From the root, so gh's host and auth resolve from the repo. A gh that fails, or prints no state, says so on stderr.
+  _rt_j="$(cd "$1" && gh pr view "$_rt_u" --json state 2>/dev/null)" && _rt_s="$(printf '%s\n' "$_rt_j" \
+    | sed -n 's/.*"state"[[:space:]]*:[[:space:]]*"\([A-Z]*\)".*/\1/p' | head -n 1)" && [ -n "$_rt_s" ] \
+    || { printf 'run %s: cannot read the state of final PR %s — record left open\n' "$2" "$_rt_u" >&2; return 1; }
+  [ "$_rt_s" = MERGED ] || return 1
   if [ "${3:-}" = --dry-run ]; then
     printf 'run %s: final PR %s is merged — start marks the record done\n' "$2" "$_rt_u"
   else

@@ -2331,6 +2331,33 @@ test_lanes_done_marker() {
   ( cd "$P" && sh "$RUNNER" status ) >/dev/null 2>&1
   assert_file "$P/.studio/runs/demo/done" "status marks a merged final PR's record done"
 }
+# #82: a real start settles a merged final PR's record and then refuses it as done; --check keeps stdout to the commit.
+test_lanes_settle_start_and_check() {
+  lanes_fixture settlest integration A:-
+  printf 'noop\n' > "$SCEN/final-repair"
+  use_gate "exit 1"
+  run_lanes start "$MFP"
+  use_gate true
+  echo state=MERGED >> "$GH/pr-1"
+  run_lanes start "$MFP"
+  assert_eq 2 "$LS_STATUS" "start refuses the settled record"
+  assert_contains "$LS_OUT" "^run demo: final PR https://gh.test/pr/1 is merged — record marked done$" "start names the settle"
+  assert_file "$P/.studio/runs/demo/done" "start marks the record done"
+  assert_contains "$LS_ERR" "run demo is done: archive its record first" "then refuses with the archive hint"
+  lanes_fixture settlechk integration A:-
+  printf 'head=x\nbase=y\nstate=MERGED\ndraft=0\noid=\ntitle=t\n' > "$GH/pr-1"
+  mkdir -p "$P/.studio/runs/other"
+  printf 'Z\tb\n' > "$P/.studio/runs/other/rows.tsv"; printf 'Z\tt\n' > "$P/.studio/runs/other/landed.tsv"
+  printf 'abc https://gh.test/pr/1 red\n' > "$P/.studio/runs/other/final"
+  # The detach path runs lanes_start --check in the foreground and parses its stdout as a commit id: a settle line there would be refused.
+  st=0; ( cd "$P" && sh "$RUNNER" start --detach "$MFP" ) > "$TMP/dsc.out" 2> "$TMP/dsc.err" || st=$?
+  assert_eq 0 "$st" "the detached start accepts the check's stdout (the commit alone)"
+  assert_file "$P/.studio/runs/other/done" "the check settles the other record"
+  assert_contains "$TMP/dsc.err" "^run other: final PR https://gh.test/pr/1 is merged — record marked done$" "the settle line is on stderr"
+  assert_not_contains "$TMP/dsc.out" "run other" "and not on stdout"
+  wait_for "[ -f '$CALLS/1.fullenv' ]" 60
+  detach_stop
+}
 # #82: an unmerged final PR, a record with an unlanded story, or a gh failure leaves the record open.
 test_lanes_settle_keeps_open() {
   lanes_fixture settleopen integration A:-
@@ -2342,8 +2369,9 @@ test_lanes_settle_keeps_open() {
   assert_missing "$P/.studio/runs/demo/done" "an OPEN final PR stays open"
   echo state=MERGED >> "$GH/pr-1"
   GH_FAIL_VIEW=1; export GH_FAIL_VIEW
-  ( cd "$P" && sh "$RUNNER" status ) >/dev/null 2>&1
+  ( cd "$P" && sh "$RUNNER" status ) >/dev/null 2>"$TMP/st.err"
   unset GH_FAIL_VIEW
+  assert_contains "$TMP/st.err" "^run demo: cannot read the state of final PR https://gh.test/pr/1 — record left open$" "a gh failure says so on stderr"
   assert_missing "$P/.studio/runs/demo/done" "a gh failure changes nothing"
   cp "$P/.studio/runs/demo/landed.tsv" "$TMP/landed.keep"; : > "$P/.studio/runs/demo/landed.tsv"
   ( cd "$P" && sh "$RUNNER" status ) >/dev/null 2>&1
@@ -5048,7 +5076,7 @@ run_tests test_stub_waitexist_and_run_token test_lanes_setup_preflight_refuses_l
   test_lanes_final_dirty_unit_is_red test_lanes_final_unit_stop_pointer_invisible test_lanes_final_budget test_lanes_final_conflict_then_red test_lanes_final_gate_interrupted_not_recorded \
   test_lanes_direct_merge_timeout_after_merge_lands test_lanes_direct_merge_timeout_term_ignored \
   test_lanes_status_dead_old_lock_not_masking test_lanes_status_per_story test_lanes_report_every_ending test_lanes_report_on_lane_crash \
-  test_lanes_done_marker test_lanes_settle_keeps_open test_lanes_status_reaps_dead_runner test_lanes_reap_names_final_pr \
+  test_lanes_done_marker test_lanes_settle_keeps_open test_lanes_settle_start_and_check test_lanes_status_reaps_dead_runner test_lanes_reap_names_final_pr \
   test_lanes_detach_strips_env test_lanes_detach_shows_push_warning test_lanes_push_check_target_workflows test_lanes_detach_refusal_in_foreground test_lanes_detach_child_refusal_surfaces \
   test_lanes_detach_timeout_lock_held_points_at_status test_lanes_detach_timeout_no_lock_ends_child \
   test_lanes_detach_poll_keeps_budget test_lanes_detach_poll_rejects_bad_value \
