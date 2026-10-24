@@ -505,6 +505,16 @@ test_skill_execute_block_outcome() {
   assert_contains "$S" 'A Block is not a stop (§6a)' "§8 says a Block is not a stop"
   assert_contains "$S" 'a conflict in a blocks file' "§9 keeps both sides of a blocks file"
   assert_eq 1 "$(sed -n '/^## 9\. /,/^## 10\. /p' "$S" | grep -c 'a conflict in a blocks file')" "the blocks-file conflict rule is in §9"
+  # A fake Block (a pending check whose reference is not pinned) is caught and fixed.
+  assert_eq 1 "$(sed -n '/^## 4\. /,/^## 4a\. /p' "$S" | grep -c '^- For a Block (§6a): its blocks-file entry.s \*\*Why it is pinned\*\* cites a plan,$')" \
+    "§4: the reviewer checks that Why it is pinned cites a line that freezes the reference"
+  assert_eq 1 "$(sed -n '/^## 4\. /,/^## 4a\. /p' "$S" | grep -c 'reference\. Without one it is a fake Block, a Critical finding')" "§4: a Block without one is a fake Block, Critical"
+  assert_eq 1 "$(sed -n '/^## 5\. /,/^## 6\. /p' "$S" | grep -c '"check each Block.s \*\*Why it is pinned\*\*')" "§5 step 3: the final reviewer checks Why it is pinned"
+  assert_eq 1 "$(sed -n '/^## 5\. /,/^## 6\. /p' "$S" | grep -c 'reference; a Block without one is a fake Block, a Critical finding";$')" "§5 step 3: a fake Block is Critical"
+  assert_eq 1 "$(sed -n '/^## 5\. /,/^## 6\. /p' "$S" | grep -c '^   the reference) is a fix-wave item: un-pend the test and fix the code\. A$')" "§5 step 5: a fake Block is a fix-wave item"
+  assert_eq 1 "$(sed -n '/^## 5\. /,/^## 6\. /p' "$S" | grep -c '^   genuine Block never is\.$')" "§5 step 5: a genuine Block never is"
+  assert_eq 1 "$(sed -n '/^## 6a\. Blocks$/,/^## 7\. /p' "$S" | grep -c 'Marking pending a check whose reference is not pinned is a Critical finding (a fake Block)\.')" "§6a step 5: a fake Block is Critical"
+  assert_eq 1 "$(sed -n '/^## 6a\. Blocks$/,/^## 7\. /p' "$S" | grep -c 'cannot import (the environment, not the code under$')" "§6a: an interpreter that cannot import is the environment's fault, not the code's"
   assert_eq 1 "$(sed -n '/^## 11\. /,$p' "$S" | grep -c '`gate Block:')" "§11: a pinned-reference mismatch is a Block with prefix gate"
 }
 

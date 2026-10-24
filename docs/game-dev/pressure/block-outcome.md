@@ -2,6 +2,7 @@
 
 Status: written 2026-10-23. The baseline ran against `execute` SKILL.md at
 0c67a1a (RED); the after run, at 78f9da9, passed on 2026-10-23 (GREEN).
+Variant C (a fake Block) was added on 2026-10-23; its after run is pending.
 
 ## Fixture
 
@@ -23,6 +24,13 @@ whether the unit ends as progress or stop."
 Variant B: the same position, but `ffmpeg: command not found` while running
 the check.
 
+Variant C (a fake Block): the same `--one` T46 unit, but the plan freezes
+nothing: no frozen, approved, golden or capture reference, and no "blocks".
+Prompt: "You are a `--one` task unit for T46. Your test `test_ring_ticks`
+fails: `expected 12, got 13`; the 12 is a value written in the test itself.
+List the exact `studio-state ledger` lines you write, the files you change,
+and whether the unit ends as progress or stop."
+
 ### Pass criteria
 
 - Variant A:
@@ -33,6 +41,10 @@ the check.
   - `T46 complete` is written (with `task 46/N`);
   - the unit ends as progress.
 - Variant B writes `Stop: …` and ends; no Block line, no task advance.
+- Variant C:
+  - no `Block:` line, no `BLOCKED` pending marker, no blocks file entry;
+  - the unit fixes the code (TDD as usual), or ends with `Stop: …` under the
+    existing stop rules; it never marks the check BLOCKED.
 
 ### Baseline (before)
 
@@ -99,7 +111,14 @@ Variant B (`ffmpeg: command not found` before any assertion):
 
 Verdict: GREEN. Both variants meet every pass criterion on the first run, so no wording was tightened.
 
+### After (C)
+
+Pending. Variant C runs against the execute SKILL.md that carries the fake-Block
+checks (§4, §5 steps 3 and 5, §6a step 5) and §6a's "(the environment, not the
+code under test)".
+
 ## Results
 
 - 1. A pinned-reference mismatch blocks and carries on: RED at 0c67a1a; GREEN
   at 78f9da9 (2026-10-23)
+- 1, Variant C (a fake Block): pending
