@@ -752,4 +752,50 @@ test_brief_rewrite_file() {
   assert_eq 0 "$(ls "$TMP/rf" | grep -c nope)" "and creates nothing"
 }
 
-run_tests test_godot_cmd_md_finds_bare_forms test_godot_cmd_md_span_edges test_godot_cmd_md_multiline test_brief_task test_brief_final test_brief_refusals test_brief_missing_sections test_brief_directives_task test_brief_directives_final test_brief_directive_text_not_ruling test_brief_directive_edge_cases test_brief_no_directives_no_part test_brief_context_appended test_brief_context_cap test_brief_context_missing_file test_brief_context_no_glob test_brief_final_plan_acceptance test_brief_check_verb test_brief_check_uses_truth_region test_brief_final_reads_check_rulings test_brief_original_plan_item test_brief_usage_names_check test_brief_single_line_item test_brief_validate_good_plan test_brief_validate_reports_all test_brief_validate_duplicate_task test_brief_validate_missing_plan_and_no_state test_brief_validate_relative_to_caller test_brief_rewrite_wraps_only test_brief_task_check_final_rewritten test_brief_validate_godot_form test_brief_missing_detector test_brief_broken_detector test_brief_rewrite_no_tmpdir test_brief_rewrite_file
+test_brief_task_blocks_default() {
+  out="$TMP/blk1.txt"
+  ( cd "$P" && STUDIO_STORY=S1 sh "$BRIEF" task 3 ) > "$out"
+  assert_eq "blocks: docs/game-dev/playtests/plan-blocks.md" "$(tail -n 1 "$out")" "no # Run:, plan.md: the plan's basename"
+  printf '# Run: demo\n\nTarget: integration/demo\n' > "$TMP/run-demo.md"
+  ( cd "$P" && STUDIO_RUN="$TMP/run-demo.md" STUDIO_STORY=S1 sh "$BRIEF" task 3 ) > "$out"
+  assert_eq "blocks: docs/game-dev/playtests/demo-blocks.md" "$(tail -n 1 "$out")" "# Run: demo gives demo-blocks.md"
+  printf '# Run:   demo2  # the lane\n' > "$TMP/run-demo2.md"
+  ( cd "$P" && STUDIO_RUN="$TMP/run-demo2.md" STUDIO_STORY=S1 sh "$BRIEF" task 3 ) > "$out"
+  assert_eq "blocks: docs/game-dev/playtests/demo2-blocks.md" "$(tail -n 1 "$out")" "the slug is trimmed"
+  printf '# Run:\n' > "$TMP/run-empty.md"
+  ( cd "$P" && STUDIO_RUN="$TMP/run-empty.md" STUDIO_STORY=S1 sh "$BRIEF" task 3 ) > "$out"
+  assert_eq "blocks: docs/game-dev/playtests/plan-blocks.md" "$(tail -n 1 "$out")" "an empty # Run: falls to the plan's basename"
+  # a dated plan, STUDIO_RUN unset
+  Q="$TMP/projb"; build_fixture "$Q"
+  cp "$Q/docs/plan.md" "$Q/docs/2026-10-22-bat-rings.md"
+  ( cd "$Q" && STUDIO_STORY=S1 sh "$STATE_BIN" set plan docs/2026-10-22-bat-rings.md ) >/dev/null 2>&1
+  ( cd "$Q" && env -u STUDIO_RUN STUDIO_STORY=S1 sh "$BRIEF" task 3 ) > "$out"
+  assert_eq "blocks: docs/game-dev/playtests/bat-rings-blocks.md" "$(tail -n 1 "$out")" "unset STUDIO_RUN, dated plan: the date and .md are dropped"
+}
+test_brief_task_blocks_sources() {
+  out="$TMP/blk2.txt"
+  printf '# Run: demo\nBlocks: docs/b/run.md # note\n' > "$TMP/run-b.md"
+  ( cd "$P" && STUDIO_RUN="$TMP/run-b.md" STUDIO_STORY=S1 sh "$BRIEF" task 3 ) > "$out"
+  assert_eq "blocks: docs/b/run.md" "$(tail -n 1 "$out")" "the Blocks: header of the run"
+  Q="$TMP/projc"; build_fixture "$Q"
+  sed -i.bak 's/^- constraint line$/- constraint line\
+- Blocks file: `docs\/b\/plan.md`\
+- Blocks file: `docs\/b\/second.md`/' "$Q/docs/plan.md"
+  ( cd "$Q" && STUDIO_RUN="$TMP/run-b.md" STUDIO_STORY=S1 sh "$BRIEF" task 3 ) > "$out"
+  assert_eq "blocks: docs/b/plan.md" "$(tail -n 1 "$out")" "the plan's item wins, the first one, backticks stripped"
+}
+test_brief_final_block_lines() {
+  Q="$TMP/projd"; build_fixture "$Q"
+  ( cd "$Q" && export STUDIO_STORY=S1
+    sh "$STATE_BIN" ledger "T3 Block: frozen.json matches — ticks: 12 vs 13 — blocks docs/x-blocks.md"
+    sh "$STATE_BIN" ledger "final Block: golden — a: 1 vs 2 — blocks docs/x-blocks.md"
+    sh "$STATE_BIN" ledger "gate Block: lint — b: 1 vs 2 — blocks docs/x-blocks.md" ) >/dev/null 2>&1
+  out="$TMP/blk3.txt"
+  ( cd "$Q" && STUDIO_STORY=S1 sh "$BRIEF" final ) > "$out"
+  assert_contains "$out" "T3 Block: frozen.json matches" "a T<n> Block line"
+  assert_contains "$out" "final Block: golden" "a final Block line"
+  assert_contains "$out" "gate Block: lint" "a gate Block line"
+  assert_not_contains "$out" "T1 complete" "other ledger lines are still absent"
+}
+
+run_tests test_godot_cmd_md_finds_bare_forms test_godot_cmd_md_span_edges test_godot_cmd_md_multiline test_brief_task test_brief_final test_brief_refusals test_brief_missing_sections test_brief_directives_task test_brief_directives_final test_brief_directive_text_not_ruling test_brief_directive_edge_cases test_brief_no_directives_no_part test_brief_context_appended test_brief_context_cap test_brief_context_missing_file test_brief_context_no_glob test_brief_final_plan_acceptance test_brief_check_verb test_brief_check_uses_truth_region test_brief_final_reads_check_rulings test_brief_original_plan_item test_brief_usage_names_check test_brief_single_line_item test_brief_validate_good_plan test_brief_validate_reports_all test_brief_validate_duplicate_task test_brief_validate_missing_plan_and_no_state test_brief_validate_relative_to_caller test_brief_rewrite_wraps_only test_brief_task_check_final_rewritten test_brief_validate_godot_form test_brief_missing_detector test_brief_broken_detector test_brief_rewrite_no_tmpdir test_brief_rewrite_file test_brief_task_blocks_default test_brief_task_blocks_sources test_brief_final_block_lines
