@@ -645,6 +645,21 @@ test_overnight_tools_malformed() {
   fixture tm12 '{"required_tools": [{"cmd": "x", "hint": "h", "version_args": "-v; rm x"}]}'
   refuse_case "version_args with a shell character" "config required_tools: entry 1 (x): version_args may hold only"
 }
+# A path cmd stays inside the worktree: a .. component is malformed; a name that only holds dots is not.
+test_overnight_tools_dotdot_refused() {
+  _td_n=0
+  for _td_c in .. ../x x/../y x/.. a/../../b; do
+    _td_n=$((_td_n + 1))
+    fixture "td$_td_n" "{\"required_tools\": [{\"cmd\": \"$_td_c\", \"hint\": \"h\"}]}"
+    refuse_case "cmd $_td_c" "config required_tools: cmd $_td_c must stay inside the worktree"
+  done
+  printf '%s\n' '{"required_tools": [{"cmd": "x/..y/z..", "hint": "h"}, {"cmd": "..a", "hint": "h"}, {"cmd": ".venv/bin/python", "hint": "h"}]}' > "$TMP/td-ok.json"
+  ( say() { printf 'studio-overnight: %s\n' "$*" >&2; }
+    . "$REPO_ROOT/studios/game-dev/bin/overnight-tools.sh"
+    tools_entries "$TMP/td-ok.json" | cut -f1 ) > "$TMP/td-ok.out" 2> "$TMP/td-ok.err"
+  assert_eq "x/..y/z.. ..a .venv/bin/python" "$(tr '\n' ' ' < "$TMP/td-ok.out" | sed 's/ $//')" "dots inside a component are not a .. component"
+  assert_eq "" "$(cat "$TMP/td-ok.err")" "and nothing is refused"
+}
 test_overnight_tools_multiline_config() {
   fixture tl7 '{
   "overnight": { "session_usd": 25 },
@@ -715,6 +730,8 @@ test_overnight_help_required_tools() {
   sh "$RUNNER" --help > "$TMP/help-tl.txt" 2>&1
   assert_contains "$TMP/help-tl.txt" "required_tools" "help: the config key"
   assert_contains "$TMP/help-tl.txt" "STUDIO_OVERNIGHT_TOOLS_SECONDS" "help: the test hook"
+  assert_contains "$TMP/help-tl.txt" "quotes and shell metacharacters are refused" "help: version_args' character set"
+  assert_contains "$TMP/help-tl.txt" "cmd must stay inside the worktree (no .. component)" "help: a path cmd has no .. component"
 }
 
 test_overnight_preflight_all_failures() {
@@ -3087,7 +3104,7 @@ run_tests test_overnight_setup_preflight_single test_overnight_help_setup_prefli
   test_overnight_tools_missing_refuses test_overnight_tools_present_passes test_overnight_tools_venv_version \
   test_overnight_tools_version_unreadable_warns test_overnight_tools_version_args test_overnight_tools_capped \
   test_overnight_tools_malformed test_overnight_tools_multiline_config test_overnight_tools_absent_unchanged \
-  test_overnight_tools_check_modes test_overnight_help_required_tools \
+  test_overnight_tools_check_modes test_overnight_help_required_tools test_overnight_tools_dotdot_refused \
   test_overnight_config_refusals test_overnight_deny_file_required \
   test_overnight_lock test_overnight_first_use_ignores \
   test_overnight_start_args test_overnight_reclaim_race test_overnight_reclaim_finds_live_lock \

@@ -468,7 +468,9 @@ Top level of config.json: "required_tools" — the tools a run needs (#95):
   (always run with version_args; it must exit 0). hint (required): the install
   line every refusal ends with. min_version (optional, like 3.10): the first
   N.N[.N] of the output of cmd version_args must be at least this. version_args
-  (optional, default --version; split on blanks). start and --dry-run refuse a
+  (optional, default --version; split on blanks; only letters, digits, blanks
+  and . _ = + / : , - — quotes and shell metacharacters are refused). A path
+  cmd must stay inside the worktree (no .. component). start and --dry-run refuse a
   tool not found, not running (exit 124 past 10 s) or too old, and print one
   "tools: …" line of the passes; a version that cannot be read is a warning.
   With worktree_setup set, start probes path entries in its scratch worktree

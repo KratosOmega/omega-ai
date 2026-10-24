@@ -14,7 +14,8 @@
 # A malformed key is one stderr line `config required_tools: <reason>` and
 # exit 1: a backslash anywhere in the array (escapes are not decoded), a
 # non-object element, a non-string value, an unknown key, no cmd or hint, a
-# cmd outside ^[A-Za-z0-9._/+-]+$ (or starting with - or /), a bad
+# cmd outside ^[A-Za-z0-9._/+-]+$ (or starting with - or /, or with a ..
+# component: a path entry stays inside the worktree), a bad
 # min_version, version_args outside letters, digits, blanks and ._=+/:,-.
 tools_entries() {
   [ -f "$1" ] || return 0
@@ -86,6 +87,7 @@ tools_entries() {
         cmd = e["cmd"]
         if (cmd !~ /^[A-Za-z0-9._\/+-]+$/ || cmd ~ /^[-\/]/)
           fail(sprintf("entry %d: cmd must be a name or a checkout-relative path of A-Z a-z 0-9 . _ / + -, got \"%s\"", ne, cmd))
+        if (("/" cmd "/") ~ /\/\.\.\//) fail(sprintf("cmd %s must stay inside the worktree (entry %d has a .. component)", cmd, ne))
         for (k in e) if (k !~ /^(cmd|hint|min_version|version_args)$/) fail(sprintf("entry %d (%s): unknown key %s", ne, cmd, k))
         if (e["hint"] == "") fail(sprintf("entry %d (%s) has no hint", ne, cmd))
         m = ("min_version" in e) ? e["min_version"] : ""
