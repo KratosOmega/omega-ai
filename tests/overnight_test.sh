@@ -689,13 +689,13 @@ test_overnight_launch_allow_rules() {
   a="$CALLS/1.argv"
   sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' "$REPO_ROOT/studios/game-dev/bin/overnight-allow.txt" | grep -v '^#' | grep . > "$TMP/allow.txt"
   N="$(grep -c . "$TMP/allow.txt")"
-  assert_eq 8 "$N" "the allow file holds the eight rules"
+  assert_eq 10 "$N" "the allow file holds the ten rules"
   assert_eq 1 "$(grep -cx -- '--allowedTools' "$a")" "--allowedTools appears once"
   _ai="$(grep -nx -- '--allowedTools' "$a" | cut -d: -f1)"; [ -n "$_ai" ] || _ai=0
   _di="$(grep -nx -- '--disallowedTools' "$a" | cut -d: -f1)"
   assert_eq "$(cat "$TMP/allow.txt")" "$(sed -n "$((_ai + 1)),$((_ai + N))p" "$a")" "every allow rule follows it, one argument each, in file order"
   assert_eq "$((_ai + N + 1))" "$_di" "--disallowedTools comes right after the allow rules"
-  for r in 'Bash(studio-test:*)' 'Bash(studio-run:*)' 'Bash(studio-vitest:*)' 'Bash(studio-tsc:*)' 'Bash(studio-gate godot -- Godot *)' 'Bash(studio-gate godot -- godot *)' \
+  for r in 'Bash(studio-test:*)' 'Bash(studio-run:*)' 'Bash(studio-vitest:*)' 'Bash(studio-tsc:*)' 'Bash(sdd-run:*)' 'Bash(studio-docs-sync:*)' 'Bash(studio-gate godot -- Godot *)' 'Bash(studio-gate godot -- godot *)' \
            'Bash(studio-gate godot -- /Applications/Godot.app/Contents/MacOS/Godot *)' \
            'Bash(studio-gate godot -- /Applications/Godot_mono.app/Contents/MacOS/Godot *)'; do
     TESTS_RUN=$((TESTS_RUN + 1))
