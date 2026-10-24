@@ -612,14 +612,15 @@ test_gate_learned_cap_production_default() {
 }
 
 # ---- the retry under load (spec 2026-10-24 A2) ----
-# seed_suite N — N main-lane rc-0 1 s rows of studio-test: a learned cap of 1 min
-# under STUDIO_GATE_MINUTES=1, which the 3 s floor seam replaces.
+# seed_suite N — N main-lane rc-0 1 s rows of studio-test: a learned cap of 15 min
+# under STUDIO_GATE_MINUTES=60, which the 3 s floor seam replaces (a learned cap the
+# run cap clamps is dropped, so the run cap must sit above the 15 min floor).
 seed_suite() { _ss_i=0; while [ "$_ss_i" -lt "$1" ]; do printf '1000 studio-test 1 0 0 main shareable -\n' >> "$(gtf)"; _ss_i=$((_ss_i + 1)); done; }
 # retry_suite TAG DIR [VAR=VAL…] — a shareable suite under a 3 s learned cap
-# inside a 60 s flat cap (room for a retry), the load read from $TMP/load.TAG.
+# inside a 3600 s flat cap (room for a retry), the load read from $TMP/load.TAG.
 retry_suite() {
   _rs_t="$1"; _rs_d="$2"; shift 2
-  lanes_bg "$_rs_t" "$_rs_d" -- env STUDIO_GATE_MINUTES=1 STUDIO_GATE_LEARNED_FLOOR_SECONDS=3 \
+  lanes_bg "$_rs_t" "$_rs_d" -- env STUDIO_GATE_MINUTES=60 STUDIO_GATE_LEARNED_FLOOR_SECONDS=3 \
     STUDIO_GATE_LOADAVG_FILE="$TMP/load.$_rs_t" "$@" sh "$BIN/studio-test"
 }
 # exclusive-scan: test_gate_retry_under_load_passes out (d) order only: the retry waits on the load file and the hold file; the short's refusal is an event wait
@@ -629,7 +630,7 @@ test_gate_retry_under_load_passes() {
   echo 12 > "$TMP/load.r"
   retry_suite r "$A"
   lanes_wait_err r ' — running it again once, exclusive, when the load is below 8 \(waiting up to [0-9]+ s\)$'
-  assert_contains "$TMP/err.r" '^gate: studio-test ran past its learned cap of 1 min (4 × median of the last 5 runs) under load 12→12 (busy at 8) — running it again once, exclusive, when the load is below 8 (waiting up to 54 s)$' "the retry line names the cap, both loads and the wait (60 s - 2 x 3 s)"
+  assert_contains "$TMP/err.r" '^gate: studio-test ran past its learned cap of 15 min (4 × median of the last 5 runs) under load 12→12 (busy at 8) — running it again once, exclusive, when the load is below 8 (waiting up to 3594 s)$' "the retry line names the cap, both loads and the wait (3600 s - 2 x 3 s)"
   assert_eq "124 main shareable" "$(rows studio-test | tail -n 1)" "the first attempt's row: 124, as before"
   sleep 1
   assert_eq 1 "$(starts r)" "no second run while the load is still busy"
@@ -667,7 +668,7 @@ test_gate_retry_not_when_idle_or_no_room() {
   echo 0.5 > "$TMP/load.i"
   retry_suite i "$A"
   assert_eq 124 "$(lanes_done i)" "idle: a cap stop is a stop"
-  assert_contains "$TMP/err.i" '^gate: studio-test ran past its learned cap of 1 min (4 × median of the last 5 runs) — stopped (load 0.5→0.5, busy at 8: not retried)$' "the stop line carries the readings"
+  assert_contains "$TMP/err.i" '^gate: studio-test ran past its learned cap of 15 min (4 × median of the last 5 runs) — stopped (load 0.5→0.5, busy at 8: not retried)$' "the stop line carries the readings"
   assert_eq 1 "$(starts i)" "idle: no retry"
   echo 9 > "$TMP/load.n"
   lanes_bg n "$A" -- env STUDIO_GATE_MINUTES=1 STUDIO_GATE_SECONDS=3 STUDIO_GATE_LOADAVG_FILE="$TMP/load.n" sh "$BIN/studio-test"
