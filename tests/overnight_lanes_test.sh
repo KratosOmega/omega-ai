@@ -385,8 +385,9 @@ printf '#!/bin/sh\nexec claude "$@"\n' > "$FAKE/claude-gd"
 # - pr create [--draft] --base B --head H [--title T] [--body…]: a new PR,
 #   prints https://gh.test/pr/<n>; --body-file F's content is saved as
 #   $GH/body-<n>.
-# - pr view <n|head> --json …: {"state":…,"isDraft":…,"number":n,
-#   "mergeCommit":{"oid":…}} (mergeCommit null before a merge); no PR -> exit 1.
+# - pr view <n|head|https://gh.test/pr/<n>> --json …: {"state":…,"isDraft":…,"number":n,
+#   "mergeCommit":{"oid":…}} (mergeCommit null before a merge); no PR -> exit 1,
+#   and so does any view while GH_FAIL_VIEW is set.
 #   A $GH/pr-<n>.pending file is appended to the PR file after the view (a
 #   GitHub read that lags the merge by one view).
 # - pr ready <n>: draft=0. pr edit <n> [--title T] [--body-file F]: records
@@ -398,6 +399,9 @@ printf '%s\n' "$*" >> "$GH/calls"
 get() { sed -n "s/^$1=//p" "$2" | tail -n 1; }
 # pr_file N|HEAD — the PR file for a number, or the newest PR with that head.
 pr_file() {
+  case "$1" in
+    https://gh.test/pr/*) set -- "${1##*/}" ;;
+  esac
   case "$1" in
     ''|*[!0-9]*) _pf=""
        for _f in "$GH"/pr-[0-9]*; do
@@ -430,6 +434,7 @@ case "$1 ${2:-}" in
     printf 'head=%s\nbase=%s\nstate=OPEN\ndraft=%s\noid=\ntitle=%s\n' "$_h" "$_b" "$_d" "$_t" > "$GH/pr-$_n"
     echo "https://gh.test/pr/$_n" ;;
   "pr view")
+    [ -z "${GH_FAIL_VIEW:-}" ] || { echo "gh: view failed" >&2; exit 1; }
     _f="$(pr_file "${3:-}")" || { echo "no pull requests found for ${3:-}" >&2; exit 1; }
     _o="$(get oid "$_f")"; if [ -n "$_o" ]; then _mc="{\"oid\":\"$_o\"}"; else _mc=null; fi
     if [ "$(get draft "$_f")" = 1 ]; then _dr=true; else _dr=false; fi
@@ -2318,6 +2323,32 @@ test_lanes_done_marker() {
   assert_contains "$(last_lanes_dir)/report.md" "^Ending: partial: 1 landed, 0 stopped, 0 skipped; final PR red$" "a red final PR is not done"
   assert_contains "$(last_lanes_dir)/report.md" "^Final PR: https://gh.test/pr/1 (red)$" "the final PR is named red"
   assert_missing "$P/.studio/runs/demo/done" "no done marker"
+  # #82: the operator merges that red final PR by hand; start --dry-run says so, status marks the record done.
+  echo state=MERGED >> "$GH/pr-1"
+  run_lanes start --dry-run "$MFP"
+  assert_contains "$LS_OUT" "^run demo: final PR https://gh.test/pr/1 is merged — start marks the record done$" "dry-run names the settle"
+  assert_missing "$P/.studio/runs/demo/done" "dry-run writes no done"
+  ( cd "$P" && sh "$RUNNER" status ) >/dev/null 2>&1
+  assert_file "$P/.studio/runs/demo/done" "status marks a merged final PR's record done"
+}
+# #82: an unmerged final PR, a record with an unlanded story, or a gh failure leaves the record open.
+test_lanes_settle_keeps_open() {
+  lanes_fixture settleopen integration A:-
+  printf 'noop\n' > "$SCEN/final-repair"
+  use_gate "exit 1"
+  run_lanes start "$MFP"
+  use_gate true
+  ( cd "$P" && sh "$RUNNER" status ) >/dev/null 2>&1
+  assert_missing "$P/.studio/runs/demo/done" "an OPEN final PR stays open"
+  echo state=MERGED >> "$GH/pr-1"
+  GH_FAIL_VIEW=1; export GH_FAIL_VIEW
+  ( cd "$P" && sh "$RUNNER" status ) >/dev/null 2>&1
+  unset GH_FAIL_VIEW
+  assert_missing "$P/.studio/runs/demo/done" "a gh failure changes nothing"
+  cp "$P/.studio/runs/demo/landed.tsv" "$TMP/landed.keep"; : > "$P/.studio/runs/demo/landed.tsv"
+  ( cd "$P" && sh "$RUNNER" status ) >/dev/null 2>&1
+  assert_missing "$P/.studio/runs/demo/done" "an unlanded story keeps the record open"
+  cp "$TMP/landed.keep" "$P/.studio/runs/demo/landed.tsv"
 }
 # AC16: a SIGKILLed runner. Its lane ends its story after the running unit;
 # `status` then sweeps every story with no ending and writes report.md.
@@ -5017,7 +5048,7 @@ run_tests test_stub_waitexist_and_run_token test_lanes_setup_preflight_refuses_l
   test_lanes_final_dirty_unit_is_red test_lanes_final_unit_stop_pointer_invisible test_lanes_final_budget test_lanes_final_conflict_then_red test_lanes_final_gate_interrupted_not_recorded \
   test_lanes_direct_merge_timeout_after_merge_lands test_lanes_direct_merge_timeout_term_ignored \
   test_lanes_status_dead_old_lock_not_masking test_lanes_status_per_story test_lanes_report_every_ending test_lanes_report_on_lane_crash \
-  test_lanes_done_marker test_lanes_status_reaps_dead_runner test_lanes_reap_names_final_pr \
+  test_lanes_done_marker test_lanes_settle_keeps_open test_lanes_status_reaps_dead_runner test_lanes_reap_names_final_pr \
   test_lanes_detach_strips_env test_lanes_detach_shows_push_warning test_lanes_push_check_target_workflows test_lanes_detach_refusal_in_foreground test_lanes_detach_child_refusal_surfaces \
   test_lanes_detach_timeout_lock_held_points_at_status test_lanes_detach_timeout_no_lock_ends_child \
   test_lanes_detach_poll_keeps_budget test_lanes_detach_poll_rejects_bad_value \

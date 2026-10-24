@@ -2282,6 +2282,10 @@ status_reap_dead() {
 # looked. Returns 0 live, 1 not.
 project_status() {
   status_reap_dead
+  for _ps_z in "$STATE_ROOT"/.studio/runs/*/landed.tsv; do   # #82: a merged final PR closes its record
+    [ -f "$_ps_z" ] || continue
+    _ps_z="${_ps_z%/landed.tsv}"; runs_settle "$STATE_ROOT" "${_ps_z##*/}" || :
+  done
   _ps_all="$(runs_live "$STATE_ROOT")"
   if [ -n "${RUN_SEL:-}" ]; then
     _ps_all="$(printf '%s\n' "$_ps_all" | runs_match "$RUN_SEL")"

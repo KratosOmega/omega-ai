@@ -164,6 +164,15 @@ mf_overlap_warn() {
 
 # mf_check — the manifest preflight: one refuse per failure (spec 806-815).
 mf_check() {
+  # #82: a record whose final PR was merged is done before any record is read.
+  # --check (detach's foreground step) prints the commit only on stdout, so its settle lines go to stderr.
+  _mc_dr=""; [ "${_ls_dry:-0}" -ne 1 ] || _mc_dr="--dry-run"
+  for _mc_z in "$STATE_ROOT"/.studio/runs/*/landed.tsv; do
+    [ -f "$_mc_z" ] || continue
+    _mc_z="${_mc_z%/landed.tsv}"; _mc_z="${_mc_z##*/}"
+    if [ "${_ls_chk:-0}" -eq 1 ]; then runs_settle "$STATE_ROOT" "$_mc_z" $_mc_dr >&2 || :
+    else runs_settle "$STATE_ROOT" "$_mc_z" $_mc_dr || :; fi
+  done
   IDS_IX_KEY=""   # one ids index for this check's stories, built afresh (overnight-ids.sh)
   git_version_ok || refuse "git 2.38 or newer is required (git merge-tree --write-tree); found $(git --version 2>/dev/null)"
   printf '%s\n' "$MF_SLUG" | grep -Eq '^[A-Za-z0-9._-]+$' \

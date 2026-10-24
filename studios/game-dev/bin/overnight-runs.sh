@@ -58,6 +58,26 @@ runs_match() { awk -F'\t' -v s="$1" '{ b = $5; sub(/.*\//, "", b) } $2 == s || b
 runs_record_open() { [ -f "$1/.studio/runs/$2/landed.tsv" ] && [ ! -f "$1/.studio/runs/$2/done" ]; }
 # runs_record_done ROOT SLUG — 0 when landed.tsv and done both exist.
 runs_record_done() { [ -f "$1/.studio/runs/$2/landed.tsv" ] && [ -f "$1/.studio/runs/$2/done" ]; }
+# runs_settle ROOT SLUG [--dry-run] — mark an open record done when every row has landed and its
+# final PR (RECORD/final, field 2) is MERGED per gh (#82); prints the line and returns 0 then
+# (--dry-run: only says so), 1 silently otherwise (gh failure included). The only writer of done
+# besides lanes_finish.
+runs_settle() {
+  runs_record_open "$1" "$2" || return 1
+  _rt_d="$1/.studio/runs/$2"
+  _rt_u="$(awk 'NR == 1 { print $2; exit }' "$_rt_d/final" 2>/dev/null)"
+  [ -n "$_rt_u" ] && [ -s "$_rt_d/rows.tsv" ] || return 1
+  cut -f1 "$_rt_d/rows.tsv" | awk -F'\t' -v l="$_rt_d/landed.tsv" '
+    BEGIN { while ((getline x < l) > 0) { split(x, a, "\t"); got[a[1]] = 1 } }
+    $1 != "" && !($1 in got) { bad = 1 } END { exit bad }' || return 1
+  [ "$(gh pr view "$_rt_u" --json state 2>/dev/null | sed -n 's/.*"state"[[:space:]]*:[[:space:]]*"\([A-Z]*\)".*/\1/p' | head -n 1)" = MERGED ] || return 1
+  if [ "${3:-}" = --dry-run ]; then
+    printf 'run %s: final PR %s is merged — start marks the record done\n' "$2" "$_rt_u"
+  else
+    : > "$_rt_d/done" || return 1
+    printf 'run %s: final PR %s is merged — record marked done\n' "$2" "$_rt_u"
+  fi
+}
 # runs_rows ROOT SLUG [RUNDIR] — the run's rows.tsv: RUNDIR's, else the newest report of SLUG; 1 for none.
 runs_rows() {
   if [ -n "${3:-}" ]; then printf '%s\n' "$3/rows.tsv"; return 0; fi

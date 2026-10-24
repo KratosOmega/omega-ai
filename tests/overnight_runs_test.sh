@@ -73,6 +73,31 @@ test_runs_records() {
   runs_record_done "$R" done; assert_eq 0 $? "done"
   runs_record_open "$R" lockonly; assert_eq 1 $? "a lock alone is no record (D4)"
 }
+# runs_settle: a hand-made record and a PATH-first gh stub.
+test_runs_settle() {
+  R="$TMP/settle"; D="$R/.studio/runs/s"; mkdir -p "$D" "$TMP/ghbin"
+  printf 'A\tb\nB\tb\n' > "$D/rows.tsv"; printf 'A\tt\n' > "$D/landed.tsv"
+  printf 'abc https://gh.test/pr/7 red\n' > "$D/final"
+  cat > "$TMP/ghbin/gh" <<'STUB'
+#!/bin/sh
+printf '{"state":"%s"}\n' "${GH_STATE:-MERGED}"
+STUB
+  chmod +x "$TMP/ghbin/gh"
+  _op="$PATH"; PATH="$TMP/ghbin:$PATH"
+  runs_settle "$R" s >/dev/null; assert_eq 1 $? "a story not landed: no settle"
+  printf 'B\tt\n' >> "$D/landed.tsv"
+  GH_STATE=OPEN; export GH_STATE
+  runs_settle "$R" s >/dev/null; assert_eq 1 $? "an OPEN PR: no settle"
+  GH_STATE=MERGED
+  assert_eq "run s: final PR https://gh.test/pr/7 is merged — start marks the record done" "$(runs_settle "$R" s --dry-run)" "dry-run line"
+  assert_missing "$D/done" "dry-run writes nothing"
+  assert_eq "run s: final PR https://gh.test/pr/7 is merged — record marked done" "$(runs_settle "$R" s)" "the settle line"
+  assert_file "$D/done" "done written"
+  runs_settle "$R" s >/dev/null; assert_eq 1 $? "a done record is not open"
+  rm -f "$D/done"; : > "$D/final"
+  runs_settle "$R" s >/dev/null; assert_eq 1 $? "no final URL: no settle"
+  unset GH_STATE; PATH="$_op"
+}
 test_runs_rows_newest_report() {
   R="$TMP/rows"; mkdir -p "$R/.studio/reports/overnight-a-20261001-010101" "$R/.studio/reports/overnight-a-20261002-010101" \
     "$R/.studio/reports/overnight-a-b-20261003-010101" "$R/.studio/reports/overnight-a-detached-20261004-010101"
@@ -158,6 +183,6 @@ TESTS_REAL_CLOCK="test_mutex_reap_race"
 # exclusive-scan: test_mutex_stale_reap_lock_broken in (a) asserts the take finishes inside a 5 s ceiling
 TESTS_EXCLUSIVE="test_mutex_stale_reap_lock_broken"
 run_tests test_runs_live_per_run_and_old_lock test_runs_live_skips_dead_and_single test_runs_match_slug_or_basename \
-  test_runs_stop_of test_runs_start_dir_lock_then_registry test_runs_records test_runs_rows_newest_report \
+  test_runs_stop_of test_runs_start_dir_lock_then_registry test_runs_records test_runs_settle test_runs_rows_newest_report \
   test_runs_worktree_of test_runs_plan_files_studio_form test_runs_plan_files_superpowers_form test_runs_plan_files_comma_line_list test_mx_take_drop_and_dead_owner \
   test_mutex_reap_race test_mutex_stale_reap_lock_broken
