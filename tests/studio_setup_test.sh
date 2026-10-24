@@ -214,6 +214,108 @@ test_setup_poll_rejects_bad_value() {
   assert_missing "$P/.studio/gate.lock" "no lock is left"
 }
 
+# run_shape NAME START_JSON MAIN_JSON — the incident's shape (phoenix run
+# bat-sonic-followups, story KAN-1723-2): a main checkout $P whose .studio/config.json
+# (MAIN_JSON) is git-excluded; a run worktree $RW on run/demo with START_JSON
+# committed there past the exclude (studio-overnight refuses an uncommitted one);
+# a story worktree $SW on `story`, forked from main, with no config of its own.
+run_shape() {
+  P="$TMP/$1"; RW="$TMP/$1-run"; SW="$TMP/$1-story"; rm -rf "$P" "$RW" "$SW"; mkdir -p "$P"
+  ( set -e; cd "$P"; git init -q -b main; sh "$STATE_BIN" init >/dev/null
+    printf '.studio/config.json\n' >> .git/info/exclude
+    git add -A; git -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
+    printf '%s\n' "$3" > .studio/config.json
+    git worktree add -q -b run/demo "$RW"; mkdir -p "$RW/.studio"
+    printf '%s\n' "$2" > "$RW/.studio/config.json"
+    git -C "$RW" add -f .studio/config.json; git -C "$RW" -c user.name=t -c user.email=t@t commit -q -m cfg
+    git worktree add -q -b story "$SW" main ) >/dev/null 2>&1 \
+    || { TESTS_RUN=$((TESTS_RUN + 1)); _fail "run_shape $1: setup failed"; }
+}
+# setup_run DIR [ARGS] — setup in DIR as a unit runs it: STUDIO_START_DIR=$RW.
+setup_run() { _d="$1"; shift; SU_STATUS=0
+  ( cd "$_d" && STUDIO_START_DIR="$RW" && export STUDIO_START_DIR && sh "$SETUP" "$@" ) > "$TMP/su.out" 2> "$TMP/su.err" || SU_STATUS=$?; }
+RAN_CMD='echo ran >> .studio/reports/ran.txt'
+
+# The incident: the run's worktree_setup lives only in the run worktree's config;
+# the story worktree has none and the main checkout's has no worktree_setup.
+# Before the fix studio-setup read the tree, then the state root, and exited 0
+# silently without running anything.
+test_setup_run_config_reaches_story_worktree() {
+  run_shape inc '{ "engine": "godot4", "test_engine_args": "--fixed-fps 60", "overnight": { "worktree_setup": "'"$RAN_CMD"'" } }' '{ "engine": "godot4" }'
+  setup_run "$SW"
+  assert_eq 0 "$SU_STATUS" "a green setup in the story worktree exits 0"
+  assert_file "$SW/.studio/reports/ran.txt" "the run's worktree_setup ran in the story worktree"
+  assert_file "$(git -C "$SW" rev-parse --absolute-git-dir)/studio-setup.done" "and left its marker in the story's git dir"
+  assert_eq "$(cat "$RW/.studio/config.json")" "$(cat "$SW/.studio/config.json" 2>/dev/null)" "the run's config is seeded into the story worktree"
+  assert_eq "" "$(git -C "$SW" status --porcelain 2>&1)" "the seeded copy is git-excluded: the story worktree stays clean"
+  assert_eq "--fixed-fps 60" "$( cd "$SW" && unset STUDIO_START_DIR && . "$REPO_ROOT/studios/game-dev/bin/gate-class.sh" && studio_cfg test_engine_args )" \
+    "a reader with no STUDIO_START_DIR (a hand session) now sees the run's keys too"
+  assert_missing "$P/.studio/reports/ran.txt" "nothing ran in the main checkout"
+}
+# Resolution order: the tree's key, then $STUDIO_START_DIR's, then the state root's.
+test_setup_resolution_order() {
+  run_shape ord '{ "worktree_setup": "echo start >> .studio/reports/ran.txt" }' '{ "worktree_setup": "echo root >> .studio/reports/ran.txt", "worktree_setup_minutes": 0 }'
+  mkdir -p "$SW/.studio"
+  printf '%s\n' '{ "worktree_setup": "echo tree >> .studio/reports/ran.txt", "worktree_setup_minutes": 5 }' > "$SW/.studio/config.json"
+  setup_run "$SW"
+  assert_eq tree "$(cat "$SW/.studio/reports/ran.txt" 2>/dev/null)" "the tree's own key wins"
+  assert_eq '{ "worktree_setup": "echo tree >> .studio/reports/ran.txt", "worktree_setup_minutes": 5 }' "$(cat "$SW/.studio/config.json")" "a config of the tree's own is never overwritten"
+  run_shape ord2 '{ "worktree_setup": "echo start >> .studio/reports/ran.txt" }' '{ "worktree_setup": "echo root >> .studio/reports/ran.txt" }'
+  setup_run "$SW"
+  assert_eq start "$(cat "$SW/.studio/reports/ran.txt" 2>/dev/null)" "then the run's (STUDIO_START_DIR) before the state root's"
+  run_shape ord3 '{ "engine": "godot4" }' '{ "worktree_setup": "echo root >> .studio/reports/ran.txt" }'
+  setup "$SW"
+  assert_eq root "$(cat "$SW/.studio/reports/ran.txt" 2>/dev/null)" "outside a run, the state root's (D8)"
+  assert_missing "$SW/.studio/config.json" "and nothing is seeded outside a run"
+}
+# Outside a run, or in a run whose config has no worktree_setup, unset stays a silent exit 0.
+test_setup_unset_in_and_out_of_run_silent() {
+  run_shape us '{ "engine": "godot4" }' '{ "engine": "godot4" }'
+  setup_run "$SW"
+  assert_eq 0 "$SU_STATUS" "a run config without worktree_setup: exit 0"
+  assert_eq "" "$(cat "$TMP/su.out" "$TMP/su.err")" "and silent"
+  setup "$SW"
+  assert_eq 0 "$SU_STATUS" "no STUDIO_START_DIR, no worktree_setup anywhere: exit 0"
+  assert_eq "" "$(cat "$TMP/su.out" "$TMP/su.err")" "and silent"
+}
+# The backstop: a run whose start config sets worktree_setup, in a worktree that
+# resolves none (a resolver that skips the run's config, as studio-setup did
+# before), is a loud exit 2, never a silent skip.
+test_setup_run_config_unresolved_fails_loud() {
+  run_shape lf '{ "worktree_setup": "'"$RAN_CMD"'" }' '{ "engine": "godot4" }'
+  rm -rf "$TMP/drift-bin"; cp -R "$REPO_ROOT/studios/game-dev/bin" "$TMP/drift-bin"
+  sed 's/ "\${STUDIO_START_DIR:-}"//' "$REPO_ROOT/studios/game-dev/bin/gate-class.sh" > "$TMP/drift-bin/gate-class.sh"
+  # No seeding either: the tree must not get the run's config by the copy.
+  sed -i.bak '/\.studio\/config\.json/d' "$P/.git/info/exclude"
+  SU_STATUS=0
+  ( cd "$SW" && STUDIO_START_DIR="$RW" && export STUDIO_START_DIR && sh "$TMP/drift-bin/studio-setup" ) > "$TMP/su.out" 2> "$TMP/su.err" || SU_STATUS=$?
+  assert_eq 2 "$SU_STATUS" "the run sets worktree_setup, the worktree resolves none: exit 2"
+  assert_eq 1 "$(wc -l < "$TMP/su.err" | tr -d ' ')" "one stderr line"
+  assert_contains "$TMP/su.err" "^studio-setup: the run's config sets worktree_setup .*, but this worktree resolves none — not skipping it silently$" "naming the cause"
+  assert_missing "$SW/.studio/reports/ran.txt" "nothing ran"
+}
+# Seeding: only where git ignores the path; an unedited earlier copy follows the
+# run's config; a hand-edited copy is kept.
+test_setup_seed_rules() {
+  run_shape sd '{ "worktree_setup": "'"$RAN_CMD"'" }' '{ "engine": "godot4" }'
+  sed -i.bak '/\.studio\/config\.json/d' "$P/.git/info/exclude"
+  setup_run "$SW"
+  assert_eq 0 "$SU_STATUS" "not ignored: still green"
+  assert_file "$SW/.studio/reports/ran.txt" "the run's command ran through the resolver"
+  assert_missing "$SW/.studio/config.json" "but nothing is seeded where git would see the copy"
+  assert_eq "" "$(git -C "$SW" status --porcelain 2>&1)" "the story worktree stays clean"
+  run_shape sd2 '{ "worktree_setup": "'"$RAN_CMD"'" }' '{ "engine": "godot4" }'
+  setup_run "$SW"
+  printf '%s\n' '{ "worktree_setup": "echo v2 >> .studio/reports/ran.txt" }' > "$RW/.studio/config.json"
+  setup_run "$SW"
+  assert_eq "$(cat "$RW/.studio/config.json")" "$(cat "$SW/.studio/config.json")" "an unedited earlier copy follows the run's config"
+  assert_eq "ran v2" "$(tr '\n' ' ' < "$SW/.studio/reports/ran.txt" | sed 's/ $//')" "and the changed command runs"
+  printf '%s\n' '{ "worktree_setup": "echo mine >> .studio/reports/ran.txt" }' > "$SW/.studio/config.json"
+  printf '%s\n' '{ "worktree_setup": "echo v3 >> .studio/reports/ran.txt" }' > "$RW/.studio/config.json"
+  setup_run "$SW"
+  assert_eq '{ "worktree_setup": "echo mine >> .studio/reports/ran.txt" }' "$(cat "$SW/.studio/config.json")" "a hand-edited copy is kept"
+}
+
 # exclusive-scan: test_setup_timeout_ends_group in (d) a two-second setup timeout the group kill must beat, then a one-second absence window
 # exclusive-scan: test_setup_timer_starts_after_lock in (b) a three-second lock holder must still be running when setup starts waiting, against a one-second timeout (d)
 # exclusive-scan: test_setup_signal_stops_child_and_releases_lock in (b) TERM is sent to the live setup run, and the child must disappear after a one-second absence window
@@ -226,4 +328,6 @@ run_tests test_setup_unset_is_silent test_setup_runs_under_lock_and_logs test_se
   test_setup_bad_config test_setup_gate_green_and_red test_setup_help \
   test_setup_signal_stops_child_and_releases_lock test_setup_timeout_kills_term_ignorer \
   test_setup_quoted_minutes_refused test_setup_logs_unique_per_run test_setup_gate_backslash_refused \
-  test_setup_no_studio_dir test_setup_poll_keeps_budget test_setup_poll_rejects_bad_value
+  test_setup_no_studio_dir test_setup_poll_keeps_budget test_setup_poll_rejects_bad_value \
+  test_setup_run_config_reaches_story_worktree test_setup_resolution_order \
+  test_setup_unset_in_and_out_of_run_silent test_setup_run_config_unresolved_fails_loud test_setup_seed_rules

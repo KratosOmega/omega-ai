@@ -113,6 +113,8 @@ export GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
 #   progress        terminal (`--progress`): appends a line to
 #                   docs/game-dev/PROGRESS.md in the cwd and commits
 #                   "docs(progress): demo"
+#   cwdcfg          modifier: copies the cwd's .studio/config.json to
+#                   $CALLS/<n>.cfg (`none` when it has none)
 #   mergemain       terminal (final repair): in the cwd, merge origin/main
 #                   with -X theirs (resolving the final step's conflict)
 #   fixgate         terminal (final repair): commits the file `fixed` in the
@@ -369,6 +371,7 @@ for act in "$@"; do
     progress)         terminal=1
                       printf -- '- %s: demo progress\n' "$(date +%Y-%m-%d)" >> docs/game-dev/PROGRESS.md
                       git add docs/game-dev/PROGRESS.md && git commit -qm "docs(progress): demo" ;;
+    cwdcfg)           cat .studio/config.json > "$CALLS/$n.cfg" 2>/dev/null || echo none > "$CALLS/$n.cfg" ;;
     mergemain)        terminal=1; git merge -q --no-edit -X theirs origin/main >&2 ;;
     fixgate)          terminal=1; : > fixed; git add fixed && git commit -qm "fix: the gate" ;;
     dirtyfix)         terminal=1; : > fixed ;;
@@ -4217,6 +4220,62 @@ test_lanes_setup_gets_start_dir() {
   assert_eq "$P" "$(cat "$TMP/sd-pd" 2>/dev/null)" "progress_direct's studio-setup sees STUDIO_START_DIR"
 }
 
+# The phoenix incident (run bat-sonic-followups, story KAN-1723-2): the run's
+# worktree_setup is committed only on run/alpha (the run worktree $RW, the start
+# checkout), .studio/config.json is git-excluded, and the main checkout's config
+# has none. The preflight's scratch tree, the story worktree and the integration
+# worktree have no config of their own: each must still run the run's command
+# (before the fix each read the main checkout's and skipped it silently), and the
+# story and integration worktrees get the run's config seeded, invisible to git.
+test_lanes_run_config_reaches_every_worktree() {
+  lanes_fixture rcw integration A:-
+  LANES_CONFIG='{"worktree_setup": "case $(pwd -P) in */setup-preflight-*) k=pf;; */integration-alpha) k=fi;; */S1-b) k=story;; *) k=other;; esac; echo $k >> '"'$TMP/rcw-ran'"'"}'; export LANES_CONFIG
+  lanes_add_run alpha integration S1:-
+  printf '.studio/config.json\n' >> "$(git -C "$P" rev-parse --path-format=absolute --git-common-dir)/info/exclude"
+  rm -f "$TMP/rcw-ran"
+  run_lanes_in "$RW" start "$RMF"
+  assert_eq 0 "$LS_STATUS" "the run ends done"
+  assert_eq 1 "$(grep -cx pf "$TMP/rcw-ran" 2>/dev/null)" "the preflight ran the run's worktree_setup in its scratch tree"
+  assert_eq 1 "$(grep -cx story "$TMP/rcw-ran" 2>/dev/null)" "the story worktree ran it"
+  assert_eq 1 "$(grep -cx fi "$TMP/rcw-ran" 2>/dev/null)" "the integration worktree ran it"
+  assert_eq 0 "$(grep -cx other "$TMP/rcw-ran" 2>/dev/null)" "and nowhere else"
+  _rcw_fw="$P/.claude/worktrees/integration-alpha"
+  assert_eq "$(cat "$RW/.studio/config.json")" "$(cat "$TMP_WT/S1-b/.studio/config.json" 2>/dev/null)" "the story worktree holds the run's config"
+  assert_eq "$(cat "$RW/.studio/config.json")" "$(cat "$_rcw_fw/.studio/config.json" 2>/dev/null)" "FINAL_W holds the run's config"
+  assert_eq "" "$(git -C "$TMP_WT/S1-b" status --porcelain 2>&1)" "the story worktree stays clean"
+  assert_eq "" "$(git -C "$_rcw_fw" status --porcelain 2>&1)" "FINAL_W stays clean"
+}
+# The final step's first unit can run in FINAL_W before its setup (a final
+# repair of origin/main's conflict): the run's config is already there.
+test_lanes_final_repair_sees_run_config() {
+  LANES_CONFIG='{"test_engine_args": "--fixed-fps 60"}'; export LANES_CONFIG
+  lanes_fixture fincfg integration A:-
+  printf '.studio/config.json\n' >> "$(git -C "$P" rev-parse --path-format=absolute --git-common-dir)/info/exclude"
+  printf 'conflict shared.txt\nauto\npush_main shared.txt\n' > "$SCEN/A"; printf 'cwdcfg;mergemain\n' > "$SCEN/final-repair"
+  run_lanes start "$MFP"
+  _n="$(prompt_calls '/omega:integration repair demo')"
+  assert_eq 1 "$(printf '%s' "$_n" | grep -c .)" "one final-repair unit for the conflict"
+  [ -n "$_n" ] || _n=0
+  assert_eq '{"test_engine_args": "--fixed-fps 60"}' "$(cat "$CALLS/$_n.cfg" 2>/dev/null)" "the final repair's cwd (FINAL_W) holds the run's config"
+  assert_eq "" "$(git -C "$P/.claude/worktrees/integration-demo" status --porcelain 2>&1)" "FINAL_W stays clean"
+}
+# A preflight that exits 0 without running the command (a studio-setup that
+# resolved none, as before the fix) is not green: start refuses.
+test_lanes_setup_preflight_requires_a_run() {
+  LANES_CONFIG='{"worktree_setup": "true"}'; export LANES_CONFIG
+  lanes_fixture pfq integration A:-
+  _pfq_b="$TMP/pfq-bin"; rm -rf "$_pfq_b"; cp -R "$BIN" "$_pfq_b"
+  printf '#!/bin/sh\nexit 0\n' > "$_pfq_b/studio-setup"
+  rm -f "$TMP/bin/studio-overnight"; ln -s "$_pfq_b/studio-overnight" "$TMP/bin/studio-overnight"
+  run_lanes start "$MFP"
+  rm -f "$TMP/bin/studio-overnight"; ln -s "$BIN/studio-overnight" "$TMP/bin/studio-overnight"
+  assert_eq 2 "$LS_STATUS" "a preflight studio-setup that ran nothing refuses start"
+  assert_contains "$LS_ERR" "^studio-overnight: worktree_setup check: studio-setup exited 0 without running worktree_setup in the scratch worktree — a story's worktree would skip it too$" "naming the silent skip"
+  assert_not_contains "$LS_ERR" "worktree_setup: green" "no green line"
+  assert_eq "" "$(pf_wts)" "no scratch worktree is left"
+  assert_eq 0 "$(calls)" "no unit ran"
+}
+
 test_lanes_gate_command_final() {
   LANES_CONFIG='{"gate_command": "echo gc >> '"'$TMP/calls-gcf/gc'"'; exit 0"}'; export LANES_CONFIG
   lanes_fixture gcf integration A:-
@@ -5497,7 +5556,7 @@ run_tests test_stub_waitexist_and_run_token test_lanes_setup_preflight_refuses_l
   test_lanes_final_step_no_delivery test_lanes_deadline \
   test_lanes_stop_at_done_never_lands test_lanes_stop_held_by_operator test_lanes_stop_pending_never_holds \
   test_lanes_gate_repair_own_stop_holds test_lanes_directive_cap_holds test_lanes_hold_during_last_unit_lands_and_clears \
-  test_lanes_next_adopted_planned test_lanes_context_preflight test_lanes_check_unit_first test_lanes_adopt_sync_fail_holds test_lanes_setup_fail_holds test_lanes_setup_fail_final_red test_lanes_setup_silent_fail_final_red test_lanes_setup_fail_path_specials test_lanes_direct_setup_fail_note test_lanes_setup_gets_start_dir test_lanes_gate_command_final test_lanes_gate_command_finish_red_repair test_lanes_report_adopted_lines test_lanes_adopt_seeded_runs_rest test_lanes_adopt_round_trip \
+  test_lanes_next_adopted_planned test_lanes_context_preflight test_lanes_check_unit_first test_lanes_adopt_sync_fail_holds test_lanes_setup_fail_holds test_lanes_setup_fail_final_red test_lanes_setup_silent_fail_final_red test_lanes_setup_fail_path_specials test_lanes_direct_setup_fail_note test_lanes_setup_gets_start_dir test_lanes_run_config_reaches_every_worktree test_lanes_final_repair_sees_run_config test_lanes_setup_preflight_requires_a_run test_lanes_gate_command_final test_lanes_gate_command_finish_red_repair test_lanes_report_adopted_lines test_lanes_adopt_seeded_runs_rest test_lanes_adopt_round_trip \
   test_lanes_per_run_lock_paths test_lanes_excludes_before_lock test_lanes_two_runs_each_own_lock \
   test_lanes_status_run_not_live test_lanes_manifest_refuses_live_single test_lanes_lock_race_single_vs_manifest \
   test_lanes_reg_write_keeps_live_sibling test_lanes_detach_with_other_run_live test_lanes_units_get_start_dir \
