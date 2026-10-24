@@ -1751,8 +1751,9 @@ final_pr_open() {
 # lines (from origin/<Branch>; a deleted branch's from its merge commit's
 # second parent, a fast-forward's from the commit itself) and its merge sha;
 # `## Not landed` with every other story's ending; `## Blocks file` with
-# each distinct `— blocks <path>` file read from FINAL_W, cut at 20000
-# bytes; the gate line.
+# each distinct `— blocks <path>` file read from FINAL_W (regular files
+# only; a symlink, a missing file or an escaping path gets a note), cut at
+# 20000 bytes; the gate line.
 final_body() {
   _fb_nl=""; _fb_bp=""
   {
@@ -1783,7 +1784,16 @@ final_body() {
       printf '%s\n' "$_fb_bp" | while IFS= read -r _fb_p; do
         case "$_fb_p" in /*|../*|*/../*|*..) continue ;; esac
         printf '### %s\n\n' "$_fb_p"
-        if [ "$(wc -c < "$FINAL_W/$_fb_p" 2>/dev/null | tr -d ' ')" -gt 20000 ] 2>/dev/null; then
+        # a regular file whose real parent stays inside FINAL_W (no symlink out)
+        _fb_pw="$(cd "$FINAL_W" 2>/dev/null && pwd -P)"
+        _fb_pd="$(cd "$FINAL_W/$(dirname "$_fb_p")" 2>/dev/null && pwd -P)"
+        case "$_fb_pd" in
+          "$_fb_pw"|"$_fb_pw"/*) [ -f "$FINAL_W/$_fb_p" ] && [ ! -L "$FINAL_W/$_fb_p" ] && _fb_ok=1 || _fb_ok=0 ;;
+          *) _fb_ok=0 ;;
+        esac
+        if [ "$_fb_ok" -eq 0 ]; then
+          printf '(not on the branch as a regular file — read %s on the branch)\n\n' "$_fb_p"
+        elif [ "$(wc -c < "$FINAL_W/$_fb_p" 2>/dev/null | tr -d ' ')" -gt 20000 ] 2>/dev/null; then
           head -c 20000 "$FINAL_W/$_fb_p"; printf '\n(truncated — read %s on the branch)\n\n' "$_fb_p"
         else
           cat "$FINAL_W/$_fb_p" 2>/dev/null; printf '\n'

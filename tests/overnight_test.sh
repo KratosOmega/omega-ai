@@ -1058,12 +1058,13 @@ test_overnight_report_anchors() {
 
 test_overnight_report_blocks() {
   fixture blk
-  scenario "stage execute; branch fb; ledger T1 Block: golden — a: 1 vs 2 — blocks docs/b.md; task 1/1; ledger T1 complete" \
+  scenario "stage execute; branch fb; ledger T1 Block: golden — a: 1 vs 2 — blocks docs/b.md; ledger T1 Review: reworded the Block: x; task 1/1; ledger T1 complete" \
            "ledger final review done" "ledger shipped https://x/pull/6; stage idle; task -"
   run_start
   R="$(last_run_dir)/report.md"
   assert_contains "$R" "^- [0-9-]* T1 Block: golden — a: 1 vs 2 — blocks docs/b.md$" "report: the Block line is listed"
   assert_eq 1 "$(sed -n '/^## Blocks$/,/^## Play list$/p' "$R" | grep -c 'T1 Block: golden')" "report: the Block line sits under ## Blocks"
+  assert_eq 0 "$(grep -c 'reworded the Block:' "$R")" "report: a line that only mentions Block: mid-text is not listed"
   assert_eq "## Rulings" "$(grep -B4 '^## Blocks$' "$R" | grep '^## Rulings$')" "report: Blocks follows Rulings"
   fixture blk0; done_scenario; run_start
   R="$(last_run_dir)/report.md"

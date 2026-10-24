@@ -372,6 +372,9 @@ for act in "$@"; do
     "ruling "*)       w="$(story_wt)"
                       ( cd "$w" && st ledger "${act#ruling }" && commit_ledger ruling ) ;;
     "block "*)        blockchk="${act#block }" ;;
+    "symlink "*)      w="$(story_wt)"; _sl="${act#symlink }"
+                      ( cd "$w" && mkdir -p "$(dirname "${_sl% *}")" && ln -s "${_sl#* }" "${_sl% *}" \
+                        && git add "${_sl% *}" && git commit -qm "symlink: ${_sl% *}" ) ;;
     inbox)            printf '{"session_id":"s","hook_event_name":"SessionStart","source":"startup"}' \
                         | sh "$STUB_PLUGIN/hooks/operator-inbox.sh" > "$CALLS/$n.inbox" ;;
     "say "*)          sh "$STUB_RUNNER" say "$id" -- "${act#say }" > /dev/null 2>&1 ;;
@@ -3286,6 +3289,22 @@ test_lanes_blocks_file_capped() {
   _bc="$(sed -n '/^### docs\/game-dev\/playtests\/demo-blocks.md$/,$p' "$GH/body-1" | wc -c | tr -d ' ')"
   assert_eq 1 "$([ "$_bc" -ge 20000 ] && [ "$_bc" -lt 25000 ] && echo 1 || echo 0)" "the Blocks file section is cut to 20000..25000 bytes ($_bc)"
 }
+# #94: the blocks file is read only as a regular file inside the worktree.
+test_lanes_blocks_file_not_followed() {
+  LANES_TASKS=2; export LANES_TASKS
+  lanes_fixture bsym integration A:-
+  mkdir -p "$TMP/outside"; printf 'TOPSECRET-OUTSIDE\n' > "$TMP/outside/secret.md"
+  printf 'auto\nauto\nsymlink docs/link.md %s/outside/secret.md; symlink docs/dir %s/outside; ruling T1 Block: s — a: 1 vs 2 — blocks docs/link.md; ruling T1 Block: d — a: 1 vs 2 — blocks docs/dir/secret.md; ruling T1 Block: m — a: 1 vs 2 — blocks docs/missing.md; ruling T1 Block: x — a: 1 vs 2 — blocks /etc/hostname; ruling T1 Block: y — a: 1 vs 2 — blocks ../x; ruling T1 Review: reworded the Block: x; auto\nauto\n' "$TMP" "$TMP" > "$SCEN/A"
+  run_lanes start "$MFP"
+  assert_eq 0 "$LS_STATUS" "the run is done"
+  assert_not_contains "$GH/body-1" "TOPSECRET-OUTSIDE" "a symlinked blocks file is not read"
+  assert_contains "$GH/body-1" "^### docs/link.md$" "the symlink path still has a heading"
+  assert_eq 3 "$(grep -c '^(not on the branch as a regular file — read ' "$GH/body-1")" "link, linked dir and missing file get the note (and nothing else does)"
+  assert_contains "$GH/body-1" "^(not on the branch as a regular file — read docs/link.md on the branch)$" "the note names the path"
+  assert_not_contains "$GH/body-1" "^### /etc/hostname$" "an absolute path gets no section"
+  assert_not_contains "$GH/body-1" "^### \.\./x$" "a .. path gets no section"
+  assert_not_contains "$(last_lanes_dir)/report.md" "reworded the Block:" "a mid-text Block: mention is not listed"
+}
 # #94: a missing tool is still a Stop, and still holds.
 test_lanes_missing_tool_still_stops() {
   lanes_fixture mts integration A:-
@@ -5101,7 +5120,7 @@ run_tests test_stub_waitexist_and_run_token test_lanes_setup_preflight_refuses_l
   test_lanes_stop_queued_story test_lanes_stop_running_story test_lanes_stop_waiting_story \
   test_lanes_hold_waiting_story_holds_at_start test_lanes_hold_running_then_resume test_lanes_run_stop_held_was_held \
   test_lanes_push_rejected_first_unit_holds test_lanes_origin_check_localcommit_holds \
-  test_lanes_block_carries_on test_lanes_blocks_file_capped test_lanes_missing_tool_still_stops \
+  test_lanes_block_carries_on test_lanes_blocks_file_capped test_lanes_blocks_file_not_followed test_lanes_missing_tool_still_stops \
   test_lanes_final_step_no_delivery test_lanes_deadline \
   test_lanes_stop_at_done_never_lands test_lanes_stop_held_by_operator test_lanes_stop_pending_never_holds \
   test_lanes_gate_repair_own_stop_holds test_lanes_directive_cap_holds test_lanes_hold_during_last_unit_lands_and_clears \
