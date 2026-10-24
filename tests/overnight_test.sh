@@ -527,6 +527,196 @@ test_overnight_push_check_other_helper() {
   assert_contains "$RS_OUT" "^push: git does not push to github.com through gh's credential helper — cannot check the workflow scope$" "the helper line"
 }
 
+# ---- #95: required tools ----
+# This Mac has a real ffmpeg, so a missing tool is named omega-test-ffmpeg. A stub tool is
+# $TMP/tools-<name>/<name>, put on PATH only inside run_start_tools's subshell.
+# tool_stub NAME BODY — an executable $TMP/tools-NAME/NAME running the shell text BODY.
+tool_stub() {
+  mkdir -p "$TMP/tools-$1" && printf '#!/bin/sh\n%s\n' "$2" > "$TMP/tools-$1/$1" && chmod +x "$TMP/tools-$1/$1"
+}
+# run_start_tools DIRS [ARGS] — run_start with DIRS (colon-separated) before PATH, in a subshell.
+run_start_tools() {
+  RS_STATUS=0; _rst_p="$1"; shift
+  ( cd "$P" && PATH="$_rst_p:$PATH" && export PATH && sh "$RUNNER" start "$@" ) > "$TMP/rs.out" 2> "$TMP/rs.err" || RS_STATUS=$?
+  RS_OUT="$TMP/rs.out"; RS_ERR="$TMP/rs.err"
+}
+# venv_stub BODY — $P/.venv/bin/python runs the shell text BODY; committed.
+venv_stub() {
+  ( cd "$P" && mkdir -p .venv/bin && printf '#!/bin/sh\n%s\n' "$1" > .venv/bin/python && chmod +x .venv/bin/python \
+      && git add -f .venv && git -c user.name=t -c user.email=t@t commit -qm venv ) >/dev/null
+}
+TL_FF='{"required_tools": [{"cmd": "omega-test-ffmpeg", "hint": "brew install ffmpeg"}]}'
+TL_MISS="required tool omega-test-ffmpeg not found on PATH — install: brew install ffmpeg"
+test_overnight_tools_missing_refuses() {
+  fixture tl1 "$TL_FF"
+  run_start
+  assert_eq 2 "$RS_STATUS" "a required tool not on PATH: start exits 2"
+  assert_contains "$RS_ERR" "$TL_MISS" "the refusal names the tool and its hint"
+  assert_eq 0 "$(calls)" "no session"
+  assert_missing "$P/.studio/reports" "no run directory"
+  run_start --dry-run
+  assert_eq 2 "$RS_STATUS" "--dry-run refuses the same"
+  assert_contains "$RS_ERR" "$TL_MISS" "and prints the same line"
+  assert_not_contains "$RS_OUT" "^tools:" "a refused entry is left out of the summary"
+}
+test_overnight_tools_present_passes() {
+  fixture tl2 "$TL_FF"
+  tool_stub omega-test-ffmpeg 'exit 0'
+  run_start_tools "$TMP/tools-omega-test-ffmpeg" --dry-run
+  assert_eq 0 "$RS_STATUS" "the tool on PATH: --dry-run passes"
+  assert_contains "$RS_OUT" "^tools: omega-test-ffmpeg found$" "the summary line"
+  assert_eq 1 "$(grep -c '^tools:' "$RS_OUT")" "one tools line"
+}
+TL_PY='{"required_tools": [{"cmd": ".venv/bin/python", "min_version": "3.10", "hint": "rebuild .venv on 3.10+"}]}'
+test_overnight_tools_venv_version() {
+  fixture tl3 "$TL_PY"
+  venv_stub 'echo "Python 3.9.6" >&2'
+  run_start --dry-run
+  assert_eq 2 "$RS_STATUS" "a venv python older than min_version: exit 2"
+  assert_contains "$RS_ERR" "required tool .venv/bin/python is 3.9.6, needs 3.10 or later — install: rebuild .venv on 3.10+" "the version refusal (stderr output read, compared by field)"
+  venv_stub 'echo "Python 3.12.7"'
+  run_start --dry-run
+  assert_eq 0 "$RS_STATUS" "a new enough venv python passes"
+  assert_contains "$RS_OUT" "^tools: .venv/bin/python 3.12.7$" "the summary names its version"
+  venv_stub 'exit 1'
+  run_start --dry-run
+  assert_eq 2 "$RS_STATUS" "a venv python that fails to run: exit 2"
+  assert_contains "$RS_ERR" "required tool .venv/bin/python does not run (exit 1) — install: rebuild .venv on 3.10+" "the does-not-run refusal"
+  chmod -x "$P/.venv/bin/python"
+  run_start --dry-run
+  assert_eq 2 "$RS_STATUS" "a venv python that is not executable: exit 2"
+  assert_contains "$RS_ERR" "required tool .venv/bin/python not found in $P — install: rebuild .venv on 3.10+" "not executable is not found"
+  ( cd "$P" && git rm -qf .venv/bin/python && git -c user.name=t -c user.email=t@t commit -qm novenv ) >/dev/null
+  run_start --dry-run
+  assert_eq 2 "$RS_STATUS" "no venv python: exit 2"
+  assert_contains "$RS_ERR" "required tool .venv/bin/python not found in $P — install: rebuild .venv on 3.10+" "the not-found-in refusal names the checkout"
+}
+test_overnight_tools_version_unreadable_warns() {
+  fixture tl4 '{"required_tools": [{"cmd": "omega-test-tool", "min_version": "1.0", "hint": "h"}]}'
+  tool_stub omega-test-tool 'echo ok'
+  run_start_tools "$TMP/tools-omega-test-tool" --dry-run
+  assert_eq 0 "$RS_STATUS" "a version that cannot be read does not refuse"
+  assert_contains "$RS_OUT" "^tools: omega-test-tool: cannot read a version from 'omega-test-tool --version' — check it by hand$" "the warning line"
+  assert_contains "$RS_OUT" "^tools: omega-test-tool found$" "the summary says found"
+}
+test_overnight_tools_version_args() {
+  fixture tl5 '{"required_tools": [{"cmd": "omega-test-tool", "min_version": "2.0.1", "version_args": "-v  --short", "hint": "h"}]}'
+  tool_stub omega-test-tool '[ "$#" = 2 ] && [ "$1" = -v ] && [ "$2" = --short ] && echo "tool 2.0.1" || echo "tool 1.0 args: $*"'
+  run_start_tools "$TMP/tools-omega-test-tool" --dry-run
+  assert_eq 0 "$RS_STATUS" "version_args are split on blanks and passed"
+  assert_contains "$RS_OUT" "^tools: omega-test-tool 2.0.1$" "an equal version passes"
+}
+test_overnight_tools_capped() {
+  fixture tl6 '{"required_tools": [{"cmd": "omega-test-hang", "min_version": "1", "hint": "h"}]}'
+  tool_stub omega-test-hang 'while :; do sleep 1; done'
+  STUDIO_OVERNIGHT_TOOLS_SECONDS=1; export STUDIO_OVERNIGHT_TOOLS_SECONDS
+  run_start_tools "$TMP/tools-omega-test-hang" --dry-run
+  unset STUDIO_OVERNIGHT_TOOLS_SECONDS
+  assert_eq 2 "$RS_STATUS" "a tool that never answers: exit 2"
+  assert_contains "$RS_ERR" "required tool omega-test-hang does not run (exit 124) — install: h" "the capped run is exit 124"
+  fixture tl6b
+  STUDIO_OVERNIGHT_TOOLS_SECONDS=x; export STUDIO_OVERNIGHT_TOOLS_SECONDS
+  refuse_case "a bad STUDIO_OVERNIGHT_TOOLS_SECONDS" "STUDIO_OVERNIGHT_TOOLS_SECONDS must be a whole number of seconds"
+  unset STUDIO_OVERNIGHT_TOOLS_SECONDS
+}
+test_overnight_tools_malformed() {
+  fixture tm1 '{"required_tools": [{"cmd": "omega-test-ffmpeg"}]}'
+  refuse_case "an entry without hint" "config required_tools: entry 1 (omega-test-ffmpeg) has no hint"
+  fixture tm2 '{"required_tools": [{"cmd": "omega-test-ffmpeg", "hint": "brew install \"ffmpeg\""}]}'
+  refuse_case "a backslash in a hint" "config required_tools: a backslash"
+  fixture tm3 '{"required_tools": [{"cmd": "a b", "hint": "h"}]}'
+  refuse_case "a cmd with a space" "config required_tools: entry 1: cmd must"
+  fixture tm4 '{"required_tools": [{"cmd": "x", "min_version": 3.10, "hint": "h"}]}'
+  refuse_case "a number value" "config required_tools: entry 1: min_version must be a string"
+  fixture tm5 '{"required_tools": ["ffmpeg"]}'
+  refuse_case "a non-object element" "config required_tools: entry 1 is not an object"
+  fixture tm6 '{"required_tools": [{"cmd": "x", "min_version": "3.x", "hint": "h"}]}'
+  refuse_case "a bad min_version" "config required_tools: entry 1 (x): min_version must"
+  fixture tm7 '{"required_tools": [{"cmd": "x", "hint": ""}]}'
+  refuse_case "an empty hint" "config required_tools: entry 1 (x) has no hint"
+  fixture tm8 '{"required_tools": [{"cmd": "x", "hint": "h", "min_versoin": "1"}]}'
+  refuse_case "an unknown key" "config required_tools: entry 1 (x): unknown key min_versoin"
+  fixture tm9 '{"required_tools": {"cmd": "x", "hint": "h"}}'
+  refuse_case "not an array" "config required_tools: must be an array"
+  fixture tm10 '{"required_tools": [{"cmd": "x", "hint": "h", "cmd": "y"}]}'
+  refuse_case "a key given twice" "config required_tools: entry 1: cmd given twice"
+  fixture tm11 '{"required_tools": [{"cmd": "/bin/ls", "hint": "h"}]}'
+  refuse_case "an absolute cmd" "config required_tools: entry 1: cmd must be a name or a checkout-relative path"
+  fixture tm12 '{"required_tools": [{"cmd": "x", "hint": "h", "version_args": "-v; rm x"}]}'
+  refuse_case "version_args with a shell character" "config required_tools: entry 1 (x): version_args may hold only"
+}
+test_overnight_tools_multiline_config() {
+  fixture tl7 '{
+  "overnight": { "session_usd": 25 },
+  "required_tools": [
+    {
+      "hint": "brew install ffmpeg",
+      "min_version": "6",
+      "cmd": "omega-test-ffmpeg"
+    },
+    { "hint" : "brew install ffmpeg",
+      "cmd":"omega-test-ffprobe" }
+  ]
+}'
+  tool_stub omega-test-ffmpeg 'echo "ffmpeg version 7.1 Copyright (c) 2000-2024"'
+  tool_stub omega-test-ffprobe 'exit 3'
+  run_start_tools "$TMP/tools-omega-test-ffmpeg:$TMP/tools-omega-test-ffprobe" --dry-run
+  assert_eq 0 "$RS_STATUS" "a pretty-printed config with reordered keys passes"
+  assert_contains "$RS_OUT" "^tools: omega-test-ffmpeg 7.1, omega-test-ffprobe found$" "both entries, in order (a bare entry without min_version is not run)"
+  run_start --dry-run
+  assert_eq 2 "$RS_STATUS" "two entries sharing a hint, both missing: exit 2"
+  assert_contains "$RS_ERR" "required tool omega-test-ffmpeg not found on PATH — install: brew install ffmpeg" "the first"
+  assert_contains "$RS_ERR" "required tool omega-test-ffprobe not found on PATH — install: brew install ffmpeg" "the second"
+  assert_eq 2 "$(grep -c 'required tool' "$RS_ERR")" "one line per entry"
+}
+# tl_norm OUT — $RS_OUT with $P as P, without env_line's machine readout (it varies run to run).
+tl_norm() { sed "s|$P|P|g" "$RS_OUT" | grep -v -e '^env: ' -e '^⚠' -e '^    ' > "$1"; }
+test_overnight_tools_absent_unchanged() {
+  fixture tla
+  run_start --dry-run
+  assert_eq 0 "$RS_STATUS" "no required_tools: passes"
+  assert_not_contains "$RS_OUT" "^tools:" "no tools line"
+  tl_norm "$TMP/tla.out"
+  fixture tlb '{"required_tools": []}'
+  run_start --dry-run
+  assert_eq 0 "$RS_STATUS" "an empty required_tools: passes"
+  assert_not_contains "$RS_OUT" "^tools:" "no tools line"
+  tl_norm "$TMP/tlb.out"
+  assert_eq "" "$(cmp "$TMP/tla.out" "$TMP/tlb.out" 2>&1)" "the same preflight stdout as with no config"
+}
+# worktree_setup set: start leaves path entries to the scratch worktree (paths-in), --dry-run
+# probes them in the start checkout and says so.
+test_overnight_tools_check_modes() {
+  fixture tl8 '{"worktree_setup": "true", "required_tools": [{"cmd": "omega-test-ffprobe", "hint": "h1"}, {"cmd": ".venv/bin/python", "min_version": "3.10", "hint": "h2"}]}'
+  venv_stub 'echo Python 3.12.7'
+  tool_stub omega-test-ffprobe 'exit 0'
+  run_start_tools "$TMP/tools-omega-test-ffprobe" --dry-run
+  assert_eq 0 "$RS_STATUS" "--dry-run with worktree_setup passes"
+  assert_contains "$RS_OUT" "^tools: omega-test-ffprobe found, .venv/bin/python 3.12.7$" "--dry-run probes path entries in the start checkout"
+  assert_contains "$RS_OUT" "^tools: path entries checked in the start checkout; start re-checks them after worktree_setup$" "and adds the note"
+  mkdir -p "$TMP/tl8s/.venv/bin"; printf '#!/bin/sh\necho Python 3.9.6\n' > "$TMP/tl8s/.venv/bin/python"; chmod +x "$TMP/tl8s/.venv/bin/python"
+  ( PATH="$TMP/tools-omega-test-ffprobe:$PATH"; unset LC_ALL; LC_COLLATE=C
+    say() { printf 'studio-overnight: %s\n' "$*" >&2; }; refuse() { say "$*"; FAILED=1; }
+    START_DIR="$P"; CONFIG="$P/.studio/config.json"; WORKTREE_SETUP=true; FAILED=0
+    . "$REPO_ROOT/studios/game-dev/bin/overnight-tools.sh"
+    tools_check start; echo "start rc=$? failed=$FAILED"
+    tools_check "paths-in $TMP/tl8s"; echo "paths-in rc=$? failed=$FAILED"
+    WORKTREE_SETUP=""; cd "$TMP" && tools_check start; echo "nosetup rc=$?"
+  ) > "$TMP/tl8.out" 2> "$TMP/tl8.err"
+  assert_eq "tools: omega-test-ffprobe found" "$(sed -n 1p "$TMP/tl8.out")" "start skips path entries when worktree_setup is set"
+  assert_eq "start rc=0 failed=0" "$(sed -n 2p "$TMP/tl8.out")" "start: no refusal"
+  assert_eq "paths-in rc=1 failed=1" "$(sed -n 3p "$TMP/tl8.out")" "paths-in DIR: a refusal returns 1 and sets FAILED"
+  assert_contains "$TMP/tl8.err" "required tool .venv/bin/python is 3.9.6, needs 3.10 or later — install: h2" "paths-in probes the path entry in DIR"
+  assert_eq 1 "$(grep -c . "$TMP/tl8.err")" "paths-in does not probe the bare entry"
+  assert_eq "tools: omega-test-ffprobe found, .venv/bin/python 3.12.7" "$(sed -n 4p "$TMP/tl8.out")" "start without worktree_setup probes path entries in START_DIR"
+  assert_eq "nosetup rc=0" "$(sed -n 5p "$TMP/tl8.out")" "start without worktree_setup: no refusal"
+}
+test_overnight_help_required_tools() {
+  sh "$RUNNER" --help > "$TMP/help-tl.txt" 2>&1
+  assert_contains "$TMP/help-tl.txt" "required_tools" "help: the config key"
+  assert_contains "$TMP/help-tl.txt" "STUDIO_OVERNIGHT_TOOLS_SECONDS" "help: the test hook"
+}
+
 test_overnight_preflight_all_failures() {
   fixture r8; ( cd "$P" && sh "$STATE_BIN" set stage idle )
   GH_STATUS=1; export GH_STATUS; run_start; unset GH_STATUS
@@ -551,7 +741,7 @@ test_overnight_deny_file_required() {
   # The runner reads overnight-deny.txt beside itself: run a copy whose
   # sibling deny file holds only comments.
   fixture deny
-  mkdir -p "$TMP/denybin"; cp "$RUNNER" "$STATE_BIN" "$REPO_ROOT/studios/game-dev/bin/overnight-channel.sh" "$REPO_ROOT/studios/game-dev/bin/overnight-runs.sh" "$REPO_ROOT/studios/game-dev/bin/overnight-sessions.sh" "$REPO_ROOT/studios/game-dev/bin/overnight-progress.sh" "$REPO_ROOT/studios/game-dev/bin/studio-env" "$TMP/denybin/"
+  mkdir -p "$TMP/denybin"; cp "$RUNNER" "$STATE_BIN" "$REPO_ROOT/studios/game-dev/bin/overnight-channel.sh" "$REPO_ROOT/studios/game-dev/bin/overnight-runs.sh" "$REPO_ROOT/studios/game-dev/bin/overnight-sessions.sh" "$REPO_ROOT/studios/game-dev/bin/overnight-tools.sh" "$REPO_ROOT/studios/game-dev/bin/overnight-progress.sh" "$REPO_ROOT/studios/game-dev/bin/studio-env" "$TMP/denybin/"
   printf '# only a comment\n\n' > "$TMP/denybin/overnight-deny.txt"
   RS_STATUS=0; ( cd "$P" && sh "$TMP/denybin/studio-overnight" start ) > "$TMP/rs.out" 2> "$TMP/rs.err" || RS_STATUS=$?
   assert_eq 2 "$RS_STATUS" "a deny file with no rules refuses"
@@ -2847,6 +3037,7 @@ FAKE
 # exclusive-scan: test_overnight_hold_on_feature_stop in (c) the stop must end the held run within one hold poll, an elapsed upper bound that a loaded machine breaks
 # exclusive-scan: test_overnight_stop_held_by_operator in (c) the stop must end the operator-held run within one hold poll, an elapsed upper bound that a loaded machine breaks
 # exclusive-scan: test_overnight_notify_hang_capped out (d) the one-second cap only has to fire on a 30-second notifier, and the elapsed bound is 30 s, so a loaded machine does not break it
+# exclusive-scan: test_overnight_tools_capped out (d) the one-second cap only has to fire on a tool that never answers, and a late cap gives the same exit 124
 # exclusive-scan: test_overnight_hold_config_refused out (d) the values are refused at start, nothing runs against a clock
 # exclusive-scan: test_inbox_lock_failures out (d) a lock wait that only gives up; the result is the same however slowly it runs
 # exclusive-scan: test_inbox_lock_busy in (d) lock contention timed against the wait the code under test is given
@@ -2893,6 +3084,10 @@ run_tests test_overnight_setup_preflight_single test_overnight_help_setup_prefli
   test_overnight_preflight_refusals test_overnight_preflight_all_failures \
   test_overnight_push_check_refuses_without_workflow test_overnight_push_check_ok_line test_overnight_push_check_no_workflows \
   test_overnight_push_check_ssh test_overnight_push_check_unknown_scopes test_overnight_push_check_other_helper \
+  test_overnight_tools_missing_refuses test_overnight_tools_present_passes test_overnight_tools_venv_version \
+  test_overnight_tools_version_unreadable_warns test_overnight_tools_version_args test_overnight_tools_capped \
+  test_overnight_tools_malformed test_overnight_tools_multiline_config test_overnight_tools_absent_unchanged \
+  test_overnight_tools_check_modes test_overnight_help_required_tools \
   test_overnight_config_refusals test_overnight_deny_file_required \
   test_overnight_lock test_overnight_first_use_ignores \
   test_overnight_start_args test_overnight_reclaim_race test_overnight_reclaim_finds_live_lock \

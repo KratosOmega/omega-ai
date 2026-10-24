@@ -461,6 +461,19 @@ Config: .studio/config.json "overnight" (defaults, ranges):
 A value present but out of range or not a number is a refusal.
 Top level of config.json: "merge_command" — a command line containing <pr>,
 its first word an executable file under the checkout.
+Top level of config.json: "required_tools" — the tools a run needs (#95):
+  [ { "cmd": "ffmpeg", "hint": "brew install ffmpeg" },
+    { "cmd": ".venv/bin/python", "min_version": "3.10", "hint": "python3.12 -m venv .venv" } ]
+  cmd (required): a name on PATH, or a path with a / relative to the checkout
+  (always run with version_args; it must exit 0). hint (required): the install
+  line every refusal ends with. min_version (optional, like 3.10): the first
+  N.N[.N] of the output of cmd version_args must be at least this. version_args
+  (optional, default --version; split on blanks). start and --dry-run refuse a
+  tool not found, not running (exit 124 past 10 s) or too old, and print one
+  "tools: …" line of the passes; a version that cannot be read is a warning.
+  With worktree_setup set, start probes path entries in its scratch worktree
+  after the setup; --dry-run probes them in the start checkout and says so.
+  String values only, no backslash; a malformed key is a refusal.
 
 Deny rules: $DENY_FILE
   one --disallowedTools rule per line.
@@ -491,6 +504,8 @@ Test hooks (tests only; never set them for a real run; --detach strips them):
                      hold's banner and reminder (else terminal-notifier, else
                      osascript on macOS); tests set it to `: `
   STUDIO_OVERNIGHT_NOTIFY_SECONDS — test hook: the notifier's cap (default 10)
+  STUDIO_OVERNIGHT_TOOLS_SECONDS — test hook: the cap on one required_tools
+                     probe run (default 10; a capped run is exit 124)
   STUDIO_OVERNIGHT_SLOT_POLL_SECONDS — test hook: seconds between a unit's
                      tries for a session slot (default 2)
   STUDIO_OVERNIGHT_LAND_HOOK — test hook: shell text evaluated after a landing's
@@ -576,6 +591,10 @@ REPORTS="$STATE_ROOT/.studio/reports"
 RUN_SLUG=""   # a manifest run's slug (run_paths); empty for a single-plan run
 # The project's live runs (#39): runs_live, runs_match, runs_stop_of, mx_*.
 . "$SELF_DIR/overnight-runs.sh"
+# The config's required_tools (#95): tools_check, run by the preflight in TOOLS_MODE
+# (start, or dry for --dry-run; cmd_start sets it before the preflight).
+. "$SELF_DIR/overnight-tools.sh"
+TOOLS_MODE=start
 # The project-wide session cap (#39 AC27): sess_*; slots are taken by manifest units only (D19).
 . "$SELF_DIR/overnight-sessions.sh"
 
@@ -683,7 +702,7 @@ preflight() {
   # #59 R2: the idle watchdog (run_unit). Its seconds seams are whole numbers >= 1.
   cfg idle_minutes 20 0 120 int
   [ -z "${IDLE_MINUTES:-}" ] || IDLE_MINUTES="$(printf '%s\n' "$IDLE_MINUTES" | awk '{ print $1 + 0 }')"   # D3
-  for _pf_v in STUDIO_OVERNIGHT_IDLE_SECONDS STUDIO_OVERNIGHT_IDLE_POLL_SECONDS STUDIO_OVERNIGHT_NOTIFY_SECONDS; do
+  for _pf_v in STUDIO_OVERNIGHT_IDLE_SECONDS STUDIO_OVERNIGHT_IDLE_POLL_SECONDS STUDIO_OVERNIGHT_NOTIFY_SECONDS STUDIO_OVERNIGHT_TOOLS_SECONDS; do
     eval "_pf_x=\${$_pf_v:-1}"
     case "$_pf_x" in ''|*[!0-9]*) refuse "$_pf_v must be a whole number of seconds (1 or more), got $_pf_x" ;;
       *) [ "$_pf_x" -ge 1 ] || refuse "$_pf_v must be a whole number of seconds (1 or more), got $_pf_x" ;; esac
@@ -696,6 +715,7 @@ preflight() {
   fi
   # A manifest run's push check is lanes_start's (it needs the target branch too).
   [ -n "$_pf_mf" ] || [ -z "$DEFAULT_BRANCH" ] || push_check "$DEFAULT_BRANCH"
+  tools_check "$TOOLS_MODE" || true
   env_line
   [ -n "$_pf_mf" ] || [ "$FAILED" -eq 0 ] || exit 2
 }
@@ -1916,6 +1936,7 @@ cmd_start() {
       *) [ -z "$_mf" ] || { usage >&2; exit 2; }; _mf="$_a" ;;
     esac
   done
+  [ "$_dr" -eq 0 ] || TOOLS_MODE=dry
   if [ "$_dt" -eq 1 ]; then
     { [ -n "$_mf" ] && [ "$_dr" -eq 0 ]; } || { usage >&2; exit 2; }
     detach_start "$_mf"
