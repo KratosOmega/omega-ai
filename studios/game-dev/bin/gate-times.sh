@@ -19,6 +19,9 @@
 # MAXMIN), p95 by nearest rank over the newest 50 gate_times_holds rows; MAXMIN
 # wins over the 15 floor. Nothing is printed with fewer than 5 rows, FACTOR 0
 # or not a whole number, or MAXMIN empty, 0 or not a whole number.
+
+# Byte collation: under a UTF-8 locale macOS sh matches [a-z] by collation (A-Y too).
+unset LC_ALL; LC_COLLATE=C
 gate_times_holds() {
   awk -v w="$2" 'NF == 8 && $2 == w && $3 ~ /^[0-9]+$/ && $4 == 0 && ($6 == "main" || $6 ~ /^main:/) { print $3 + 0 }' "$1" 2>/dev/null
 }
