@@ -863,8 +863,9 @@ test_adopt_part_done_ignores_sync() {
   assert_contains "$TMP/ad.out" "^T4 in progress: $_wa\.\.$_wa$" "baseline"
   wt_commit "chore(sync): merge origin/main into S1-b" ws1.txt
   wt_commit "fix(sync): resolve x" ws2.txt
+  wt_commit "fix(suite): checkpoint repair" ws3.txt
   inspect_s1
-  assert_contains "$TMP/ad.out" "^T4 in progress: $_wa\.\.$_wa$" "sync commits do not count"
+  assert_contains "$TMP/ad.out" "^T4 in progress: $_wa\.\.$_wa$" "sync and suite-checkpoint commits do not count"
 }
 
 # live_lock STATE… — a live dummy run holding S1 in state STATE.

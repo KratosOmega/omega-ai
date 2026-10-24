@@ -105,17 +105,20 @@ When the review is clean, in the session worktree:
    When it does not, the invoking skill's bookkeeping is pending (for
    example `.studio/ledger/`): commit it with that skill's own commit step,
    or stop and list the files. Never `reset`. Then note the feature HEAD:
-   `before=$(git rev-parse HEAD)`.
-2. `first=$(git rev-list --reverse <feature-branch>..parallel/<feature>/task-<n> | head -n 1)`,
-   `last=$(git rev-parse parallel/<feature>/task-<n>)`, then
-   `git cherry-pick $first^..$last` (a single commit: `git cherry-pick $last`).
+   run `git rev-parse HEAD` and keep its output as `<before>`.
+2. Run `git rev-list --reverse <feature-branch>..parallel/<feature>/task-<n>`
+   and note its first line as `<first>` and its last line as `<last>`
+   (the same as `git rev-parse parallel/<feature>/task-<n>`), then
+   `git cherry-pick <first>^..<last>` with the shas written out (a single
+   commit: `git cherry-pick <last>`).
 3. Run the project's tests. On a cherry-pick conflict: `git cherry-pick
    --abort`, dispatch a fix agent to rebase the task branch onto the
    feature branch in the task worktree, then retry from step 1.
 4. Verify: `git status --porcelain` prints nothing. Then `git log
-   --oneline $before..HEAD` must list exactly the cherry-picked commits.
+   --oneline <before>..HEAD` must list exactly the cherry-picked commits.
    Extra commits mean an agent committed on the session branch:
-   `git tag stray/task-<n> HEAD && git reset --hard $before` and redo the
+   `git tag stray/task-<n> HEAD`, then (only when it succeeded)
+   `git reset --hard <before>`, as two calls, and redo the
    cherry-pick. A dirty tree (`git status --porcelain` prints something)
    is never reset — stop and list the files.
 5. `git worktree remove <scratchpad>/wt/task-<n>` and

@@ -7,7 +7,7 @@ mk_tmp pointer_skills_execute_test; trap 'rm_tmp "$TMP"' EXIT  # no test uses TM
 S="$REPO_ROOT/studios/game-dev/skills/execute/SKILL.md"
 
 test_skill_execute_handoff_at_isolation() {
-  assert_contains "$S" 'studio-state handoff "$(git rev-parse --show-toplevel)"' "hand-off at isolation (c)"
+  assert_contains "$S" 'studio-state handoff "<that path>"' "hand-off at isolation (c)"
   assert_contains "$S" "is not the main checkout" "hand-off only outside the main checkout"
   assert_contains "$S" "any non-zero exit" "a failed hand-off stops"
   assert_contains "$S" "no hand-off runs" "in place runs no hand-off"

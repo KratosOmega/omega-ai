@@ -95,11 +95,11 @@ error.
 
 Build the review package for the scope: `git log --oneline`,
 `git diff --stat` and `git diff -U10` for the range, redirected to one
-uniquely named file under `"$(git rev-parse --git-dir)"`.
+uniquely named file under the git dir (run `git rev-parse --git-dir`, and write its output in the path).
 
 Build the verify-prior-fixes list: with `<merge-base>` the scope's start,
 run `git log --format='%h %s' <merge-base>..HEAD` and keep the lines that
-match `^[0-9a-f]+ fix\((T[0-9]+|final|gate|review|B[0-9]+)\)` (`grep -E`).
+match `^[0-9a-f]+ fix\((T[0-9]+|final|gate|review|suite|B[0-9]+)\)` (`grep -E`).
 
 Dispatch `game-dev:reviewer` with `subagent_type: "game-dev:reviewer"` and
 `model: "opus"` (the agent file keeps `model: inherit`; the dispatch

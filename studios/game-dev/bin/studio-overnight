@@ -106,10 +106,18 @@ cfg_raw() {
   [ -f "$CONFIG" ] || return 0
   sed -n 's/.*"'"$1"'"[[:space:]]*:[[:space:]]*\([^,}[:space:]]*\).*/\1/p' "$CONFIG" | head -n 1
 }
-# cfg KEY DEFAULT MIN MAX int|dec — sets the variable named by KEY's upper
+# cfg KEY DEFAULT MIN MAX int|dec [auto] — sets the variable named by KEY's upper
 # case; a present value outside the range or of the wrong kind is a refusal.
+# Only a key passing `auto` as the sixth argument also accepts a quoted number
+# ("6") and the string "auto" (= DEFAULT); a quoted empty value ("") is refused
+# there too. Every other key takes only a bare number, quotes included in the
+# refusal text.
 cfg() {
   _v="$(cfg_raw "$1")"
+  if [ "${6:-}" = auto ]; then
+    case "$_v" in '"'?*'"') _v="${_v#\"}"; _v="${_v%\"}" ;; esac
+    [ "$_v" != auto ] || _v=""
+  fi
   [ -n "$_v" ] || _v="$2"
   case "$5" in
     int) printf '%s' "$_v" | grep -Eq '^[0-9]+$' ;;
@@ -443,6 +451,15 @@ Config: .studio/config.json "overnight" (defaults, ranges):
   gate_command         ""             command the finish gate runs after the tests
                                     (studio-setup gate); no backslash. Unset = none
   retries              1     0-3      retries of an unchanged unit
+  gate_cap_factor      4     0-10     a gate run is stopped at this factor x the p95 of the last 50
+                                    main-lane passes of the same command in .studio/gate.times
+                                    (STUDIO_GATE_CAP_FACTOR; at least 15 min, never past the cap
+                                    above, nothing learned under 5 runs); 0 = off; "auto" = 4
+  suite_every          auto  auto|0-20 lanes: run the whole suite after every K completed tasks
+                                    (a checkpoint; a red one goes to the gate-repair loop);
+                                    0 = off; auto = 4 when
+                                    the median of the last 10 main-lane suite runs in .studio/gate.times
+                                    is 8 min or less (3 runs at least), else off. Single-plan runs: off
   gate_repairs         2     0-3      lanes: gate-repair units per story after a red finish gate,
                                     each followed by a fresh finish (the full gate again);
                                     0 = a red gate stops the story
@@ -459,15 +476,23 @@ Config: .studio/config.json "overnight" (defaults, ranges):
                                     0 = a stop rule ends the story at once (no holds)
   directive_chars      4000  500-16000 cap on a story's active + pending directive text
 A value present but out of range or not a number is a refusal.
-Top level of config.json: "merge_command" — a command line containing <pr>,
-its first word an executable file under the checkout.
+Top level of config.json (not under "overnight"):
+  merge_command        ""             a command line containing <pr>, its first word an
+                                    executable file under the checkout
+  node_workers         auto  auto|1-32 vitest workers for a whole-suite run (studio-vitest):
+                                    auto = max(2, physical cores / 2); a run naming only
+                                    existing files stays at 2. Refused at start when bad
+  node_dir             ""             the node project dir, from the project root
+                                    (studio-vitest, studio-tsc); unset = the current dir
+                                    when it holds package.json
 
 Deny rules: $DENY_FILE
   one --disallowedTools rule per line.
 
 Allow rules: $ALLOW_FILE
-  one --allowedTools rule per line (the gate verbs and the gated Godot form);
-  no file or no rules: no --allowedTools.
+  one --allowedTools rule per line: studio-test, studio-run, studio-vitest, studio-tsc,
+  sdd-run, studio-docs-sync and the gated Godot forms; no file or no rules: no
+  --allowedTools.
 
 The morning report is written to .studio/reports/overnight-<ts>/report.md on
 every ending (manifest mode: overnight-<slug>-<ts>/report.md, a section per
@@ -576,6 +601,8 @@ REPORTS="$STATE_ROOT/.studio/reports"
 RUN_SLUG=""   # a manifest run's slug (run_paths); empty for a single-plan run
 # The project's live runs (#39): runs_live, runs_match, runs_stop_of, mx_*.
 . "$SELF_DIR/overnight-runs.sh"
+# gate_times_holds, gate_learned_cap: the readout of the gate caps studio-gate will learn.
+. "$SELF_DIR/gate-times.sh"
 # The project-wide session cap (#39 AC27): sess_*; slots are taken by manifest units only (D19).
 . "$SELF_DIR/overnight-sessions.sh"
 
@@ -675,6 +702,11 @@ preflight() {
   gate_room_check
   cfg retries 1 0 3 int
   cfg gate_repairs 2 0 3 int
+  cfg gate_cap_factor 4 0 10 int auto
+  # node_workers is a top-level key read by studio-vitest through gate-class.sh:
+  # refuse here, by the same function, what it would refuse inside a unit at night.
+  _pf_nw="$( cd "$START_DIR" && STUDIO_START_DIR="$START_DIR" && . "$SELF_DIR/gate-class.sh" && gate_node_workers 2>&1 >/dev/null )" \
+    || refuse "$_pf_nw"
   cfg hold_minutes 480 0 1440 int
   cfg directive_chars 4000 500 16000 int
   hold_overrides
@@ -696,6 +728,11 @@ preflight() {
   fi
   # A manifest run's push check is lanes_start's (it needs the target branch too).
   [ -n "$_pf_mf" ] || [ -z "$DEFAULT_BRANCH" ] || push_check "$DEFAULT_BRANCH"
+  # A4: a single-plan run is one lane by definition.
+  [ -n "$_pf_mf" ] || echo "one lane: a hold idles this run until you answer; add an independent story to keep the machine busy"
+  caps_readout
+  suite_every_resolve "$_pf_mf"
+  echo "suite checkpoint: $SUITE_NOTE"
   env_line
   [ -n "$_pf_mf" ] || [ "$FAILED" -eq 0 ] || exit 2
 }
@@ -771,8 +808,70 @@ session_caps() {
 # caps_env — the caps as launch env words, each KEY='value' (sq).
 caps_env() {
   session_caps
-  printf 'BASH_DEFAULT_TIMEOUT_MS=%s BASH_MAX_TIMEOUT_MS=%s STUDIO_GATE_MINUTES=%s' \
-    "$(sq "$CMD_MS")" "$(sq "$MAX_MS")" "$(sq "$GATE_MIN")"
+  printf 'BASH_DEFAULT_TIMEOUT_MS=%s BASH_MAX_TIMEOUT_MS=%s STUDIO_GATE_MINUTES=%s STUDIO_GATE_CAP_FACTOR=%s' \
+    "$(sq "$CMD_MS")" "$(sq "$MAX_MS")" "$(sq "$GATE_MIN")" "$(sq "${GATE_CAP_FACTOR:-4}")"
+}
+# caps_readout — one `gate caps:` stdout line: each who with 5 or more
+# main-lane passes in gate.times and the run cap studio-gate learns for it
+# (gate_learned_cap), then the rest at the default cap. A who is listed only
+# with a well-formed rc-0 main-lane row (gate_times_holds); a learned value the
+# run cap clamps (>= GATE_MIN) is no learned cap, as in studio-gate. Nothing
+# without history.
+caps_readout() {
+  session_caps
+  _cr_f="$STATE_ROOT/.studio/gate.times"
+  _cr_whos="$(awk 'NF == 8 && $2 != "setup" && !seen[$2]++ { print $2 }' "$_cr_f" 2>/dev/null)"
+  _cr_ok=""
+  for _cr_w in $_cr_whos; do
+    [ -z "$(gate_times_holds "$_cr_f" "$_cr_w")" ] || _cr_ok="$_cr_ok $_cr_w"
+  done
+  _cr_whos="$_cr_ok"
+  [ -n "$_cr_whos" ] || return 0
+  if [ "${GATE_CAP_FACTOR:-4}" = 0 ]; then echo "gate caps: learned caps off (gate_cap_factor 0)"; return 0; fi
+  _cr_l=""; _cr_d=""; _cr_k=""
+  for _cr_w in $_cr_whos; do
+    _cr_c="$(gate_learned_cap "$_cr_f" "$_cr_w" "${GATE_CAP_FACTOR:-4}" "$GATE_MIN")"
+    [ -z "$_cr_c" ] || [ "$_cr_c" -lt "$GATE_MIN" ] || { _cr_k="${_cr_k:+$_cr_k, }$_cr_w"; continue; }
+    if [ -n "$_cr_c" ]; then _cr_l="${_cr_l:+$_cr_l, }$_cr_w $_cr_c min (×${GATE_CAP_FACTOR:-4} p95)"
+    else _cr_d="${_cr_d:+$_cr_d, }$_cr_w"; fi
+  done
+  [ -z "$_cr_d" ] || _cr_d="default $GATE_MIN min for $_cr_d (fewer than 5 runs)"
+  [ -z "$_cr_k" ] || _cr_k="default $GATE_MIN min for $_cr_k (the learned cap reaches it)"
+  _cr_o="$_cr_l"
+  for _cr_x in "$_cr_d" "$_cr_k"; do
+    [ -z "$_cr_x" ] || _cr_o="$_cr_o${_cr_o:+; }$_cr_x"
+  done
+  echo "gate caps: $_cr_o"
+}
+
+# suite_every_resolve [MANIFEST] — sets SUITE_EVERY (an integer; the interval
+# of the checkpoint suites) and SUITE_NOTE (its readout). A single-plan run
+# (no MANIFEST) is always 0: it has no gate-repair loop to take a red
+# checkpoint. Config is 0-20 or "auto" (cfg's opt-in), which is 4 when the
+# median of the newest 10 well-formed main-lane studio-test rows
+# (gate_times_holds) is 480 s or less and there are 3 or more, else 0.
+suite_every_resolve() {
+  SUITE_EVERY=0; SUITE_NOTE="off — single-plan run"
+  _se_auto=0
+  case "$(cfg_raw suite_every)" in ''|'"auto"') _se_auto=1 ;; esac
+  [ "$_se_auto" = 1 ] || cfg suite_every 0 0 20 int auto
+  [ -n "${1:-}" ] || return 0
+  if [ "$_se_auto" = 0 ]; then
+    SUITE_EVERY="$(printf '%s\n' "${SUITE_EVERY:-0}" | awk '{ print $1 + 0 }')"
+    if [ "$SUITE_EVERY" -gt 0 ]; then SUITE_NOTE="every $SUITE_EVERY tasks"; else SUITE_NOTE="off — suite_every 0"; fi
+    return 0
+  fi
+  SUITE_EVERY=0
+  _se_m="$(gate_times_holds "$STATE_ROOT/.studio/gate.times" studio-test | tail -n 10 | sort -n | awk '
+    { h[NR] = $1 }
+    END { if (NR < 3) { print "few"; exit }
+          m = (NR % 2) ? h[(NR + 1) / 2] : (h[NR / 2] + h[NR / 2 + 1]) / 2
+          printf "%s %.1f\n", (m <= 480) ? "on" : "off", m / 60 }')"
+  case "$_se_m" in
+    few) SUITE_NOTE="off — fewer than 3 suite runs" ;;
+    *) if [ "${_se_m%% *}" = on ]; then SUITE_EVERY=4; SUITE_NOTE="every 4 tasks (median suite ${_se_m#* } min)"
+       else SUITE_NOTE="off — median suite ${_se_m#* } min"; fi ;;
+  esac
 }
 
 # gate_room_check — a warning (never a refusal) when the slowest of the last
@@ -1454,7 +1553,8 @@ reg_end() {
 
 # start_session ARGS — the session in the background, its pid in CPID. Its
 # env words are LAUNCH_ENV (manifest mode: the story's, story_launch_env),
-# else the caps then OMEGA_AUTOPILOT=1; STUDIO_GATE_HELD never reaches a session (D17).
+# else the caps then OMEGA_AUTOPILOT=1; STUDIO_GATE_HELD never reaches a session (D17), nor an operator-shell
+# STUDIO_SUITE_EVERY (only a manifest story's LAUNCH_ENV sets it).
 # Under a lane (LDIR set) the pid is also written to LDIR/cpid. The session
 # starts in UNIT_CWD when set (manifest mode's final-step units), else where
 # the story's pointer is (story_dir: START_DIR until a hand-off, #42).
@@ -1463,7 +1563,7 @@ reg_end() {
 # the run's start dir, for every unit (AC30, D42).
 start_session() {
   set -m 2>/dev/null || true   # own process group: a terminal Ctrl-C reaches only the runner (D6; a lane subshell too, D1c)
-  ( cd "${UNIT_CWD:-$(story_dir)}" && unset STUDIO_GATE_HELD && eval "export ${LAUNCH_ENV:-$(caps_env) OMEGA_AUTOPILOT=1}" \
+  ( cd "${UNIT_CWD:-$(story_dir)}" && unset STUDIO_GATE_HELD STUDIO_SUITE_EVERY && eval "export ${LAUNCH_ENV:-$(caps_env) OMEGA_AUTOPILOT=1}" \
       && STUDIO_UNIT_TAG="$UNIT_TAG" && export STUDIO_UNIT_TAG \
       && STUDIO_RUN_DIR="$RUN_DIR" && export STUDIO_RUN_DIR \
       && STUDIO_START_DIR="$START_DIR" && export STUDIO_START_DIR && exec claude-gd -p "$@" ) \

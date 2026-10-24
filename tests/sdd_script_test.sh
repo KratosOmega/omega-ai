@@ -5,6 +5,7 @@ set -u
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 . "$REPO_ROOT/tests/assert.sh"
 BIN="$REPO_ROOT/studios/game-dev/bin/sdd-script"
+RUN_BIN="$REPO_ROOT/studios/game-dev/bin/sdd-run"
 mk_tmp sdd_script_test
 trap 'rm_tmp "$TMP"' EXIT
 SDD=skills/subagent-driven-development/scripts
@@ -159,7 +160,62 @@ test_space_in_config_dir() {
   case "$CFG" in *" "*) _pass "config dir path contains a space" ; TESTS_RUN=$((TESTS_RUN + 1)) ;; *) _fail "no space in $CFG"; TESTS_RUN=$((TESTS_RUN + 1)) ;; esac
   assert_eq "$(cache 6.4.1)/$SDD/review-package" "$(out)" "registry path resolved under a config dir with a space"
 }
+# runx ARGS — sdd-run under $CFG
+runx() {
+  RC=0
+  CLAUDE_CONFIG_DIR="$CFG" sh "$RUN_BIN" "$@" > "$TMP/run.out" 2> "$TMP/run.err" || RC=$?
+}
+test_sdd_run_execs_script() {
+  fresh 20
+  ver 6.4.1 subagent-driven-development review-package
+  installed 6.4.1
+  printf '#!/bin/sh\necho "$@"\n' > "$(cache 6.4.1)/$SDD/review-package"
+  runx review-package a b
+  assert_eq "0" "$RC" "sdd-run exits with the script's status"
+  assert_eq "a b" "$(out)" "the script runs with its arguments"
+  ver 6.4.1 executing-plans task-done
+  printf '#!/bin/sh\necho "done $1"\n' > "$(cache 6.4.1)/skills/executing-plans/scripts/task-done"
+  runx --skill executing-plans task-done 3
+  assert_eq "done 3" "$(out)" "--skill picks the owning skill"
+}
+test_sdd_run_missing() {
+  fresh 21
+  ver 6.4.1 subagent-driven-development review-package
+  installed 6.4.1
+  runx no-such-script x
+  nonzero "a missing script exits non-zero"
+  assert_eq "1" "$RC" "exit 1"
+  assert_contains "$TMP/run.err" "sdd-script: script 'no-such-script' not found" "sdd-script's message passes through"
+  assert_eq "" "$(out)" "nothing on stdout"
+}
 
-run_tests test_installpath_wins test_highest_version test_stale_installed test_skill_flag \
+test_refuses_path_escapes() {
+  fresh 22
+  ver 6.4.1 subagent-driven-development review-package
+  installed 6.4.1
+  printf '#!/bin/sh\necho ESCAPED "$@"\n' > "$(cache 6.4.1)/skills/evil.sh"
+  printf '#!/bin/sh\necho ESCAPED "$@"\n' > "$TMP/evil.sh"
+  # skills/<skill>/scripts/../../evil.sh is a real file inside the install
+  runx "../../evil.sh" a b
+  nonzero "sdd-run refuses a traversal name"
+  assert_eq "" "$(out)" "the traversal script did not run"
+  for _n in "../../../../../../../../../../../../../..$TMP/evil.sh" "a/b" ".." "." ""; do
+    runx "$_n" a b
+    nonzero "sdd-run refuses name '$_n'"
+    assert_contains "$TMP/run.err" "sdd-script: " "name '$_n': says why"
+    assert_eq "" "$(out)" "name '$_n': nothing runs"
+  done
+  for _s in "a/b" "../skills" ".." "." ""; do
+    runx --skill "$_s" review-package a b
+    nonzero "sdd-run refuses --skill '$_s'"
+    assert_contains "$TMP/run.err" "sdd-script: " "skill '$_s': says why"
+    assert_eq "" "$(out)" "skill '$_s': nothing runs"
+  done
+  run --skill ../x review-package
+  nonzero "sdd-script refuses a / in the skill"
+}
+
+run_tests test_refuses_path_escapes test_installpath_wins test_highest_version test_stale_installed test_skill_flag \
   test_missing_script test_no_superpowers test_home_fallback test_usage \
-  test_multi_entries test_prerelease_order test_empty_highest test_space_in_config_dir
+  test_multi_entries test_prerelease_order test_empty_highest test_space_in_config_dir \
+  test_sdd_run_execs_script test_sdd_run_missing

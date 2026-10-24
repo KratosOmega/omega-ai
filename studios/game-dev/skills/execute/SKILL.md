@@ -12,12 +12,11 @@ description: Use when an approved plan exists — dispatches a fresh role agent 
 **Never search for a tool or script.** Do not run `find /`, `find ~`, `locate`
 or a recursive `ls` from `/`, `~` or `$HOME` to look for one: a search can hang
 a headless unit for hours. `find .` or `git ls-files` inside the project, and
-`command -v`, are fine. Find superpowers' scripts with `sdd-script` (below),
+`command -v`, are fine. Run superpowers' scripts with `sdd-run` (below),
 use a path this studio documents, or stop and report the tool as missing.
-If `sdd-script` is command not found, run
-`"$(command -v sdd-script || echo "$OMEGA_STUDIO_ROOT/bin/sdd-script")"` in its
-place; if that is missing too, stop and report "reinstall omega-ai". Never look
-for it.
+If `sdd-run` is command not found, run
+`sh "$OMEGA_STUDIO_ROOT/bin/sdd-run"` in its place; if that is missing too, stop
+and report "reinstall omega-ai". Never look for it.
 
 ## 0. Preconditions and isolation
 
@@ -48,7 +47,8 @@ Check these first, in the checkout you are in:
 - The spec and the plan are committed: `git log -1 --format=%h -- <spec path>`
   and the same for the plan path each print a hash — note both hashes. If
   either prints nothing, stop and say: "commit the spec and plan first —
-  `git add <spec> <plan> .studio/ledger .studio/config.json && git commit -m 'docs: approve <topic>'`".
+  run `git add <spec> <plan> .studio/ledger .studio/config.json`, then `git commit -m 'docs: approve <topic>'`".
+  (Two separate calls; the commit only when the add succeeded.)
   A worktree is a checkout; an uncommitted spec does not travel into it.
 - Nothing is staged or pending on top of that commit:
   `git status --porcelain -- <spec> <plan> .studio/ledger .studio/config.json`
@@ -100,17 +100,18 @@ is `STUDIO_STORY`:
 - Git lock rule: retry a git write whose stderr says `could not lock` or `cannot lock ref`
   three times, after 1, 2 and 4 seconds, before treating it as a failure.
   Run `git fetch origin` and `git fetch origin run/<slug>` with that retry.
+- **Shell-form rule (the orchestrator's own calls).** Under a lane, apply this to every call you make, and it is the line §2 puts in every brief: "Worktree isolation refuses some shell forms. Run git as one plain command per Bash call. Never `cd <dir> &&` before a command: the shell starts in the worktree, so use `git -C`, `npm --prefix`, or a verb's `--dir`. No `$(…)` or `$VAR` in a git command: write the value. Write and edit files with the Write and Edit tools, not heredocs or inline scripts."
 - Read Target, Branch and slug from `$STUDIO_RUN` (its header and this
   story's row).
 - **Branch exists** (local, or `origin/<Branch>`): enter its worktree
   (`studio-state worktree`, else
   `git worktree add --no-track [-b <Branch>] <path> <Branch or origin/<Branch>>`).
-  Then sync the docs:
-  `git checkout $STUDIO_DOCS_REV -- <spec> <plan>`, and only when
-  `git diff --cached --quiet` fails, commit
+  Then sync the docs with `studio-docs-sync`: it checks out the spec and plan
+  (and the paths a `Context:` header lists, each present in the run's docs
+  commit) from `$STUDIO_DOCS_REV`, and only when they differ commits
   `docs(<id>): plan at run docs <short sha>`. The ledger is never touched.
-  When the plan has a `Context:` header, the docs sync is
-  `git checkout $STUDIO_DOCS_REV -- <spec> <plan> <Context paths>` (the paths the header lists, each present in the run's docs commit).
+  Never write the `git checkout` by hand: it is one command, no variable in an
+  option.
   A docs-sync commit on a branch that is behind `origin/<Branch>` diverges it:
   `studio-adopt sync` then holds the story, and nothing repairs that by itself.
 - **New branch:**
@@ -118,17 +119,16 @@ is `STUDIO_STORY`:
   then `EnterWorktree` with `path:` (in a story session the studio's
   `worktree-guard.sh` hook refuses a call without `path:`; a bare call
   creates a stray worktree), then
-  `git checkout $STUDIO_DOCS_REV -- <spec> <plan> .studio/ledger/<id>.md`,
-  and commit `docs(<id>): approved plan`. With a `Context:` header the checkout is
-  `git checkout $STUDIO_DOCS_REV -- <spec> <plan> .studio/ledger/<id>.md <Context paths>`.
+  `studio-docs-sync --new`: it checks out the spec, plan, ledger and any
+  `Context:` paths from `$STUDIO_DOCS_REV` and commits `docs(<id>): approved plan`.
 - Then `studio-state set branch <Branch>` and
   `studio-state ledger "base origin/<Target>"`. Every `git merge-base` in
   §4a, §5 and §7 uses `origin/<Target>` after a fetch; the bare `<Target>`
   is used only for `gh pr create --base`.
   A lane unit records operator messages after this line (see §8, Operator messages).
   On the new-branch path, when the copied `.studio/ledger/<id>.md` has an `adopted` line,
-  record the adopted story's base after the `base` line:
-  `studio-state ledger "adopt-base $(git rev-parse HEAD)"`.
+  record the adopted story's base after the `base` line: run `git rev-parse HEAD`,
+  then `studio-state ledger "adopt-base <that sha>"`, writing the sha itself.
 - Then run `studio-setup` from the worktree root (`worktree_setup`; a no-op when
   unset or already done). On exit 1:
   `studio-state ledger "Stop: worktree setup failed — exit <n> — log <path>"`
@@ -225,15 +225,19 @@ is `STUDIO_STORY`:
   checkout outside a lane and the top level is not the main checkout (the
   first `worktree` line of `git worktree list --porcelain`; the top level
   is `git rev-parse --show-toplevel`), run inside the new worktree
-  `studio-state handoff "$(git rev-parse --show-toplevel)"`;
+  `git rev-parse --show-toplevel`, then `studio-state handoff "<that path>"`
+  with the path written out;
   any non-zero exit stops and shows its message, a killed call included. In place (the
   (b) consent; the default-branch path in §7) the top level is the main
   checkout: no hand-off runs, and `set branch` writes the main pointer as
   today. A worktree-born story runs no hand-off. Then run inside the worktree
-  `studio-state set branch "$(git branch --show-current)"`. A new run — or
+  `git branch --show-current`, then `studio-state set branch "<that name>"`
+  with the name written out. A new run — or
   such a resume at `task 0/N`, which is a new run restarted — then records
   its base and commits it at once:
-  `studio-state ledger "base <noted branch>" && git add .studio/ledger && git commit -m "chore(studio): ledger"`.
+  three separate calls, in order, each only when the one before succeeded:
+  `studio-state ledger "base <noted branch>"`, `git add .studio/ledger`,
+  `git commit -m "chore(studio): ledger"`.
   Never write the ledger before the fast-forward: an untracked ledger file
   makes it abort.
   Also: any resume whose feature ledger has no `base <branch>` line writes
@@ -310,9 +314,10 @@ procedures, below).
 per-task cycle: fresh implementer per task, task review after each, ledger.
 Its fix loop, its final review and its last step are replaced by §4a, §5 and
 §7 below. The studio rules in §2–§7 layer on top of it. When a superpowers
-skill says `scripts/<name>`, run `bash "$(sdd-script [--skill <skill>] <name>)" ...`
+skill says `scripts/<name>`, run `sdd-run [--skill <skill>] <name> ...`
 (`--skill executing-plans` for task-start and task-done); if that fails, stop
-and report it (`sdd-script` not found: "reinstall omega-ai").
+and report it (`sdd-run` not found: "reinstall omega-ai"). `sdd-run` runs the
+script `sdd-script` locates, so no command substitution is needed.
 Under `--one`, SDD's setup never reads the plan: the one task's text comes from `studio-brief task <n>`, and no other task is extracted.
 Under `--one`, see §8.
 
@@ -359,7 +364,7 @@ and the project `CLAUDE.md` architecture rules. Make the task text in two
 separate calls, so the brief shows only the gated Godot form (the plan file
 is never edited):
 
-1. ``bash "$(sdd-script task-brief)" <plan> <n>`` — the skill's task-brief
+1. ``sdd-run task-brief <plan> <n>`` — the skill's task-brief
    script writes the task text to a file and prints only
    `wrote <file>: <N> lines`.
 2. ``studio-brief rewrite <file>``, with `<file>` the path from that line —
@@ -377,13 +382,14 @@ verbatim (§0, The gate runs in the foreground): "run `studio-test` and
 `$BASH_MAX_TIMEOUT_MS`; never in the background (no `run_in_background`, no
 `&`), and never end a turn to wait for one".
 
+Under a lane, every implementer, fixer and reviewer brief also carries this line verbatim: "Worktree isolation refuses some shell forms. Run git as one plain command per Bash call. Never `cd <dir> &&` before a command: the shell starts in the worktree, so use `git -C`, `npm --prefix`, or a verb's `--dir`. No `$(…)` or `$VAR` in a git command: write the value. Write and edit files with the Write and Edit tools, not heredocs or inline scripts."
+
 Every implementer and fixer brief also carries: "run one test file with
 `studio-test --file <test file>`; never build a Godot or GUT command by
 hand; run a Godot script or import as `studio-gate godot -- <command>`; pass `timeout` only on gate-routed commands; a gate-routed command
 that exits 124 is `Stop: gate timed out`; a targeted vitest runs as
-`cd <node dir> && studio-gate vitest -- npx vitest run --minWorkers=1 --maxWorkers=2 <file>…`,
-tsc as `cd <node dir> && studio-gate tsc -- npx tsc --noEmit` — the `cd` outside the gate,
-never `sh -c` inside it; the whole suite runs only when `Verify:` includes `suite`".
+`studio-vitest <file>…`, tsc as `studio-tsc` — each changes into the node dir and runs under the gate;
+never a `cd <node dir> &&` chain, never `sh -c` inside the gate; the whole suite runs only when `Verify:` includes `suite`".
 
 ## 3. Verify rules (both modes)
 
@@ -407,7 +413,10 @@ kind listed binds the implementer:
 - `visual` — the implementer reports what to look at and where. Record it as
   `studio-state ledger "T<n> Visual: <text>"`.
 - `suite` — the implementer also runs the whole suite (`studio-test`) before
-  reporting and pastes its summary line.
+  reporting and pastes its summary line. When it is green, the task unit
+  records it for the checkpoint count (§8):
+  `studio-state ledger "suite green T<n> <full sha>"`, `<full sha>` being
+  `git rev-parse HEAD`.
 
 A task that introduces or changes a tunable value (a cooldown, a window, a
 speed, a curve) always includes `unit`: the number is tested, the feel is
@@ -458,8 +467,8 @@ This overrides `superpowers:subagent-driven-development`'s fix loop (rounds 1–
    dispatch rule, the C# exception included). Its brief carries:
    - the findings, verbatim;
    - the diff as a file, never pasted inline: SDD's review package for the
-     task's commit range. ``bash "$(sdd-script review-package)" <plan> <BASE> HEAD``,
-     run from the worktree root (`sdd-script` prints the script's path; if it
+     task's commit range. ``sdd-run review-package <plan> <BASE> HEAD``,
+     run from the worktree root (`sdd-run` finds the script with `sdd-script`; if it
      fails, stop and report its message, never search for the script), with
      `<BASE>` the commit the task started from, prints the file's path (the
      script runs git in its working directory); the file holds
@@ -504,7 +513,7 @@ the last task's review. Under `--one`, see §8: a task unit never starts it.
 2. Build the verify-prior-fixes list from the scopes reserved for fix
    commits. With `<merge-base>` = `git merge-base <base> HEAD`, run
    `git log --format='%h %s' <merge-base>..HEAD` and keep the lines that
-   match `^[0-9a-f]+ fix\((T[0-9]+|final|gate|review|B[0-9]+)\)` (`grep -E`).
+   match `^[0-9a-f]+ fix\((T[0-9]+|final|gate|review|suite|B[0-9]+)\)` (`grep -E`).
    A plan task's own `fix(…)` commit — a bug-fix feature — is not on the
    list.
 3. Dispatch `game-dev:reviewer` with `subagent_type: "game-dev:reviewer"`
@@ -513,8 +522,8 @@ the last task's review. Under `--one`, see §8: a task unit never starts it.
    (`requesting-code-review`'s `code-reviewer.md`). The brief:
    - `Scope: branch <name> vs <base>`;
    - the review package for `<merge-base>..HEAD`
-     (``bash "$(sdd-script review-package)" <plan> <merge-base> HEAD``, run
-     from the worktree root; a failing `sdd-script` means stop and report),
+     (``sdd-run review-package <plan> <merge-base> HEAD``, run
+     from the worktree root; a failing `sdd-run` means stop and report),
      as SDD's final
      review gets one;
    - the spec path and the project `CLAUDE.md` path — report every
@@ -549,7 +558,8 @@ the last task's review. Under `--one`, see §8: a task unit never starts it.
    Re-review per §4a rule 3 (a Minor-only wave is never re-reviewed); never
    a third pass (§4a rule 4).
 6. `studio-state ledger "final review done"`, then commit the ledger:
-   `git add .studio/ledger && git commit -m "chore(studio): ledger"`. The
+   `git add .studio/ledger`, then (only when it succeeded) `git commit -m "chore(studio): ledger"`,
+   as two calls. The
    finish then starts from a clean ledger, so a re-run after a stop in §7
    passes §0's clean-tree check and resumes at §7 (§0, Where to start).
    Under `--one`, see §8.
@@ -629,7 +639,8 @@ A finish records operator messages at §0's recording point and commits them wit
    branch name and the PROGRESS path. It adds the entry on the branch and
    reports the milestone gate: `gate met: <current> → <next>` or
    `gate not met: …`. Commit it:
-   `git add docs/game-dev/PROGRESS.md && git commit -m "docs(progress): <topic>"`.
+   `git add docs/game-dev/PROGRESS.md`, then (only when it succeeded)
+   `git commit -m "docs(progress): <topic>"`, as two calls.
    On `gate met`: `studio-state set milestone <next>` (writes the project's milestone: the main checkout's pointer, from any checkout). On `gate not met`:
    `milestone` stays, and its missing list goes in the report. Without the
    file: skip this step and say so in the report.
@@ -640,7 +651,8 @@ A finish records operator messages at §0's recording point and commits them wit
      open no PR: the report says the work is committed locally on
      `<branch>`, and step 5's line is `shipped <branch> (local, default branch)`.
    - Otherwise, first write the PR body file,
-     `"$(git rev-parse --git-dir)/game-dev-pr-body.md"` — inside the
+     `<git dir>/game-dev-pr-body.md` (run `git rev-parse --git-dir` and write its output
+     in the path) — inside the
      repository's metadata, never committed. It holds, in order: the spec's
      `## Purpose`; `## Acceptance criteria` as a `- [ ]` checklist;
      `## Play before merging` (the play list); `## Rulings` (every `Ruling:`
@@ -663,7 +675,8 @@ A finish records operator messages at §0's recording point and commits them wit
      Never merge: no session merges into `main` (the default branch) in any run mode; the runner lands.
 5. **State.** `studio-state ledger "shipped <PR url, or the branch name when there is no PR>"`;
    commit the ledger
-   (`git add .studio/ledger && git commit -m "chore(studio): <topic> finished"`)
+   (`git add .studio/ledger`, then, only when it succeeded,
+   `git commit -m "chore(studio): <topic> finished"`, as two calls)
    and push it when step 4 pushed. Then:
    `studio-state set stage idle`; `studio-state set task -`.
    Leave `spec`, `plan` and `branch` as they are: `branch` keeps the feature
@@ -794,8 +807,34 @@ runs exactly one unit, writes its state, commits, pushes, and ends the turn.
   line, the ledger committed), no next implementer is dispatched, and when
   n = N §5 is not started.
   This overrides SDD's instruction to continue to the next task.
+- **Checkpoint suite** (a task unit under a lane only): `STUDIO_SUITE_EVERY`
+  is the runner's interval K (`0` or unset = off; a single-plan run never
+  has it). After the task is complete and §6's writes are committed, when
+  K > 0, this task's `Verify:` has no `suite` (that run already records
+  `suite green`, §3), and the story ledger holds at least K
+  `T<n> complete` lines since its last `suite green` line (or since its
+  `base` line, when it has none), run `studio-test` in the foreground, as §0
+  says the gate runs. A resumed story whose old `T<n> complete` lines have
+  no `suite green` line counts from its `base` line, so its first
+  checkpoint comes at once.
+  - Green: `studio-state ledger "suite green T<n> <full sha>"` (`<full sha>`
+    is `git rev-parse HEAD`), then commit the ledger, push, and end the unit.
+  - Red: one fresh fixer of this task's `Role:` (§2's dispatch rule), with
+    §4a rule 2's brief, the failing tests' output and the range since the last
+    `suite green` line (or `base`). It commits `fix(suite): <summary>` and
+    verifies with `studio-test --file` on the failing files, up to two
+    rounds. Then `studio-test` once more. Green: record `suite green` as
+    above, commit, push, end the unit.
+  - Exit codes keep §7's lane meaning.
+  - Still red: `studio-state ledger "Stop: gate red — checkpoint after T<n> — <failing line>"`,
+    committed as stops are (§8's stop rule). The runner's gate-repair loop
+    takes it (§11), counted against the same `overnight.gate_repairs`, and
+    the story then resumes at the next task: `task` already counts this one.
+  - The task stays complete throughout: its own tests passed and it was
+    reviewed. A checkpoint never re-opens it.
 - **What each unit writes:**
-  - a task: the task's commits, `task n/N`, the `T<n>` ledger lines, then
+  - a task: the task's commits, `task n/N`, the `T<n>` ledger lines, a
+    checkpoint's `suite green` line or `fix(suite)` commits when one ran, then
     `git push -u origin <branch>`;
   - the final review: the `fix(final)` commits, the `Review: final` and
     `final review done` lines committed, then the push;
@@ -817,7 +856,8 @@ runs exactly one unit, writes its state, commits, pushes, and ends the turn.
   - Once §0 step (c) has recorded `branch` — or a resume has entered the
     feature checkout its recorded `branch` names — in the feature checkout,
     then commit it there:
-    `git add .studio/ledger && git commit -m "chore(studio): stop"`.
+    `git add .studio/ledger`, then (only when it succeeded) `git commit -m "chore(studio): stop"`,
+    as two calls.
   - Any stop before that — §0's preconditions, §0 (a)'s stops, and a stop
     before step (c) has recorded `branch`, the ancestor check's failed
     fast-forward inside the worktree a new run just created included —
@@ -865,7 +905,8 @@ A message that arrives earlier is remembered and recorded at that point.
 and pushed only when that commit is pushed: a red stop pushes nothing. A
 line recorded after the unit's last ledger commit
 is committed in a `chore(studio): ledger` commit before the unit ends
-(`git add .studio/ledger && git commit -m "chore(studio): ledger"`), and is
+(`git add .studio/ledger`, then, only when it succeeded,
+`git commit -m "chore(studio): ledger"`, as two calls), and is
 pushed under the same rule (a rejected push: §8's push rule).
 
 **Conflicts.** If a message conflicts with the approved plan or spec,
@@ -944,8 +985,8 @@ there is no plan to read.
 
 ## 11. Gate repair (--gate-repair)
 
-The runner launches this unit under a lane when a story's finish stopped on
-a red gate (`Stop: gate red — …`, §7's lane rules) and the story has gate
+The runner launches this unit under a lane after a red finish gate or a red checkpoint (§8)
+(`Stop: gate red — …`, §7's lane rules) when the story has gate
 repairs left (`overnight.gate_repairs`): prompt
 `/game-dev:execute --gate-repair`, from the start checkout, with the
 story's env (`STUDIO_STORY`, `STUDIO_RUN`, `STUDIO_DOCS_REV`,
@@ -958,7 +999,7 @@ any miss is a `Stop:` line (§8's stop rule).
 
 A full gate can take most of a session, so this unit never runs it: it
 fixes, proves the fix on what failed, and records the repair. The runner
-then launches a fresh finish, which runs the full gate once (§7).
+then resumes the story: the next task, or a fresh finish, which runs the full gate once (§7).
 
 - **Enter the feature checkout** through `studio-state worktree`, first:
   the `Stop: gate red` line is in the feature checkout's ledger only, so
@@ -967,7 +1008,10 @@ then launches a fresh finish, which runs the full gate once (§7).
 - **Operator messages** are recorded here, after entering (see §8, Operator messages).
 - **Preconditions:** `stage execute`, no `shipped` line in the feature
   ledger, its latest `Stop:` line is a `gate red` one, and `STUDIO_REPAIR`
-  starts with `gate:`.
+  starts with `gate:`. They also hold in the middle of a story: a red
+  checkpoint suite (§8) ends with `Stop: gate red — checkpoint after T<n> — …`
+  while `task` is below `N`. Repair it the same way; the runner then resumes
+  at the next task, and the finish gate is still run once at the end.
 - **Read the failure:** the `Stop: gate red — <failing command and line>`
   line names the red command. For `studio-test`, read the failing tests'
   names and output from the log at `<log>` (for `gate_command`, the log the Stop
@@ -990,9 +1034,10 @@ then launches a fresh finish, which runs the full gate once (§7).
   stops that end the unit at once with
   `studio-state ledger "Stop: <the printed message>"`, committed.
 - **Record:** `studio-state ledger "Repair: gate — <summary>"`, commit the
-  ledger (`git add .studio/ledger && git commit -m "chore(studio): gate repair"`),
+  ledger (`git add .studio/ledger`, then, only when it succeeded,
+  `git commit -m "chore(studio): gate repair"`, as two calls),
   then push the story branch (a rejected push: §8's push rule). The runner reads that `Repair:` line and
-  launches the fresh finish.
+  resumes the story: the next task, or a fresh finish.
 - **Red after three rounds:** `studio-state ledger "Stop: gate repair red — <failing line>"`,
   committed. It is a hard stop: the runner launches no further repair.
 - A git write whose stderr says `could not lock` or `cannot lock ref` is retried, as §0 and §7 do.

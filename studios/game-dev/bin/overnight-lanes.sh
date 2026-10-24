@@ -388,10 +388,12 @@ chain_waits() { awk -F'\t' -v k="$1" '$1 == k { print $2; exit }' "$CHAINS"; }
 # story_launch_env ID — the env words of a unit launch for story ID (spec
 # 686-687), each KEY='value' with the value single-quoted (sq):
 # OMEGA_AUTOPILOT STUDIO_RUN (abs RUN_DIR/manifest.md) STUDIO_STORY
-# STUDIO_DOCS_REV, then the command caps from caps_env (see studio-overnight).
+# STUDIO_DOCS_REV, then the command caps from caps_env (see studio-overnight)
+# and STUDIO_SUITE_EVERY (the checkpoint-suite interval; 0 = off; manifest
+# stories only, a single-plan run has no gate-repair loop to take a red one).
 story_launch_env() {
-  printf 'OMEGA_AUTOPILOT=%s STUDIO_RUN=%s STUDIO_STORY=%s STUDIO_DOCS_REV=%s %s' \
-    "$(sq 1)" "$(sq "$RUN_DIR/manifest.md")" "$(sq "$1")" "$(sq "$MF_DOCS")" "$(caps_env)"
+  printf 'OMEGA_AUTOPILOT=%s STUDIO_RUN=%s STUDIO_STORY=%s STUDIO_DOCS_REV=%s %s STUDIO_SUITE_EVERY=%s' \
+    "$(sq 1)" "$(sq "$RUN_DIR/manifest.md")" "$(sq "$1")" "$(sq "$MF_DOCS")" "$(caps_env)" "$(sq "${SUITE_EVERY:-0}")"
 }
 
 # story_first_label ID — the label of ID's next unit from its studio state
@@ -406,6 +408,15 @@ story_first_label() {
   SIG_CHK="$(printf '%s\n' "$_sfl" | grep -c '^- [0-9-]* check done')"
   SIG_CHKREQ="$(printf '%s\n' "$_sfl" | grep -c '^- [0-9-]* check requested$')"
   label_for
+}
+
+# one_lane_note — A4: stdout, exactly one line, when at most one story can run at a
+# time (one chain, or max_lanes 1); nothing otherwise. Never a refusal. Reads $CHAINS.
+one_lane_note() {
+  _ol_n="$(wc -l < "$CHAINS" | tr -d ' ')"
+  if [ "$_ol_n" -eq 1 ] || [ "${MAX_LANES:-0}" -eq 1 ]; then
+    echo "one lane: a hold idles this run until you answer; add an independent story to keep the machine busy"
+  fi
 }
 
 # lanes_dry_run — the chains, each chain's first launch line, the deny count.
@@ -2093,6 +2104,8 @@ lanes_start() {
   [ "$FAILED" -eq 0 ] || exit 2
   run_paths "$MF_SLUG"
   build_chains
+  # A4: beside push_check; --check keeps stdout for the checked commit, so the note goes to stderr there.
+  if [ "$_ls_chk" -eq 1 ]; then one_lane_note >&2; else one_lane_note; fi
   if [ "$_ls_chk" -eq 1 ]; then
     setup_preflight "$MF_TARGET"
     printf '%s\n' "$SP_SHA"

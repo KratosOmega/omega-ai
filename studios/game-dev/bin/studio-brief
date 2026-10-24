@@ -40,6 +40,20 @@
 #                           (no godot-cmd.awk: exit 1, reinstall omega-ai). The
 #                           plan path is the caller's; Spec: paths are the work
 #                           root's. Needs no studio state.
+#                           A task's optional `After: T<m>[, T<m>…]` line must name
+#                           earlier tasks above `## Backlog`, else
+#                           `task <n>: After: T<m> is not an earlier task above ## Backlog`.
+#   studio-brief tracks <plan>
+#                           the plan's independent tracks, for the plan skill's
+#                           split decision. Only tasks above `## Backlog` count;
+#                           two tasks share a track when a normalized `Files:`
+#                           path matches (backticks, a leading ./ or res:// and
+#                           spaces are stripped) or one names the other in
+#                           `After:`. Prints `tracks: <K>`, then per track
+#                           `track <k>: T<a> T<b> … — <m> tasks — files: <p1>, <p2>, …`
+#                           (tasks ascending, tracks by smallest task, files
+#                           sorted and unique; `files: -` when none). Exit 0, or
+#                           2 for bad usage or a missing plan.
 #   studio-brief rewrite    markdown on stdin, the same text on stdout with each
 #                           bare Godot script/import run gated as
 #                           `studio-gate godot -- …` (#66 R4); exit 0.
@@ -73,7 +87,7 @@ STATE_BIN="$HERE/studio-state"
 DET="$HERE/godot-cmd.awk"
 
 usage() {
-  printf 'usage: studio-brief task <n> | final | check <k> | validate <plan> | rewrite [<file>]\n' >&2
+  printf 'usage: studio-brief task <n> | final | check <k> | validate <plan> | tracks <plan> | rewrite [<file>]\n' >&2
   exit 2
 }
 fail() { printf 'studio-brief: %s\n' "$*" >&2; exit 1; }
@@ -149,6 +163,31 @@ spec_item() {
 # plan_tasks PLAN — the numbers of its `### Task <n>:` headings, outside fences, in order.
 plan_tasks() {
   awk '/^```/ { f = !f; next } !f && /^### Task [0-9]+:/ { s = $3; sub(/:.*/, "", s); print s }' "$1"
+}
+
+# plan_tasks_above_backlog PLAN — plan_tasks, stopping at a `## Backlog` line
+# outside a fence. A repeated number is listed once.
+plan_tasks_above_backlog() {
+  awk '/^```/ { f = !f; next } f { next } /^## Backlog/ { exit }
+    /^### Task [0-9]+:/ { s = $3; sub(/:.*/, "", s); if (!(s in seen)) { seen[s] = 1; print s } }' "$1"
+}
+
+# task_field PLAN N KEY — the value of the first `KEY:` line (outside fences)
+# in `### Task N:`'s block; empty when absent.
+task_field() {
+  _tf_r="$(section "$1" "### Task $2:" 0)"
+  [ -n "$_tf_r" ] || return 0
+  sed -n "${_tf_r% *},${_tf_r#* }p" "$1" | awk -v k="$3" '
+    /^```/ { f = !f; next }
+    f { next }
+    index($0, k ":") == 1 { v = substr($0, length(k) + 2); sub(/^[ \t]+/, "", v); print v; exit }'
+}
+
+# norm_paths LIST — a comma-separated Files: value as one normalized path per
+# line: backticks, surrounding spaces, a leading ./ or res:// stripped.
+norm_paths() {
+  printf '%s\n' "$1" | tr ',' '\n' | tr -d '`' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
+    -e 's|^res://||' -e 's|^\./||' | sed '/^$/d'
 }
 
 # state_get KEY — one studio-state field, with '-' (unset) read as empty.
@@ -284,6 +323,43 @@ need_plan() {
 }
 
 case "$verb" in
+tracks)
+  [ $# -eq 2 ] || usage
+  case "$2" in /*) tplan="$2" ;; *) tplan="$CALLER_PWD/$2" ;; esac
+  [ -f "$tplan" ] || { printf 'studio-brief: plan %s not found\n' "$2" >&2; exit 2; }
+  _tr_rows="$(
+    for _tn in $(plan_tasks_above_backlog "$tplan"); do
+      printf '%s\t@\n' "$_tn"
+      norm_paths "$(task_field "$tplan" "$_tn" Files)" | while IFS= read -r _tp; do printf '%s\t%s\n' "$_tn" "$_tp"; done
+      printf '%s\n' "$(task_field "$tplan" "$_tn" After)" | tr ',' '\n' | tr -d ' \t' | sed -n 's/^T\([0-9][0-9]*\)$/\1/p' \
+        | while IFS= read -r _tm; do printf '%s\t@T%s\n' "$_tn" "$_tm"; done
+    done
+  )"
+  printf '%s\n' "$_tr_rows" | awk -F'\t' '
+    function find(x) { while (P[x] != x) { P[x] = P[P[x]]; x = P[x] } return x }
+    function join(a, b,   ra, rb) { ra = find(a); rb = find(b)
+      if (ra == rb) return
+      if (ra + 0 < rb + 0) P[rb] = ra; else P[ra] = rb }
+    NF < 2 { next }
+    $2 == "@" { P[$1] = $1; order[++n] = $1; next }
+    $2 ~ /^@T/ { after[++na] = $1 SUBSEP substr($2, 3); next }
+    { if ($2 in owner) join(owner[$2], $1); else owner[$2] = $1; fl[++nf] = $1 SUBSEP $2 }
+    END {
+      for (i = 1; i <= na; i++) { split(after[i], e, SUBSEP); if ((e[1] in P) && (e[2] in P)) join(e[1], e[2]) }
+      for (i = 1; i <= n; i++) { r = find(order[i]); if (!(r in cnt)) roots[++k] = r; cnt[r]++
+        mem[r] = mem[r] (cnt[r] > 1 ? " " : "") "T" order[i] }
+      for (i = 1; i <= nf; i++) { split(fl[i], e, SUBSEP); r = find(e[1])
+        if (!((r SUBSEP e[2]) in has)) { has[r SUBSEP e[2]] = 1; nfiles[r]++; F[r, nfiles[r]] = e[2] } }
+      for (i = 1; i <= k; i++) for (j = i + 1; j <= k; j++) if (roots[j] + 0 < roots[i] + 0) { t = roots[i]; roots[i] = roots[j]; roots[j] = t }
+      print "tracks: " (k + 0)
+      for (i = 1; i <= k; i++) { r = roots[i]; m = nfiles[r] + 0
+        for (a = 2; a <= m; a++) { v = F[r, a]; b = a - 1
+          while (b >= 1 && F[r, b] > v) { F[r, b + 1] = F[r, b]; b-- }
+          F[r, b + 1] = v }
+        l = ""; for (a = 1; a <= m; a++) l = l (a > 1 ? ", " : "") F[r, a]
+        printf "track %d: %s — %d tasks — files: %s\n", i, mem[r], cnt[r], (m ? l : "-") }
+    }'
+  ;;
 validate)
   validate_item() {
     _vi=$((_vi + 1))
@@ -303,6 +379,7 @@ validate)
   done <<EOF
 $_vg_rows
 EOF
+  _vabove=" $(plan_tasks_above_backlog "$vplan" | tr '\n' ' ')"
   for _vn in $(plan_tasks "$vplan"); do
     # A repeated number: `task <n>` only ever reaches the first block, so the
     # later one is never briefed or checked. Named once, not re-validated.
@@ -319,6 +396,15 @@ EOF
     _vr="$(section "$vplan" "### Task $_vn:" 0)"
     each_spec_item "$vplan" "${_vr% *}" "${_vr#* }" validate_item
     if [ $? -eq 3 ]; then printf 'studio-brief: task %s: no Spec: line\n' "$_vn" >&2; _vbad=1; fi
+    case "$_vabove" in *" $_vn "*)
+      for _va in $(task_field "$vplan" "$_vn" After | tr ',' ' '); do
+        _vm="${_va#T}"
+        case "$_va" in T[0-9]*) case "$_vm" in *[!0-9]*) _vm="" ;; esac ;; *) _vm="" ;; esac
+        if [ -z "$_vm" ] || [ "$_vm" -ge "$_vn" ] || { case "$_vabove" in *" $_vm "*) false ;; esac; }; then
+          printf 'studio-brief: task %s: After: %s is not an earlier task above ## Backlog\n' "$_vn" "$_va" >&2; _vbad=1
+        fi
+      done ;;
+    esac
   done
   [ "$_vt" -gt 0 ] || { printf 'studio-brief: no ### Task blocks in %s\n' "$2" >&2; exit 1; }
   [ "$_vbad" = 0 ] || exit 1

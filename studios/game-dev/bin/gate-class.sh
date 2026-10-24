@@ -216,6 +216,37 @@ gate_phys_cores() {
   printf '%s\n' "$_gp_n"
 }
 
+# _gc_cfg_raw KEY — KEY's raw token (quotes stripped, so 8, "8" and "auto" all
+# read) from the same config files studio_cfg reads; empty when absent.
+_gc_cfg_raw() {
+  _gr_top="$(git rev-parse --show-toplevel 2>/dev/null)" || _gr_top=""
+  [ -n "$_gr_top" ] || _gr_top="$(pwd -P)"
+  _gr_v=""
+  for _gr_f in "$_gr_top/.studio/config.json" "${STUDIO_START_DIR:+$STUDIO_START_DIR/.studio/config.json}"; do
+    [ -n "$_gr_f" ] && [ -f "$_gr_f" ] || continue
+    _gr_v="$(sed -n 's/.*"'"$1"'"[[:space:]]*:[[:space:]]*\([^,}[:space:]]*\).*/\1/p' "$_gr_f" | head -n 1 | tr -d '"')"
+    [ -z "$_gr_v" ] || break
+  done
+  printf '%s\n' "$_gr_v"
+}
+
+# gate_node_workers — the vitest worker count for a whole-suite run (a positive
+# integer): config node_workers (auto or 1-32) when set, else auto = max(2,
+# physical cores / 2), else 2 when the cores are unreadable. A bad value prints
+# `gate: node_workers must be auto or 1-32, got <v>` on stderr and returns 1.
+gate_node_workers() {
+  _gn_v="$(_gc_cfg_raw node_workers)"
+  case "$_gn_v" in
+    ''|auto) ;;
+    [1-9]|[1-2][0-9]|3[0-2]) printf '%s\n' "$_gn_v"; return 0 ;;
+    *) printf 'gate: node_workers must be auto or 1-32, got %s\n' "$_gn_v" >&2; return 1 ;;
+  esac
+  _gn_c="$(gate_phys_cores)" || { echo 2; return 0; }
+  _gn_h=$((_gn_c / 2))
+  [ "$_gn_h" -ge 2 ] || _gn_h=2
+  printf '%s\n' "$_gn_h"
+}
+
 # gate_load1 — the 1-minute load average (a decimal), else return 1.
 gate_load1() {
   if [ -n "${STUDIO_GATE_LOADAVG+x}" ]; then

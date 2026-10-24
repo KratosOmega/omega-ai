@@ -10,6 +10,8 @@
 #     seconds; it applies only while STUDIO_GATE_MINUTES caps the run.
 #   STUDIO_GATE_SHORT_SECONDS (default 300) — the short slot's cap in seconds
 #     (a non-digit value reads as 300).
+#   STUDIO_GATE_LEARNED_FLOOR_SECONDS (default 900) — the learned cap's floor in
+#     seconds, honoured only below 15 min (a non-digit value reads as 900).
 #
 # Lanes (#71 R3), all under STATE_ROOT/.studio/ and changed only under the
 # reclaim mutex (a live owner's release excepted). The main lane gate.lock/
@@ -44,7 +46,12 @@
 # no cap) stops a run that goes past it: TERM to the process group, KILL after
 # the 10 s grace, `gate: <who> ran past <n> min — stopped` on stderr, rc 124
 # in gate.times. The timer starts once the lock is held (waiting does not
-# count). Who `setup` is exempt (worktree_setup has its own timer). A nested
+# count). With STUDIO_GATE_SECONDS unset, the cap is learned (gate-times.sh
+# gate_learned_cap): clamp(ceil(F x p95 of WHO's last 50 main-lane passes / 60),
+# 15, STUDIO_GATE_MINUTES) min once there are 5 such rows, F = STUDIO_GATE_CAP_FACTOR
+# (0-10, default 4; 0 = off): `gate: <who> ran past its learned cap of <N> min
+# (<F> × p95 of the last <M> runs) — stopped`. Who `setup` is exempt
+# (worktree_setup has its own timer). A nested
 # gate execs before any timer, so re-entry adds no second one.
 # Exit: the command's status · 2 usage · 128+n when TERM/INT/HUP ended it (one
 # landing after the command ended keeps its status and row) · 124 when
@@ -328,6 +335,30 @@ case "${STUDIO_GATE_MINUTES:-}" in
        case "$CAP_SECS" in ''|*[!0-9]*) CAP_SECS="" ;; *) CAP_SECS="$(decimal "$CAP_SECS")" ;; esac
      fi ;;
 esac
+# The learned cap: once WHO has 5 main-lane passes in gate.times, a run is
+# stopped at the factor (STUDIO_GATE_CAP_FACTOR, default 4) x p95 of them, at
+# least 15 min and never past STUDIO_GATE_MINUTES (gate_learned_cap). An
+# explicit STUDIO_GATE_SECONDS stays the cap. The floor's test seam
+# STUDIO_GATE_LEARNED_FLOOR_SECONDS (default 900) replaces the 15 min floor only
+# when the floor is what bound.
+LEARNED_MIN=""; LEARNED_F=4; LEARNED_M=0
+if [ -n "$CAP_SECS" ] && [ -z "${STUDIO_GATE_SECONDS:-}" ] && [ -n "$ROOT" ]; then
+  case "${STUDIO_GATE_CAP_FACTOR:-}" in ''|*[!0-9]*) ;; *) LEARNED_F="$(decimal "$STUDIO_GATE_CAP_FACTOR")" ;; esac
+  [ "$LEARNED_F" -le 10 ] || LEARNED_F=4
+  LEARNED_MIN="$(gate_learned_cap "$ROOT/.studio/gate.times" "$WHO" "$LEARNED_F" "$CAP_MIN")"
+  # A learned value the run cap clamped (>= CAP_MIN) learned nothing: today's cap and message.
+  [ -z "$LEARNED_MIN" ] || [ "$LEARNED_MIN" -lt "$CAP_MIN" ] || LEARNED_MIN=""
+  if [ -n "$LEARNED_MIN" ]; then
+    LEARNED_M="$(gate_times_holds "$ROOT/.studio/gate.times" "$WHO" | tail -n 50 | wc -l | tr -d ' ')"
+    CAP_SECS=$((LEARNED_MIN * 60))
+    case "${STUDIO_GATE_LEARNED_FLOOR_SECONDS:-900}" in
+      ''|*[!0-9]*) ;;
+      *) if [ "$LEARNED_MIN" -le 15 ] && [ "$(decimal "${STUDIO_GATE_LEARNED_FLOOR_SECONDS:-900}")" -lt "$CAP_SECS" ]; then
+           CAP_SECS="$(decimal "${STUDIO_GATE_LEARNED_FLOOR_SECONDS:-900}")"
+         fi ;;
+    esac
+  fi
+fi
 # The slot's cap in seconds (§7 Caps): min(this, the run cap) binds a slot run.
 case "${STUDIO_GATE_SHORT_SECONDS:-300}" in ''|*[!0-9]*) SHORT_SECS=300 ;; *) SHORT_SECS="$(decimal "${STUDIO_GATE_SHORT_SECONDS:-300}")" ;; esac
 ATT_SECS=""; ATT_SHORT=0; SHORT_CAPPED=0
@@ -439,7 +470,10 @@ run_once() {
       sleep 1
     done
   fi
-  [ "$CAPPED" = 0 ] || printf 'gate: %s ran past %s min — stopped\n' "$WHO" "$CAP_MIN" >&2
+  if [ "$CAPPED" = 0 ]; then :
+  elif [ -n "$LEARNED_MIN" ]; then
+    printf 'gate: %s ran past its learned cap of %s min (%s × p95 of the last %s runs) — stopped\n' "$WHO" "$LEARNED_MIN" "$LEARNED_F" "$LEARNED_M" >&2
+  else printf 'gate: %s ran past %s min — stopped\n' "$WHO" "$CAP_MIN" >&2; fi
   POST=1; RUNNING=0
   CHILD=""
   HOLD_S=$(( $(date +%s) - T0 ))
