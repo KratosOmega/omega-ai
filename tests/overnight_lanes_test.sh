@@ -412,7 +412,9 @@ printf '#!/bin/sh\nexec claude "$@"\n' > "$FAKE/claude-gd"
 #   $GH/body-<n>.
 # - pr view <n|head|https://gh.test/pr/<n>> --json …: {"state":…,"isDraft":…,"number":n,
 #   "mergeCommit":{"oid":…}} (mergeCommit null before a merge); no PR -> exit 1,
-#   and so does any view while GH_FAIL_VIEW is set.
+#   and so does any view while GH_FAIL_VIEW is set. When the --json fields name
+#   headRefOid, the object ends with "headRefOid": the PR file's headoid=, else
+#   origin's head of the PR's head branch (git ls-remote, from the cwd).
 #   A $GH/pr-<n>.pending file is appended to the PR file after the view (a
 #   GitHub read that lags the merge by one view).
 # - pr ready <n>: draft=0. pr edit <n> [--title T] [--body-file F]: records
@@ -463,8 +465,14 @@ case "$1 ${2:-}" in
     _f="$(pr_file "${3:-}")" || { echo "no pull requests found for ${3:-}" >&2; exit 1; }
     _o="$(get oid "$_f")"; if [ -n "$_o" ]; then _mc="{\"oid\":\"$_o\"}"; else _mc=null; fi
     if [ "$(get draft "$_f")" = 1 ]; then _dr=true; else _dr=false; fi
-    printf '{"state":"%s","isDraft":%s,"number":%s,"mergeCommit":%s}\n' \
-      "$(get state "$_f")" "$_dr" "${_f##*/pr-}" "$_mc"
+    _hr=""
+    case "$*" in
+      *headRefOid*) _ho="$(get headoid "$_f")"
+        [ -n "$_ho" ] || _ho="$(git ls-remote origin "refs/heads/$(get head "$_f")" 2>/dev/null | cut -f1)"
+        _hr=",\"headRefOid\":\"$_ho\"" ;;
+    esac
+    printf '{"state":"%s","isDraft":%s,"number":%s,"mergeCommit":%s%s}\n' \
+      "$(get state "$_f")" "$_dr" "${_f##*/pr-}" "$_mc" "$_hr"
     if [ -f "$_f.pending" ]; then cat "$_f.pending" >> "$_f"; rm -f "$_f.pending"; fi ;;
   "pr ready")
     _f="$(pr_file "${3:-}")" || exit 1
@@ -2353,6 +2361,10 @@ test_lanes_done_marker() {
   run_lanes start --dry-run "$MFP"
   assert_contains "$LS_OUT" "^run demo: final PR https://gh.test/pr/1 is merged — start marks the record done$" "dry-run names the settle"
   assert_missing "$P/.studio/runs/demo/done" "dry-run writes no done"
+  _dm_n="$(grep -c '^pr view' "$GH/calls")"
+  ( cd "$P" && sh "$RUNNER" status --run demo ) >/dev/null 2>&1
+  assert_missing "$P/.studio/runs/demo/done" "status --run (detach's liveness poll) settles nothing"
+  assert_eq "$_dm_n" "$(grep -c '^pr view' "$GH/calls")" "and asks gh nothing"
   ( cd "$P" && sh "$RUNNER" status ) >/dev/null 2>&1
   assert_file "$P/.studio/runs/demo/done" "status marks a merged final PR's record done"
 }
@@ -2370,10 +2382,12 @@ test_lanes_settle_start_and_check() {
   assert_file "$P/.studio/runs/demo/done" "start marks the record done"
   assert_contains "$LS_ERR" "run demo is done: archive its record first" "then refuses with the archive hint"
   lanes_fixture settlechk integration A:-
-  printf 'head=x\nbase=y\nstate=MERGED\ndraft=0\noid=\ntitle=t\n' > "$GH/pr-1"
+  # A record whose landing is in its final PR's head, which is the PR's headRefOid.
+  _sc_h="$(git -C "$P" rev-parse HEAD)"
+  printf 'head=x\nbase=y\nstate=MERGED\ndraft=0\noid=\ntitle=t\nheadoid=%s\n' "$_sc_h" > "$GH/pr-1"
   mkdir -p "$P/.studio/runs/other"
-  printf 'Z\tb\n' > "$P/.studio/runs/other/rows.tsv"; printf 'Z\tt\n' > "$P/.studio/runs/other/landed.tsv"
-  printf 'abc https://gh.test/pr/1 red\n' > "$P/.studio/runs/other/final"
+  printf 'Z\tb\n' > "$P/.studio/runs/other/rows.tsv"; printf 'Z\tt\t%s\t1\n' "$_sc_h" > "$P/.studio/runs/other/landed.tsv"
+  printf '%s https://gh.test/pr/1 red\n' "$_sc_h" > "$P/.studio/runs/other/final"
   # The detach path runs lanes_start --check in the foreground and parses its stdout as a commit id: a settle line there would be refused.
   st=0; ( cd "$P" && sh "$RUNNER" start --detach "$MFP" ) > "$TMP/dsc.out" 2> "$TMP/dsc.err" || st=$?
   assert_eq 0 "$st" "the detached start accepts the check's stdout (the commit alone)"
