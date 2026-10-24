@@ -43,8 +43,8 @@ table() {
   if [ -n "${RUN_ALL_TABLE:-}" ]; then cat "$RUN_ALL_TABLE"; return; fi
   cat <<'EOF'
 # suite                      shards  floor
-overnight_lanes_test         8       1483
-overnight_test               4       1507
+overnight_lanes_test         8       1529
+overnight_test               4       1611
 gate_lanes_test              1       226
 isolate_test                 1       131
 toolkit_test                 1       351
@@ -55,7 +55,7 @@ install_test                 1       475
 studio_setup_test            1       61
 hook_test                    1       630
 run_all_test                 1       98
-studio_test                  1       795
+studio_test                  1       862
 state_test                   1       245
 gate_class_test              1       102
 omega_test                   1       543
