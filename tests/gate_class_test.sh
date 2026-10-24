@@ -235,6 +235,32 @@ test_load_unreadable_refuses() {
   assert_eq "1 5/?" "$(lo x 5)" "non-numeric cores refuses"
 }
 
+# lp ENV… — gate_load1 and gate_load_peak under the given env words; prints "<l1rc>:<l1> <peakrc>:<peak>".
+lp() {
+  (
+    unset STUDIO_GATE_LOADAVG STUDIO_GATE_LOADAVG_FILE
+    for _a in "$@"; do export "$_a"; done
+    . "$BIN/gate-class.sh"
+    _l="$(gate_load1)"; _lr=$?; _p="$(gate_load_peak)"; _pr=$?
+    printf '%s:%s %s:%s\n' "$_lr" "$_l" "$_pr" "$_p"
+  )
+}
+
+test_load_file_seam_and_peak() {
+  assert_eq "0:5 0:5" "$(lp STUDIO_GATE_LOADAVG=5)" "the value seam gives one value for both averages"
+  printf '12.5\nignored\n' > "$TMP/load"
+  assert_eq "0:12.5 0:12.5" "$(lp STUDIO_GATE_LOADAVG_FILE="$TMP/load" STUDIO_GATE_LOADAVG=1)" "the file seam wins and reads its first line"
+  printf '3\n' > "$TMP/load"
+  assert_eq "0:3 0:3" "$(lp STUDIO_GATE_LOADAVG_FILE="$TMP/load")" "the file is read again on every reading"
+  assert_eq "1: 1:" "$(lp STUDIO_GATE_LOADAVG_FILE="$TMP/no-such-load")" "a missing load file is unreadable"
+  assert_eq "1: 1:" "$(lp STUDIO_GATE_LOADAVG=abc)" "a non-numeric load is unreadable"
+  case "$(uname -s)" in
+    Darwin|Linux)
+      _r="$(lp)"
+      assert_eq 1 "$(printf '%s\n' "$_r" | grep -Ec '^0:[0-9.]+ 0:[0-9.]+$')" "the machine's averages read ($_r)" ;;
+  esac
+}
+
 test_load_production_defaults() {
   _pd="$(
     unset STUDIO_GATE_PHYS_CORES STUDIO_GATE_LOADAVG
@@ -324,5 +350,5 @@ run_tests test_classify_gut_file_runs test_classify_whole_suite_and_dir test_cla
   test_classify_symlink_cycle_is_bounded test_classify_non_utf8_list_four_entries test_classify_godot_who_and_spaced_paths \
   test_classify_vitest_forms test_classify_vitest_near_misses test_classify_tsc_forms test_classify_eslint_forms \
   test_classify_everything_else_is_exclusive test_classify_reads_lane_from_toplevel test_classify_run_fallback \
-  test_classify_minified_config test_load_threshold_from_physical_cores test_load_unreadable_refuses \
+  test_classify_minified_config test_load_threshold_from_physical_cores test_load_unreadable_refuses test_load_file_seam_and_peak \
   test_load_production_defaults test_node_workers_auto test_node_workers_config test_classify_takes_no_lock test_classify_needs_no_studio_dir test_classify_usage
