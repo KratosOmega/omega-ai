@@ -386,7 +386,8 @@ Talking to a live run (<story> is - in a single-plan run; every verb takes
                      next tool call (a session waiting on a subagent or a
                      long gate reads it when that returns). Empty text exits 2.
   said <story>       the story's directives: id, state, text
-  unsay <story> <id> remove a pending message, or retire a directive
+  unsay <story> <id> remove a pending message, or retire a directive (its text
+                     stops counting toward directive_chars at once)
   hold <story>       hold the story at its next unit boundary (queued or
                      waiting: when it would start)
   resume <story>     a held story goes on with its next unit (lanes: after a
@@ -474,7 +475,8 @@ Config: .studio/config.json "overnight" (defaults, ranges):
   model_progress       sonnet   model for the progress unit
   hold_minutes         480   0-1440   minutes a held story waits for say/resume/stop;
                                     0 = a stop rule ends the story at once (no holds)
-  directive_chars      4000  500-16000 cap on a story's active + pending directive text
+  directive_chars      4000  500-16000 cap on a story's active, pending and delivered
+                                    directive text (retiring ones not counted)
 A value present but out of range or not a number is a refusal.
 Top level of config.json (not under "overnight"):
   merge_command        ""             a command line containing <pr>, its first word an

@@ -148,7 +148,7 @@ ignores the selector — see the registry above).
 |---|---|---|
 | `say <story> [--unit] '<text>'` or `say <story> [--unit] -- <text>` | queues a message (scope `story`, or `unit` with `--unit`); text after `--` is every word joined by spaces | the message id |
 | `said <story>` | lists directives: `<id>  <state>  <text>`, state `active`, `pending`, `pending (unit)`, `delivered`, `retiring` | the list, or `(no directives)` |
-| `unsay <story> <id>` | removes a pending message, or queues a `retire` for an active or delivered one | `removed message <id> …` or `retire queued: …` |
+| `unsay <story> <id>` | removes a pending message, or queues a `retire` for an active or delivered one (a `retiring` directive no longer counts toward `directive_chars`) | `removed message <id> …` or `retire queued: …` |
 | `hold <story>` | `control/<story>.hold` (refused while landing (`landing` or `repair`), when already held, and when `hold_minutes` is 0) | `hold requested: …` |
 | `resume <story>` | `control/<story>.resume` (refused while the start checkout's ledger is dirty, when the story is not held, and when `hold_minutes` is 0) | `resume requested: …` |
 | `stop <story>` | `control/<story>.stop` (refused while landing (`landing` or `repair`)) | `stop requested: …` |
