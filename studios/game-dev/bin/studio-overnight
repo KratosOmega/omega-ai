@@ -2134,7 +2134,9 @@ setup_preflight() {
   _sp_l="$(tail -n 1 "$_sp_ef" 2>/dev/null)"; rm -f "$_sp_ef"; _sp_ef=""
   if [ "$_sp_rc" -eq 0 ]; then
     # #95: the path entries of required_tools, probed where the setup built them.
-    tools_check "paths-in $SP_W" || { sp_remove; exit 2; }
+    # Their tools: lines go to stderr: under start --detach this runs in lanes_start
+    # --check, whose stdout detach reads as the checked commit alone.
+    tools_check "paths-in $SP_W" >&2 || { sp_remove; exit 2; }
     sp_remove; say "worktree_setup: green in a linked worktree"; return 0
   fi
   _sp_log=""

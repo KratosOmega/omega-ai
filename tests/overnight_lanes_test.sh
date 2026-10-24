@@ -4884,6 +4884,31 @@ test_lanes_detach_setup_preflight_runs_once() {
   assert_contains "$(ls -d "$P"/.studio/reports/overnight-demo-detached-* | tail -n 1)" "worktree_setup: checked by start --detach at [0-9a-f]\{7\}$" "the child's log says it skipped the check"
   assert_eq "" "$(pf_wts)" "no scratch worktree"
 }
+# #95: --detach with worktree_setup and a path entry of required_tools. The scratch
+# worktree's probe prints its tools: lines on stderr, so detach's check stdout is the
+# commit alone: a pass detaches; a miss refuses in the foreground (exit 2, on stderr).
+test_lanes_detach_tools_after_setup() {
+  LANES_CONFIG='{"worktree_setup": "case $(pwd -P) in */setup-preflight-*) mkdir -p bin && echo echo tool 1.2 > bin/tool && echo echo ok > bin/plain && chmod +x bin/tool bin/plain;; esac", "required_tools": [{"cmd": "bin/tool", "min_version": "1.0", "hint": "build it"}, {"cmd": "bin/plain", "min_version": "1", "hint": "build plain"}]}'; export LANES_CONFIG
+  lanes_fixture dta integration A:-
+  st=0; ( cd "$P" && sh "$RUNNER" start --detach "$MFP" ) > "$TMP/dta.out" 2> "$TMP/dta.err" || st=$?
+  assert_eq 0 "$st" "detach: a path entry that passes in the scratch worktree detaches"
+  assert_contains "$TMP/dta.out" "^detached: pid [0-9]*, log " "the child was started"
+  assert_contains "$TMP/dta.err" "^tools: bin/tool 1.2, bin/plain found$" "the summary line is on stderr"
+  assert_contains "$TMP/dta.err" "^tools: bin/plain: cannot read a version from 'bin/plain --version' — check it by hand$" "and so is the warning line"
+  assert_not_contains "$TMP/dta.err" "unexpected commit" "detach parses the check's stdout as the commit alone"
+  wait_for "[ -f '$CALLS/1.fullenv' ]" 60
+  detach_stop
+  assert_eq "" "$(pf_wts)" "no scratch worktree"
+  LANES_CONFIG='{"worktree_setup": "case $(pwd -P) in */setup-preflight-*) mkdir -p bin && echo echo tool 0.9 > bin/tool && chmod +x bin/tool;; esac", "required_tools": [{"cmd": "bin/tool", "min_version": "1.0", "hint": "build it"}]}'; export LANES_CONFIG
+  lanes_fixture dtr integration A:-
+  st=0; ( cd "$P" && sh "$RUNNER" start --detach "$MFP" ) > "$TMP/dtr.out" 2> "$TMP/dtr.err" || st=$?
+  assert_eq 2 "$st" "detach: a path entry too old in the scratch worktree refuses in the foreground"
+  assert_contains "$TMP/dtr.err" "required tool bin/tool is 0.9, needs 1.0 or later — install: build it" "the refusal is on stderr"
+  assert_not_contains "$TMP/dtr.out" "^detached:" "no child was started"
+  assert_eq "" "$(ls "$P/.studio/reports" 2>/dev/null | grep '^overnight-demo-detached-')" "no detached child log"
+  assert_eq 0 "$(calls)" "no unit ran"
+  assert_eq "" "$(pf_wts)" "no scratch worktree"
+}
 test_lanes_setup_checked_env_binds_to_sha() {
   LANES_CONFIG='{"worktree_setup": "case $(pwd -P) in */setup-preflight-*) echo pf >> '"'$TMP/pf-env'"';; esac"}'; export LANES_CONFIG
   rm -f "$TMP/pf-env"
@@ -5136,7 +5161,7 @@ run_tests test_stub_waitexist_and_run_token test_lanes_setup_preflight_refuses_l
   test_lanes_setup_preflight_interrupt_cleans test_lanes_setup_preflight_sweeps_stale \
   test_lanes_setup_preflight_bad_config test_lanes_setup_preflight_timeout \
   test_lanes_detach_setup_preflight_refused test_lanes_detach_setup_preflight_interrupt \
-  test_lanes_detach_setup_preflight_runs_once test_lanes_setup_checked_env_binds_to_sha \
+  test_lanes_detach_setup_preflight_runs_once test_lanes_detach_tools_after_setup test_lanes_setup_checked_env_binds_to_sha \
   test_lanes_chain_rule test_lanes_manifest_refusals test_lanes_branch_default_or_target_refused test_lanes_conflicts_lock_without_start test_lanes_preflight_backlog_tasks test_lanes_manifest_header_refusals \
   test_lanes_preflight_story_checks test_lanes_preflight_story_state test_lanes_docs_unreachable \
   test_lanes_git_too_old test_lanes_sourced_only test_lanes_next \
