@@ -47,10 +47,10 @@
 # the 10 s grace, `gate: <who> ran past <n> min — stopped` on stderr, rc 124
 # in gate.times. The timer starts once the lock is held (waiting does not
 # count). With STUDIO_GATE_SECONDS unset, the cap is learned (gate-times.sh
-# gate_learned_cap): clamp(ceil(F x p95 of WHO's last 50 main-lane passes / 60),
+# gate_learned_cap): clamp(ceil(F x median of WHO's last 50 main-lane passes / 60),
 # 15, STUDIO_GATE_MINUTES) min once there are 5 such rows, F = STUDIO_GATE_CAP_FACTOR
 # (0-10, default 4; 0 = off): `gate: <who> ran past its learned cap of <N> min
-# (<F> × p95 of the last <M> runs) — stopped`. Who `setup` is exempt
+# (<F> × median of the last <M> runs) — stopped`. Who `setup` is exempt
 # (worktree_setup has its own timer). A nested
 # gate execs before any timer, so re-entry adds no second one.
 # Exit: the command's status · 2 usage · 128+n when TERM/INT/HUP ended it (one
@@ -336,7 +336,7 @@ case "${STUDIO_GATE_MINUTES:-}" in
      fi ;;
 esac
 # The learned cap: once WHO has 5 main-lane passes in gate.times, a run is
-# stopped at the factor (STUDIO_GATE_CAP_FACTOR, default 4) x p95 of them, at
+# stopped at the factor (STUDIO_GATE_CAP_FACTOR, default 4) x the median of them, at
 # least 15 min and never past STUDIO_GATE_MINUTES (gate_learned_cap). An
 # explicit STUDIO_GATE_SECONDS stays the cap. The floor's test seam
 # STUDIO_GATE_LEARNED_FLOOR_SECONDS (default 900) replaces the 15 min floor only
@@ -472,7 +472,7 @@ run_once() {
   fi
   if [ "$CAPPED" = 0 ]; then :
   elif [ -n "$LEARNED_MIN" ]; then
-    printf 'gate: %s ran past its learned cap of %s min (%s × p95 of the last %s runs) — stopped\n' "$WHO" "$LEARNED_MIN" "$LEARNED_F" "$LEARNED_M" >&2
+    printf 'gate: %s ran past its learned cap of %s min (%s × median of the last %s runs) — stopped\n' "$WHO" "$LEARNED_MIN" "$LEARNED_F" "$LEARNED_M" >&2
   else printf 'gate: %s ran past %s min — stopped\n' "$WHO" "$CAP_MIN" >&2; fi
   POST=1; RUNNING=0
   CHILD=""

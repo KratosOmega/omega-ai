@@ -451,7 +451,7 @@ Config: .studio/config.json "overnight" (defaults, ranges):
   gate_command         ""             command the finish gate runs after the tests
                                     (studio-setup gate); no backslash. Unset = none
   retries              1     0-3      retries of an unchanged unit
-  gate_cap_factor      4     0-10     a gate run is stopped at this factor x the p95 of the last 50
+  gate_cap_factor      4     0-10     a gate run is stopped at this factor x the median of the last 50
                                     main-lane passes of the same command in .studio/gate.times
                                     (STUDIO_GATE_CAP_FACTOR; at least 15 min, never past the cap
                                     above, nothing learned under 5 runs); 0 = off; "auto" = 4
@@ -832,7 +832,7 @@ caps_readout() {
   for _cr_w in $_cr_whos; do
     _cr_c="$(gate_learned_cap "$_cr_f" "$_cr_w" "${GATE_CAP_FACTOR:-4}" "$GATE_MIN")"
     [ -z "$_cr_c" ] || [ "$_cr_c" -lt "$GATE_MIN" ] || { _cr_k="${_cr_k:+$_cr_k, }$_cr_w"; continue; }
-    if [ -n "$_cr_c" ]; then _cr_l="${_cr_l:+$_cr_l, }$_cr_w $_cr_c min (×${GATE_CAP_FACTOR:-4} p95)"
+    if [ -n "$_cr_c" ]; then _cr_l="${_cr_l:+$_cr_l, }$_cr_w $_cr_c min (×${GATE_CAP_FACTOR:-4} median)"
     else _cr_d="${_cr_d:+$_cr_d, }$_cr_w"; fi
   done
   [ -z "$_cr_d" ] || _cr_d="default $GATE_MIN min for $_cr_d (fewer than 5 runs)"

@@ -165,10 +165,16 @@ test_learned_cap_needs_five_rows() {
   assert_eq "15" "$(cap "$F" w 4 60)" "5 rows print a value"
 }
 
-test_learned_cap_p95_and_clamp() {
+test_learned_cap_median_and_clamp() {
   F="$TMP/lcp.times"; : > "$F"
-  lcap_rows "$F" w main 0 60 60 60 60 290
-  assert_eq "20" "$(cap "$F" w 4 60)" "4 x p95 290 s = 19.3 min, rounded up to 20"
+  lcap_rows "$F" w main 0 60 290 290 60 290
+  assert_eq "20" "$(cap "$F" w 4 60)" "4 x median 290 s = 19.3 min, rounded up to 20"
+  F="$TMP/lco.times"; : > "$F"
+  lcap_rows "$F" w main 0 241 254 293 267 273 277 273 285 282 279 280 269 629 307 268 269
+  assert_eq "19" "$(cap "$F" w 4 60)" "phoenix's 16 suites: one 629 s outlier leaves the cap at 4 x median 277 s (p95 would give 42)"
+  F="$TMP/lce.times"; : > "$F"
+  lcap_rows "$F" w main 0 100 200 300 400 500 600
+  assert_eq "20" "$(cap "$F" w 4 60)" "an even count takes the lower middle (the 3rd of 6: 300 s)"
   F="$TMP/lcf.times"; : > "$F"
   lcap_rows "$F" w main 0 30 30 30 30 30
   assert_eq "15" "$(cap "$F" w 4 60)" "the floor is 15 min"
@@ -192,7 +198,7 @@ test_learned_cap_skips_bad_rows() {
   printf 'garbage line\n' >> "$F"
   assert_eq "" "$(cap "$F" w 4 60)" "four good rows; the bad ones are skipped, not counted"
   lcap_rows "$F" w main:demoted 0 290
-  assert_eq "20" "$(cap "$F" w 4 60)" "a main:<reason> row counts; the rest still do not"
+  assert_eq "15" "$(cap "$F" w 4 60)" "a main:<reason> row counts (the 5th row); the rest still do not"
   assert_eq "" "$(cap "$F" nobody 4 60)" "another who has no rows"
 }
 
@@ -210,5 +216,5 @@ TESTS_EXCLUSIVE="test_gate_times_mutex_fallback"
 run_tests test_gt_rows_rejects_wrong_rc test_gate_times_row_shape test_gate_times_wait_recorded \
   test_gate_times_keeps_4_field_rows test_gate_times_14_day_retention test_gate_times_line_cap \
   test_gate_times_concurrent_no_loss test_gate_times_mutex_fallback \
-  test_gate_times_holds_filters_and_orders test_learned_cap_needs_five_rows test_learned_cap_p95_and_clamp \
+  test_gate_times_holds_filters_and_orders test_learned_cap_needs_five_rows test_learned_cap_median_and_clamp \
   test_learned_cap_skips_bad_rows test_learned_cap_factor_zero

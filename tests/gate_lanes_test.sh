@@ -561,7 +561,7 @@ test_gate_learned_cap_fires() {
   seed_probe 5 1
   lanes_bg p "$LR" -- env STUDIO_GATE_MINUTES=60 STUDIO_GATE_LEARNED_FLOOR_SECONDS=3 sh "$LANES_GATE" probe -- sh -c 'sleep 20'
   assert_eq 124 "$(lanes_done p)" "the learned cap stops the run"
-  assert_contains "$TMP/err.p" '^gate: probe ran past its learned cap of 15 min (4 × p95 of the last 5 runs) — stopped$' "the learned-cap line"
+  assert_contains "$TMP/err.p" '^gate: probe ran past its learned cap of 15 min (4 × median of the last 5 runs) — stopped$' "the learned-cap line"
   assert_not_contains "$TMP/err.p" 'ran past [0-9]* min' "not the plain cap line"
   assert_eq "124 main exclusive" "$(rows probe | tail -n 1)" "a 124 row"
 }
@@ -577,7 +577,7 @@ test_gate_learned_cap_factor_and_setup() {
   # Factor 11 reads as 4: the learned cap (15 min, 3 s seam) fires.
   lanes_bg b "$LR" -- env STUDIO_GATE_MINUTES=60 STUDIO_GATE_LEARNED_FLOOR_SECONDS=3 STUDIO_GATE_CAP_FACTOR=11 sh "$LANES_GATE" probe -- sh -c 'sleep 20'
   assert_eq 124 "$(lanes_done b)" "factor 11 falls back to 4"
-  assert_contains "$TMP/err.b" 'learned cap of 15 min (4 × p95 of the last [0-9]* runs)' "with factor 4 in the line"
+  assert_contains "$TMP/err.b" 'learned cap of 15 min (4 × median of the last [0-9]* runs)' "with factor 4 in the line"
   # Who setup is exempt from any cap.
   lanes_bg c "$LR" -- env STUDIO_GATE_MINUTES=60 STUDIO_GATE_LEARNED_FLOOR_SECONDS=3 sh "$LANES_GATE" setup -- sh -c 'sleep 6'
   assert_eq 0 "$(lanes_done c)" "setup: no learned cap"

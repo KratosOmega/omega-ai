@@ -509,7 +509,7 @@ test_overnight_caps_readout() {
   printf '1000 vitest 5 0 0 short short -\n1000 vitest 5 0 0 main exclusive -\n' >> "$P/.studio/gate.times"
   run_start --dry-run
   assert_eq 0 "$RS_STATUS" "dry run exits 0"
-  assert_contains "$RS_OUT" "^gate caps: studio-test 20 min (×4 p95); default 45 min for vitest (fewer than 5 runs)$" "learned caps, then the defaults"
+  assert_contains "$RS_OUT" "^gate caps: studio-test 20 min (×4 median); default 45 min for vitest (fewer than 5 runs)$" "learned caps, then the defaults"
   assert_contains "$RS_OUT" "STUDIO_GATE_CAP_FACTOR='4' OMEGA_AUTOPILOT=1" "the launch env carries the factor"
   assert_eq 1 "$(awk '/^one lane:/ { o = NR } /^gate caps:/ { c = NR } END { print (o && c == o + 1) ? 1 : 0 }' "$RS_OUT")" "the readout follows the one-lane line"
   cap_cfg() { printf '%s\n' "$1" > "$P/.studio/config.json"; ( cd "$P" && git add -A && git -c user.name=t -c user.email=t@t commit -qm cfg ) >/dev/null 2>&1; }
