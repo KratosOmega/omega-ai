@@ -2812,6 +2812,27 @@ test_overnight_setup_preflight_single() {
   assert_contains "$RS_ERR" "worktree_setup: green in a linked worktree" "the green line"
   assert_eq "" "$(ls -d "$P"/.claude/worktrees/setup-preflight-* 2>/dev/null)" "no scratch worktree"
 }
+# #95: with worktree_setup, a path entry is probed in the scratch worktree after the setup
+# built it (the start checkout's good venv does not mask it); a miss removes the scratch tree.
+test_overnight_tools_after_setup() {
+  fixture tas '{"worktree_setup": "sh scripts/setup.sh", "required_tools": [{"cmd": ".venv/bin/python", "min_version": "3.10", "hint": "use python3.12 -m venv"}]}'
+  # The setup (committed, pushed: the scratch worktree is off origin/main) rebuilds an old venv python.
+  ( cd "$P" && mkdir -p scripts && printf '%s\n' 'mkdir -p .venv/bin' \
+      "printf '#!/bin/sh\\necho Python 3.9.6\\n' > .venv/bin/python" 'chmod +x .venv/bin/python' > scripts/setup.sh \
+      && git add scripts && git -c user.name=t -c user.email=t@t commit -qm setup ) >/dev/null
+  venv_stub 'echo Python 3.12.7'
+  ( cd "$P" && git push -q origin HEAD ) >/dev/null 2>&1
+  done_scenario; run_start
+  assert_eq 2 "$RS_STATUS" "setup builds a too-old venv python: start exits 2"
+  assert_contains "$RS_ERR" "required tool .venv/bin/python is 3.9.6, needs 3.10 or later — install: use python3.12 -m venv" "the refusal comes from the scratch worktree"
+  assert_eq 0 "$(calls)" "no session"
+  assert_eq "" "$(git -C "$P" worktree list | grep setup-preflight-)" "the scratch worktree is gone"
+  assert_eq "" "$(ls -d "$P"/.claude/worktrees/setup-preflight-* 2>/dev/null)" "and its directory"
+  run_start --dry-run
+  assert_eq 0 "$RS_STATUS" "--dry-run probes the start checkout and passes"
+  assert_contains "$RS_OUT" "^tools: .venv/bin/python 3.12.7$" "the start checkout's venv"
+  assert_contains "$RS_OUT" "^tools: path entries checked in the start checkout; start re-checks them after worktree_setup$" "and the note"
+}
 test_overnight_help_setup_preflight() {
   sh "$RUNNER" --help > "$TMP/help-pf.txt" 2>&1
   assert_contains "$TMP/help-pf.txt" "Preflighted: start runs it once in a scratch linked" "help: worktree_setup says it is preflighted"
@@ -3085,7 +3106,7 @@ before_each() {
   export STUDIO_SETUP_POLL_SECONDS STUDIO_GATE_POLL_SECONDS STUDIO_OVERNIGHT_REAP_POLL_SECONDS \
          STUDIO_OVERNIGHT_DETACH_POLL_SECONDS STUDIO_OVERNIGHT_POLL_SECONDS
 }
-run_tests test_overnight_setup_preflight_single test_overnight_help_setup_preflight \
+run_tests test_overnight_setup_preflight_single test_overnight_tools_after_setup test_overnight_help_setup_preflight \
   test_overnight_fixture_copy_equals_build test_overnight_fixture_failed_build_not_reused \
   test_overnight_open_calls test_overnight_denied_scan test_overnight_permission_route_ending test_overnight_idle_stall test_overnight_idle_spares_gate_call \
   test_overnight_idle_off_and_refusals test_overnight_idle_default_seams test_overnight_stall_holds_with_until_command \
