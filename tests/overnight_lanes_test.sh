@@ -46,7 +46,7 @@ export GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
 #   $CALLS/<n>.argv (one element per line), .story, .prompt, .pid, .pwd,
 #   .peers (the peer-runs hook's output; only with STUDIO_UNIT_TAG set),
 #   .env (OMEGA_AUTOPILOT, STUDIO_RUN, STUDIO_DOCS_REV, STUDIO_REPAIR,
-#   STUDIO_GATE_HELD as KEY=value lines), .t0 and .t1 (epoch seconds).
+#   STUDIO_GATE_HELD, STUDIO_SUITE_EVERY as KEY=value lines), .t0 and .t1 (epoch seconds).
 # - Live count (#39): $CALLS/live/<pid> while a call runs; $CALLS/max holds
 #   the most calls seen running at once.
 # - Scenario: line m of $SCEN/<id> (unit prompts), $SCEN/<id>.land
@@ -56,7 +56,7 @@ export GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
 #   (`/omega:integration repair`). A missing file or line means `auto`.
 # - A line is a `;`-separated list of actions, run in order. `auto` runs
 #   last unless the line names a terminal action (stop, noop, hang, exit,
-#   repair, fakerepair, gaterepair, syncrepair, progress); naming `auto`
+#   repair, fakerepair, gaterepair, syncrepair, checkpoint, progress); naming `auto`
 #   itself changes nothing. Post actions (push_target, push_main, dirty,
 #   localcommit, rmwt) run after auto or the terminal action, in order.
 # - Actions:
@@ -104,6 +104,10 @@ export GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
 #                   in the story worktree; no merge, no push
 #   gaterepair      terminal (`--gate-repair`): in the story worktree, ledger
 #                   `Repair: gate — fixed`, commit, push
+#   checkpoint <reason> terminal: the unit completes its task as auto does
+#                   (the next unit by state; the commit, `T<k> complete`
+#                   line and task k/N), then ledgers `Stop: <reason>` and
+#                   commits it (a red checkpoint suite, execute §8)
 #   gatelog         modifier: writes a studio-test log, .studio/reports/
 #                   test-<stamp>.log, in the story worktree
 #   progress        terminal (`--progress`): appends a line to
@@ -192,8 +196,8 @@ for a in "$@"; do printf '%s\n' "$a"; done > "$CALLS/$n.argv"
 printf '%s\n' "$id" > "$CALLS/$n.story"
 printf '%s\n' "$prompt" > "$CALLS/$n.prompt"
 pwd -P > "$CALLS/$n.pwd"
-printf 'OMEGA_AUTOPILOT=%s\nSTUDIO_RUN=%s\nSTUDIO_DOCS_REV=%s\nSTUDIO_REPAIR=%s\nSTUDIO_GATE_HELD=%s\n' \
-  "${OMEGA_AUTOPILOT:-}" "${STUDIO_RUN:-}" "${STUDIO_DOCS_REV:-}" "${STUDIO_REPAIR:-}" "${STUDIO_GATE_HELD:-}" > "$CALLS/$n.env"
+printf 'OMEGA_AUTOPILOT=%s\nSTUDIO_RUN=%s\nSTUDIO_DOCS_REV=%s\nSTUDIO_REPAIR=%s\nSTUDIO_GATE_HELD=%s\nSTUDIO_SUITE_EVERY=%s\n' \
+  "${OMEGA_AUTOPILOT:-}" "${STUDIO_RUN:-}" "${STUDIO_DOCS_REV:-}" "${STUDIO_REPAIR:-}" "${STUDIO_GATE_HELD:-}" "${STUDIO_SUITE_EVERY:-}" > "$CALLS/$n.env"
 env > "$CALLS/$n.fullenv"
 # #39: a unit session starts under the peers hook, as SessionStart runs it.
 [ -z "${STUDIO_UNIT_TAG:-}" ] || sh "$STUB_PLUGIN/hooks/peer-runs.sh" < /dev/null > "$CALLS/$n.peers" 2>/dev/null
@@ -356,6 +360,8 @@ for act in "$@"; do
                           "$(git rev-parse HEAD)" "$(git log -1 --format=%s)" "$(git rev-parse -q --verify 'HEAD^2' 2>/dev/null)" \
                           "$(git ls-remote origin "refs/heads/$BRANCH" | cut -f1)" "$(git status --porcelain | grep -c .)" \
                           "$(if git rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1; then echo 1; else echo 0; fi)" ) > "$CALLS/$n.probe" ;;
+    "checkpoint "*)   terminal=1; ( auto ) >&2
+                      w="$(story_wt)"; ( cd "$w" && st ledger "Stop: ${act#checkpoint }" && commit_ledger checkpoint-stop && sg push -q origin "$BRANCH" ) ;;
     gaterepair)       terminal=1; w="$(story_wt)"
                       ( cd "$w" && st ledger "Repair: gate — fixed" && commit_ledger gate-repair && sg push -q origin "$BRANCH" ) ;;
     gatelog)          w="$(story_wt)"
@@ -590,7 +596,7 @@ last_lanes_dir() { ls -d "$P"/.studio/reports/overnight-demo-* 2>/dev/null | tai
 # on main and pushes it, so origin/main is not in integration/demo until the
 # final step merges it; for MODE direct, an
 # executable scripts/merge.sh (the stub merge program) committed on run/demo.
-# LANES_TASKS=2 gives every plan a Task 2 and sets task 0/2 (default: one task).
+# LANES_TASKS=N gives every plan Tasks 1..N and sets task 0/N (default: one task).
 # LANES_MAIN_PRE=<dir> commits <dir>'s files on main before run/demo is cut, so the run branch inherits them (#56).
 # Exports P, MFP, CALLS, GH,
 # TMP_WT and SCEN (an empty scenario dir: every unit is `auto`); unsets LANES_*.
@@ -661,7 +667,11 @@ lf_build() {
       _id="${_r%%:*}"; _plan="docs/game-dev/plans/2026-10-01-$_id.md"
       printf '# Plan: %s\n\nStory: %s\n\n## Global Constraints\n\n- none\n\n## Decisions\n\n- none\n\n### Task 1: t\n\nSpec: %s:L1-2\nReview: final\n' \
         "$_id" "$_id" "$_lf_spec" > "$_plan" || exit 1
-      [ "$_lf_tasks" != 2 ] || printf '\n### Task 2: u\n\nSpec: %s:L1-2\nReview: final\n' "$_lf_spec" >> "$_plan" || exit 1
+      _lf_k=2
+      while [ "$_lf_k" -le "$_lf_tasks" ]; do
+        printf '\n### Task %s: u\n\nSpec: %s:L1-2\nReview: final\n' "$_lf_k" "$_lf_spec" >> "$_plan" || exit 1
+        _lf_k=$((_lf_k + 1))
+      done
       STUDIO_STORY="$_id"; export STUDIO_STORY
       sh "$STATE_BIN" init >/dev/null || exit 1
       sh "$STATE_BIN" set spec "$_lf_spec" || exit 1
@@ -791,6 +801,40 @@ bg_wait() { _bp="$(cat "$TMP/bg-$1.pid")"; _bi=0
   if kill -0 "$_bp" 2>/dev/null; then kill -TERM "$_bp"; TESTS_RUN=$((TESTS_RUN + 1)); _fail "bg run $1 ran past 120 s"; fi
   BG_STATUS=0; wait "$_bp" 2>/dev/null || BG_STATUS=$?; }
 
+ONE_LANE_LINE='^one lane: a hold idles this run until you answer; add an independent story to keep the machine busy$'
+test_lanes_one_lane_note_one_chain() {
+  lanes_fixture ol1 integration A:- B:A
+  run_lanes start --dry-run "$MFP"
+  assert_eq 0 "$LS_STATUS" "dry run exits 0 $(cat "$LS_ERR")"
+  assert_contains "$LS_OUT" "$ONE_LANE_LINE" "one chain: the one-lane line"
+}
+test_lanes_one_lane_note_max_lanes_1() {
+  LANES_CONFIG='{"overnight": {"max_lanes": 1}}'; export LANES_CONFIG
+  lanes_fixture ol2 integration A:- B:-
+  run_lanes start --dry-run "$MFP"
+  assert_eq 0 "$LS_STATUS" "dry run exits 0 $(cat "$LS_ERR")"
+  assert_contains "$LS_OUT" "$ONE_LANE_LINE" "max_lanes 1: the one-lane line"
+}
+test_lanes_no_note_two_chains() {
+  lanes_fixture ol3 integration A:- B:-
+  run_lanes start --dry-run "$MFP"
+  assert_eq 0 "$LS_STATUS" "dry run exits 0 $(cat "$LS_ERR")"
+  assert_not_contains "$LS_OUT" "^one lane:" "two chains: no one-lane line"
+}
+# AC4 pin: sibling stories A and A-2 (Task 2's shape) are two independent chains.
+test_lanes_split_siblings_planned() {
+  LANES_CELLS=dash; export LANES_CELLS
+  lanes_fixture sib integration A:- A-2:-
+  printf -- '- 2026-10-01 spec approved docs/game-dev/specs/2026-10-01-demo.md\n- 2026-10-01 plan approved docs/game-dev/plans/2026-10-01-A.md\n- 2026-10-01 plan approved docs/game-dev/plans/2026-10-01-A-2.md\n- 2026-10-01 Decisions swept A\n- 2026-10-01 Decisions swept A-2\n' > "$P/.studio/ledger/demo.md"
+  run_lanes next "$MFP"
+  assert_contains "$LS_OUT" "^next: /omega:autopilot demo$" "both siblings planned"
+  lanes_fixture sib2 integration A:- A-2:-
+  run_lanes start --dry-run "$MFP"
+  assert_eq 0 "$LS_STATUS" "dry run exits 0 $(cat "$LS_ERR")"
+  assert_contains "$LS_OUT" "^chain 1: A$" "first sibling chain"
+  assert_contains "$LS_OUT" "^chain 2: A-2$" "second sibling chain"
+}
+
 test_lanes_chain_rule() {
   lanes_fixture chains integration A:- B:- C:A D:A E:C,B F:E
   run_lanes start --dry-run "$MFP"
@@ -806,7 +850,7 @@ test_lanes_chain_rule() {
   assert_contains "$LS_OUT" "Bash(git push \* main)" "the deny rules are expanded"
   assert_eq 4 "$(grep -c "claude-gd -p" "$LS_OUT")" "one launch line per chain"
   assert_contains "$LS_OUT" "^deny: [0-9][0-9]* rules$" "the deny rule count"
-  assert_contains "$LS_OUT" "^allow: 6 rules$" "the allow rule count"
+  assert_contains "$LS_OUT" "^allow: $(grep -Evc '^[[:space:]]*(#|$)' "$REPO_ROOT/studios/game-dev/bin/overnight-allow.txt") rules$" "the allow rule count is the allow file's non-comment, non-blank lines"
   assert_eq 0 "$(calls)" "dry run launches no session"
   assert_missing "$P/.studio/overnight.lock" "dry run takes no lock"
   assert_missing "$P/.studio/runs/demo/lock" "nor a per-run lock"
@@ -1617,6 +1661,91 @@ test_lanes_gate_repair_then_lands() {
   assert_eq "1 A-T1 progress,2 A-final-review progress,3 A-finish stop,4 A-gate-repair progress,5 A-finish done," \
     "$(story_rows A)" "a fresh finish follows the repair; unit numbers run on"
   assert_contains "$(last_lanes_dir)/report.md" "^| 4 | A-gate-repair | " "the report lists the gate-repair unit"
+}
+# seed_suite_times FILE N SECS — N well-formed main-lane studio-test rows of SECS seconds.
+seed_suite_times() {
+  mkdir -p "$(dirname "$1")"; _sst_i=0
+  while [ "$_sst_i" -lt "$2" ]; do printf '1000 studio-test %s 0 0 main exclusive -\n' "$3" >> "$1"; _sst_i=$((_sst_i + 1)); done
+}
+# suite_dry CFG ROWS SECS — a manifest dry run with config CFG ('' = none) and ROWS rows of SECS.
+suite_dry() {
+  [ -z "$1" ] || { LANES_CONFIG="$1"; export LANES_CONFIG; }
+  lanes_fixture "sv$$-$3-$2" integration A:- B:A
+  [ "$2" = 0 ] || seed_suite_times "$P/.studio/gate.times" "$2" "$3"
+  run_lanes start --dry-run "$MFP"
+}
+test_suite_every_auto_on() {
+  suite_dry '' 10 270
+  assert_eq 0 "$LS_STATUS" "dry run exits 0 $(cat "$LS_ERR")"
+  assert_contains "$LS_OUT" "^suite checkpoint: every 4 tasks (median suite 4.5 min)$" "median 4.5 min: every 4"
+  assert_eq 1 "$(awk '/^gate caps:/ { c = NR } /^suite checkpoint:/ { s = NR } END { print (c && s == c + 1) ? 1 : 0 }' "$LS_OUT")" "the readout follows gate caps"
+}
+test_suite_every_auto_off_slow() {
+  suite_dry '' 10 1200
+  assert_contains "$LS_OUT" "^suite checkpoint: off — median suite 20.0 min$" "20 min: off"
+}
+# suite_dry_secs TAG SECS… — a manifest dry run whose gate.times holds one main-lane studio-test row per SECS, oldest first.
+suite_dry_secs() {
+  _sds_t="$1"; shift
+  lanes_fixture "svs$$-$_sds_t" integration A:- B:A
+  for _sds_s in "$@"; do seed_suite_times "$P/.studio/gate.times" 1 "$_sds_s"; done
+  run_lanes start --dry-run "$MFP"
+}
+test_suite_every_newest_ten_window() {
+  suite_dry_secs win 1200 1200 1200 1200 1200 1200 1200 1200 1200 1200 270 270 270 270 270 270 270 270 270 270
+  assert_eq 0 "$LS_STATUS" "dry run exits 0 $(cat "$LS_ERR")"
+  assert_contains "$LS_OUT" "^suite checkpoint: every 4 tasks (median suite 4.5 min)$" "10 old slow rows, then 10 fast ones: only the newest 10 count"
+}
+test_suite_every_median_boundary() {
+  suite_dry_secs even 400 480 481 600
+  assert_contains "$LS_OUT" "^suite checkpoint: off — median suite 8.0 min$" "the even median 480.5 s is over 480: off (not truncated to 480)"
+  suite_dry_secs one 481 481 481
+  assert_contains "$LS_OUT" "^suite checkpoint: off — median suite 8.0 min$" "481 s is off"
+  suite_dry_secs exact 480 480 480
+  assert_contains "$LS_OUT" "^suite checkpoint: every 4 tasks (median suite 8.0 min)$" "exactly 480 s is on"
+  suite_dry_secs under 400 480 480 600
+  assert_contains "$LS_OUT" "^suite checkpoint: every 4 tasks (median suite 8.0 min)$" "an even median of exactly 480 is on"
+}
+test_suite_every_few_rows() {
+  suite_dry '' 2 270
+  assert_contains "$LS_OUT" "^suite checkpoint: off — fewer than 3 suite runs$" "2 rows: off"
+}
+test_suite_every_config() {
+  suite_dry '{"overnight": {"suite_every": 2}}' 0 0
+  assert_contains "$LS_OUT" "^suite checkpoint: every 2 tasks$" "2 is every 2"
+  assert_contains "$LS_OUT" "STUDIO_SUITE_EVERY='2'" "the launch env says 2"
+  suite_dry '{"overnight": {"suite_every": "auto"}}' 10 270
+  assert_eq 0 "$LS_STATUS" "a quoted auto is accepted"
+  assert_contains "$LS_OUT" "^suite checkpoint: every 4 tasks" "and reads as auto"
+  suite_dry '{"overnight": {"suite_every": "3"}}' 0 0
+  assert_contains "$LS_OUT" "^suite checkpoint: every 3 tasks$" "a quoted number is accepted"
+  suite_dry '{"overnight": {"suite_every": 0}}' 10 270
+  assert_contains "$LS_OUT" "^suite checkpoint: off — suite_every 0$" "0 is off"
+  suite_dry '{"overnight": {"suite_every": 21}}' 0 0
+  assert_eq 2 "$LS_STATUS" "21 is a refusal"
+  assert_contains "$LS_ERR" "suite_every" "naming the key"
+  suite_dry '{"overnight": {"suite_every": ""}}' 0 0
+  assert_eq 2 "$LS_STATUS" "a quoted empty value is a refusal"
+  assert_contains "$LS_ERR" 'config overnight.suite_every must be a number from 0 to 20 (int), got ""$' "naming the key and the empty value"
+}
+test_lanes_suite_every_env() {
+  lanes_fixture sveenv integration A:-
+  seed_suite_times "$P/.studio/gate.times" 10 270
+  run_lanes start "$MFP"
+  assert_eq 0 "$LS_STATUS" "the run lands $(cat "$LS_ERR")"
+  assert_contains "$CALLS/1.env" "^STUDIO_SUITE_EVERY=4$" "a lane's unit gets the checkpoint interval"
+}
+test_lanes_checkpoint_red_repairs_then_next_task() {
+  LANES_TASKS=4; export LANES_TASKS
+  lanes_fixture svcp integration A:-
+  printf 'auto\ncheckpoint gate red — checkpoint after T2 — studio-test: 1 failed\nauto\nauto\nauto\nauto\n' > "$SCEN/A"
+  printf 'gaterepair\n' > "$SCEN/A.gate"
+  run_lanes start "$MFP"
+  assert_eq 0 "$LS_STATUS" "the story lands $(cat "$LS_ERR")"
+  assert_contains "$(last_lanes_dir)/stories/A" "^landed [0-9a-f]\{40\}$" "A lands after the checkpoint repair"
+  assert_eq "1 A-T1 progress,2 A-T2 stop,3 A-gate-repair progress,4 A-T3 progress,5 A-T4 progress,6 A-final-review progress,7 A-finish done," \
+    "$(story_rows A)" "the repair, then T3: no T2 re-run, no finish in between"
+  assert_eq 1 "$(gate_calls)" "one gate-repair unit"
 }
 test_lanes_gate_repair_cap() {
   LANES_CONFIG='{"overnight": {"gate_repairs": 1}}'; export LANES_CONFIG
@@ -5216,6 +5345,7 @@ run_tests test_stub_waitexist_and_run_token test_lanes_setup_preflight_refuses_l
   test_lanes_setup_preflight_bad_config test_lanes_setup_preflight_timeout \
   test_lanes_detach_setup_preflight_refused test_lanes_detach_setup_preflight_interrupt \
   test_lanes_detach_setup_preflight_runs_once test_lanes_detach_tools_after_setup test_lanes_setup_checked_env_binds_to_sha \
+  test_lanes_one_lane_note_one_chain test_lanes_one_lane_note_max_lanes_1 test_lanes_no_note_two_chains test_lanes_split_siblings_planned \
   test_lanes_chain_rule test_lanes_manifest_refusals test_lanes_branch_default_or_target_refused test_lanes_conflicts_lock_without_start test_lanes_preflight_backlog_tasks test_lanes_manifest_header_refusals \
   test_lanes_preflight_story_checks test_lanes_preflight_story_state test_lanes_docs_unreachable \
   test_lanes_git_too_old test_lanes_sourced_only test_lanes_next \
@@ -5229,7 +5359,7 @@ run_tests test_stub_waitexist_and_run_token test_lanes_setup_preflight_refuses_l
   test_lanes_land_second_conflict_stops test_lanes_land_repair_no_progress test_lanes_direct_refused_then_repaired test_lanes_direct_merged_never_repairs test_lanes_direct_merge_timeout \
   test_lanes_land_once_explicit_branch test_lanes_land_idempotent \
   test_lanes_land_crash_after_push test_lanes_land_lock_reclaim test_lanes_land_shipped_resume \
-  test_lanes_gate_never_overlaps test_lanes_gate_repair_then_lands test_lanes_gate_repair_cap \
+  test_lanes_gate_never_overlaps test_lanes_gate_repair_then_lands test_lanes_gate_repair_cap test_suite_every_auto_on test_suite_every_auto_off_slow test_suite_every_newest_ten_window test_suite_every_median_boundary test_suite_every_few_rows test_suite_every_config test_lanes_suite_every_env test_lanes_checkpoint_red_repairs_then_next_task \
   test_lanes_gate_repair_same_stop_twice test_lanes_gate_repairs_zero test_lanes_gate_hard_stops_no_repair \
   test_lanes_gate_repair_no_progress test_lanes_gate_repair_model_and_no_log test_lanes_gate_repair_budget test_lanes_gate_repair_halt \
   test_lanes_sync_clean_merge_no_session test_lanes_sync_skips test_lanes_sync_integration_two_refs \

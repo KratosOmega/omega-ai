@@ -45,6 +45,7 @@ test_autopilot_contract() {
   assert_contains "$S" '\*\*dependencies\*\*' "phase 1 asks the dependencies"
   assert_contains "$S" '\*\*maximize parallelism\*\* (listed first, marked Recommended)' "maximize parallelism is recommended"
   assert_contains "$S" '\*\*chain\*\*: each story depends on the row before it' "chain is the other option"
+  assert_contains "$S" 'each row after the first depends on exactly one row, the one directly above it' "the one-chain rule matches the runner's chains"
   assert_contains "$S" 'chain: each row after the first depends on the row before it' "chain proposes the row before"
   assert_contains "$S" 'maximize parallelism: the smallest set' "maximize proposes the smallest dependency set"
   assert_contains "$S" 'how many lanes' "and the lane count"
@@ -53,6 +54,13 @@ test_autopilot_contract() {
   assert_contains "$S" 'Overlap check, before the first seed' "plans are checked for overlapping files before seeding"
   assert_contains "$S" 'add a dependency' "an overlap can add a dependency"
   assert_contains "$S" 'keep parallel' "or keep the stories parallel"
+  assert_contains "$S" '\*\*add a backfill story\*\*' "step 3 offers a backfill story when one lane is in effect"
+  assert_contains "$S" '\*\*run as is\*\*' "or running as is"
+  _a="$(grep -n -F -m1 -- '**add a backfill story**' "$S" | cut -d: -f1)"
+  _b="$(grep -n -F -m1 -- 'Check that the run worktree has `.studio/run` before the first seed' "$S" | cut -d: -f1)"
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if [ -n "$_a" ] && [ -n "$_b" ] && [ "$_a" -lt "$_b" ]; then _pass "the backfill offer comes before the first seed"
+  else _fail "the backfill offer comes before the first seed ($_a, $_b)"; fi
   assert_contains "$S" 'Mode: direct ' "the manifest template defaults to direct"
   assert_contains "$S" 'docs/runs/<slug>.md' "the run manifest"
   assert_contains "$S" '> \.studio/run`' "the pointer (anchored: not .studio/runs/)"
@@ -85,7 +93,9 @@ test_autopilot_contract() {
   assert_contains "$S" '"user_dir": "per-worktree"' "on writes user_dir (#71)"
   assert_contains "$S" '"test_engine_args": "--fixed-fps 60"' "on writes test_engine_args (#71)"
   assert_contains "$S" "' <n> <on|off>" "the one-liner takes the lane count and on|off (#71)"
-  assert_contains "$S" 'studio-gate vitest -- npx vitest run --minWorkers=1 --maxWorkers=2' "the targeted vitest form is a constraint (#71)"
+  assert_contains "$S" 'studio-vitest <file>' "the targeted vitest verb is a constraint (#71)"
+  assert_contains "$S" 'tsc as `studio-tsc`' "the tsc verb is a constraint (#71)"
+  assert_not_contains "$S" 'cd <node dir> && studio-gate vitest' "no cd chain into the gate (#71)"
   if python3 -c 'import json' >/dev/null 2>&1; then
     _pf="$TMP/ap-fx"; rm -rf "$_pf"; mkdir -p "$_pf/.studio"
     _prog="$(sed -n "s/.*python3 -c '\([^']*\)' <n> <on|off>.*/\1/p" "$S" | head -n 1)"
@@ -179,7 +189,7 @@ test_autopilot_contract() {
   test_autopilot_off_stop_rule
   test_autopilot_adopt_slug_forms
   # AC1: the manifest commit carries every story's ledger; AC3: step 3 ledgers `adopted` before seeding.
-  _a="$(grep -n -F -m1 -- 'git add docs/runs/<slug>.md .studio/config.json .studio/ledger/<id>.md … && git commit -m "docs(run): <slug> manifest"' "$S" | cut -d: -f1)"
+  _a="$(grep -n -F -m1 -- 'git add docs/runs/<slug>.md .studio/config.json .studio/ledger/<id>.md …`, then, only when it succeeded, `git commit -m "docs(run): <slug> manifest"' "$S" | cut -d: -f1)"
   TESTS_RUN=$((TESTS_RUN + 1))
   if [ -n "$_a" ]; then _pass "manifest commit adds the ledgers"; else _fail "manifest commit adds the ledgers"; fi
   _a="$(grep -n -F -m1 -- 'studio-state ledger "adopted <original> -> <new plan>"' "$S" | cut -d: -f1)"

@@ -1,0 +1,30 @@
+#!/bin/sh
+# studio-tsc [--dir D] — tsc through the gate, from the node dir, as one
+# command (no `cd … &&` chain, which worktree isolation refuses):
+# studio-gate tsc -- npx tsc --noEmit
+# Node dir: --dir, else config node_dir (relative to the git top level), else
+# `.` when ./package.json exists.
+# Exit: studio-gate's (the tsc status · 124 the run cap) · 2 no node dir or a
+# bad option.
+SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
+. "$SELF_DIR/gate-class.sh"
+_st_dir=""
+case "${1:-}" in
+  --dir) [ "$#" -ge 2 ] || { echo 'studio-tsc: --dir needs a path' >&2; exit 2; }
+         _st_dir="$2"; shift 2 ;;
+esac
+[ "$#" -eq 0 ] || { echo 'usage: studio-tsc [--dir D]' >&2; exit 2; }
+if [ -z "$_st_dir" ]; then
+  _st_dir="$(studio_cfg node_dir)"
+  case "$_st_dir" in
+    '') [ -f ./package.json ] && _st_dir=. ;;
+    /*) ;;
+    *) _st_dir="$(gate_wt)/$_st_dir" ;;
+  esac
+fi
+if [ -z "$_st_dir" ]; then
+  echo 'studio-tsc: no node dir — set node_dir in .studio/config.json or pass --dir' >&2
+  exit 2
+fi
+cd "$_st_dir" 2>/dev/null || { printf 'studio-tsc: cannot enter node dir %s\n' "$_st_dir" >&2; exit 2; }
+exec studio-gate tsc -- npx tsc --noEmit

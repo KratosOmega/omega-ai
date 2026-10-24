@@ -289,7 +289,7 @@ Run `studio-state set spec <spec path>` and
 Revise on request and re-render. On approval: change the spec's `Status:` to
 `Approved`, run `studio-state ledger "spec approved <spec path>"`, commit the
 spec, its artifact (§6) and the state that must travel with them —
-`git add <spec path> docs/game-dev/artifacts/YYYY-MM-DD-<topic>.html .gitignore .studio/ledger .studio/config.json && git commit -m "docs(specs): approve <topic>"` —
+`git add <spec path> docs/game-dev/artifacts/YYYY-MM-DD-<topic>.html .gitignore .studio/ledger .studio/config.json`, then, only when it succeeded, `git commit -m "docs(specs): approve <topic>"` (two calls) —
 and print `Next: run /clear, then /game-dev:plan`. Under a manifest
 (an id and an active manifest, §5), print `/clear` and then the command
 `studio-overnight next` prints instead, in the `<slug>/<id>` form when

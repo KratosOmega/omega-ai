@@ -7,14 +7,17 @@
 # (tests/gate_lanes_fixture.sh). Every order is event-driven: a run holds on a
 # file, the test waits for a mark or a `gate: waiting` line, then releases.
 # Test-only knobs set here (lanes_init): STUDIO_GATE_POLL_SECONDS=0.1
-# (production 1), STUDIO_GATE_LOADAVG and STUDIO_GATE_PHYS_CORES (production:
-# the machine is read).
+# (production 1), STUDIO_GATE_LEARNED_FLOOR_SECONDS (production 900, set in
+# test_gate_learned_cap_fires only), STUDIO_GATE_LOADAVG and STUDIO_GATE_PHYS_CORES (production:
+# the machine is read); the retry tests also set STUDIO_GATE_LOADAVG_FILE and
+# STUDIO_GATE_LOAD_WAIT_SECONDS (production: unset).
 set -u
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 . "$REPO_ROOT/tests/assert.sh"
 . "$REPO_ROOT/tests/gate_times_rows.sh"
 unset STUDIO_START_DIR STUDIO_GATE_HELD STUDIO_GATE_LANE STUDIO_GATE_DEMOTE STUDIO_UNIT_TAG \
-      STUDIO_GATE_MINUTES STUDIO_GATE_SECONDS
+      STUDIO_GATE_MINUTES STUDIO_GATE_SECONDS STUDIO_GATE_LEARNED_FLOOR_SECONDS STUDIO_GATE_CAP_FACTOR \
+      STUDIO_GATE_LOADAVG_FILE STUDIO_GATE_LOAD_WAIT_SECONDS
 BIN="$REPO_ROOT/studios/game-dev/bin"
 mk_tmp gate_lanes_test
 trap 'rm_tmp "$TMP"' EXIT
@@ -530,7 +533,7 @@ test_lanes_short_cap_under_run_cap_is_124() {
   assert_eq 124 "$(lanes_done v)" "the run cap binds (STUDIO_GATE_MINUTES <= 5): 124, as today"
   assert_eq 0 "$(grep -c '^s v main ' "$LANES_MARKS")" "no re-run in the main lane"
   assert_eq "124 short short" "$(rows vitest)" "one row: 124 in the slot"
-  assert_contains "$TMP/err.v" '^gate: vitest ran past 1 min — stopped$' "today's run-cap line"
+  assert_contains "$TMP/err.v" '^gate: vitest ran past 1 min — stopped (load 0→0, busy at 8: not retried)$' "today's run-cap line"
   assert_not_contains "$TMP/err.v" 'main lane' "no hand-off line"
   lanes_go suite
   assert_eq 0 "$(lanes_done suite)" "the suite exits 0"
@@ -549,6 +552,144 @@ test_lanes_short_cap_production_default() {
   capv w "$B" STUDIO_GATE_SHORT_SECONDS=abc LANES_SLEEP=2
   assert_eq 0 "$(lanes_done w)" "a non-digit STUDIO_GATE_SHORT_SECONDS reads as 300"
   assert_eq 1 "$(starts w)" "no re-run"
+}
+
+# ---- the learned cap (overnight throughput, Task 5) ----
+# seed_probe N SECS — N main-lane rc-0 rows of `probe` in the project's gate.times.
+seed_probe() { _sp_i=0; while [ "$_sp_i" -lt "$1" ]; do printf '1000 probe %s 0 0 main exclusive -\n' "$2" >> "$(gtf)"; _sp_i=$((_sp_i + 1)); done; }
+# exclusive-scan: test_gate_learned_cap_fires in (a) a 3 s test floor must stop a 20 s run (the learned value is 15 min)
+test_gate_learned_cap_fires() {
+  lanes_repo lcap
+  seed_probe 5 1
+  lanes_bg p "$LR" -- env STUDIO_GATE_MINUTES=60 STUDIO_GATE_LEARNED_FLOOR_SECONDS=3 sh "$LANES_GATE" probe -- sh -c 'sleep 20'
+  assert_eq 124 "$(lanes_done p)" "the learned cap stops the run"
+  assert_contains "$TMP/err.p" '^gate: probe ran past its learned cap of 15 min (4 × median of the last 5 runs) — stopped (load 0→0, busy at 8: not retried)$' "the learned-cap line"
+  assert_not_contains "$TMP/err.p" 'ran past [0-9]* min' "not the plain cap line"
+  assert_eq "124 main exclusive" "$(rows probe | tail -n 1)" "a 124 row"
+}
+# exclusive-scan: test_gate_learned_cap_factor_and_setup out (d) every run is a 1 s run under a cap that cannot fire
+test_gate_learned_cap_factor_and_setup() {
+  lanes_repo lcapf
+  seed_probe 5 1
+  printf '1000 setup 1 0 0 main exclusive -\n1000 setup 1 0 0 main exclusive -\n1000 setup 1 0 0 main exclusive -\n1000 setup 1 0 0 main exclusive -\n1000 setup 1 0 0 main exclusive -\n' >> "$(gtf)"
+  # Factor 0: no learned cap, so the 3 s floor seam never applies and the run passes.
+  lanes_bg a "$LR" -- env STUDIO_GATE_MINUTES=60 STUDIO_GATE_LEARNED_FLOOR_SECONDS=3 STUDIO_GATE_CAP_FACTOR=0 sh "$LANES_GATE" probe -- sh -c 'sleep 6'
+  assert_eq 0 "$(lanes_done a)" "factor 0: no learned cap"
+  assert_not_contains "$TMP/err.a" 'ran past' "factor 0: no cap line"
+  # Factor 11 reads as 4: the learned cap (15 min, 3 s seam) fires.
+  lanes_bg b "$LR" -- env STUDIO_GATE_MINUTES=60 STUDIO_GATE_LEARNED_FLOOR_SECONDS=3 STUDIO_GATE_CAP_FACTOR=11 sh "$LANES_GATE" probe -- sh -c 'sleep 20'
+  assert_eq 124 "$(lanes_done b)" "factor 11 falls back to 4"
+  assert_contains "$TMP/err.b" 'learned cap of 15 min (4 × median of the last [0-9]* runs)' "with factor 4 in the line"
+  # Who setup is exempt from any cap.
+  lanes_bg c "$LR" -- env STUDIO_GATE_MINUTES=60 STUDIO_GATE_LEARNED_FLOOR_SECONDS=3 sh "$LANES_GATE" setup -- sh -c 'sleep 6'
+  assert_eq 0 "$(lanes_done c)" "setup: no learned cap"
+  assert_not_contains "$TMP/err.c" 'ran past' "setup: no cap line"
+}
+# A history whose learned cap is clamped to STUDIO_GATE_MINUTES (here 10: the 15 min floor is
+# clamped down to it) is no learned cap: the plain 10 min cap applies, so the 3 s floor seam,
+# which only a learned cap uses, does not stop a 6 s run (before: the clamped 10 was learned).
+# exclusive-scan: test_gate_learned_cap_clamped_is_today out (d) every run is a 1 s run under a cap that cannot fire
+test_gate_learned_cap_clamped_is_today() {
+  lanes_repo lcapc
+  seed_probe 5 1
+  lanes_bg k "$LR" -- env STUDIO_GATE_MINUTES=10 STUDIO_GATE_LEARNED_FLOOR_SECONDS=3 sh "$LANES_GATE" probe -- sh -c 'sleep 6'
+  assert_eq 0 "$(lanes_done k)" "a clamped learned cap is no learned cap: the run passes under the plain cap"
+  assert_not_contains "$TMP/err.k" 'ran past' "no cap line"
+}
+# exclusive-scan: test_gate_learned_cap_production_default out (d) a 2 s run under a 15 min floor
+test_gate_learned_cap_production_default() {
+  assert_contains "$BIN/studio-gate" 'STUDIO_GATE_LEARNED_FLOOR_SECONDS:-900' "the floor defaults to 900 s"
+  assert_contains "$BIN/studio-gate" '^#.*STUDIO_GATE_LEARNED_FLOOR_SECONDS (default 900)' "the seam is named in the header"
+  lanes_repo lcapd
+  seed_probe 5 1
+  lanes_bg q "$LR" -- env STUDIO_GATE_MINUTES=60 sh "$LANES_GATE" probe -- sh -c 'sleep 2'
+  assert_eq 0 "$(lanes_done q)" "a 2 s run under the production 15 min floor exits 0"
+  assert_not_contains "$TMP/err.q" 'ran past' "no cap line"
+  # An explicit STUDIO_GATE_SECONDS stays the cap, learned or not.
+  lanes_bg r "$LR" -- env STUDIO_GATE_MINUTES=60 STUDIO_GATE_SECONDS=2 sh "$LANES_GATE" probe -- sh -c 'sleep 15'
+  assert_eq 124 "$(lanes_done r)" "STUDIO_GATE_SECONDS binds"
+  assert_contains "$TMP/err.r" '^gate: probe ran past 60 min — stopped (load 0→0, busy at 8: not retried)$' "the plain line"
+}
+
+# ---- the retry under load (spec 2026-10-24 A2) ----
+# seed_suite N — N main-lane rc-0 1 s rows of studio-test: a learned cap of 15 min
+# under STUDIO_GATE_MINUTES=60, which the 3 s floor seam replaces (a learned cap the
+# run cap clamps is dropped, so the run cap must sit above the 15 min floor).
+seed_suite() { _ss_i=0; while [ "$_ss_i" -lt "$1" ]; do printf '1000 studio-test 1 0 0 main shareable -\n' >> "$(gtf)"; _ss_i=$((_ss_i + 1)); done; }
+# retry_suite TAG DIR [VAR=VAL…] — a shareable suite under a 3 s learned cap
+# inside a 3600 s flat cap (room for a retry), the load read from $TMP/load.TAG.
+retry_suite() {
+  _rs_t="$1"; _rs_d="$2"; shift 2
+  lanes_bg "$_rs_t" "$_rs_d" -- env STUDIO_GATE_MINUTES=60 STUDIO_GATE_LEARNED_FLOOR_SECONDS=3 \
+    STUDIO_GATE_LOADAVG_FILE="$TMP/load.$_rs_t" "$@" sh "$BIN/studio-test"
+}
+# exclusive-scan: test_gate_retry_under_load_passes out (d) order only: the retry waits on the load file and the hold file; the short's refusal is an event wait
+test_gate_retry_under_load_passes() {
+  lanes_repo rtry; A="$(lanes_wt A)"; B="$(lanes_wt B)"
+  seed_suite 5
+  echo 12 > "$TMP/load.r"
+  retry_suite r "$A"
+  lanes_wait_err r ' — running it again once, exclusive, when the load is below 8 \(waiting up to [0-9]+ s\)$'
+  assert_contains "$TMP/err.r" '^gate: studio-test ran past its learned cap of 15 min (4 × median of the last 5 runs) under load 12→12 (busy at 8) — running it again once, exclusive, when the load is below 8 (waiting up to 3594 s)$' "the retry line names the cap, both loads and the wait (3600 s - 2 x 3 s)"
+  assert_eq "124 main shareable" "$(rows studio-test | tail -n 1)" "the first attempt's row: 124, as before"
+  sleep 1
+  assert_eq 1 "$(starts r)" "no second run while the load is still busy"
+  echo 1 > "$TMP/load.r"
+  _i=0; while [ "$(starts r)" -lt 2 ] && [ "$_i" -lt 300 ]; do sleep 0.1; _i=$((_i + 1)); done
+  assert_eq 2 "$(starts r)" "the retry starts once the load drops"
+  lanes_gut s "$B"; lanes_go s
+  lanes_wait_err s '; short lane: beside exclusive$'
+  assert_eq 0 "$(starts s)" "no short check beside the exclusive retry"
+  lanes_go r
+  assert_eq 0 "$(lanes_done r)" "the retry passes: exit 0"
+  assert_contains "$TMP/err.r" '^gate: studio-test passed on the retry ([0-9]* s, exclusive, load 1→1)$' "the pass line"
+  assert_eq "0 main:retry exclusive" "$(rows studio-test | tail -n 1)" "the retry's row: lane main:retry, class exclusive"
+  assert_eq 1 "$(sh -c '. "$1/gate-times.sh"; gate_times_holds "$2" studio-test' sh "$BIN" "$(gtf)" | wc -l | awk '{ print ($1 == 6) }')" "a passing retry is a timing row (5 seeded + 1)"
+  assert_eq 0 "$(lanes_done s)" "the short runs after the retry"
+}
+# exclusive-scan: test_gate_retry_times_out_twice in (a) two 3 s caps and a 1 s load wait must fire on runs that hold for 30 s
+test_gate_retry_times_out_twice() {
+  lanes_repo rtw; A="$(lanes_wt A)"
+  seed_suite 5
+  echo 12.5 > "$TMP/load.t"
+  retry_suite t "$A" STUDIO_GATE_LOAD_WAIT_SECONDS=1
+  assert_eq 124 "$(lanes_done t)" "the retry also hits the cap: 124"
+  assert_contains "$TMP/err.t" '^gate: load still 12.5/8 after 1 s — running it again anyway$' "the wait ran out and said so"
+  assert_contains "$TMP/err.t" '^gate: studio-test timed out twice — [0-9]* s under load 12.5→12.5, then [0-9]* s exclusive under load 12.5→12.5 (busy at 8) — stopped$' "the stop line has both durations and the loads"
+  assert_eq 2 "$(starts t)" "two runs, no third"
+  assert_eq "124 main shareable
+124 main:retry exclusive" "$(rows studio-test | tail -n 2)" "two 124 rows"
+  assert_missing "$LR/.studio/gate.lock" "the lane is released"
+}
+# exclusive-scan: test_gate_retry_not_when_idle_or_no_room in (a) 3 s caps must fire on runs that hold for 30 s
+test_gate_retry_not_when_idle_or_no_room() {
+  lanes_repo ridl; A="$(lanes_wt A)"
+  seed_suite 5
+  echo 0.5 > "$TMP/load.i"
+  retry_suite i "$A"
+  assert_eq 124 "$(lanes_done i)" "idle: a cap stop is a stop"
+  assert_contains "$TMP/err.i" '^gate: studio-test ran past its learned cap of 15 min (4 × median of the last 5 runs) — stopped (load 0.5→0.5, busy at 8: not retried)$' "the stop line carries the readings"
+  assert_eq 1 "$(starts i)" "idle: no retry"
+  echo 9 > "$TMP/load.n"
+  lanes_bg n "$A" -- env STUDIO_GATE_MINUTES=1 STUDIO_GATE_SECONDS=3 STUDIO_GATE_LOADAVG_FILE="$TMP/load.n" sh "$BIN/studio-test"
+  assert_eq 124 "$(lanes_done n)" "busy but the cap is the flat cap: a stop"
+  assert_contains "$TMP/err.n" '^gate: studio-test ran past 1 min — stopped (load 9→9, busy at 8: no room for a second run inside the 3 s cap)$' "no room, said so"
+  assert_eq 1 "$(starts n)" "no room: no retry"
+}
+
+# exclusive-scan: test_gate_retry_not_after_a_signal in (b) a TERM reaches the gate while a TERM-ignoring run holds; the cap then fires on it
+test_gate_retry_not_after_a_signal() {
+  lanes_repo rsig; A="$(lanes_wt A)"
+  seed_suite 5
+  echo 12 > "$TMP/load.g"
+  retry_suite g "$A" LANES_TRAP=1
+  lanes_wait_mark '^s g '
+  kill -TERM "$(cat "$TMP/pid.g")"
+  lanes_done g > /dev/null
+  assert_eq 1 "$(starts g)" "a run a signal reached is not run again, though the cap then fired under load"
+  assert_not_contains "$TMP/err.g" 'running it again' "no retry line"
+  assert_contains "$TMP/err.g" '— stopped (load 12→12, busy at 8: not retried)$' "the stop line says not retried"
+  assert_eq 0 "$(rows studio-test | grep -c 'main:retry')" "no retry row"
 }
 
 # exclusive-scan: test_lanes_demote_reruns_once out (d) order only: event waits on the hand-off line and marks
@@ -766,13 +907,14 @@ test_lanes_short_cap_equal_run_cap_is_124() {
   assert_eq 124 "$(lanes_done v)" "CAP_SECS == SHORT_SECS: the run cap binds, 124"
   assert_eq 0 "$(grep -c '^s v main ' "$LANES_MARKS")" "no re-run in the main lane"
   assert_eq "124 short short" "$(rows vitest)" "one row: 124 in the slot"
-  assert_contains "$TMP/err.v" '^gate: vitest ran past 5 min — stopped$' "today's run-cap line"
+  assert_contains "$TMP/err.v" '^gate: vitest ran past 5 min — stopped (load 0→0, busy at 8: not retried)$' "today's run-cap line"
   assert_not_contains "$TMP/err.v" 'main lane' "no hand-off line"
 }
 
 TESTS_EXCLUSIVE="test_lanes_waiting_messages test_lanes_signal_after_command_keeps_rc \
   test_lanes_short_cap_reruns_in_main test_lanes_short_cap_under_run_cap_is_124 test_lanes_short_cap_term_ignorer \
-  test_lanes_late_signal_no_rerun_line test_lanes_short_cap_equal_run_cap_is_124"
+  test_lanes_late_signal_no_rerun_line test_lanes_short_cap_equal_run_cap_is_124 test_gate_learned_cap_fires \
+  test_gate_retry_times_out_twice test_gate_retry_not_when_idle_or_no_room test_gate_retry_not_after_a_signal"
 run_tests test_lanes_beside_shareable test_lanes_never_beside_exclusive test_lanes_drain_and_no_starvation \
   test_lanes_three_way_never_overlaps_exclusive test_lanes_same_worktree_gut_goes_main \
   test_lanes_node_beside_suite_same_worktree test_lanes_second_node_same_worktree_waits \
@@ -788,4 +930,8 @@ run_tests test_lanes_beside_shareable test_lanes_never_beside_exclusive test_lan
   test_lanes_short_cap_term_ignorer test_lanes_demote_then_signal_no_rerun \
   test_lanes_busy_mutex_first_poll_names_slot_holder test_lanes_own_pid_lane_is_stale \
   test_lanes_stale_own_demote_file_ignored test_lanes_late_signal_no_rerun_line test_lanes_leak_sticky_across_demote \
-  test_lanes_phys_cores_read_once test_lanes_short_cap_equal_run_cap_is_124
+  test_lanes_phys_cores_read_once test_lanes_short_cap_equal_run_cap_is_124 \
+  test_gate_learned_cap_fires test_gate_learned_cap_production_default test_gate_learned_cap_factor_and_setup \
+  test_gate_learned_cap_clamped_is_today \
+  test_gate_retry_under_load_passes test_gate_retry_times_out_twice test_gate_retry_not_when_idle_or_no_room \
+  test_gate_retry_not_after_a_signal

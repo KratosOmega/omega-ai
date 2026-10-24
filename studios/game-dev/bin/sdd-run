@@ -1,0 +1,37 @@
+#!/bin/sh
+# sdd-run — run one of superpowers' skill scripts, found by sdd-script, in one
+# command word. It replaces `bash "$(sdd-script <name>)" ARG…`: Claude Code's
+# worktree isolation refuses a `$(…)` substitution in a command, and every
+# refusal wastes a turn (spec docs/game-dev/specs/2026-10-23-overnight-throughput.md, Part E). It never searches and never copies
+# sdd-script's lookup: it runs the sibling sdd-script and execs what it prints.
+#
+#   sdd-run [--skill <skill>] <name> [ARG…]
+#   sdd-run review-package <plan> <BASE> HEAD
+#
+#   --skill   as sdd-script: the superpowers skill that owns the script
+#             (default subagent-driven-development; task-start / task-done
+#             live in executing-plans). Read only before <name>.
+# Exit: the script's own status; 1 with sdd-script's message when the script
+# cannot be found (stop and report it); 2 on usage.
+# Byte collation: under a UTF-8 locale macOS sh matches [a-z] by collation (A-Y too).
+unset LC_ALL; LC_COLLATE=C
+set -u
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+SKILL=""; SKILL_SET=0
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --skill) [ "$#" -ge 2 ] || { printf 'sdd-run: --skill needs a value\n' >&2; exit 2; }; SKILL="$2"; SKILL_SET=1; shift 2 ;;
+    --skill=*) SKILL="${1#--skill=}"; SKILL_SET=1; shift ;;
+    *) break ;;
+  esac
+done
+[ "$#" -ge 1 ] || { printf 'usage: sdd-run [--skill <skill>] <name> [ARG...]\n' >&2; exit 2; }
+NAME="$1"; shift
+
+if [ "$SKILL_SET" = 1 ]; then
+  P="$(sh "$HERE/sdd-script" --skill "$SKILL" "$NAME")" || exit 1
+else
+  P="$(sh "$HERE/sdd-script" "$NAME")" || exit 1
+fi
+exec bash "$P" "$@"

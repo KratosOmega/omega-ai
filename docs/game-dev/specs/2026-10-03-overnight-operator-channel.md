@@ -144,7 +144,10 @@ Verbs
    it never falls back to another run.
 5. `say` exits 1 when the story's active, pending and delivered-not-recorded
    `story` text would exceed `directive_chars`; the message lists those
-   directives with ids.
+   directives with ids. A `retiring` directive (a retire is queued or
+   delivered for it, not yet recorded) is not counted, so a held story can
+   swap a stale directive for a new one (2026-10-24 gate-retry spec, Part B);
+   the message still lists it, with its state.
 6. In single-plan mode the story argument is `-` and is required for the new
    verbs (`stop -` ends the plan's story; bare `stop` ends the run, as today).
 7. Verb targets by story record:
@@ -455,7 +458,7 @@ Single-plan mode uses `story: "-"`.
 | key | default | range | meaning |
 |---|---|---|---|
 | `hold_minutes` | 480 | 0–1440 | how long a held story waits; 0 = today's behaviour |
-| `directive_chars` | 4000 | 500–16000 | cap on a story's active + pending directive text |
+| `directive_chars` | 4000 | 500–16000 | cap on a story's active, pending and delivered directive text (not retiring) |
 
 Test-only: `STUDIO_OVERNIGHT_HOLD_MINUTES` overrides `hold_minutes` (the
 existing suites set it to 0); `STUDIO_OVERNIGHT_HOLD_SECONDS` replaces

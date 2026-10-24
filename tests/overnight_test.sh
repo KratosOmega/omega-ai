@@ -42,6 +42,7 @@ for a in "$@"; do printf '%s\n' "$a"; done > "$CALLS/$n.argv"
 pwd -P > "$CALLS/$n.pwd"
 printf '%s %s\n' "${STUDIO_UNIT_TAG:-unset}" "${STUDIO_RUN_DIR:-unset}" > "$CALLS/$n.chan"
 printf '%s\n' "${OMEGA_AUTOPILOT:-unset}" > "$CALLS/$n.env"
+printf '%s\n' "${STUDIO_SUITE_EVERY:-unset}" > "$CALLS/$n.suite"
 printf '%s %s %s\n' "${BASH_DEFAULT_TIMEOUT_MS:-unset}" "${BASH_MAX_TIMEOUT_MS:-unset}" "${STUDIO_GATE_MINUTES:-unset}" > "$CALLS/$n.caps"
 root="$(sh "$STUB_STATE_BIN" root)"
 cp "$root/.studio/overnight.lock" "$CALLS/$n.lock" 2>/dev/null
@@ -317,7 +318,7 @@ test_overnight_help() {
            "STUDIO_OVERNIGHT_INBOX_WAIT — test hook" "events.jsonl" "next tool call" \
            "deny-rules \[--dir" "STUDIO_RUN_ORIGIN" \
            "STUDIO_GATE_MINUTES" "min(45, session_minutes/3)" "min(60, session_minutes/2)" \
-           "idle_minutes .*0-120" "STUDIO_OVERNIGHT_IDLE_SECONDS — test hook" "STUDIO_OVERNIGHT_IDLE_POLL_SECONDS — test hook"; do
+           "gate_cap_factor .*0-10" "STUDIO_GATE_CAP_FACTOR" "idle_minutes .*0-120" "STUDIO_OVERNIGHT_IDLE_SECONDS — test hook" "STUDIO_OVERNIGHT_IDLE_POLL_SECONDS — test hook"; do
     assert_contains "$TMP/help.txt" "$w" "help names $w"
   done
   assert_contains "$REPO_ROOT/docs/game-dev/overnight-events.md" "deny-rules" "the contract doc lists deny-rules"
@@ -392,7 +393,7 @@ test_overnight_unit_caps() {
   run_start
   assert_eq "1800000 5400000 45" "$(cat "$CALLS/1.caps")" "90 (default): 30 / 90 / 45"
   run_start --dry-run
-  assert_contains "$RS_OUT" "BASH_DEFAULT_TIMEOUT_MS='1800000' BASH_MAX_TIMEOUT_MS='5400000' STUDIO_GATE_MINUTES='45' OMEGA_AUTOPILOT=1 claude-gd -p '/game-dev:execute --one'" "the dry-run line carries the caps before OMEGA_AUTOPILOT"
+  assert_contains "$RS_OUT" "BASH_DEFAULT_TIMEOUT_MS='1800000' BASH_MAX_TIMEOUT_MS='5400000' STUDIO_GATE_MINUTES='45' STUDIO_GATE_CAP_FACTOR='4' OMEGA_AUTOPILOT=1 claude-gd -p '/game-dev:execute --one'" "the dry-run line carries the caps before OMEGA_AUTOPILOT"
 }
 test_overnight_dry_run() {
   fixture dry
@@ -483,6 +484,109 @@ test_overnight_push_check_refuses_without_workflow() {
   unset GH_SCOPES
   assert_eq 2 "$RS_STATUS" "--dry-run refuses the same"
   assert_contains "$RS_ERR" "$PUSH_FIX" "and prints the same line"
+}
+test_single_plan_one_lane_note() {
+  push_fixture ol1
+  run_start --dry-run
+  assert_eq 0 "$RS_STATUS" "dry run exits 0"
+  assert_contains "$RS_OUT" "^one lane: a hold idles this run until you answer; add an independent story to keep the machine busy$" "single-plan run: the one-lane line"
+}
+test_overnight_cfg_quoted_values_opt_in() {
+  for _q in '"6"' '"auto"' '""'; do
+    fixture "cq$(printf '%s' "$_q" | tr -cd 'a-z0-9')" "{ \"overnight\": { \"retries\": $_q } }"
+    run_start --dry-run
+    assert_eq 2 "$RS_STATUS" "retries $_q is refused (not an opt-in key)"
+    assert_contains "$RS_ERR" "config overnight.retries must be a number from 0 to 3 (int), got $_q\$" "the refusal text is unchanged for $_q"
+  done
+  fixture cqe '{ "overnight": { "gate_cap_factor": "" } }'
+  run_start --dry-run
+  assert_eq 2 "$RS_STATUS" "gate_cap_factor \"\" is refused"
+  assert_contains "$RS_ERR" 'config overnight.gate_cap_factor must be a number from 0 to 10 (int), got ""$' "naming the empty value"
+}
+test_overnight_caps_readout() {
+  push_fixture cr1
+  _cr_i=0; while [ "$_cr_i" -lt 5 ]; do printf '1000 studio-test 290 0 0 main exclusive -\n' >> "$P/.studio/gate.times"; _cr_i=$((_cr_i + 1)); done
+  printf '1000 vitest 5 0 0 short short -\n1000 vitest 5 0 0 main exclusive -\n' >> "$P/.studio/gate.times"
+  run_start --dry-run
+  assert_eq 0 "$RS_STATUS" "dry run exits 0"
+  assert_contains "$RS_OUT" "^gate caps: studio-test 20 min (×4 median); default 45 min for vitest (fewer than 5 runs)$" "learned caps, then the defaults"
+  assert_contains "$RS_OUT" "STUDIO_GATE_CAP_FACTOR='4' OMEGA_AUTOPILOT=1" "the launch env carries the factor"
+  assert_eq 1 "$(awk '/^one lane:/ { o = NR } /^gate caps:/ { c = NR } END { print (o && c == o + 1) ? 1 : 0 }' "$RS_OUT")" "the readout follows the one-lane line"
+  cap_cfg() { printf '%s\n' "$1" > "$P/.studio/config.json"; ( cd "$P" && git add -A && git -c user.name=t -c user.email=t@t commit -qm cfg ) >/dev/null 2>&1; }
+  cap_cfg '{ "overnight": { "gate_cap_factor": 0 } }'
+  run_start --dry-run
+  assert_eq 0 "$RS_STATUS" "factor 0 is allowed"
+  assert_contains "$RS_OUT" "^gate caps: learned caps off (gate_cap_factor 0)$" "off line"
+  assert_contains "$RS_OUT" "STUDIO_GATE_CAP_FACTOR='0'" "and the env word says 0"
+  cap_cfg '{ "overnight": { "gate_cap_factor": "auto" } }'
+  run_start --dry-run
+  assert_contains "$RS_OUT" "STUDIO_GATE_CAP_FACTOR='4'" "auto reads as the default"
+  cap_cfg '{ "overnight": { "gate_cap_factor": "6" } }'
+  run_start --dry-run
+  assert_contains "$RS_OUT" "STUDIO_GATE_CAP_FACTOR='6'" "a quoted number is accepted"
+  cap_cfg '{ "overnight": { "gate_cap_factor": 11 } }'
+  run_start --dry-run
+  assert_eq 2 "$RS_STATUS" "11 is a refusal"
+  assert_contains "$RS_ERR" "gate_cap_factor" "naming the key"
+}
+test_overnight_caps_readout_clamped_and_short() {
+  push_fixture cr2
+  _cr_i=0; while [ "$_cr_i" -lt 5 ]; do printf '1000 slowwho 3000 0 0 main exclusive -\n' >> "$P/.studio/gate.times"; _cr_i=$((_cr_i + 1)); done
+  _cr_i=0; while [ "$_cr_i" -lt 5 ]; do printf '1000 shortwho 5 0 0 short short -\n1000 failwho 5 1 0 main exclusive -\n' >> "$P/.studio/gate.times"; _cr_i=$((_cr_i + 1)); done
+  printf '1000 studio-test 290 0 0 main exclusive -\n' >> "$P/.studio/gate.times"
+  run_start --dry-run
+  assert_eq 0 "$RS_STATUS" "dry run exits 0"
+  assert_not_contains "$RS_OUT" "slowwho [0-9]* min (" "a learned value clamped to the run cap is not listed as learned"
+  assert_contains "$RS_OUT" "default 45 min for .*slowwho" "it keeps the default cap"
+  assert_not_contains "$RS_OUT" "shortwho" "a who with only short rows is not listed"
+  assert_not_contains "$RS_OUT" "failwho" "nor one with only rc != 0 rows"
+  assert_contains "$RS_OUT" "default 45 min for .*studio-test" "a who with one good row is listed at the default"
+}
+test_overnight_node_workers_preflight() {
+  for _nw in 33 '"x"' 0; do
+    fixture "nw$(printf '%s' "$_nw" | tr -cd 'a-z0-9')" "{ \"node_workers\": $_nw }"
+    run_start --dry-run
+    assert_eq 2 "$RS_STATUS" "node_workers $_nw is refused at preflight"
+    assert_contains "$RS_ERR" "^studio-overnight: gate: node_workers must be auto or 1-32, got $(printf '%s' "$_nw" | tr -d '"')\$" "the gate's own message for $_nw"
+  done
+  for _nw in '"auto"' '"8"' 8; do
+    fixture "nwok$(printf '%s' "$_nw" | tr -cd 'a-z0-9')" "{ \"node_workers\": $_nw }"
+    run_start --dry-run
+    assert_eq 0 "$RS_STATUS" "node_workers $_nw is accepted"
+  done
+}
+test_suite_every_single_plan_off() {
+  push_fixture se1
+  _se_i=0; while [ "$_se_i" -lt 10 ]; do printf '1000 studio-test 270 0 0 main exclusive -\n' >> "$P/.studio/gate.times"; _se_i=$((_se_i + 1)); done
+  run_start --dry-run
+  assert_eq 0 "$RS_STATUS" "dry run exits 0"
+  assert_contains "$RS_OUT" "^suite checkpoint: off — single-plan run$" "single-plan run: off"
+  assert_not_contains "$RS_OUT" "STUDIO_SUITE_EVERY" "no launch env word"
+}
+test_single_plan_unit_lacks_suite_every() {
+  fixture sev1; done_scenario
+  STUDIO_SUITE_EVERY=4; export STUDIO_SUITE_EVERY
+  run_start
+  unset STUDIO_SUITE_EVERY
+  assert_eq 0 "$RS_STATUS" "the run ends 0"
+  assert_eq "unset" "$(cat "$CALLS/1.suite" 2>/dev/null)" "an operator-shell STUDIO_SUITE_EVERY does not reach a single-plan unit"
+}
+test_help_lists_new_keys() {
+  sh "$RUNNER" --help > "$TMP/help2.txt" 2>&1
+  for w in "suite_every  *auto  *auto|0-20" "gate_cap_factor  *4  *0-10" "node_workers  *auto  *auto|1-32" "node_dir  *\"\""; do
+    assert_contains "$TMP/help2.txt" "$w" "help lists $w"
+  done
+  # node_workers and node_dir are top-level keys (AC15): under the top-level note, not the overnight block.
+  sed -n '/^Config: /,/^A value present but out of range/p' "$TMP/help2.txt" > "$TMP/help-ov.txt"
+  sed -n '/^Top level of config.json/,/^Deny rules/p' "$TMP/help2.txt" > "$TMP/help-top.txt"
+  assert_not_contains "$TMP/help-ov.txt" "node_workers" "node_workers is not in the overnight block"
+  assert_not_contains "$TMP/help-ov.txt" "node_dir" "node_dir is not in the overnight block"
+  assert_contains "$TMP/help-top.txt" "node_workers  *auto  *auto|1-32" "node_workers is in the top-level block"
+  assert_contains "$TMP/help-top.txt" "node_dir  *\"\"" "node_dir is in the top-level block"
+  assert_contains "$TMP/help2.txt" "studio-test, studio-run, studio-vitest, studio-tsc," "the allow rules line names the verbs"
+  assert_contains "$TMP/help2.txt" "sdd-run, studio-docs-sync and the gated Godot forms" "all of them"
+  assert_not_contains "$TMP/help2.txt" "the gate verbs" "not just the gate verbs"
+  assert_eq 0 "$(cat "$TMP/help-ov.txt" "$TMP/help-top.txt" | awk 'length > 110' | grep -c .)" "no config help line is wider than 110 columns"
 }
 test_overnight_push_check_ok_line() {
   push_fixture pk2 1
@@ -758,7 +862,7 @@ test_overnight_deny_file_required() {
   # The runner reads overnight-deny.txt beside itself: run a copy whose
   # sibling deny file holds only comments.
   fixture deny
-  mkdir -p "$TMP/denybin"; cp "$RUNNER" "$STATE_BIN" "$REPO_ROOT/studios/game-dev/bin/overnight-channel.sh" "$REPO_ROOT/studios/game-dev/bin/overnight-runs.sh" "$REPO_ROOT/studios/game-dev/bin/overnight-sessions.sh" "$REPO_ROOT/studios/game-dev/bin/overnight-tools.sh" "$REPO_ROOT/studios/game-dev/bin/overnight-progress.sh" "$REPO_ROOT/studios/game-dev/bin/studio-env" "$TMP/denybin/"
+  mkdir -p "$TMP/denybin"; cp "$RUNNER" "$STATE_BIN" "$REPO_ROOT/studios/game-dev/bin/overnight-channel.sh" "$REPO_ROOT/studios/game-dev/bin/overnight-runs.sh" "$REPO_ROOT/studios/game-dev/bin/gate-times.sh" "$REPO_ROOT/studios/game-dev/bin/overnight-tools.sh" "$REPO_ROOT/studios/game-dev/bin/overnight-sessions.sh" "$REPO_ROOT/studios/game-dev/bin/overnight-progress.sh" "$REPO_ROOT/studios/game-dev/bin/studio-env" "$TMP/denybin/"
   printf '# only a comment\n\n' > "$TMP/denybin/overnight-deny.txt"
   RS_STATUS=0; ( cd "$P" && sh "$TMP/denybin/studio-overnight" start ) > "$TMP/rs.out" 2> "$TMP/rs.err" || RS_STATUS=$?
   assert_eq 2 "$RS_STATUS" "a deny file with no rules refuses"
@@ -890,13 +994,14 @@ test_overnight_launch_allow_rules() {
   a="$CALLS/1.argv"
   sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' "$REPO_ROOT/studios/game-dev/bin/overnight-allow.txt" | grep -v '^#' | grep . > "$TMP/allow.txt"
   N="$(grep -c . "$TMP/allow.txt")"
-  assert_eq 6 "$N" "the allow file holds the six rules"
+  assert_eq "$(grep -Evc '^[[:space:]]*(#|$)' "$REPO_ROOT/studios/game-dev/bin/overnight-allow.txt")" "$N" "the rule count is the allow file's non-comment, non-blank lines"
+  assert_eq 1 "$([ "$N" -gt 0 ] && echo 1 || echo 0)" "the allow file holds rules"
   assert_eq 1 "$(grep -cx -- '--allowedTools' "$a")" "--allowedTools appears once"
   _ai="$(grep -nx -- '--allowedTools' "$a" | cut -d: -f1)"; [ -n "$_ai" ] || _ai=0
   _di="$(grep -nx -- '--disallowedTools' "$a" | cut -d: -f1)"
   assert_eq "$(cat "$TMP/allow.txt")" "$(sed -n "$((_ai + 1)),$((_ai + N))p" "$a")" "every allow rule follows it, one argument each, in file order"
   assert_eq "$((_ai + N + 1))" "$_di" "--disallowedTools comes right after the allow rules"
-  for r in 'Bash(studio-test:*)' 'Bash(studio-run:*)' 'Bash(studio-gate godot -- Godot *)' 'Bash(studio-gate godot -- godot *)' \
+  for r in 'Bash(studio-test:*)' 'Bash(studio-run:*)' 'Bash(studio-vitest:*)' 'Bash(studio-tsc:*)' 'Bash(sdd-run:*)' 'Bash(studio-docs-sync:*)' 'Bash(studio-gate godot -- Godot *)' 'Bash(studio-gate godot -- godot *)' \
            'Bash(studio-gate godot -- /Applications/Godot.app/Contents/MacOS/Godot *)' \
            'Bash(studio-gate godot -- /Applications/Godot_mono.app/Contents/MacOS/Godot *)'; do
     TESTS_RUN=$((TESTS_RUN + 1))
@@ -1721,6 +1826,46 @@ test_say_cap_counts_characters() {
   verb say - "$(printf '%300s' '' | sed 's/ /é/g')"; assert_eq 0 "$V_STATUS" "300 two-byte characters"
   verb say - "$(printf '%200s' '' | sed 's/ /é/g')"; assert_eq 0 "$V_STATUS" "500 characters (1000 bytes) fit a 500-character cap"
   verb say - "é";                                     assert_eq 1 "$V_STATUS" "the 501st character does not"
+  fake_run_end
+}
+# Gate-retry spec Part B: a retiring directive no longer counts toward
+# directive_chars, so a held story (no unit runs to record the retirement)
+# can swap a stale directive for a new one; the next unit gets the retires
+# before the new note, in one block.
+test_say_cap_retiring_not_counted() {
+  fixture scr; FR_CHARS=500
+  fake_run overnight-scr-1 manifest S="held stop: need art until 2026-10-04T05:00:00Z"; unset FR_CHARS
+  ( cd "$P" && STUDIO_STORY=S && export STUDIO_STORY \
+      && sh "$STATE_BIN" ledger "Directive 1: $(printf '%200s' '' | tr ' ' a)" \
+      && sh "$STATE_BIN" ledger "Directive 2: $(printf '%200s' '' | tr ' ' b)" \
+      && git add -A .studio/ledger && git -c user.name=t -c user.email=t@t commit -qm ledger ) >/dev/null 2>&1
+  IB="$FR_DIR/inbox/S"
+  verb say S "$(printf '%300s' '' | tr ' ' c)"
+  assert_eq 1 "$V_STATUS" "held at the cap: 700 of 500 is refused"
+  verb unsay S 1; assert_eq "retire queued: message 3 retires directive 1" "$(cat "$V_OUT")" "unsay 1 queues a retire"
+  verb unsay S 2; assert_eq "retire queued: message 4 retires directive 2" "$(cat "$V_OUT")" "unsay 2 queues a retire"
+  verb say S "$(printf '%300s' '' | tr ' ' c)"
+  assert_eq 0 "$V_STATUS" "with both retiring, 300 of 500 fits while the story is held"
+  assert_eq 5 "$(cat "$V_OUT")" "the new directive's id follows the retires"
+  verb said S
+  assert_eq "1  retiring  $(printf '%200s' '' | tr ' ' a)|2  retiring  $(printf '%200s' '' | tr ' ' b)|5  pending  $(printf '%300s' '' | tr ' ' c)" \
+    "$(tr '\n' '|' < "$V_OUT" | sed 's/|$//')" "said: two retiring, one pending"
+  # still over without the retiring rows: refused, and the refusal lists them
+  verb say S "$(printf '%201s' '' | tr ' ' d)"
+  assert_eq 1 "$V_STATUS" "300 + 201 is over 500 even with the retiring ones left out"
+  assert_contains "$V_ERR" "would carry 501 directive characters (retiring ones not counted), over directive_chars 500" "the count leaves the retiring text out"
+  assert_contains "$V_ERR" "^  1  retiring  aaaa" "the refusal lists retiring directive 1"
+  assert_contains "$V_ERR" "^  2  retiring  bbbb" "and retiring directive 2"
+  assert_contains "$V_ERR" "^  5  pending  cccc" "and the pending one"
+  assert_missing "$IB/6.msg" "nothing is written"
+  # the next unit's delivery block: the retires (lower ids) before the new note
+  printf '{"session_id":"s","hook_event_name":"SessionStart","source":"startup"}' \
+    | STUDIO_UNIT_TAG=tag-scr STUDIO_RUN_DIR="$FR_DIR" STUDIO_STORY=S \
+      sh "$REPO_ROOT/studios/game-dev/hooks/operator-inbox.sh" > "$TMP/scr.inbox"
+  assert_eq "[retire 1]|[retire 2]|[5, story]" \
+    "$(grep -E '^\[(retire [0-9]+|[0-9]+, story)\]' "$TMP/scr.inbox" | sed 's/^\(\[[^]]*\]\).*/\1/' | tr '\n' '|' | sed 's/|$//')" \
+    "one block: retire 1, retire 2, then the new directive 5"
+  assert_eq "3.msg 4.msg 5.msg" "$(ls "$IB/delivered/tag-scr" | sort -n | tr '\n' ' ' | sed 's/ $//')" "all three are claimed by the unit"
   fake_run_end
 }
 test_say_bad_directive_chars_defaults() {
@@ -3146,7 +3291,7 @@ run_tests test_overnight_setup_preflight_single test_overnight_tools_after_setup
   test_overnight_stop_no_run test_overnight_inhibitor test_overnight_no_inhibitor \
   test_overnight_help test_overnight_unit_caps test_events_contract_doc test_overnight_dry_run \
   test_overnight_preflight_refusals test_overnight_preflight_all_failures \
-  test_overnight_push_check_refuses_without_workflow test_overnight_push_check_ok_line test_overnight_push_check_no_workflows \
+  test_overnight_push_check_refuses_without_workflow test_overnight_push_check_ok_line test_single_plan_one_lane_note test_overnight_caps_readout test_overnight_caps_readout_clamped_and_short test_overnight_node_workers_preflight test_suite_every_single_plan_off test_single_plan_unit_lacks_suite_every test_help_lists_new_keys test_overnight_cfg_quoted_values_opt_in test_overnight_push_check_no_workflows \
   test_overnight_push_check_ssh test_overnight_push_check_unknown_scopes test_overnight_push_check_other_helper \
   test_overnight_tools_missing_refuses test_overnight_tools_present_passes test_overnight_tools_venv_version \
   test_overnight_tools_version_unreadable_warns test_overnight_tools_version_args test_overnight_tools_capped \
@@ -3174,7 +3319,7 @@ run_tests test_overnight_setup_preflight_single test_overnight_tools_after_setup
   test_say_empty_text_exit_2 \
   test_say_ids_ledger_and_inbox \
   test_say_cap \
-  test_say_cap_counts_characters test_say_bad_directive_chars_defaults test_inbox_lock_failures \
+  test_say_cap_counts_characters test_say_cap_retiring_not_counted test_say_bad_directive_chars_defaults test_inbox_lock_failures \
   test_said_lists_states \
   test_unsay_pending_active_delivered \
   test_unsay_id_prefix \

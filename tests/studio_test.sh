@@ -257,7 +257,7 @@ test_execute_contract() {
              'final|gate|review' 'final fix wave' 'A task is complete' 'final review done' 'studio-lint' \
              'subagent_type: "game-dev:producer"' 'gh pr create' '[-][-]draft' 'local, default branch' \
              'Play before merging' 'studio-state set stage idle' 'new run clears' \
-             'studio-state set branch "$(git branch' 'before the fast-forward' 'ledger "base' \
+             'studio-state set branch "<that name>"' 'before the fast-forward' 'ledger "base' \
              "from the feature's worktree" 'set task 0/' 'N/N' 'SDD ledger — plan:' \
              'Next: play the list; merge when it passes; report failures with /game-dev:playtest <what failed>; /clear before the next feature\.'; do
     assert_contains "$E" "$lit" "execute carries: $lit"
@@ -273,7 +273,7 @@ test_execute_contract() {
   # is cleared before stage is written, the legacy stop does not isolate, and
   # review-package runs from the worktree root.
   for lit in "producer's gate result" 'A new run first runs `studio-state set branch -`' \
-             'then do not isolate' 'run from the worktree root (`sdd-script` prints the script'"'"'s path'; do
+             'then do not isolate' 'run from the worktree root (`sdd-run` finds the script'; do
     assert_contains "$E" "$lit" "execute carries: $lit"
   done
   assert_not_contains "$E" "run from SDD's skill directory" "execute no longer reads review-package's directory as a cwd"
@@ -589,8 +589,10 @@ test_execute_lanes() {
   assert_contains "$E" 'Under a lane\*\* (`STUDIO_STORY` and `STUDIO_RUN` both set)' "§0 has one lane paragraph keyed on both variables"
   assert_contains "$E" 'git status --porcelain -- <spec> <plan> .studio/ledger/<id>.md .studio/config.json' "§0 under a lane checks only the story's ledger"
   assert_contains "$E" 'git worktree add --no-track -b <Branch>' "§0 creates the story branch with --no-track"
-  assert_contains "$E" 'git checkout $STUDIO_DOCS_REV -- <spec> <plan> .studio/ledger/<id>.md' "a new branch takes docs and ledger from the docs revision"
-  assert_contains "$E" 'git checkout $STUDIO_DOCS_REV -- <spec> <plan>`, and only when' "an existing branch syncs spec and plan only when they differ (D3)"
+  assert_contains "$E" '`studio-docs-sync --new`' "a new branch takes docs and ledger from the docs revision"
+  assert_contains "$E" 'sync the docs with `studio-docs-sync`' "an existing branch syncs spec and plan only when they differ (D3)"
+  assert_contains "$E" 'and only when they differ commits' "the sync commits only on a difference"
+  assert_not_contains "$E" 'git checkout $STUDIO_DOCS_REV' "no hand-written docs checkout (isolation refuses the variable)"
   assert_contains "$E" 'docs(<id>): plan at run docs' "an existing branch syncs spec and plan, never the ledger"
   assert_contains "$E" 'The ledger is never touched' "an existing branch's ledger is never touched"
   assert_contains "$E" 'studio-state ledger "base origin/<Target>"' "the base is recorded as the remote target"
@@ -644,6 +646,7 @@ test_execute_lane_gate_foreground() {
   assert_contains "$E" 'no `&` inside the command, no Monitor or notification' "no shell & and no notification wait"
   assert_contains "$E" '`tests/probes/bash_timeout_probe.sh` (2026-10-02)' "the probe result replaces the hedge"
   assert_contains "$E" 'Stop: gate timed out — <command> ran past <n> min' "a timed-out gate is a stated stop"
+  assert_contains "$E" 'Stop: gate timed out — <command>: <the last output line that starts' "a gate exit 124 quotes the gate's own stop line"
   assert_file "$REPO_ROOT/tests/probes/bash_timeout_probe.sh" "the probe is in the repo"
   # The brief line §2 carries verbatim.
   assert_eq 1 "$(tr '\n' ' ' < "$E" | grep -c 'never in the background (no `run_in_background`, no `&`), and never end a turn to wait for one')" "§2's verbatim brief line"
@@ -681,11 +684,14 @@ test_short_lane_unit_rule_text() {
     'calls of up to three files are short-lane eligible' \
     "when the task's \`Verify:\` includes \`suite\`" \
     '`suite` — the implementer also runs the whole suite' \
-    'studio-gate vitest -- npx vitest run --minWorkers=1 --maxWorkers=2' \
-    'never `sh -c` inside it' "the implementers ran each task's touched tests"; do
+    '`studio-vitest <file>…`' '`studio-tsc`' \
+    'never `sh -c` inside the gate' "the implementers ran each task's touched tests"; do
     assert_contains "$E" "$lit" "execute says: $lit"
   done
   assert_not_contains "$E" 'runs `studio-test` and pastes its summary' "the old whole-suite unit rule is gone"
+  assert_not_contains "$E" 'cd <node dir> && studio-gate' "execute: no cd chain into the gate"
+  assert_not_contains "$P" 'cd <node dir> && studio-gate' "plan: no cd chain into the gate"
+  assert_contains "$P" 'studio-vitest <file>' "plan: the vitest verb"
   for lit in '`suite` — the task changes a seam whose effects reach tests it does not touch' \
     "Without \`suite\`, a task's tests are the files it touches" 'targeted vitest as'; do
     assert_contains "$P" "$lit" "plan says: $lit"
@@ -755,6 +761,24 @@ test_execute_gate_repair() {
       END { print (e && p && e < p) ? "enter-first" : "check-first" }' "$E")" "$_sec enters the feature checkout before its preconditions"
   done
   assert_not_contains "$E" '`/game-dev:execute --land`, in the story.s worktree' "§9 names the checkout the runner starts it in"
+}
+
+# Checkpoint suites (overnight throughput D1-D2): execute's task unit runs the suite every K tasks in lanes.
+test_execute_checkpoint_rules() {
+  E="$REPO_ROOT/studios/game-dev/skills/execute/SKILL.md"
+  assert_contains "$E" 'STUDIO_SUITE_EVERY' "the task unit reads the interval"
+  assert_contains "$E" 'suite green T<n> <full sha>' "the ledger line a green suite records"
+  assert_contains "$E" 'fix(suite): <summary>' "the checkpoint fixer's commit"
+  assert_contains "$E" 'Stop: gate red — checkpoint after T<n> — <failing line>' "a red checkpoint's stop"
+  assert_contains "$E" 'A checkpoint never re-opens it' "the task stays complete"
+  assert_eq 1 "$(grep -cF 'fix\((T[0-9]+|final|gate|review|suite|B[0-9]+)\)' "$E" | awk '{ print ($1 > 0) }')" "the final reviewer verifies checkpoint fixes"
+  assert_contains "$E" "Exit codes keep §7's lane meaning[.]" "a checkpoint's exit codes are §7's"
+  assert_contains "$E" 'a red finish gate or a red checkpoint (§8)' "§11 takes a red checkpoint too"
+  assert_contains "$E" 'resumes the story: the next task, or a fresh finish' "§11: the runner resumes the story"
+  assert_not_contains "$E" 'launches a fresh finish' "§11 does not always launch a fresh finish"
+  assert_not_contains "$E" 'launches the fresh finish' "§11 does not always launch the fresh finish"
+  RV="$REPO_ROOT/studios/game-dev/skills/review/SKILL.md"
+  assert_eq 1 "$(grep -cF 'fix\((T[0-9]+|final|gate|review|suite|B[0-9]+)\)' "$RV" | awk '{ print ($1 > 0) }')" "review's verify-prior-fixes pattern agrees with execute §5 step 2"
 }
 
 # section_count FILE HEADING_RE PATTERN — matches of PATTERN between the
@@ -834,9 +858,10 @@ test_final_wave_contracts() {
 # #35: execute's adopt rules (AC9, AC12, AC13, AC15, AC16, AC18-20, AC25).
 test_execute_adopt() {
   E="$REPO_ROOT/studios/game-dev/skills/execute/SKILL.md"
-  assert_contains "$E" 'git checkout $STUDIO_DOCS_REV -- <spec> <plan> <Context paths>' "§0 docs sync takes the Context paths (AC18)"
-  assert_contains "$E" 'git checkout $STUDIO_DOCS_REV -- <spec> <plan> .studio/ledger/<id>.md <Context paths>' "and on the new-branch path"
-  assert_contains "$E" 'studio-state ledger "adopt-base $(git rev-parse HEAD)"' "a not-started adopted story records its base (AC9)"
+  assert_contains "$E" 'the paths a `Context:` header lists, each present in the run.s docs' "§0 docs sync takes the Context paths (AC18)"
+  assert_contains "$E" 'ledger and any$' "and on the new-branch path"
+  assert_contains "$E" '`Context:` paths from `\$STUDIO_DOCS_REV`' "the new-branch sync names the Context paths"
+  assert_contains "$E" 'studio-state ledger "adopt-base <that sha>"' "a not-started adopted story records its base (AC9)"
   assert_contains "$E" 'run `studio-setup` from the worktree root' "setup on every entry (AC19)"
   assert_eq 1 "$([ "$(section_count "$E" '^## 0[.] ' 'run `studio-setup` from the worktree root')" -ge 2 ] && echo 1 || echo 0)" "lane and single-plan entries both run it"
   assert_contains "$E" 'Stop: worktree setup failed — exit <n> — log <path>' "a failed setup stops"
@@ -870,13 +895,15 @@ test_execute_adopt() {
 # undefined "skill directory"; the no-search rule reaches execute and every agent.
 test_sdd_script_references() {
   ex="$REPO_ROOT/studios/game-dev/skills/execute/SKILL.md"
-  assert_contains "$ex" 'sdd-script review-package' "execute finds review-package with sdd-script"
+  assert_contains "$ex" 'sdd-run review-package <plan> <BASE> HEAD' "execute runs review-package with sdd-run"
+  assert_contains "$ex" 'sdd-run review-package <plan> <merge-base> HEAD' "and the final review's package"
+  assert_not_contains "$ex" 'bash "\$(sdd-script' "execute has no bash \$(sdd-script form (isolation refuses it)"
   assert_not_contains "$ex" "SDD's skill directory" "execute no longer says 'SDD's skill directory'"
   assert_not_contains "$ex" 'bash scripts/review-package' "execute has no bare scripts/review-package path"
   assert_contains "$ex" 'Never search for a tool or script' "execute carries the no-search rule"
-  assert_contains "$ex" 'bash "$(sdd-script \[--skill <skill>\] <name>)"' "execute maps a superpowers skill's scripts/<name> to sdd-script"
-  assert_contains "$ex" 'reinstall omega-ai' "execute: sdd-script not found means reinstall omega-ai"
-  assert_contains "$ex" '"$(sdd-script task-brief)" <plan> <n>' "execute's task-brief call carries <plan> <n>"
+  assert_contains "$ex" 'sdd-run \[--skill <skill>\] <name>' "execute maps a superpowers skill's scripts/<name> to sdd-run"
+  assert_contains "$ex" '`sdd-run` not found: "reinstall omega-ai"' "execute: sdd-run not found means reinstall omega-ai"
+  assert_contains "$ex" 'sdd-run task-brief <plan> <n>' "execute's task-brief call carries <plan> <n>"
   assert_contains "$ex" '`find .` or `git ls-files` inside the project' "execute: searching inside the project is fine"
   for f in "$REPO_ROOT"/studios/game-dev/agents/*.md; do
     assert_contains "$f" 'Never search for a tool or script' "$(basename "$f") carries the no-search rule"
@@ -889,7 +916,7 @@ test_execute_task_brief_rewritten() {
   E="$REPO_ROOT/studios/game-dev/skills/execute/SKILL.md"
   # task-brief writes the task text to a file and prints only `wrote <file>: N lines`,
   # so the rewrite gates that file in place; a pipe would gate the status line.
-  assert_contains "$E" '``bash "$(sdd-script task-brief)" <plan> <n>``' "the task text comes from task-brief as its own call"
+  assert_contains "$E" '``sdd-run task-brief <plan> <n>``' "the task text comes from task-brief as its own call"
   assert_contains "$E" 'wrote <file>: <N> lines' "the skill names task-brief's output line"
   assert_contains "$E" '``studio-brief rewrite <file>``' "the brief file task-brief wrote is rewritten in place"
   assert_not_contains "$E" '| studio-brief rewrite' "task-brief's stdout is not piped into rewrite"
@@ -927,6 +954,33 @@ test_plan_probe_rule() {
   assert_eq 1 "$(grep -c '^## 7\. Sweep, for a manifest story' "$PL")" "§7 keeps its number"
 }
 
+test_plan_split_rules() {
+  _has() { TESTS_RUN=$((TESTS_RUN + 1)); if grep -q -F -- "$2" "$1"; then _pass "$3"; else _fail "$3 (missing '$2')"; fi; }
+  PL="$REPO_ROOT/studios/game-dev/skills/plan/SKILL.md"
+  _has "$PL" 'After: T<a>[, T<b>…]' "After: line documented"
+  _has "$PL" 'studio-brief tracks <plan>' "tracks command"
+  _has "$PL" 'at least two tracks with at least 3 tasks each' "split threshold"
+  _has "$PL" 'Reply **approve** (split), **approve one** (keep one story), or name the task to change.' "split stop reply"
+  _has "$PL" '<id>-<k>' "sibling id"
+  _has "$PL" '<Branch>-<k>' "sibling branch"
+  _has "$PL" '<plan stem>-<k>.md' "sibling plan file"
+  _has "$PL" 'A **feature AC** that tasks in two tracks both implement ties those tracks' "feature AC ties"
+  _has "$PL" 'A **cross-cutting AC**' "cross-cutting AC"
+  _has "$PL" 'docs(plans): approve <topic> (split <S>)' "split commit subject"
+  _has "$PL" 'becomes a manifest Depends on' "later dependency becomes Depends on"
+  _has "$PL" 'now depends on the original and every sibling' "later row depends on the original and every sibling"
+  _has "$PL" 'a task shown as `files: -` must get its `Files:` line before a split is proposed' "a files: - task gets its Files: line first"
+  _has "$PL" 'After a split, §7 items 1-3 are done' "after a split the planner goes to §7 item 4"
+  _has "$PL" 'when folding leaves one track' "no split when folding leaves one track"
+  _has "$PL" 'when acceptance criterion ties fold everything into one track' "no split when AC ties fold everything"
+  _c="$(grep -n -F -m1 -- '**Conflict scan first.**' "$PL" | cut -d: -f1)"
+  _t2="$(grep -n -F -m1 -- 'studio-brief tracks <plan>' "$PL" | cut -d: -f1)"
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if [ -n "$_c" ] && [ -n "$_t2" ] && [ "$_c" -lt "$_t2" ]; then
+    _pass "the conflict scan precedes studio-brief tracks"
+  else _fail "conflict scan order ($_c < $_t2)"; fi
+}
+
 run_tests test_plugin_manifests test_skill_frontmatter test_agent_frontmatter \
   test_external_references_declared test_required_plugins_enabled test_bin_syntax \
   test_role_agents_exist test_stage_skill_contracts test_plan_skill_contract \
@@ -938,4 +992,4 @@ run_tests test_plugin_manifests test_skill_frontmatter test_agent_frontmatter \
   test_no_ship_references test_superpowers_requires_referenced test_no_last_playtest_callers \
   test_execute_one_contract test_skill_execute_block_outcome test_router_overnight_lock test_execute_lanes test_execute_lane_gate_foreground test_execute_command_caps_text test_docs_59_wording test_agent_gameplay_programmer_file_runs test_short_lane_unit_rule_text test_execute_land_and_progress test_execute_gate_repair test_execute_operator_messages test_execute_adopt test_final_wave_contracts \
   test_plan_brainstorm_lanes test_execute_sync_repair_form test_execute_peers_brief_rule test_plan_brainstorm_slug_form test_plan_brainstorm_check_id \
-  test_sdd_script_references test_execute_task_brief_rewritten test_plan_gated_godot_forms test_plan_probe_rule
+  test_sdd_script_references test_execute_checkpoint_rules test_execute_task_brief_rewritten test_plan_gated_godot_forms test_plan_probe_rule test_plan_split_rules

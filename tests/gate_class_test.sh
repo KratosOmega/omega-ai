@@ -235,6 +235,32 @@ test_load_unreadable_refuses() {
   assert_eq "1 5/?" "$(lo x 5)" "non-numeric cores refuses"
 }
 
+# lp ENV… — gate_load1 and gate_load_peak under the given env words; prints "<l1rc>:<l1> <peakrc>:<peak>".
+lp() {
+  (
+    unset STUDIO_GATE_LOADAVG STUDIO_GATE_LOADAVG_FILE
+    for _a in "$@"; do export "$_a"; done
+    . "$BIN/gate-class.sh"
+    _l="$(gate_load1)"; _lr=$?; _p="$(gate_load_peak)"; _pr=$?
+    printf '%s:%s %s:%s\n' "$_lr" "$_l" "$_pr" "$_p"
+  )
+}
+
+test_load_file_seam_and_peak() {
+  assert_eq "0:5 0:5" "$(lp STUDIO_GATE_LOADAVG=5)" "the value seam gives one value for both averages"
+  printf '12.5\nignored\n' > "$TMP/load"
+  assert_eq "0:12.5 0:12.5" "$(lp STUDIO_GATE_LOADAVG_FILE="$TMP/load" STUDIO_GATE_LOADAVG=1)" "the file seam wins and reads its first line"
+  printf '3\n' > "$TMP/load"
+  assert_eq "0:3 0:3" "$(lp STUDIO_GATE_LOADAVG_FILE="$TMP/load")" "the file is read again on every reading"
+  assert_eq "1: 1:" "$(lp STUDIO_GATE_LOADAVG_FILE="$TMP/no-such-load")" "a missing load file is unreadable"
+  assert_eq "1: 1:" "$(lp STUDIO_GATE_LOADAVG=abc)" "a non-numeric load is unreadable"
+  case "$(uname -s)" in
+    Darwin|Linux)
+      _r="$(lp)"
+      assert_eq 1 "$(printf '%s\n' "$_r" | grep -Ec '^0:[0-9.]+ 0:[0-9.]+$')" "the machine's averages read ($_r)" ;;
+  esac
+}
+
 test_load_production_defaults() {
   _pd="$(
     unset STUDIO_GATE_PHYS_CORES STUDIO_GATE_LOADAVG
@@ -257,6 +283,40 @@ test_load_production_defaults() {
       assert_eq "1" "$_crc" "an unknown OS: cores exit 1"
       assert_eq "1" "$_lrc" "an unknown OS: load exits 1" ;;
   esac
+}
+
+# nw CORES [CONFIG_JSON] — gate_node_workers with the cores seam set (CORES "-" =
+# unset, "" = set empty) from a bare project dir; prints "<rc> <output> <stderr>".
+nw() {
+  _nwd="$TMP/nw"; rm -rf "$_nwd"; mkdir -p "$_nwd/.studio"
+  [ -z "${2:-}" ] || printf '%s\n' "$2" > "$_nwd/.studio/config.json"
+  (
+    cd "$_nwd" || exit 9
+    . "$BIN/gate-class.sh"
+    if [ "$1" != - ]; then STUDIO_GATE_PHYS_CORES="$1"; export STUDIO_GATE_PHYS_CORES; fi
+    _o="$(gate_node_workers 2> "$_nwd/err")"; _rc=$?
+    printf '%s %s %s\n' "$_rc" "$_o" "$(cat "$_nwd/err")"
+  )
+}
+
+test_node_workers_auto() {
+  assert_eq "0 2 " "$(nw 4)" "4 cores: 2 workers"
+  assert_eq "0 6 " "$(nw 12)" "12 cores: 6 workers"
+  assert_eq "0 2 " "$(nw 2)" "2 cores: floor of 2"
+  assert_eq "0 2 " "$(nw 1)" "1 core: floor of 2"
+  assert_eq "0 2 " "$(nw '')" "unreadable cores (set, empty): 2"
+}
+
+test_node_workers_config() {
+  assert_eq "0 8 " "$(nw 12 '{"node_workers": 8}')" "a number sets it"
+  assert_eq "0 8 " "$(nw 12 '{"node_workers": "8"}')" "a quoted number sets it"
+  assert_eq "0 1 " "$(nw 12 '{"node_workers": 1}')" "1 is the floor"
+  assert_eq "0 32 " "$(nw 4 '{"node_workers": 32}')" "32 is the cap"
+  assert_eq "0 6 " "$(nw 12 '{"node_workers": "auto"}')" "auto is the machine's value"
+  assert_eq "0 6 " "$(nw 12 '{"engine": "godot4"}')" "absent is auto"
+  assert_eq "1  gate: node_workers must be auto or 1-32, got 33" "$(nw 12 '{"node_workers": 33}')" "33 is refused"
+  assert_eq "1  gate: node_workers must be auto or 1-32, got 0" "$(nw 12 '{"node_workers": 0}')" "0 is refused"
+  assert_eq "1  gate: node_workers must be auto or 1-32, got many" "$(nw 12 '{"node_workers": "many"}')" "a word is refused"
 }
 
 test_classify_takes_no_lock() {
@@ -290,5 +350,5 @@ run_tests test_classify_gut_file_runs test_classify_whole_suite_and_dir test_cla
   test_classify_symlink_cycle_is_bounded test_classify_non_utf8_list_four_entries test_classify_godot_who_and_spaced_paths \
   test_classify_vitest_forms test_classify_vitest_near_misses test_classify_tsc_forms test_classify_eslint_forms \
   test_classify_everything_else_is_exclusive test_classify_reads_lane_from_toplevel test_classify_run_fallback \
-  test_classify_minified_config test_load_threshold_from_physical_cores test_load_unreadable_refuses \
-  test_load_production_defaults test_classify_takes_no_lock test_classify_needs_no_studio_dir test_classify_usage
+  test_classify_minified_config test_load_threshold_from_physical_cores test_load_unreadable_refuses test_load_file_seam_and_peak \
+  test_load_production_defaults test_node_workers_auto test_node_workers_config test_classify_takes_no_lock test_classify_needs_no_studio_dir test_classify_usage
