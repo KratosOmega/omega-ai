@@ -445,9 +445,12 @@ Config: .studio/config.json "overnight" (defaults, ranges):
                                     0 = off
   worktree_setup       ""             command run once per new worktree under the gate lock
                                     (studio-setup); no backslash. Unset = nothing runs.
+                                    Set in the run's config but resolved to none in a
+                                    unit's worktree: studio-setup exits 2, never a silent skip.
                                     Preflighted: start runs it once in a scratch linked
-                                    worktree off the run's base and refuses on a failure
-                                    (exit code and log shown); --dry-run only says so
+                                    worktree off the run's base (shaped like a story's) and
+                                    refuses on a failure (exit code and log shown) or when
+                                    nothing ran; --dry-run only says so
   worktree_setup_minutes 20  1-120    cap on one worktree_setup run
   gate_command         ""             command the finish gate runs after the tests
                                     (studio-setup gate); no backslash. Unset = none
@@ -482,6 +485,13 @@ Config: .studio/config.json "overnight" (defaults, ranges):
                                     "spike T<n> pass|fail <plan>" ledger line to be a pass:
                                     warn = a preflight warning; refuse = start and --dry-run refuse
 A value present but out of range or not a number is a refusal.
+The run's config is the start checkout's. Story, integration and progress worktrees
+have none of their own when it is committed only on the run branch: the runner
+exports STUDIO_START_DIR to every unit, and studio-setup (and the runner, in the
+integration worktree) copies the run's .studio/config.json into a worktree that has
+none, where git ignores the path. Units' tools read each key from the worktree's
+config, then \$STUDIO_START_DIR's, then (studio-setup only) the main checkout's:
+tree -> \$STUDIO_START_DIR -> STATE_ROOT.
 Top level of config.json (not under "overnight"):
   merge_command        ""             a command line containing <pr>, its first word an
                                     executable file under the checkout. Direct mode runs
@@ -2239,7 +2249,11 @@ run_excludes() {
 # setup_preflight BRANCH — #49: worktree_setup once, through studio-setup (its
 # gate lock, timeout, log and marker), in a scratch linked worktree at
 # origin/BRANCH, so a command that breaks only where .git is a file is refused
-# here and not by the first story at night. Silent when unset. --detach's
+# here and not by the first story at night. The scratch tree is shaped like a
+# story's (forked from the same base, no config but what that base commits), and
+# studio-setup resolves and seeds config there as in a story (tree, then
+# STUDIO_START_DIR's, then the state root's); an exit 0 that ran nothing (no
+# marker) is a refusal, never green. Silent when unset. --detach's
 # child gets STUDIO_OVERNIGHT_SETUP_CHECKED (read once, then unset): the
 # base's commit skips the check; any other commit (BRANCH moved since detach
 # checked it) refuses, since re-running a long setup would outlast detach's
@@ -2283,6 +2297,11 @@ setup_preflight() {
   trap - INT TERM HUP
   SP_PID=""
   _sp_l="$(tail -n 1 "$_sp_ef" 2>/dev/null)"; rm -f "$_sp_ef"; _sp_ef=""
+  # Green means the command ran: studio-setup writes its marker only then. An exit 0
+  # with no marker resolved no worktree_setup here, and a story's worktree would too.
+  if [ "$_sp_rc" -eq 0 ] && [ ! -s "$_sp_gd/studio-setup.done" ]; then
+    _sp_rc=2; _sp_l="studio-setup exited 0 without running worktree_setup in the scratch worktree — a story's worktree would skip it too"
+  fi
   if [ "$_sp_rc" -eq 0 ]; then
     # #95: the path entries of required_tools, probed where the setup built them.
     # Their tools: lines go to stderr: under start --detach this runs in lanes_start

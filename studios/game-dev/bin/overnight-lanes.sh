@@ -1898,6 +1898,10 @@ setup_note() {
     *) printf '%s\n' "$_sn_l" ;;
   esac
 }
+# final_seed — the run's .studio/config.json copied into FINAL_W before any
+# unit runs there (cfg_seed: only where git ignores the path, never over a
+# config of FINAL_W's own); studio-setup seeds the same way in every worktree.
+final_seed() { ( cd "$FINAL_W" && STUDIO_START_DIR="$START_DIR" && . "$SELF_DIR/gate-class.sh" && cfg_seed ) 2>/dev/null; }
 
 final_integration() {
   _fi_rep=0
@@ -1929,6 +1933,7 @@ final_integration() {
         || { FINAL_COLOR=red; final_note "cannot switch $FINAL_W to origin/$_fi_b"; return 1; }
     fi
   fi
+  final_seed
   if ! git -C "$FINAL_W" merge-base --is-ancestor "$_fi_m" HEAD 2>/dev/null \
      && ! git_retry -C "$FINAL_W" merge -q --no-edit "$_fi_m" > "$RUN_DIR/final-merge.log" 2>&1; then
     git -C "$FINAL_W" merge --abort 2>/dev/null
