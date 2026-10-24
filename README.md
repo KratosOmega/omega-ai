@@ -99,6 +99,8 @@ The shim puts `studios/game-dev/bin/` on `PATH`. From a Godot project root:
 | `studio-tsc [--dir D]` | `tsc --noEmit` through the gate from the node dir | 0 · 1 errors · 2 no node dir · 124 gate run cap |
 | `studio-lint [PATH]` | `gdlint` and `gdformat --check` when gdtoolkit is installed | 0 clean · 1 findings · 3 not installed |
 | `studio-state …` | Reads and writes `.studio/STATE.md` | 0 · 1 |
+| `sdd-run [--skill S] <name> [ARG…]` | Runs a superpowers skill script that `sdd-script` locates (`exec bash <path> ARG…`), as one command word where `bash "$(sdd-script …)"` is refused by worktree isolation | the script's own · 1 script not found · 2 usage |
+| `studio-docs-sync [--new] [<path>…]` | Checks the story's spec and plan (and `Context:` paths, with `--new` the ledger) out of `$STUDIO_DOCS_REV` and commits them only when they differ | 0 · 1 a git failure · 2 usage, or `STUDIO_DOCS_REV` / `STUDIO_STORY` unset |
 | `studio-overnight start [<manifest>] \| status [--run] \| watch [--run] \| stop [--run \| --all] \| next \| check-id \| say \| said \| unsay \| hold \| resume` | Runs approved plans unattended, one fresh headless session per unit, and takes messages and holds while it runs; see below | start: 0 done · 1 other ending · 2 refused; the channel verbs: 0 · 1 refused · 2 usage; check-id: 0 free · 1 taken · 2 usage |
 
 The verbs never name Godot; `studios/game-dev/engines/godot/` does. Godot is

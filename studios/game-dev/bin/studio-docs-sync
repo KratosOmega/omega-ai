@@ -1,0 +1,70 @@
+#!/bin/sh
+# studio-docs-sync — bring the run's docs into this story's branch and commit
+# them only when they differ. It is the one command for execute §0's docs sync,
+# so the skill never writes `git checkout $STUDIO_DOCS_REV -- …` (an unquoted
+# variable in an option, which Claude Code's worktree isolation refuses; #96).
+#
+#   studio-docs-sync [--new] [<extra path>…]
+#
+# Reads STUDIO_DOCS_REV and STUDIO_STORY (both required), the story's spec and
+# plan (studio-state get spec / get plan), and the plan's `Context:` header
+# (parsed as studio-brief's context_part does). Runs, from the current directory:
+#   git checkout <rev> -- <spec> <plan> [.studio/ledger/<id>.md] <Context…> <extra…>
+# --new also takes the story's ledger (a new branch). When `git diff --cached
+# --quiet` then fails it commits `docs(<id>): plan at run docs <short rev>`, or
+# with --new `docs(<id>): approved plan`. Nothing staged, no commit.
+# Exit: 0 synced or nothing to do · 1 a git failure (git's stderr passes
+# through) · 2 usage, or STUDIO_DOCS_REV or STUDIO_STORY missing.
+# Byte collation: under a UTF-8 locale macOS sh matches [a-z] by collation (A-Y too).
+unset LC_ALL; LC_COLLATE=C
+set -u
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+usage() { printf 'usage: studio-docs-sync [--new] [<extra path>...]\n' >&2; exit 2; }
+
+NEW=0
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --new) NEW=1; shift ;;
+    --) shift; break ;;
+    -*) usage ;;
+    *) break ;;
+  esac
+done
+REV="${STUDIO_DOCS_REV:-}"; ID="${STUDIO_STORY:-}"
+[ -n "$REV" ] || { printf 'studio-docs-sync: STUDIO_DOCS_REV is not set\n' >&2; exit 2; }
+[ -n "$ID" ] || { printf 'studio-docs-sync: STUDIO_STORY is not set\n' >&2; exit 2; }
+
+SPEC="$(sh "$HERE/studio-state" get spec)" || exit 1
+PLAN="$(sh "$HERE/studio-state" get plan)" || exit 1
+case "$SPEC" in ''|-) printf 'studio-docs-sync: the story has no spec\n' >&2; exit 2 ;; esac
+case "$PLAN" in ''|-) printf 'studio-docs-sync: the story has no plan\n' >&2; exit 2 ;; esac
+
+# The plan's Context: paths, as studio-brief's context_part reads them, from
+# the plan at the run's revision (the branch's own copy may be an older plan),
+# else the plan on disk.
+CTX="$({ git show "$REV:$PLAN" 2>/dev/null || cat "$PLAN" 2>/dev/null; } | sed -n '/^## /q; s/^Context:[[:space:]]*//p' | head -n 1)"
+
+# Paths are positional parameters, so a name with a space or a glob stays one
+# word: spec, plan, [ledger], the extras given, then the Context paths.
+set -f
+set -- "$SPEC" "$PLAN" "$@"
+[ "$NEW" = 0 ] || set -- ".studio/ledger/$ID.md" "$@"
+if [ -n "$CTX" ]; then
+  _old="$IFS"; IFS='
+'
+  for _f in $(printf '%s\n' "$CTX" | tr ',' '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//'); do
+    [ -z "$_f" ] || set -- "$@" "$_f"
+  done
+  IFS="$_old"
+fi
+
+git checkout "$REV" -- "$@" || exit 1
+if ! git diff --cached --quiet; then
+  if [ "$NEW" = 1 ]; then
+    git commit -q -m "docs($ID): approved plan" || exit 1
+  else
+    git commit -q -m "docs($ID): plan at run docs $(printf '%.7s' "$REV")" || exit 1
+  fi
+fi
+exit 0

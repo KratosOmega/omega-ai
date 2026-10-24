@@ -273,7 +273,7 @@ test_execute_contract() {
   # is cleared before stage is written, the legacy stop does not isolate, and
   # review-package runs from the worktree root.
   for lit in "producer's gate result" 'A new run first runs `studio-state set branch -`' \
-             'then do not isolate' 'run from the worktree root (`sdd-script` prints the script'"'"'s path'; do
+             'then do not isolate' 'run from the worktree root (`sdd-run` finds the script'; do
     assert_contains "$E" "$lit" "execute carries: $lit"
   done
   assert_not_contains "$E" "run from SDD's skill directory" "execute no longer reads review-package's directory as a cwd"
@@ -545,8 +545,10 @@ test_execute_lanes() {
   assert_contains "$E" 'Under a lane\*\* (`STUDIO_STORY` and `STUDIO_RUN` both set)' "§0 has one lane paragraph keyed on both variables"
   assert_contains "$E" 'git status --porcelain -- <spec> <plan> .studio/ledger/<id>.md .studio/config.json' "§0 under a lane checks only the story's ledger"
   assert_contains "$E" 'git worktree add --no-track -b <Branch>' "§0 creates the story branch with --no-track"
-  assert_contains "$E" 'git checkout $STUDIO_DOCS_REV -- <spec> <plan> .studio/ledger/<id>.md' "a new branch takes docs and ledger from the docs revision"
-  assert_contains "$E" 'git checkout $STUDIO_DOCS_REV -- <spec> <plan>`, and only when' "an existing branch syncs spec and plan only when they differ (D3)"
+  assert_contains "$E" '`studio-docs-sync --new`' "a new branch takes docs and ledger from the docs revision"
+  assert_contains "$E" 'sync the docs with `studio-docs-sync`' "an existing branch syncs spec and plan only when they differ (D3)"
+  assert_contains "$E" 'and only when they differ commits' "the sync commits only on a difference"
+  assert_not_contains "$E" 'git checkout $STUDIO_DOCS_REV' "no hand-written docs checkout (isolation refuses the variable)"
   assert_contains "$E" 'docs(<id>): plan at run docs' "an existing branch syncs spec and plan, never the ledger"
   assert_contains "$E" 'The ledger is never touched' "an existing branch's ledger is never touched"
   assert_contains "$E" 'studio-state ledger "base origin/<Target>"' "the base is recorded as the remote target"
@@ -793,8 +795,9 @@ test_final_wave_contracts() {
 # #35: execute's adopt rules (AC9, AC12, AC13, AC15, AC16, AC18-20, AC25).
 test_execute_adopt() {
   E="$REPO_ROOT/studios/game-dev/skills/execute/SKILL.md"
-  assert_contains "$E" 'git checkout $STUDIO_DOCS_REV -- <spec> <plan> <Context paths>' "§0 docs sync takes the Context paths (AC18)"
-  assert_contains "$E" 'git checkout $STUDIO_DOCS_REV -- <spec> <plan> .studio/ledger/<id>.md <Context paths>' "and on the new-branch path"
+  assert_contains "$E" 'the paths a `Context:` header lists, each present in the run.s docs' "§0 docs sync takes the Context paths (AC18)"
+  assert_contains "$E" 'ledger and any$' "and on the new-branch path"
+  assert_contains "$E" '`Context:` paths from `\$STUDIO_DOCS_REV`' "the new-branch sync names the Context paths"
   assert_contains "$E" 'studio-state ledger "adopt-base $(git rev-parse HEAD)"' "a not-started adopted story records its base (AC9)"
   assert_contains "$E" 'run `studio-setup` from the worktree root' "setup on every entry (AC19)"
   assert_eq 1 "$([ "$(section_count "$E" '^## 0[.] ' 'run `studio-setup` from the worktree root')" -ge 2 ] && echo 1 || echo 0)" "lane and single-plan entries both run it"
@@ -829,13 +832,15 @@ test_execute_adopt() {
 # undefined "skill directory"; the no-search rule reaches execute and every agent.
 test_sdd_script_references() {
   ex="$REPO_ROOT/studios/game-dev/skills/execute/SKILL.md"
-  assert_contains "$ex" 'sdd-script review-package' "execute finds review-package with sdd-script"
+  assert_contains "$ex" 'sdd-run review-package <plan> <BASE> HEAD' "execute runs review-package with sdd-run"
+  assert_contains "$ex" 'sdd-run review-package <plan> <merge-base> HEAD' "and the final review's package"
+  assert_not_contains "$ex" 'bash "\$(sdd-script' "execute has no bash \$(sdd-script form (isolation refuses it)"
   assert_not_contains "$ex" "SDD's skill directory" "execute no longer says 'SDD's skill directory'"
   assert_not_contains "$ex" 'bash scripts/review-package' "execute has no bare scripts/review-package path"
   assert_contains "$ex" 'Never search for a tool or script' "execute carries the no-search rule"
-  assert_contains "$ex" 'bash "$(sdd-script \[--skill <skill>\] <name>)"' "execute maps a superpowers skill's scripts/<name> to sdd-script"
-  assert_contains "$ex" 'reinstall omega-ai' "execute: sdd-script not found means reinstall omega-ai"
-  assert_contains "$ex" '"$(sdd-script task-brief)" <plan> <n>' "execute's task-brief call carries <plan> <n>"
+  assert_contains "$ex" 'sdd-run \[--skill <skill>\] <name>' "execute maps a superpowers skill's scripts/<name> to sdd-run"
+  assert_contains "$ex" '`sdd-run` not found: "reinstall omega-ai"' "execute: sdd-run not found means reinstall omega-ai"
+  assert_contains "$ex" 'sdd-run task-brief <plan> <n>' "execute's task-brief call carries <plan> <n>"
   assert_contains "$ex" '`find .` or `git ls-files` inside the project' "execute: searching inside the project is fine"
   for f in "$REPO_ROOT"/studios/game-dev/agents/*.md; do
     assert_contains "$f" 'Never search for a tool or script' "$(basename "$f") carries the no-search rule"
@@ -848,7 +853,7 @@ test_execute_task_brief_rewritten() {
   E="$REPO_ROOT/studios/game-dev/skills/execute/SKILL.md"
   # task-brief writes the task text to a file and prints only `wrote <file>: N lines`,
   # so the rewrite gates that file in place; a pipe would gate the status line.
-  assert_contains "$E" '``bash "$(sdd-script task-brief)" <plan> <n>``' "the task text comes from task-brief as its own call"
+  assert_contains "$E" '``sdd-run task-brief <plan> <n>``' "the task text comes from task-brief as its own call"
   assert_contains "$E" 'wrote <file>: <N> lines' "the skill names task-brief's output line"
   assert_contains "$E" '``studio-brief rewrite <file>``' "the brief file task-brief wrote is rewritten in place"
   assert_not_contains "$E" '| studio-brief rewrite' "task-brief's stdout is not piped into rewrite"

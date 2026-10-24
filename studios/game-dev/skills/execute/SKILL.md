@@ -12,12 +12,11 @@ description: Use when an approved plan exists — dispatches a fresh role agent 
 **Never search for a tool or script.** Do not run `find /`, `find ~`, `locate`
 or a recursive `ls` from `/`, `~` or `$HOME` to look for one: a search can hang
 a headless unit for hours. `find .` or `git ls-files` inside the project, and
-`command -v`, are fine. Find superpowers' scripts with `sdd-script` (below),
+`command -v`, are fine. Run superpowers' scripts with `sdd-run` (below),
 use a path this studio documents, or stop and report the tool as missing.
-If `sdd-script` is command not found, run
-`"$(command -v sdd-script || echo "$OMEGA_STUDIO_ROOT/bin/sdd-script")"` in its
-place; if that is missing too, stop and report "reinstall omega-ai". Never look
-for it.
+If `sdd-run` is command not found, run
+`sh "$OMEGA_STUDIO_ROOT/bin/sdd-run"` in its place; if that is missing too, stop
+and report "reinstall omega-ai". Never look for it.
 
 ## 0. Preconditions and isolation
 
@@ -105,12 +104,12 @@ is `STUDIO_STORY`:
 - **Branch exists** (local, or `origin/<Branch>`): enter its worktree
   (`studio-state worktree`, else
   `git worktree add --no-track [-b <Branch>] <path> <Branch or origin/<Branch>>`).
-  Then sync the docs:
-  `git checkout $STUDIO_DOCS_REV -- <spec> <plan>`, and only when
-  `git diff --cached --quiet` fails, commit
+  Then sync the docs with `studio-docs-sync`: it checks out the spec and plan
+  (and the paths a `Context:` header lists, each present in the run's docs
+  commit) from `$STUDIO_DOCS_REV`, and only when they differ commits
   `docs(<id>): plan at run docs <short sha>`. The ledger is never touched.
-  When the plan has a `Context:` header, the docs sync is
-  `git checkout $STUDIO_DOCS_REV -- <spec> <plan> <Context paths>` (the paths the header lists, each present in the run's docs commit).
+  Never write the `git checkout` by hand: it is one command, no variable in an
+  option.
   A docs-sync commit on a branch that is behind `origin/<Branch>` diverges it:
   `studio-adopt sync` then holds the story, and nothing repairs that by itself.
 - **New branch:**
@@ -118,9 +117,8 @@ is `STUDIO_STORY`:
   then `EnterWorktree` with `path:` (in a story session the studio's
   `worktree-guard.sh` hook refuses a call without `path:`; a bare call
   creates a stray worktree), then
-  `git checkout $STUDIO_DOCS_REV -- <spec> <plan> .studio/ledger/<id>.md`,
-  and commit `docs(<id>): approved plan`. With a `Context:` header the checkout is
-  `git checkout $STUDIO_DOCS_REV -- <spec> <plan> .studio/ledger/<id>.md <Context paths>`.
+  `studio-docs-sync --new`: it checks out the spec, plan, ledger and any
+  `Context:` paths from `$STUDIO_DOCS_REV` and commits `docs(<id>): approved plan`.
 - Then `studio-state set branch <Branch>` and
   `studio-state ledger "base origin/<Target>"`. Every `git merge-base` in
   §4a, §5 and §7 uses `origin/<Target>` after a fetch; the bare `<Target>`
@@ -310,9 +308,10 @@ procedures, below).
 per-task cycle: fresh implementer per task, task review after each, ledger.
 Its fix loop, its final review and its last step are replaced by §4a, §5 and
 §7 below. The studio rules in §2–§7 layer on top of it. When a superpowers
-skill says `scripts/<name>`, run `bash "$(sdd-script [--skill <skill>] <name>)" ...`
+skill says `scripts/<name>`, run `sdd-run [--skill <skill>] <name> ...`
 (`--skill executing-plans` for task-start and task-done); if that fails, stop
-and report it (`sdd-script` not found: "reinstall omega-ai").
+and report it (`sdd-run` not found: "reinstall omega-ai"). `sdd-run` runs the
+script `sdd-script` locates, so no command substitution is needed.
 Under `--one`, SDD's setup never reads the plan: the one task's text comes from `studio-brief task <n>`, and no other task is extracted.
 Under `--one`, see §8.
 
@@ -359,7 +358,7 @@ and the project `CLAUDE.md` architecture rules. Make the task text in two
 separate calls, so the brief shows only the gated Godot form (the plan file
 is never edited):
 
-1. ``bash "$(sdd-script task-brief)" <plan> <n>`` — the skill's task-brief
+1. ``sdd-run task-brief <plan> <n>`` — the skill's task-brief
    script writes the task text to a file and prints only
    `wrote <file>: <N> lines`.
 2. ``studio-brief rewrite <file>``, with `<file>` the path from that line —
@@ -457,8 +456,8 @@ This overrides `superpowers:subagent-driven-development`'s fix loop (rounds 1–
    dispatch rule, the C# exception included). Its brief carries:
    - the findings, verbatim;
    - the diff as a file, never pasted inline: SDD's review package for the
-     task's commit range. ``bash "$(sdd-script review-package)" <plan> <BASE> HEAD``,
-     run from the worktree root (`sdd-script` prints the script's path; if it
+     task's commit range. ``sdd-run review-package <plan> <BASE> HEAD``,
+     run from the worktree root (`sdd-run` finds the script with `sdd-script`; if it
      fails, stop and report its message, never search for the script), with
      `<BASE>` the commit the task started from, prints the file's path (the
      script runs git in its working directory); the file holds
@@ -512,8 +511,8 @@ the last task's review. Under `--one`, see §8: a task unit never starts it.
    (`requesting-code-review`'s `code-reviewer.md`). The brief:
    - `Scope: branch <name> vs <base>`;
    - the review package for `<merge-base>..HEAD`
-     (``bash "$(sdd-script review-package)" <plan> <merge-base> HEAD``, run
-     from the worktree root; a failing `sdd-script` means stop and report),
+     (``sdd-run review-package <plan> <merge-base> HEAD``, run
+     from the worktree root; a failing `sdd-run` means stop and report),
      as SDD's final
      review gets one;
    - the spec path and the project `CLAUDE.md` path — report every
