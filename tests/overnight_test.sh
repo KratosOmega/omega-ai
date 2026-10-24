@@ -1278,6 +1278,17 @@ test_overnight_report_blocks() {
   assert_eq "(none)" "$(sed -n '/^## Blocks$/{n;n;p;}' "$R")" "report: no Block lines reads (none)"
 }
 
+# #94: a Block line written by the gate repair (`gate Block:`) is listed like a task's.
+test_overnight_report_gate_block() {
+  fixture gblk
+  scenario "stage execute; branch fb; ledger gate Block: golden — a: 1 vs 2 — blocks docs/b.md; task 1/1; ledger T1 complete" \
+           "ledger final review done" "ledger shipped https://x/pull/6; stage idle; task -"
+  run_start
+  R="$(last_run_dir)/report.md"
+  assert_eq 1 "$(sed -n '/^## Blocks$/,/^## Play list$/p' "$R" | grep -c '^- [0-9-]* gate Block: golden — a: 1 vs 2 — blocks docs/b.md$')" \
+    "report: a gate Block line is listed under ## Blocks"
+}
+
 test_overnight_resume_quote() {
   fixture "q'uote"; scenario "cost 1" "cost 1"; run_start
   R="$(last_run_dir)/report.md"
@@ -3126,7 +3137,7 @@ run_tests test_overnight_setup_preflight_single test_overnight_tools_after_setup
   test_overnight_open_calls test_overnight_denied_scan test_overnight_permission_route_ending test_overnight_idle_stall test_overnight_idle_spares_gate_call \
   test_overnight_idle_off_and_refusals test_overnight_idle_default_seams test_overnight_stall_holds_with_until_command \
   test_overnight_report_done test_overnight_report_not_done test_overnight_preflight_env_warns_not_blocks \
-  test_overnight_report_anchors test_overnight_report_blocks test_overnight_resume_quote test_overnight_label_t1 \
+  test_overnight_report_anchors test_overnight_report_blocks test_overnight_report_gate_block test_overnight_resume_quote test_overnight_label_t1 \
   test_overnight_session_seconds_refused test_overnight_claim_without_run_dir \
   test_overnight_report_runner_error test_overnight_crash_resume test_overnight_status test_overnight_status_short_lane \
   test_overnight_timeout test_overnight_kill_after_grace \
