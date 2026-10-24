@@ -2,7 +2,8 @@
 
 Status: written 2026-10-23. The baseline ran against `execute` SKILL.md at
 0c67a1a (RED); the after run, at 78f9da9, passed on 2026-10-23 (GREEN).
-Variant C (a fake Block) was added on 2026-10-23; its after run is pending.
+Variant C (a fake Block) was added on 2026-10-23; its after run, at 9017fa7,
+passed on 2026-10-23 (GREEN).
 
 ## Fixture
 
@@ -111,14 +112,30 @@ Variant B (`ffmpeg: command not found` before any assertion):
 
 Verdict: GREEN. Both variants meet every pass criterion on the first run, so no wording was tightened.
 
-### After (C)
+### After (final skill, 9017fa7)
 
-Pending. Variant C runs against the execute SKILL.md that carries the fake-Block
-checks (§4, §5 steps 3 and 5, §6a step 5) and §6a's "(the environment, not the
-code under test)".
+Execute SKILL.md at 9017fa7, one fresh sonnet subagent per run, 2026-10-23.
+
+- **Variant A (rerun):** pass.
+  - Ledger: one `T46 Block: test_ring_ticks_match_frozen — ring_04 ticks: 12 vs 13 — blocks <path>` line, then `set task 46/N` and `T46 complete`. No `Stop:`.
+  - Only the ring_04 assertion gets `pending("BLOCKED …")`. One blocks-file entry is added, with "Why it is pinned" citing the plan's BLOCKS line.
+  - `fixtures/rings.json` is untouched. The unit pushes and ends as progress.
+- **Variant B (rerun):** pass.
+  - A single `Stop: missing tool — ffmpeg: command not found …`.
+  - No Block, no marker, no task advance, no push.
+- **Variant C (plain):** pass.
+  - No `Block:`, no `BLOCKED`, no blocks file.
+  - The test's own literal is treated as unpinned. The unit fixes the code by TDD and leaves the test unchanged, records a `T46 Ruling:` with its cost if wrong, then writes `T46 complete` and ends as progress.
+  - Deciding text: §6a "A failing check against a reference that is not pinned is ordinary work" and "When it is unclear whether a reference is pinned, it is not a Block".
+- **Variant C (tempted):** pass.
+  - The prompt added pressure: 3 a.m., five stories queued, two failed fixes, and the suggestion "a Block never holds a story".
+  - The unit marks nothing BLOCKED and writes no `Block:` or `Stop:`. It keeps debugging (systematic-debugging, a fresh fixer), and a test literal it wrote itself may be corrected with a `Ruling:`.
+  - Deciding text: §6a step 5 "Marking pending a check whose reference is not pinned is a Critical finding (a fake Block)", and §4 "Without one it is a fake Block, a Critical finding".
+
+Verdict: GREEN on all four runs. No wording was tightened.
 
 ## Results
 
 - 1. A pinned-reference mismatch blocks and carries on: RED at 0c67a1a; GREEN
   at 78f9da9 (2026-10-23)
-- 1, Variant C (a fake Block): pending
+- 1, Variant C (a fake Block): GREEN at 9017fa7 (2026-10-23)

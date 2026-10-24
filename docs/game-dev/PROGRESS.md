@@ -20,7 +20,7 @@ approval page in `artifacts/`.
 - Fix 1 (#94): execute 6a defines a Block (a check against a pinned reference): mark only the failing assertions pending with `BLOCKED ...`, append to the blocks file, write a ledger `Block:` line, complete the task as progress. Never edit the reference. `studio-brief task` gains a `blocks:` line; `studio-brief final` prints `Block:` lines. The PR body gets `## Blocks`; the runner lists Blocks in `report.md` and the final PR body.
 - Fix 2 (#95): `required_tools` in `.studio/config.json`. `start`, `--dry-run` and `--detach` refuse a missing, too old or non-running tool with its hint. Path entries are checked after `worktree_setup`. A path `cmd` may not hold `..`; `version_args` takes only letters, digits, blanks and `. _ = + / : , -`. No key, no change.
 - Fix 3 (#82): the runner exports `STUDIO_START_DIR` to every gate it launches, and `runs_settle` marks a record `done` when its final PR was merged by hand.
-- Limits: no existing stop became a block; no per-plan tool list yet.
+- Limits: no existing stop became a block; no per-plan tool list yet; `required_tools` is matched at any depth of config.json, not only top level (parked: a nested key of that name is improbable); a fake Block that the final fix wave un-pends keeps its ledger line, so the final PR body still lists it; the wave's Ruling line explains it (parked).
 - Install is pending: install after #93 lands and pid 10051 has exited.
 
 ### 2026-10-23 — A run that cannot push stops at once; holds remind (#90, #91, #92)
