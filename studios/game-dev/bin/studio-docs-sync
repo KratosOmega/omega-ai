@@ -2,7 +2,7 @@
 # studio-docs-sync — bring the run's docs into this story's branch and commit
 # them only when they differ. It is the one command for execute §0's docs sync,
 # so the skill never writes `git checkout $STUDIO_DOCS_REV -- …` (an unquoted
-# variable in an option, which Claude Code's worktree isolation refuses; #96).
+# variable in an option, which Claude Code's worktree isolation refuses; spec 2026-10-23-overnight-throughput, Part E).
 #
 #   studio-docs-sync [--new] [<extra path>…]
 #
@@ -10,6 +10,8 @@
 # plan (studio-state get spec / get plan), and the plan's `Context:` header
 # (parsed as studio-brief's context_part does). Runs, from the current directory:
 #   git checkout <rev> -- <spec> <plan> [.studio/ledger/<id>.md] <Context…> <extra…>
+# A Context path absent at <rev> is skipped silently (the skill: "each present in
+# the run's docs commit"); an extra path given here is not filtered.
 # --new also takes the story's ledger (a new branch). When `git diff --cached
 # --quiet` then fails it commits `docs(<id>): plan at run docs <short rev>`, or
 # with --new `docs(<id>): approved plan`. Nothing staged, no commit.
@@ -54,7 +56,8 @@ if [ -n "$CTX" ]; then
   _old="$IFS"; IFS='
 '
   for _f in $(printf '%s\n' "$CTX" | tr ',' '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//'); do
-    [ -z "$_f" ] || set -- "$@" "$_f"
+    [ -z "$_f" ] || git cat-file -e "$REV:$_f" 2>/dev/null || continue
+    set -- "$@" "$_f"
   done
   IFS="$_old"
 fi

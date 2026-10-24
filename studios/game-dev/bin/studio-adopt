@@ -316,14 +316,14 @@ chain_check() {
 # part_done FROM TIP DOCS — AC11: the first-parent commits FROM..TIP, oldest
 # first, minus merges of the default or Target branch, commits touching only
 # .studio/ and DOCS paths (D22), commits inside a `check done <a>..<b>` range
-# (the $TMPD/checkset file), and fix(final|gate|review|sync / chore(sync / docs(progress subjects.
+# (the $TMPD/checkset file), and fix(final|gate|review|sync|suite / chore(sync / docs(progress subjects.
 part_done() {
   git log --first-parent --diff-merges=first-parent --name-only --reverse \
       --format='C %H %P%x09%s' "$1..$2" 2>/dev/null | awk -v docs="$3" '
     BEGIN { n = split(docs, d, " "); for (i = 1; i <= n; i++) isdoc[d[i]] = 1 }
     function flush() { if (h != "" && keep) print h; h = "" }
     /^C / { flush(); split($0, t, "\t"); h = substr(t[1], 3); keep = 0
-            if (t[2] ~ /^(fix\(final|fix\(gate|fix\(review|fix\(sync|chore\(sync|docs\(progress)/) h = ""
+            if (t[2] ~ /^(fix\(final|fix\(gate|fix\(review|fix\(sync|fix\(suite|chore\(sync|docs\(progress)/) h = ""
             next }
     NF == 0 { next }
     h != "" && $0 !~ /^\.studio\// && !($0 in isdoc) { keep = 1 }

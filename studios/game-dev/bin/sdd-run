@@ -2,7 +2,7 @@
 # sdd-run — run one of superpowers' skill scripts, found by sdd-script, in one
 # command word. It replaces `bash "$(sdd-script <name>)" ARG…`: Claude Code's
 # worktree isolation refuses a `$(…)` substitution in a command, and every
-# refusal wastes a turn (#96, Part E). It never searches and never copies
+# refusal wastes a turn (spec docs/game-dev/specs/2026-10-23-overnight-throughput.md, Part E). It never searches and never copies
 # sdd-script's lookup: it runs the sibling sdd-script and execs what it prints.
 #
 #   sdd-run [--skill <skill>] <name> [ARG…]
@@ -18,18 +18,18 @@ unset LC_ALL; LC_COLLATE=C
 set -u
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-SKILL=""
+SKILL=""; SKILL_SET=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --skill) [ "$#" -ge 2 ] || { printf 'sdd-run: --skill needs a value\n' >&2; exit 2; }; SKILL="$2"; shift 2 ;;
-    --skill=*) SKILL="${1#--skill=}"; shift ;;
+    --skill) [ "$#" -ge 2 ] || { printf 'sdd-run: --skill needs a value\n' >&2; exit 2; }; SKILL="$2"; SKILL_SET=1; shift 2 ;;
+    --skill=*) SKILL="${1#--skill=}"; SKILL_SET=1; shift ;;
     *) break ;;
   esac
 done
 [ "$#" -ge 1 ] || { printf 'usage: sdd-run [--skill <skill>] <name> [ARG...]\n' >&2; exit 2; }
 NAME="$1"; shift
 
-if [ -n "$SKILL" ]; then
+if [ "$SKILL_SET" = 1 ]; then
   P="$(sh "$HERE/sdd-script" --skill "$SKILL" "$NAME")" || exit 1
 else
   P="$(sh "$HERE/sdd-script" "$NAME")" || exit 1

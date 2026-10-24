@@ -5,8 +5,13 @@
 # --disallowedTools.
 #
 # Least privilege: never Bash(studio-gate:*) or Bash(studio-gate godot -- *).
-# Either would let any binary skip the auto-mode classifier. Only the gate
-# verbs and the gated Godot binaries named below are allowed.
+# Either would let any binary skip the auto-mode classifier. Each rule below
+# is safe to skip it because it runs a fixed studio script or a named Godot
+# binary, never an arbitrary path: studio-test, studio-run, studio-vitest and
+# studio-tsc run the project's own gate; studio-docs-sync runs only git
+# checkout of the run's docs; sdd-run runs only a script found under the
+# installed superpowers skills, and sdd-script refuses a name or skill that is
+# empty, holds a '/', or is . or .. .
 #
 # The $GODOT / ${GODOT} / $GODOT_PATH / $GODOT_BIN forms are left out on
 # purpose: Claude Code 2.1.296 never matched them (probe, spec "Probe

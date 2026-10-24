@@ -189,7 +189,33 @@ test_sdd_run_missing() {
   assert_eq "" "$(out)" "nothing on stdout"
 }
 
-run_tests test_installpath_wins test_highest_version test_stale_installed test_skill_flag \
+test_refuses_path_escapes() {
+  fresh 22
+  ver 6.4.1 subagent-driven-development review-package
+  installed 6.4.1
+  printf '#!/bin/sh\necho ESCAPED "$@"\n' > "$(cache 6.4.1)/skills/evil.sh"
+  printf '#!/bin/sh\necho ESCAPED "$@"\n' > "$TMP/evil.sh"
+  # skills/<skill>/scripts/../../evil.sh is a real file inside the install
+  runx "../../evil.sh" a b
+  nonzero "sdd-run refuses a traversal name"
+  assert_eq "" "$(out)" "the traversal script did not run"
+  for _n in "../../../../../../../../../../../../../..$TMP/evil.sh" "a/b" ".." "." ""; do
+    runx "$_n" a b
+    nonzero "sdd-run refuses name '$_n'"
+    assert_contains "$TMP/run.err" "sdd-script: " "name '$_n': says why"
+    assert_eq "" "$(out)" "name '$_n': nothing runs"
+  done
+  for _s in "a/b" "../skills" ".." "." ""; do
+    runx --skill "$_s" review-package a b
+    nonzero "sdd-run refuses --skill '$_s'"
+    assert_contains "$TMP/run.err" "sdd-script: " "skill '$_s': says why"
+    assert_eq "" "$(out)" "skill '$_s': nothing runs"
+  done
+  run --skill ../x review-package
+  nonzero "sdd-script refuses a / in the skill"
+}
+
+run_tests test_refuses_path_escapes test_installpath_wins test_highest_version test_stale_installed test_skill_flag \
   test_missing_script test_no_superpowers test_home_fallback test_usage \
   test_multi_entries test_prerelease_order test_empty_highest test_space_in_config_dir \
   test_sdd_run_execs_script test_sdd_run_missing

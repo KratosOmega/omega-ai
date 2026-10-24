@@ -40,8 +40,15 @@ fi
 # The files test runs in the node dir (paths are relative to it); the worker
 # count is read from here, where the project's config is found.
 [ -d "$_sv_dir" ] || { printf 'studio-vitest: cannot enter node dir %s\n' "$_sv_dir" >&2; exit 2; }
-_sv_files=1; [ "$#" -ge 1 ] || _sv_files=0
-for _sv_a in "$@"; do ( cd "$_sv_dir" && [ -f "$_sv_a" ] ) || _sv_files=0; done
+# File-only: at least one non-flag ARG and every non-flag ARG an existing file
+# (a -prefixed flag such as --silent does not change that).
+_sv_nf=0; _sv_bad=0
+for _sv_a in "$@"; do
+  case "$_sv_a" in -*) continue ;; esac
+  _sv_nf=$((_sv_nf + 1))
+  ( cd "$_sv_dir" && [ -f "$_sv_a" ] ) || _sv_bad=1
+done
+_sv_files=0; { [ "$_sv_nf" -ge 1 ] && [ "$_sv_bad" = 0 ]; } && _sv_files=1
 if [ "$_sv_files" = 1 ]; then
   _sv_w=2
 else

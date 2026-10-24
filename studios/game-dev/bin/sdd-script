@@ -17,6 +17,8 @@
 #   2. the highest version directory under <config>/plugins/cache/*/superpowers/
 #      (versions compared numerically field by field, so 6.10.0 > 6.4.1 > 6.3.0;
 #      a pre-release ranks below its release; folders without skills/ are skipped).
+# SKILL and NAME are each one path component: empty, '.', '..' or anything with
+# a '/' is refused (exit 1) before any lookup.
 # Prints <root>/skills/<skill>/scripts/<name> and exits 0. When the script is not
 # there it names every path it checked on stderr and exits 1: stop and report it.
 # Byte collation: under a UTF-8 locale macOS sh matches [a-z] by collation (A-Y too).
@@ -37,6 +39,11 @@ while [ "$#" -gt 0 ]; do
 done
 [ -n "$NAME" ] || die "usage: sdd-script [--skill <skill>] <name>"
 [ -n "$SKILL" ] || die "--skill needs a value"
+# One path component each: sdd-run execs what this prints and is allow-listed,
+# so a NAME or SKILL must never reach outside <root>/skills/<skill>/scripts/.
+for _v in "$SKILL" "$NAME"; do
+  case "$_v" in ''|*/*|.|..) die "refusing '$_v': a skill and a script name are single path components (no '/', '.' or '..')" ;; esac
+done
 
 CFG="${CLAUDE_CONFIG_DIR:-${HOME:-}/.claude}"
 CHECKED=""

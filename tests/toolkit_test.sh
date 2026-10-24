@@ -1370,6 +1370,10 @@ test_vitest_files_two_workers() {
   assert_eq "short node" "$(printf '%s\n' "$_cls" | cut -d' ' -f1-2)" "the five-file form classifies short"
   nodeverb "$P" studio-vitest -t 'a b' tests/a.test.ts
   assert_contains "$TMP/node.out" "--maxWorkers=2 -t a b tests/a.test.ts" "-t goes before the files"
+  nodeverb "$P" studio-vitest tests/a.test.ts --silent
+  assert_contains "$TMP/node.out" "--maxWorkers=2 tests/a.test.ts --silent" "a file plus a flag: 2 workers"
+  STUDIO_GATE_PHYS_CORES=12 nodeverb "$P" studio-vitest --silent
+  assert_contains "$TMP/node.out" "--maxWorkers=6 --silent" "a flag alone: node_workers"
 }
 
 test_vitest_dir_node_workers() {

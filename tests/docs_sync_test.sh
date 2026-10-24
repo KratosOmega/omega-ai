@@ -76,6 +76,21 @@ test_docs_sync_context_paths() {
   assert_eq "two v2" "$(cat "$R/ctx/two.md")" "second Context file synced"
   assert_eq "extra v2" "$(cat "$R/docs/extra.md")" "an extra path is synced"
 }
+test_docs_sync_context_absent_skipped() {
+  repo 7
+  git -C "$R" show "$REV:docs/p.md" > /dev/null
+  # a plan at REV naming a Context path that does not exist at REV
+  git -C "$R" checkout -q main
+  printf 'Context: ctx/one.md, ctx/gone.md, ctx/two.md\n\n## Goal\nv3\n' > "$R/docs/p.md"
+  git -C "$R" commit -qam v3; REV="$(git -C "$R" rev-parse HEAD)"
+  git -C "$R" checkout -q feat
+  sync
+  assert_eq "0" "$RC" "an absent Context path does not fail the sync"
+  assert_eq "" "$(cat "$TMP/sync.err")" "and is skipped silently"
+  assert_eq "one v2" "$(cat "$R/ctx/one.md")" "the present Context paths are checked out"
+  assert_eq "two v2" "$(cat "$R/ctx/two.md")" "including those after the absent one"
+  assert_contains "$R/docs/p.md" "^v3$" "the plan is the run's"
+}
 test_docs_sync_git_failure() {
   repo 5
   sync docs/no-such-file.md
@@ -93,5 +108,5 @@ test_docs_sync_usage() {
 }
 
 run_tests test_docs_sync_commits_on_change test_docs_sync_noop_when_same \
-  test_docs_sync_new_adds_ledger test_docs_sync_context_paths \
+  test_docs_sync_new_adds_ledger test_docs_sync_context_paths test_docs_sync_context_absent_skipped \
   test_docs_sync_git_failure test_docs_sync_usage
