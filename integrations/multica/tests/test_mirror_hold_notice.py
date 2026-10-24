@@ -193,6 +193,62 @@ class HoldNoticeTest(MirrorCase):
         self.assertEqual(len(self.banners()), 1)
         self.assertEqual(self.banners()[0][1], notice.banner_text("-", BASE, "stop: need art"))
 
+    # ----- the hold reminder (#92) ---------------------------------------------
+
+    def reminder(self, story, why="w", until=U):
+        return ev("hold_reminder", story=story, until=until, why=why)
+
+    def test_reminder_posts_run_and_kickoff_once(self):
+        self.begin()
+        self.add(held("A"), held("B"))
+        calls0, kick0, run0 = len(self.status_calls()), list(self.kick()), list(self.comments_on(self.RI))
+        nb = len(self.banners())
+        self.add(self.reminder("B"))
+        text = notice.reminder_body("B", "w", U)
+        self.assertTrue(text.startswith("story B still held — stops at "))
+        self.assertEqual(self.comments_on(self.RI)[len(run0):], ["studio: " + text])
+        self.assertEqual(self.kick()[len(kick0):], [notice.kickoff_text(text)])
+        self.assertTrue(self.kick()[-1].startswith("studio: [notify only] story B still held"))
+        self.assertEqual(len(self.status_calls()), calls0)
+        self.assertEqual(len(self.banners()), nb)
+        self.poll()
+        self.ctx = self.state.Ctx(self.cfg, self.paths, self.cli, self.log,
+                                  lambda kind, text: self.notes.append((kind, text)),
+                                  now=lambda: self.t0 + self.skew)
+        self.poll()
+        self.assertEqual(len(self.kick()), len(kick0) + 1)
+        self.assertEqual(len(self.comments_on(self.RI)), len(run0) + 1)
+        self.assertEqual(self.saved()["held"], ["A", "B"])
+
+    def test_reminder_no_request_issue(self):
+        self.begin(request=False)
+        self.add(held("B"))
+        before = len(self.board.calls("issue comment add"))
+        self.add(self.reminder("B"))
+        added = self.board.calls("issue comment add")[before:]
+        self.assertEqual([c["argv"][3] for c in added], [self.RI])
+        self.assertEqual(self.saved()["pending"], None)
+
+    def test_reminder_single_plan(self):
+        self.begin(stories=(), mode="single")
+        self.add(state_("-", "running"), held("-", why="stop: need art"))
+        n, k = len(self.comments_on(self.RI)), len(self.kick())
+        self.add(self.reminder("-", why="stop: need art"))
+        text = notice.reminder_body("-", "stop: need art", U)
+        self.assertTrue(text.startswith("the run is still held — stops at "))
+        self.assertEqual(self.comments_on(self.RI)[n:], ["studio: " + text])
+        self.assertEqual(self.kick()[k:], [notice.kickoff_text(text)])
+        self.assertEqual(self.run_status(), ["in_progress", "blocked"])
+
+    def test_reminder_superseded_hold_no_kickoff(self):
+        self.begin()
+        self.add(held("A"), self.reminder("A"), state_("A", "running"), poll=False)
+        self.assertEqual(self.kick(), [])
+        text = notice.reminder_body("A", "w", U)
+        runc = self.comments_on(self.RI)
+        self.assertEqual(runc.count("studio: " + text), 1)
+        self.assertEqual(self.saved()["held"], [])
+
     # ----- once per event (AC10), superseded (AC11), old state (AC12) --------
 
     def test_banner_once_per_event_across_restart(self):                       # AC10

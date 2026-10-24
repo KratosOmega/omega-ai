@@ -59,16 +59,29 @@ for act in "$@"; do
     "ledger "*)   sh "$STUB_STATE_BIN" ledger "${act#ledger }" ;;
     # branch: real execute's (c) (#42) — a new worktree, the hand-off into it,
     # then `set branch` there; the line's later actions run in the worktree.
+    # branch, legacybranch and inplace push the new branch, as a real unit's
+    # work reaches origin (#91: the runner checks it after a unit).
     "branch "*)   b="${act#branch }"
                   git worktree add -q "$TMP_WT/wt-$b" -b "$b" >/dev/null 2>&1
                   cd "$TMP_WT/wt-$b" && sh "$STUB_STATE_BIN" handoff "$(pwd -P)" >/dev/null 2>&1
-                  sh "$STUB_STATE_BIN" set branch "$b" ;;
+                  sh "$STUB_STATE_BIN" set branch "$b"
+                  git push -q -u origin "$b" >/dev/null 2>&1 ;;
     # legacybranch: the pre-#42 (c), `set branch` in the start checkout.
     "legacybranch "*) b="${act#legacybranch }"
                   git worktree add -q "$TMP_WT/wt-$b" -b "$b" >/dev/null 2>&1
-                  sh "$STUB_STATE_BIN" set branch "$b" ;;
+                  sh "$STUB_STATE_BIN" set branch "$b"
+                  git -C "$TMP_WT/wt-$b" push -q -u origin "$b" >/dev/null 2>&1 ;;
     # inplace: (c) with consent to work in place — no worktree, no hand-off.
-    inplace)      git checkout -q -b feat && sh "$STUB_STATE_BIN" set branch feat ;;
+    inplace)      git checkout -q -b feat && sh "$STUB_STATE_BIN" set branch feat
+                  git push -q -u origin feat >/dev/null 2>&1 ;;
+    # unpushed: an empty commit in the story worktree, not pushed (#91).
+    unpushed)     git -C "$(sh "$STUB_STATE_BIN" worktree)" -c user.name=t -c user.email=t@t commit -q --allow-empty -m unpushed ;;
+    # pushwt: push the story worktree's branch to origin.
+    pushwt)       _pw="$(sh "$STUB_STATE_BIN" worktree)"
+                  git -C "$_pw" push -q origin "$(git -C "$_pw" symbolic-ref --short HEAD)" >/dev/null 2>&1 ;;
+    # onmain: in place on the default branch (execute §7 step 4) — `set branch
+    # main` and an empty commit, never pushed.
+    onmain)       sh "$STUB_STATE_BIN" set branch main && git -c user.name=t -c user.email=t@t commit -q --allow-empty -m onmain ;;
     stopbeforec)  sh "$STUB_STATE_BIN" ledger "Stop: stopped before isolation" ;;
     wtcheck)      _w=0; sh "$STUB_STATE_BIN" worktree >/dev/null 2>&1 || _w=$?; echo "$_w" > "$CALLS/$n.wt" ;;
     "dupstory "*) b="${act#dupstory }"; ( git worktree add -q "$TMP_WT/wt-$b" -b "$b" >/dev/null 2>&1
@@ -119,16 +132,29 @@ date +%s > "$CALLS/$n.t1"
 exit "$code"
 STUB
 printf '#!/bin/sh\nexec claude "$@"\n' > "$FAKE/claude-gd"
-printf '#!/bin/sh\nexit "${GH_STATUS:-0}"\n' > "$FAKE/gh"
+# The fake gh: `auth status [-h H]` logs its argv to $CALLS/gh.argv, prints a "Token scopes:" line
+# ($GH_SCOPES; default 'repo', 'workflow'; "-" prints none), and exits $GH_STATUS.
+cat > "$FAKE/gh" <<'STUB'
+#!/bin/sh
+[ -z "${CALLS:-}" ] || printf '%s\n' "$*" >> "$CALLS/gh.argv"
+case "$1 ${2:-}" in
+  "auth status")
+    if [ "${GH_SCOPES:-}" != - ]; then printf '  - Token scopes: %s\n' "${GH_SCOPES:-'repo', 'workflow'}"; fi ;;
+esac
+exit "${GH_STATUS:-0}"
+STUB
 # What gatereg runs: a process whose argv names studio-gate, as unit_reap and
 # the idle watchdog require of a registered gate.
 printf '#!/bin/sh\nwhile :; do sleep 1; done\n' > "$FAKE/fake-studio-gate"
 # A fake caffeinate: records its argv and pid, then lives until the -w pid dies.
 printf '#!/bin/sh\nprintf "%%s\\n" "$*" > "$CALLS/caffeinate.args"\necho "$$" > "$CALLS/caffeinate.pid"\nwhile kill -0 "$3" 2>/dev/null; do sleep 1; done\n' > "$FAKE/caffeinate"
+printf '#!/bin/sh\nexit 0\n' > "$FAKE/terminal-notifier"   # a detached child strips STUDIO_*: no real banner
 chmod +x "$FAKE"/*
 export PATH="$FAKE:$PATH" STUB_STATE_BIN="$STATE_BIN" STUB_RUNNER="$RUNNER" STUB_PLUGIN="$REPO_ROOT/studios/game-dev"
 # The suites test today's endings: hold_minutes 0 (spec milestone gate 1).
 STUDIO_OVERNIGHT_HOLD_MINUTES=0; export STUDIO_OVERNIGHT_HOLD_MINUTES
+# A hold raises a banner (#92): the suites never show a real one.
+STUDIO_OVERNIGHT_NOTIFY_CMD=': '; export STUDIO_OVERNIGHT_NOTIFY_CMD
 
 # OVERNIGHT_FIXTURE_TEMPLATES (suite-local): 1 (default) builds each config's project once
 # under $TMP/tpl/o-<key>/ and copies it per call; 0 builds fresh every call, as before.
@@ -428,6 +454,77 @@ test_overnight_preflight_refusals() {
   fixture r6; STUB_VERSION_STATUS=1; export STUB_VERSION_STATUS
   refuse_case "claude-gd --version fails" "claude-gd"; unset STUB_VERSION_STATUS
   fixture r7; GH_STATUS=1; export GH_STATUS; refuse_case "gh not authenticated" "gh auth status"; unset GH_STATUS
+  push_fixture r7h; GH_STATUS=1; export GH_STATUS; refuse_case "gh not authenticated for an https origin" "gh auth status -h github.com failed — log in first"; unset GH_STATUS
+}
+
+# ---- #90: the preflight's push check (the gh token's workflow scope) ----
+# push_fixture NAME [WORKFLOWS] — a fixture whose push URL is https://github.com/t/t.git (fetch stays
+# local), gh as the credential helper; WORKFLOWS=1 pushes .github/workflows/ci.yml to origin/main.
+push_fixture() {
+  fixture "$1"
+  ( cd "$P" && git remote set-url --push origin https://github.com/t/t.git \
+      && git config credential.https://github.com.helper '!gh auth git-credential' ) >/dev/null
+  [ "${2:-}" = 1 ] || return 0
+  ( cd "$P" && mkdir -p .github/workflows && echo 'on: push' > .github/workflows/ci.yml \
+      && git add -A && git -c user.name=t -c user.email=t@t commit -qm ci \
+      && git update-ref refs/remotes/origin/main HEAD ) >/dev/null
+}
+PUSH_FIX="Fix: gh auth refresh -h github.com -s workflow"
+test_overnight_push_check_refuses_without_workflow() {
+  push_fixture pk1 1
+  GH_SCOPES="'repo'"; export GH_SCOPES
+  run_start
+  assert_eq 2 "$RS_STATUS" "a token without the workflow scope: exit 2"
+  assert_contains "$RS_ERR" "$PUSH_FIX" "names the fix"
+  assert_contains "$RS_ERR" "gh token for github.com lacks the workflow scope, and this repo has .github/workflows" "names the cause"
+  assert_missing "$P/.studio/reports" "no run directory"
+  assert_eq 0 "$(calls)" "no session"
+  run_start --dry-run
+  unset GH_SCOPES
+  assert_eq 2 "$RS_STATUS" "--dry-run refuses the same"
+  assert_contains "$RS_ERR" "$PUSH_FIX" "and prints the same line"
+}
+test_overnight_push_check_ok_line() {
+  push_fixture pk2 1
+  run_start --dry-run
+  assert_eq 0 "$RS_STATUS" "a token with the workflow scope passes"
+  assert_contains "$RS_OUT" "^push: gh token for github.com has the workflow scope$" "the ok line"
+  assert_contains "$CALLS/gh.argv" "^auth status -h github.com$" "gh is asked about the push host"
+}
+test_overnight_push_check_no_workflows() {
+  push_fixture pk3
+  GH_SCOPES="'repo'"; export GH_SCOPES
+  run_start --dry-run
+  unset GH_SCOPES
+  assert_eq 0 "$RS_STATUS" "no workflows: the scope is not needed"
+  assert_contains "$RS_OUT" "^push: no .github/workflows — workflow scope not needed$" "the not-needed line"
+}
+test_overnight_push_check_ssh() {
+  push_fixture pk4 1
+  ( cd "$P" && git remote set-url --push origin git@github.com:t/t.git )
+  GH_SCOPES="'repo'"; export GH_SCOPES
+  run_start --dry-run
+  unset GH_SCOPES
+  assert_eq 0 "$RS_STATUS" "an SSH origin passes"
+  assert_contains "$RS_OUT" "^push: origin is SSH — no token scope applies$" "the SSH line"
+  assert_contains "$CALLS/gh.argv" "^auth status$" "gh auth status runs with no -h"
+}
+test_overnight_push_check_unknown_scopes() {
+  push_fixture pk5 1
+  GH_SCOPES=-; export GH_SCOPES
+  run_start --dry-run
+  unset GH_SCOPES
+  assert_eq 0 "$RS_STATUS" "unreadable scopes do not refuse"
+  assert_contains "$RS_OUT" "^push: cannot read gh token scopes for github.com — make sure the token may write workflows$" "the cannot-read line"
+}
+test_overnight_push_check_other_helper() {
+  push_fixture pk6 1
+  ( cd "$P" && git config credential.https://github.com.helper osxkeychain )
+  GH_SCOPES="'repo'"; export GH_SCOPES
+  run_start --dry-run
+  unset GH_SCOPES
+  assert_eq 0 "$RS_STATUS" "another credential helper does not refuse"
+  assert_contains "$RS_OUT" "^push: git does not push to github.com through gh's credential helper — cannot check the workflow scope$" "the helper line"
 }
 
 test_overnight_preflight_all_failures() {
@@ -1809,6 +1906,61 @@ test_overnight_hold_deadline() {
   assert_eq 2 "$(calls)" "no unit ran while held"
   holds_off
 }
+# #92: a hold raises one banner at its start and one reminder at 25% left. A logging
+# notifier appends its text ($1) to $CALLS/notify.
+test_overnight_hold_notifies_once() {
+  fixture hnf; holds_on 8
+  STUDIO_OVERNIGHT_NOTIFY_CMD='printf "%s\n" "$1" >> "$CALLS/notify"'; export STUDIO_OVERNIGHT_NOTIFY_CMD
+  scenario "$ISO1" "wtledger Stop: need art" "sleep 9; inbox; task 2/2; wtledger T2 complete b..c" \
+           "wtledger final review done" "wtledger shipped https://x/pull/3; stage idle; task -"
+  start_bg; wait_held 60
+  verb resume -; bg_end 90 "the run ends"
+  assert_eq 1 "$(wc -l < "$CALLS/notify" | tr -d ' ')" "one banner: the start; a resume before the reminder cancels it"
+  assert_contains "$CALLS/notify" "^run held in overnight-[0-9-]*: stop: need art — until [0-9][0-9]:[0-9][0-9]$" "the banner text"
+  assert_not_contains "$R/events.jsonl" '"event":"hold_reminder"' "and no reminder event"
+  STUDIO_OVERNIGHT_NOTIFY_CMD=': '; holds_off
+}
+test_overnight_hold_reminder_before_expiry() {
+  fixture hrm; holds_on 8
+  STUDIO_OVERNIGHT_NOTIFY_CMD='printf "%s\n" "$1" >> "$CALLS/notify"'; export STUDIO_OVERNIGHT_NOTIFY_CMD
+  scenario "$ISO1" "wtledger Stop: need art"
+  run_start
+  assert_eq 2 "$(wc -l < "$CALLS/notify" | tr -d ' ')" "a banner and a reminder"
+  assert_eq 1 "$(sed -n 2p "$CALLS/notify" | grep -c '^run still held in overnight-[0-9-]* — stops at [0-9][0-9]:[0-9][0-9] unless resumed: stop: need art$')" "the reminder text"
+  E="$(last_run_dir)/events.jsonl"
+  assert_eq 1 "$(grep -c '"event":"hold_reminder","story":"-"' "$E")" "one hold_reminder event"
+  assert_contains "$E" '"event":"hold_reminder","story":"-","until":"20[0-9-]*T[0-9:]*Z","why":"stop: need art"' "its fields"
+  _hr_a="$(grep -n '"event":"hold_reminder"' "$E" | head -n 1 | cut -d: -f1)"
+  _hr_b="$(grep -n '"state":"stopped"' "$E" | head -n 1 | cut -d: -f1)"
+  assert_eq 1 "$([ -n "$_hr_a" ] && [ -n "$_hr_b" ] && [ "$_hr_a" -lt "$_hr_b" ] && echo 1 || echo 0)" "the reminder comes before the stopped state"
+  assert_contains "$(last_run_dir)/report.md" "^Ending: stop: need art (held 0h0m, no reply)$" "the ending is unchanged"
+  STUDIO_OVERNIGHT_NOTIFY_CMD=': '; holds_off
+}
+test_overnight_notify_failure_not_fatal() {
+  fixture hnx; holds_on 2
+  STUDIO_OVERNIGHT_NOTIFY_CMD='exit 1'; export STUDIO_OVERNIGHT_NOTIFY_CMD
+  scenario "$ISO1" "wtledger Stop: need art"
+  run_start
+  assert_eq 1 "$RS_STATUS" "the run ends 1"
+  assert_contains "$(last_run_dir)/report.md" "^Ending: stop: need art (held 0h0m, no reply)$" "as test_overnight_hold_deadline"
+  assert_contains "$TMP/rs.err" "^studio-overnight: notify failed: exit 1$" "the failure is one stderr line"
+  STUDIO_OVERNIGHT_NOTIFY_CMD=': '; holds_off
+}
+test_overnight_notify_hang_capped() {
+  fixture hnh; holds_on 2
+  STUDIO_OVERNIGHT_NOTIFY_CMD='sleep 30'; STUDIO_OVERNIGHT_NOTIFY_SECONDS=1
+  export STUDIO_OVERNIGHT_NOTIFY_CMD STUDIO_OVERNIGHT_NOTIFY_SECONDS
+  scenario "$ISO1" "wtledger Stop: need art"
+  t0="$(date +%s)"; run_start; t1="$(date +%s)"
+  assert_eq 1 "$([ $((t1 - t0)) -lt 30 ] && echo 1 || echo 0)" "the run ends well before the notifier would"
+  assert_contains "$(last_run_dir)/report.md" "^Ending: stop: need art (held 0h0m, no reply)$" "the same ending"
+  assert_contains "$TMP/rs.err" "notify failed: timed out" "the cap is reported"
+  STUDIO_OVERNIGHT_NOTIFY_CMD=': '; unset STUDIO_OVERNIGHT_NOTIFY_SECONDS; holds_off
+}
+test_overnight_notify_seconds_refused() {
+  fixture nsr; STUDIO_OVERNIGHT_NOTIFY_SECONDS=x; export STUDIO_OVERNIGHT_NOTIFY_SECONDS
+  refuse_case "bad notify cap" "STUDIO_OVERNIGHT_NOTIFY_SECONDS must be a whole number"; unset STUDIO_OVERNIGHT_NOTIFY_SECONDS
+}
 # D9: the hold wait at its production 5 s poll (the knob unset). The deadline is 3 s,
 # so the first poll after it is the one at 5 s; the lower bound holds under any load.
 test_overnight_hold_default_poll() {
@@ -2045,6 +2197,60 @@ test_overnight_requeue_retire() {
 }
 
 
+# ---- #91 Gap 2b: origin_check — work not on origin is not progress ----
+# PUSH_WHY — the origin-check ending's text after `stop: ` for feat (BRE).
+PUSH_WHY='push not on origin — feat [0-9a-f]\{7\} vs origin [0-9a-f]\{7\}'
+test_overnight_origin_check_holds_unpushed() {
+  fixture ocu; holds_on 60
+  scenario "$ISO1; unpushed"
+  start_bg
+  wait_held 60; assert_file "$R/control/-.held" "a unit whose head is not on origin holds the isolated story"
+  assert_contains "$R/control/-.held" "^held stop: $PUSH_WHY until " "the held record names the branch, the local head and origin's"
+  assert_eq stop "$(unit_col 7)" "unit 1's outcome is stop"
+  assert_eq 1 "$(calls)" "no other unit runs"
+  assert_not_contains "$R/units.tsv" "	progress$" "the unit is not counted as progress"
+  verb stop -; bg_end 20 "the run ends within a poll"
+  assert_contains "$R/report.md" "^Ending: stop: $PUSH_WHY$" "the stop keeps the why"
+  holds_off
+}
+test_overnight_origin_check_ends_without_holds() {
+  fixture oce; scenario "$ISO1; unpushed"; run_start
+  assert_contains "$(last_run_dir)/report.md" "^Ending: stop: push not on origin — feat " "holds off: the run ends with the origin check's stop"
+  assert_eq 1 "$(calls)" "one unit"
+  assert_eq stop "$(unit_col 7)" "its outcome is stop"
+}
+test_overnight_origin_check_resume_after_push() {
+  fixture ocr; holds_on 60
+  scenario "$ISO1; unpushed" "task 2/2; wtledger T2 complete c..d" \
+           "wtledger final review done" "wtledger shipped https://x/pull/3; stage idle; task -"
+  start_bg; wait_held 60
+  git -C "$TMP_WT/wt-feat" push -q origin feat
+  verb resume -
+  bg_end 60 "the resumed run finishes"
+  assert_eq 0 "$BG_STATUS" "it ends done"
+  assert_eq "stop progress progress done" "$(unit_col 7)" "once the operator pushed, the next unit runs and is progress"
+  assert_eq 1 "$(grep -c '"state":"held"' "$R/events.jsonl")" "held once: the check does not hold the story again"
+  holds_off
+}
+test_overnight_origin_check_skips_default_branch() {
+  fixture ocm; scenario "stage execute; onmain; task 1/2" "task 2/2"; run_start
+  assert_eq main "$(git -C "$P" symbolic-ref --short HEAD)" "the stub worked in place on main"
+  assert_eq onmain "$(git -C "$P" log -1 --format=%s)" "with a commit origin does not have"
+  assert_eq "progress progress" "$(unit_col 7 | cut -d' ' -f1-2)" "the default branch in place is never checked (§7 step 4)"
+}
+test_overnight_origin_check_single_branch_clone() {
+  fixture ocsb
+  ( cd "$P" && git config remote.origin.fetch '+refs/heads/main:refs/remotes/origin/main' )
+  scenario "$ISO1" "task 2/2"; run_start
+  assert_eq "progress progress" "$(unit_col 7 | cut -d' ' -f1-2)" "a single-branch clone: a pushed isolating unit is progress (fetch names its ref)"
+  assert_not_contains "$(last_run_dir)/report.md" "push not on origin" "no false hold"
+}
+test_overnight_origin_check_noprog_not_checked() {
+  fixture ocn; scenario "$ISO1" "unpushed" "pushwt; task 2/2"; run_start
+  assert_eq "progress noprog progress" "$(unit_col 7 | cut -d' ' -f1-3)" "an unpushed commit with no progress is a retry, not a stop; the pushed unit is progress"
+  assert_not_contains "$(last_run_dir)/report.md" "push not on origin" "the check never ran on the no-progress unit"
+}
+
 # ---- #39 T10: run selection for status, watch, stop and the channel ----
 test_status_two_runs_blocks_oldest_first() {
   fixture s2r; FR_SEQ=2; fake_mrun beta S2=running; _pb="$FR_PID"; FR_SEQ=1; fake_mrun alpha S1=running
@@ -2252,11 +2458,13 @@ test_single_plan_rerun_after_stop_before_handoff() {
 }
 # I1: a pre-#42 layout (P at execute, branch feat recorded, a live pointer-less
 # worktree on feat): snapshot's ledger read adopts the story into the worktree,
-# and the run follows it instead of stopping on P's now-idle stage.
+# and the run follows it instead of stopping on P's now-idle stage. Its earlier
+# units pushed feat, as a real story's do (#91: the runner checks origin).
 test_single_plan_follows_adopted_legacy_story() {
   fixture ald
   ( cd "$P" && sh "$STATE_BIN" set stage execute && sh "$STATE_BIN" set task 1/2 \
-      && sh "$STATE_BIN" set branch feat && git worktree add -q "$TMP_WT/wt-feat" -b feat ) >/dev/null 2>&1
+      && sh "$STATE_BIN" set branch feat && git worktree add -q "$TMP_WT/wt-feat" -b feat \
+      && git push -q -u origin feat ) >/dev/null 2>&1
   scenario "task 2/2; wtledger T2 complete b..c; wtledger final review done" \
            "wtledger shipped https://x/pull/1; stage idle; task -"
   run_start
@@ -2638,6 +2846,7 @@ FAKE
 # exclusive-scan: test_overnight_claim_without_run_dir in (d) the one-second watchdog and an elapsed ceiling on the whole run
 # exclusive-scan: test_overnight_hold_on_feature_stop in (c) the stop must end the held run within one hold poll, an elapsed upper bound that a loaded machine breaks
 # exclusive-scan: test_overnight_stop_held_by_operator in (c) the stop must end the operator-held run within one hold poll, an elapsed upper bound that a loaded machine breaks
+# exclusive-scan: test_overnight_notify_hang_capped out (d) the one-second cap only has to fire on a 30-second notifier, and the elapsed bound is 30 s, so a loaded machine does not break it
 # exclusive-scan: test_overnight_hold_config_refused out (d) the values are refused at start, nothing runs against a clock
 # exclusive-scan: test_inbox_lock_failures out (d) a lock wait that only gives up; the result is the same however slowly it runs
 # exclusive-scan: test_inbox_lock_busy in (d) lock contention timed against the wait the code under test is given
@@ -2682,6 +2891,8 @@ run_tests test_overnight_setup_preflight_single test_overnight_help_setup_prefli
   test_overnight_stop_no_run test_overnight_inhibitor test_overnight_no_inhibitor \
   test_overnight_help test_overnight_unit_caps test_events_contract_doc test_overnight_dry_run \
   test_overnight_preflight_refusals test_overnight_preflight_all_failures \
+  test_overnight_push_check_refuses_without_workflow test_overnight_push_check_ok_line test_overnight_push_check_no_workflows \
+  test_overnight_push_check_ssh test_overnight_push_check_unknown_scopes test_overnight_push_check_other_helper \
   test_overnight_config_refusals test_overnight_deny_file_required \
   test_overnight_lock test_overnight_first_use_ignores \
   test_overnight_start_args test_overnight_reclaim_race test_overnight_reclaim_finds_live_lock \
@@ -2726,6 +2937,8 @@ run_tests test_overnight_setup_preflight_single test_overnight_help_setup_prefli
   test_overnight_resume_runs_next_unit \
   test_overnight_new_stop_holds_again \
   test_overnight_hold_deadline test_overnight_hold_default_poll \
+  test_overnight_hold_notifies_once test_overnight_hold_reminder_before_expiry \
+  test_overnight_notify_failure_not_fatal test_overnight_notify_hang_capped test_overnight_notify_seconds_refused \
   test_overnight_stop_beats_resume \
   test_overnight_resume_wins_at_deadline \
   test_overnight_requeue_then_hold \
@@ -2745,6 +2958,9 @@ run_tests test_overnight_setup_preflight_single test_overnight_help_setup_prefli
   test_overnight_stop_pending_never_holds \
   test_overnight_sighup_while_held \
   test_overnight_requeue_retire \
+  test_overnight_origin_check_holds_unpushed test_overnight_origin_check_ends_without_holds \
+  test_overnight_origin_check_resume_after_push test_overnight_origin_check_skips_default_branch \
+  test_overnight_origin_check_noprog_not_checked test_overnight_origin_check_single_branch_clone \
   test_status_two_runs_blocks_oldest_first test_status_run_not_live test_status_registry_root_once \
   test_watch_run_selects test_stop_two_runs_refuses test_stop_run_writes_own_flag test_stop_all_writes_each_flag \
   test_stop_story_unchanged test_verbs_channel_resolution_by_story test_verbs_channel_run_flag_slug_or_basename \

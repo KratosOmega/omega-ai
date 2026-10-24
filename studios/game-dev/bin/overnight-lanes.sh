@@ -924,6 +924,8 @@ lane_halt_reason() {
 # record is the story's record, stories/<id> (R4).
 halt_reason() { lane_halt_reason; }
 hold_record() { story_write "$1" "$2"; }
+# story_branch — origin_check's branch (#91): the story's manifest Branch.
+story_branch() { row_field "$CUR_ID" branch; }
 
 # ---- Session slots (#39 AC27, AC28; D19-D25) ----
 # slot_halt — a wait ends only on a halt (D22): lane_halt in a lane, the stop file for the final step.
@@ -2083,6 +2085,11 @@ lanes_start() {
   trap 'lanes_on_exit $?' EXIT
   MF_ROWS="$MF_TMP/rows.tsv"; CHAINS="$MF_TMP/chains"
   if mf_load "$_ls_mf"; then mf_check; fi
+  [ "$FAILED" -eq 0 ] || exit 2
+  # #90: one push check for the run — the default branch and the target (once when equal).
+  # --check prints the checked commit only on stdout (detach parses it), so the decision line goes to stderr there.
+  _ls_pb="$DEFAULT_BRANCH"; [ "$MF_TARGET" = "$DEFAULT_BRANCH" ] || _ls_pb="$DEFAULT_BRANCH $MF_TARGET"
+  if [ "$_ls_chk" -eq 1 ]; then push_check $_ls_pb >&2; else push_check $_ls_pb; fi
   [ "$FAILED" -eq 0 ] || exit 2
   run_paths "$MF_SLUG"
   build_chains

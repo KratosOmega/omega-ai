@@ -89,6 +89,8 @@ envelope, in this order:
   text (for example `stop: need art`), possibly
   followed by ` (was held: …)`. To detect an operator stop, read the
   `control` event (action `stop`) and the story's next terminal `story_state`.
+- A hold writes `story_state` held, then (unless resumed or ended first) one
+  `hold_reminder` when 25% of the hold is left, then its resolution.
 - A failed write never stops the run. Verbs and the hook note it in
   `<run dir>/hook.log`; the runner notes it on its stderr.
 
@@ -105,6 +107,7 @@ envelope, in this order:
 | `message_queued` | `story`, `id`, `scope` | `id` is a number; `scope`: `story`, `unit`, `retire` |
 | `message_delivered` | `story`, `id`, `scope`, `unit`, `via` | `via`: `session_start`, `tool_call`; a compact re-show of a delivered message is not logged |
 | `message_requeued` | `story`, `id`, `unit`, `requeues` | `id` and `requeues` are numbers |
+| `hold_reminder` | `story`, `until`, `why` | once per hold, at 25% of the hold left (`until` is ISO-8601 UTC; `story` is `-` in a single-plan run); the runner raises the operator banner itself; it comes before the held story's resolution |
 | `control` | `story`, `action` | `action`: `hold`, `resume`, `stop`; the request, written by the verb |
 | `run_ended` | `ending`, `report` | `report` is the path of `report.md`; `ending` is `done` or free text |
 

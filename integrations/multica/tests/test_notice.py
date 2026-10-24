@@ -25,6 +25,14 @@ class NoticeTextTest(unittest.TestCase):
     def setUp(self):
         _pst(self)
 
+    def test_reminder_body_story_and_single(self):                             # #92
+        self.assertEqual(notice.reminder_body("B", "need art", U),
+                         "story B still held — stops at 2026-10-03 18:00 PDT (2026-10-04T01:00:00Z UTC) unless resumed. Why: need art")
+        self.assertEqual(notice.reminder_body("-", "need art", U),
+                         "the run is still held — stops at 2026-10-03 18:00 PDT (2026-10-04T01:00:00Z UTC) unless resumed. Why: need art")
+        self.assertEqual(notice.reminder_body("B", "w", "soon"), "story B still held — stops at soon unless resumed. Why: w")
+        self.assertEqual(notice.reminder_body("B", "w", None), "story B still held — stops at ? unless resumed. Why: w")
+
     def test_until_line_local_and_utc(self):
         self.assertEqual(notice.until_line(U), "Until 2026-10-03 18:00 PDT (2026-10-04T01:00:00Z UTC); then it stops.")
 

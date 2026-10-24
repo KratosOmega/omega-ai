@@ -487,6 +487,10 @@ Environment:
 Test hooks (tests only; never set them for a real run; --detach strips them):
   STUDIO_OVERNIGHT_POLL_SECONDS — test hook: a whole number of seconds between
                      a lane's polls of a wait or a lock (default 5)
+  STUDIO_OVERNIGHT_NOTIFY_CMD — shell text run as `sh -c "$CMD" notify TEXT` for a
+                     hold's banner and reminder (else terminal-notifier, else
+                     osascript on macOS); tests set it to `: `
+  STUDIO_OVERNIGHT_NOTIFY_SECONDS — test hook: the notifier's cap (default 10)
   STUDIO_OVERNIGHT_SLOT_POLL_SECONDS — test hook: seconds between a unit's
                      tries for a session slot (default 2)
   STUDIO_OVERNIGHT_LAND_HOOK — test hook: shell text evaluated after a landing's
@@ -621,7 +625,13 @@ preflight() {
   if ! { command -v claude-gd >/dev/null 2>&1 && claude-gd --version >/dev/null 2>&1; }; then
     refuse "claude-gd not found or not working"
   fi
-  gh auth status >/dev/null 2>&1 || refuse "gh auth status failed — log in first"
+  # #90: an https origin asks gh about its own host; any other origin keeps the plain check.
+  push_host
+  if [ "$PUSH_KIND" = https ]; then
+    gh auth status -h "$PUSH_HOST" >/dev/null 2>&1 || refuse "gh auth status -h $PUSH_HOST failed — log in first"
+  else
+    gh auth status >/dev/null 2>&1 || refuse "gh auth status failed — log in first"
+  fi
   if [ ! -f "$DENY_FILE" ] || ! grep -Evq '^[[:space:]]*(#|$)' "$DENY_FILE"; then
     refuse "$DENY_FILE: no deny rules"
   fi
@@ -673,7 +683,7 @@ preflight() {
   # #59 R2: the idle watchdog (run_unit). Its seconds seams are whole numbers >= 1.
   cfg idle_minutes 20 0 120 int
   [ -z "${IDLE_MINUTES:-}" ] || IDLE_MINUTES="$(printf '%s\n' "$IDLE_MINUTES" | awk '{ print $1 + 0 }')"   # D3
-  for _pf_v in STUDIO_OVERNIGHT_IDLE_SECONDS STUDIO_OVERNIGHT_IDLE_POLL_SECONDS; do
+  for _pf_v in STUDIO_OVERNIGHT_IDLE_SECONDS STUDIO_OVERNIGHT_IDLE_POLL_SECONDS STUDIO_OVERNIGHT_NOTIFY_SECONDS; do
     eval "_pf_x=\${$_pf_v:-1}"
     case "$_pf_x" in ''|*[!0-9]*) refuse "$_pf_v must be a whole number of seconds (1 or more), got $_pf_x" ;;
       *) [ "$_pf_x" -ge 1 ] || refuse "$_pf_v must be a whole number of seconds (1 or more), got $_pf_x" ;; esac
@@ -684,9 +694,63 @@ preflight() {
     # AC5: a single-plan run excludes every live run, per-run locks included.
     refuse "$RECHECK_WHY"
   fi
+  # A manifest run's push check is lanes_start's (it needs the target branch too).
+  [ -n "$_pf_mf" ] || [ -z "$DEFAULT_BRANCH" ] || push_check "$DEFAULT_BRANCH"
   env_line
   [ -n "$_pf_mf" ] || [ "$FAILED" -eq 0 ] || exit 2
 }
+# push_host — #90: sets PUSH_URL (origin's push URL), PUSH_KIND (https | ssh | other)
+# and, for https, PUSH_HOST. https://[user@]host[:port]/… is https; git@host:… and
+# ssh://[user@]host/… are ssh.
+push_host() {
+  PUSH_URL="$(git -C "$START_DIR" remote get-url --push origin 2>/dev/null)" || PUSH_URL=""
+  PUSH_HOST=""
+  case "$PUSH_URL" in
+    https://*)
+      PUSH_KIND=https
+      _ph="${PUSH_URL#https://}"; _ph="${_ph%%/*}"; _ph="${_ph##*@}"; PUSH_HOST="${_ph%%:*}" ;;
+    ssh://*|*@*:*) PUSH_KIND=ssh ;;
+    *) PUSH_KIND=other ;;
+  esac
+  [ -n "$PUSH_HOST" ] || [ "$PUSH_KIND" != https ] || PUSH_KIND=other
+}
+
+# push_check BASE… — #90: a push that touches .github/workflows is rejected unless
+# the token has the workflow scope. Needs push_host's PUSH_HOST/PUSH_KIND. Refuses
+# when some origin/BASE has workflows, git pushes through gh's credential helper
+# and gh reports scopes without workflow; otherwise prints one stdout line.
+push_check() {
+  case "$PUSH_KIND" in
+    ssh) echo "push: origin is SSH — no token scope applies"; return 0 ;;
+    other) echo "push: origin $PUSH_URL is not https or ssh — not checked"; return 0 ;;
+  esac
+  _pc_wf=0
+  for _pc_b in "$@"; do
+    git -C "$START_DIR" cat-file -e "refs/remotes/origin/$_pc_b:.github/workflows" 2>/dev/null && _pc_wf=1
+  done
+  if [ "$_pc_wf" -eq 0 ]; then
+    echo "push: no .github/workflows — workflow scope not needed"; return 0
+  fi
+  _pc_h="$(git -C "$START_DIR" config --get-urlmatch credential.helper "https://$PUSH_HOST" 2>/dev/null)"
+  case "$_pc_h" in
+    *"gh auth git-credential"*) ;;
+    *) echo "push: git does not push to $PUSH_HOST through gh's credential helper — cannot check the workflow scope"; return 0 ;;
+  esac
+  # The active account's "Token scopes:" line; with no account lines, the first one.
+  _pc_sc="$(gh auth status -h "$PUSH_HOST" 2>&1 | awk '
+    /Active account:/ { acct = 1; act = ($0 ~ /Active account: true/); next }
+    /Token scopes:/ && !done && (!acct || act) { sub(/^.*Token scopes:[ \t]*/, ""); v = $0; done = 1 }
+    END { if (done) print v }')"
+  case "$_pc_sc" in
+    ''|none) echo "push: cannot read gh token scopes for $PUSH_HOST — make sure the token may write workflows"; return 0 ;;
+  esac
+  _pc_sc="$(printf '%s' "$_pc_sc" | tr -d "' ")"
+  case ",$_pc_sc," in
+    *,workflow,*) echo "push: gh token for $PUSH_HOST has the workflow scope" ;;
+    *) refuse "gh token for $PUSH_HOST lacks the workflow scope, and this repo has .github/workflows — a push that touches them is rejected. Fix: gh auth refresh -h $PUSH_HOST -s workflow" ;;
+  esac
+}
+
 # env_line [RUN_PID] — studio-env's readout on stdout: a summary line, and a
 # warning block when the machine is short of something. Never fails, never
 # blocks. The preflight prints it on stdout too (stderr is the refusals').
@@ -796,6 +860,37 @@ snapshot() {
     { printf '%s\n' "$_l" | stop_lines; cat "$1.start"; } | sort -u > "$1"
   fi
 }
+# story_branch — the story's branch: `state get branch` (single plan);
+# overnight-lanes.sh redefines it as the manifest row's Branch.
+story_branch() { state get branch 2>/dev/null; }
+# origin_check — #91 Gap 2b: work not on origin is not progress. After a unit
+# that made progress or finished, the story branch's head (snapshot's
+# FEATURE_DIR) must be on origin. Skipped (0) when the story has no branch,
+# its branch is the default branch (in place, pushing nothing: execute §7
+# step 4), or FEATURE_DIR does not have it checked out. Else it fetches
+# origin's branch (git_retry when loaded, sp_git) and HEAD must be an ancestor
+# of refs/remotes/origin/<branch>. On failure 1 and ORIGIN_WHY (the ending
+# after `stop: `): `push not on origin — <branch> <sha7> vs origin
+# <sha7|none>` (none: origin has no such branch, by ls-remote, after a failed
+# fetch), or `… — <branch> fetch failed`. Never pushes, never moves a branch.
+origin_check() {
+  ORIGIN_WHY=""
+  _oc_b="$(story_branch)"
+  case "$_oc_b" in ''|-) return 0 ;; esac
+  [ "$_oc_b" != "${DEFAULT_BRANCH:-}" ] || return 0
+  [ "$(git -C "$FEATURE_DIR" symbolic-ref -q --short HEAD 2>/dev/null)" = "$_oc_b" ] || return 0
+  _oc_h="$(git -C "$FEATURE_DIR" rev-parse --short=7 HEAD 2>/dev/null)"
+  if ! sp_git -C "$FEATURE_DIR" fetch -q origin "+refs/heads/$_oc_b:refs/remotes/origin/$_oc_b" >/dev/null 2>&1; then
+    _oc_rc=0; git -C "$FEATURE_DIR" ls-remote -q --exit-code origin "refs/heads/$_oc_b" >/dev/null 2>&1 || _oc_rc=$?
+    if [ "$_oc_rc" = 2 ]; then ORIGIN_WHY="push not on origin — $_oc_b $_oc_h vs origin none"
+    else ORIGIN_WHY="push not on origin — $_oc_b fetch failed"; fi
+    return 1
+  fi
+  git -C "$FEATURE_DIR" merge-base --is-ancestor HEAD "refs/remotes/origin/$_oc_b" 2>/dev/null && return 0
+  _oc_o="$(git -C "$FEATURE_DIR" rev-parse -q --short=7 --verify "refs/remotes/origin/$_oc_b^{commit}" 2>/dev/null)" || _oc_o=none
+  ORIGIN_WHY="push not on origin — $_oc_b $_oc_h vs origin ${_oc_o:-none}"
+  return 1
+}
 # stop_lines — the Stop: lines of one ledger on stdin, each suffixed with a
 # tab and its occurrence number (snapshot's rule).
 stop_lines() { grep '^- [0-9-]* Stop: ' | awk '{ k[$0]++; printf "%s\t%d\n", $0, k[$0] }'; }
@@ -863,6 +958,47 @@ state_event() {
 }
 # iso_utc EPOCH — EPOCH as YYYY-MM-DDTHH:MM:SSZ (GNU date -d, else BSD -r).
 iso_utc() { date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -r "$1" +%Y-%m-%dT%H:%M:%SZ; }
+# notify_operator TEXT — a desktop banner for the operator (#92). The command
+# is STUDIO_OVERNIGHT_NOTIFY_CMD run as `sh -c "$CMD" notify TEXT`, else
+# terminal-notifier, else (Darwin) osascript. It runs in the background and is
+# killed after STUDIO_OVERNIGHT_NOTIFY_SECONDS (default 10, a test knob), so a
+# hung notifier never stalls a hold. A failure is one `notify failed: <why>`
+# line; it always returns 0.
+notify_operator() {
+  _no_t="$1"; _no_f="${RUN_DIR:-${TMPDIR:-/tmp}}/.notify.$$${CUR_ID:-}"; rm -f "$_no_f.pid" "$_no_f.st"
+  _no_w=""
+  if [ -n "${STUDIO_OVERNIGHT_NOTIFY_CMD:-}" ]; then
+    _no_n=0
+  elif command -v terminal-notifier >/dev/null 2>&1; then
+    _no_n=1
+  elif [ "$(uname -s)" = Darwin ] && command -v osascript >/dev/null 2>&1; then
+    _no_n=2; _no_t2="$(printf '%s' "$_no_t" | tr -d '\\' | tr '"' "'")"
+  else
+    return 0
+  fi
+  (
+    case "$_no_n" in
+      0) sh -c "$STUDIO_OVERNIGHT_NOTIFY_CMD" notify "$_no_t" & ;;
+      1) terminal-notifier -title studio-overnight -message "$_no_t" & ;;
+      2) osascript -e "display notification \"$_no_t2\" with title \"studio-overnight\"" & ;;
+    esac
+    _no_p=$!; echo "$_no_p" > "$_no_f.pid"; wait "$_no_p"; echo "$?" > "$_no_f.st.tmp"; mv "$_no_f.st.tmp" "$_no_f.st"
+  ) >/dev/null 2>&1 &
+  _no_sp=$!
+  _no_i=0; _no_max=$(( ${STUDIO_OVERNIGHT_NOTIFY_SECONDS:-10} * 5 ))
+  while [ ! -f "$_no_f.st" ] && [ "$_no_i" -lt "$_no_max" ]; do sleep 0.2; _no_i=$((_no_i + 1)); done
+  if [ -f "$_no_f.st" ]; then
+    _no_s="$(cat "$_no_f.st")"
+    [ "$_no_s" = 0 ] || _no_w="exit $_no_s"
+  else
+    _no_w="timed out"
+    kill "$(cat "$_no_f.pid" 2>/dev/null)" 2>/dev/null; kill "$_no_sp" 2>/dev/null
+  fi
+  wait "$_no_sp" 2>/dev/null
+  rm -f "$_no_f.pid" "$_no_f.st" "$_no_f.st.tmp"
+  [ -z "$_no_w" ] || say "notify failed: $_no_w"
+  return 0
+}
 # ---- Operator messages and holds (#27; spec AC13-14, AC17-27) ----
 # requeue_check — after each unit: each story or retire message the unit
 # claimed (inbox/<story>/delivered/<UNIT_TAG>/) is checked against the
@@ -926,7 +1062,8 @@ op_boundary() {
 isolated() { [ "${FEATURE_DIR:-$START_DIR}" != "$START_DIR" ]; }
 # holdable — AC17-18, R6: ENDING holds instead of ending. Never under a halt,
 # never with holds off; `held by operator` always; a `stop:` only when it is
-# the feature-only Stop take_new_stop saw; the rest only after isolation.
+# the feature-only Stop take_new_stop saw, or origin_check's (#91); the rest
+# only after isolation.
 holdable() {
   [ "$HOLD_ON" = 1 ] || return 1
   ! stop_requested || return 1
@@ -934,6 +1071,7 @@ holdable() {
   _h_e="${ENDING%% \[permission-route — *}"
   case "$_h_e" in
     "held by operator") return 0 ;;
+    "stop: push not on origin — "*) isolated; return $? ;;
     "stop: "*) [ "$_h_e" = "${STOP_ENDING:-}" ] && [ "${STOP_SRC:-}" = feature ] && isolated; return $? ;;
     "no progress on "*|"timed out on "*|"directive "*" not recorded"|"gate red after "*|"gate repair made no progress"|"gate repair timed out"*|"stalled on "*|"gate repair stalled"*)
       isolated; return $? ;;
@@ -974,6 +1112,8 @@ hold_wait() {
   _hw_dl=$(( $(date +%s) + HOLD_SECS ))
   hold_record "$1" "held $_hw_why until $(iso_utc "$_hw_dl")"
   say "${CUR_ID:+$CUR_ID }held: $_hw_why — say / resume / stop ${CUR_ID:--}"
+  _hw_who="${CUR_ID:-run}"; _hw_run="$(basename "$RUN_DIR")"; _hw_rm=$(( _hw_dl - HOLD_SECS / 4 )); _hw_rd=0
+  notify_operator "$_hw_who held in $_hw_run: $_hw_why — until $(hhmm_local "$(iso_utc "$_hw_dl")")"
   while :; do
     if stop_requested; then ENDING="$(halt_reason) (was held: $_hw_why)"; return 1; fi
     if ctl_take "$1" stop; then
@@ -981,7 +1121,13 @@ hold_wait() {
       return 1
     fi
     if ctl_take "$1" resume; then hold_record "$1" running; ENDING=""; return 0; fi
-    if [ "$(date +%s)" -ge "$_hw_dl" ]; then ENDING="$_hw_why (held $(hm "$HOLD_SECS"), no reply)"; return 1; fi
+    _hw_now=$(date +%s)
+    if [ "$_hw_rd" = 0 ] && [ "$_hw_now" -ge "$_hw_rm" ] && [ "$_hw_now" -lt "$_hw_dl" ]; then
+      _hw_rd=1; run_event hold_reminder "story=${CUR_ID:--}" "until=$(iso_utc "$_hw_dl")" "why=$_hw_why"
+      notify_operator "$_hw_who still held in $_hw_run — stops at $(hhmm_local "$(iso_utc "$_hw_dl")") unless resumed: $_hw_why"
+      _hw_now=$(date +%s)
+    fi
+    if [ "$_hw_now" -ge "$_hw_dl" ]; then ENDING="$_hw_why (held $(hm "$HOLD_SECS"), no reply)"; return 1; fi
     sleep "${STUDIO_OVERNIGHT_POLL_SECONDS:-5}"
   done
 }
@@ -1612,6 +1758,10 @@ story_units() {
     snapshot "$UNIT_DIR/stops.after"
     take_new_stop "$UNIT_DIR/stops.before" "$UNIT_DIR/stops.after"
     if [ -n "$NEW_STOP" ]; then row "$n" "$_base$suffix" stop; ENDING="$STOP_ENDING$UNIT_DENY_NOTE"; return 0; fi
+    # #91: a unit that would be done or progress must have its work on origin.
+    if { [ "$SIG_STAGE" = idle ] && [ "$SIG_SHIPPED" -gt 0 ]; } || [ "$SIG" != "$_before" ]; then
+      if ! origin_check; then row "$n" "$_base$suffix" stop; ENDING="stop: $ORIGIN_WHY$UNIT_DENY_NOTE"; return 0; fi
+    fi
     if [ "$SIG_STAGE" = idle ] && [ "$SIG_SHIPPED" -gt 0 ]; then row "$n" "$_base$suffix" done; ENDING=done; return 0; fi
     if [ -n "$REQ_LIMIT" ]; then
       if [ "$SIG" != "$_before" ]; then _su_o=progress; else _su_o="$(unit_outcome)"; fi

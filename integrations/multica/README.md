@@ -239,6 +239,7 @@ Rules that catch people out:
   the story, why it is held and how to answer (`/say`, `/resume`, `/stop`). The marker
   means the comment is a notice only, never a command. The operator's Mac also shows a
   macOS banner. An unassigned (queued) kickoff wakes no agent; the banner is then the only alert.
+- Hold reminder: when 25% of a hold is left, the runner writes a `hold_reminder` event and the bridge posts a reminder notice on the Run issue and the notify-only one on the kickoff issue. An older bridge ignores it.
 - When the Run issue closes, the game-dev agent wakes once on the request issue and posts a short summary of the report. An agent-assigned request issue whose Run issue is its sub-issue is woken by Multica when its last sub-issue closes. Otherwise (a queued kickoff, or a Run issue that could not be made a sub-issue) it is woken by a once-only rule the bridge arms (see [Queue a run behind another](#queue-a-run-behind-another)).
 
 Hands-off: if you assign a mirrored issue to an agent, the bridge stops writing to
