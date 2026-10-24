@@ -15,9 +15,11 @@
 # Any other line (an old 4-field row, garbage) is skipped, never an error.
 #
 # gate_learned_cap FILE WHO FACTOR MAXMIN — a run cap in whole minutes learned
-# from WHO's history, or nothing. It prints clamp(ceil(FACTOR x p95 / 60), 15,
-# MAXMIN), p95 by nearest rank over the newest 50 gate_times_holds rows; MAXMIN
-# wins over the 15 floor. Nothing is printed with fewer than 5 rows, FACTOR 0
+# from WHO's history, or nothing. It prints clamp(ceil(FACTOR x median / 60), 15,
+# MAXMIN), the median by nearest rank (the ceil(N/2)-th smallest) over the newest
+# 50 gate_times_holds rows; MAXMIN wins over the 15 floor. The median, not a
+# high percentile: one slow outlier must not stretch the cap for 50 runs, and a
+# run slowed by load is studio-gate's retry's to absorb (spec 2026-10-24 A1). Nothing is printed with fewer than 5 rows, FACTOR 0
 # or not a whole number, or MAXMIN empty, 0 or not a whole number.
 
 # Byte collation: under a UTF-8 locale macOS sh matches [a-z] by collation (A-Y too).
@@ -33,7 +35,7 @@ gate_learned_cap() {
     { h[NR] = $1 }
     END {
       if (NR < 5) exit
-      r = int((NR * 95 + 99) / 100)
+      r = int((NR + 1) / 2)
       m = int((f * h[r] + 59) / 60)
       if (m < 15) m = 15
       if (m > mx) m = mx

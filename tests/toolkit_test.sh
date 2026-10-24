@@ -1160,10 +1160,10 @@ test_gate_times_window_per_who() {
 }
 
 # #59 AC2: STUDIO_GATE_MINUTES caps the run once the lock is held.
-gate_capped() {   # gate_capped MIN SECS WHO CMD… — run the gate capped; GC_ST, GC_SECS, $TMP/gc.err
+gate_capped() {   # gate_capped MIN SECS WHO CMD… — run the gate capped (an idle 4-core load); GC_ST, GC_SECS, $TMP/gc.err
   _gc_m="$1"; _gc_s="$2"; _gc_w="$3"; shift 3
   _gc_t0=$(date +%s); GC_ST=0
-  ( cd "$GP" && STUDIO_GATE_MINUTES="$_gc_m" STUDIO_GATE_SECONDS="$_gc_s" sh "$GATE" "$_gc_w" -- "$@" ) > "$TMP/gc.out" 2> "$TMP/gc.err" || GC_ST=$?
+  ( cd "$GP" && STUDIO_GATE_MINUTES="$_gc_m" STUDIO_GATE_SECONDS="$_gc_s" STUDIO_GATE_LOADAVG=0 STUDIO_GATE_PHYS_CORES=4 sh "$GATE" "$_gc_w" -- "$@" ) > "$TMP/gc.out" 2> "$TMP/gc.err" || GC_ST=$?
   GC_SECS=$(( $(date +%s) - _gc_t0 ))
 }
 # cap_bin — $TMP/cap6bin, a link to bin/: a gate run through it carries $TMP in
@@ -1176,7 +1176,7 @@ test_gate_run_cap_stops_a_long_run() {
   gate_capped 1 1 t sleep 30
   assert_eq 124 "$GC_ST" "a run past the cap exits 124"
   assert_eq 1 "$([ "$GC_SECS" -lt 8 ] && echo 1 || echo 0)" "stopped at the cap, not after 30 s"
-  assert_contains "$TMP/gc.err" '^gate: t ran past 1 min — stopped$' "names who and the minutes"
+  assert_contains "$TMP/gc.err" '^gate: t ran past 1 min — stopped (load 0→0, busy at 8: not retried)$' "names who, the minutes and the load readings"
   assert_eq 1 "$(gt_rows "$GP/.studio/gate.times" t 124)" "gate.times records 124"
   assert_contains "$GP/.studio/gate.times" '^[0-9][0-9]* t [0-9][0-9]* 124 [0-9][0-9]* [a-z][a-z:-]* [a-z][a-z]* [^ ][^ ]*$' "the row has all 8 fields"
   assert_missing "$GP/.studio/gate.lock" "the lock is released"

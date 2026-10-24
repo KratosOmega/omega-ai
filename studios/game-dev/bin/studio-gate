@@ -12,6 +12,10 @@
 #     (a non-digit value reads as 300).
 #   STUDIO_GATE_LEARNED_FLOOR_SECONDS (default 900) — the learned cap's floor in
 #     seconds, honoured only below 15 min (a non-digit value reads as 900).
+#   STUDIO_GATE_LOAD_WAIT_SECONDS (default: what the cap leaves, below) — the
+#     retry's longest wait for the load to drop.
+#   STUDIO_GATE_LOADAVG_FILE, STUDIO_GATE_LOADAVG, STUDIO_GATE_PHYS_CORES —
+#     the load seams (gate-class.sh).
 #
 # Lanes (#71 R3), all under STATE_ROOT/.studio/ and changed only under the
 # reclaim mutex (a live owner's release excepted). The main lane gate.lock/
@@ -47,15 +51,28 @@
 # the 10 s grace, `gate: <who> ran past <n> min — stopped` on stderr, rc 124
 # in gate.times. The timer starts once the lock is held (waiting does not
 # count). With STUDIO_GATE_SECONDS unset, the cap is learned (gate-times.sh
-# gate_learned_cap): clamp(ceil(F x p95 of WHO's last 50 main-lane passes / 60),
+# gate_learned_cap): clamp(ceil(F x median of WHO's last 50 main-lane passes / 60),
 # 15, STUDIO_GATE_MINUTES) min once there are 5 such rows, F = STUDIO_GATE_CAP_FACTOR
 # (0-10, default 4; 0 = off): `gate: <who> ran past its learned cap of <N> min
-# (<F> × p95 of the last <M> runs) — stopped`. Who `setup` is exempt
+# (<F> × median of the last <M> runs) — stopped`. Who `setup` is exempt
 # (worktree_setup has its own timer). A nested
 # gate execs before any timer, so re-entry adds no second one.
+# Every cap stop line ends with the load readings: `(load <L0>→<L1>, busy at
+# <t>: …)`, L0 the 1-min load at the start, L1 the higher of the 1- and 5-min
+# loads at the end, t the load rule's 2 x physical cores (gate-class.sh).
+# Retry under load (spec 2026-10-24 A2): a main-lane run the cap stopped while
+# L0 or L1 was at t or more runs once more when two runs fit the flat cap
+# (2 x the cap <= STUDIO_GATE_MINUTES x 60; an explicit STUDIO_GATE_SECONDS is
+# the flat cap and the run cap at once, so it never retries; a run a signal
+# reached is never retried either). It releases its lane, waits for
+# the load to drop below t (at most the rest of the flat cap, else it runs
+# anyway), queues as exclusive and runs under the same cap; its row's lane is
+# main:retry. A pass prints `gate: <who> passed on the retry (…)`; a second cap
+# stop prints `gate: <who> timed out twice — <s1> s under load …, then <s2> s
+# exclusive under load … (busy at <t>) — stopped` and exits 124.
 # Exit: the command's status · 2 usage · 128+n when TERM/INT/HUP ended it (one
 # landing after the command ended keeps its status and row) · 124 when
-# STUDIO_GATE_MINUTES stopped the run.
+# STUDIO_GATE_MINUTES stopped the run (twice, when it was retried).
 # With no .studio/ project there is nothing to protect: the command just runs.
 
 # Byte collation: under a UTF-8 locale macOS sh matches [a-z] by collation (A-Y too).
@@ -146,6 +163,11 @@ fi
 HAS_ISO=0
 if [ "$KIND" != node ] && ( cd "$WT" 2>/dev/null && sh "$SELF_DIR/studio-dispatch" --has isolate ); then HAS_ISO=1; fi
 OWNED=0; OWN_DIR=""; LANE=""; REASON=""; LAST_REASON=""; DEMOTED=0; LEAKED=0
+# The retry under load: RETRIED once it was granted; R_* the first attempt's
+# seconds and loads; LOAD_WAIT the pending wait in seconds (empty: none).
+# EXT_SIG: a TERM/INT/HUP that reached a running attempt (the cap's own 124
+# overwrites SIGSTATUS, so it is kept apart): such a run is never retried.
+RETRIED=0; R_S=""; R_L0=""; R_L1=""; LOAD_WAIT=""; ATT_L0="?"; ATT_L1="?"; EXT_SIG=""
 BLK_WHO=""; BLK_PID=""; BLK_NOTE=""; BLK_STUCK=""
 
 HAVE_MUTEX=0
@@ -309,7 +331,7 @@ targets_alive() {
 # to LATE_SIG: the command's status and its row are kept, and no re-run starts.
 on_signal() {
   if [ "$RUNNING" = 1 ]; then
-    SIGSTATUS="$1"
+    SIGSTATUS="$1"; [ "$1" = 124 ] || EXT_SIG="$1"
     _c="${CHILD:-$!}"
     if [ -z "$TARGETS" ] && [ -n "$_c" ]; then TARGETS="$(targets "$_c")"; fi
     if [ -n "$TARGETS" ]; then kill -TERM $TARGETS 2>/dev/null; fi
@@ -335,8 +357,10 @@ case "${STUDIO_GATE_MINUTES:-}" in
        case "$CAP_SECS" in ''|*[!0-9]*) CAP_SECS="" ;; *) CAP_SECS="$(decimal "$CAP_SECS")" ;; esac
      fi ;;
 esac
+# The flat cap in seconds (before any learned cap): the retry's budget.
+FLAT_SECS="$CAP_SECS"
 # The learned cap: once WHO has 5 main-lane passes in gate.times, a run is
-# stopped at the factor (STUDIO_GATE_CAP_FACTOR, default 4) x p95 of them, at
+# stopped at the factor (STUDIO_GATE_CAP_FACTOR, default 4) x the median of them, at
 # least 15 min and never past STUDIO_GATE_MINUTES (gate_learned_cap). An
 # explicit STUDIO_GATE_SECONDS stays the cap. The floor's test seam
 # STUDIO_GATE_LEARNED_FLOOR_SECONDS (default 900) replaces the 15 min floor only
@@ -412,6 +436,7 @@ run_once() {
   # a forwarded signal reaches everything it started, and its signal
   # dispositions are not the ignored SIGINT of a plain background job. A slot
   # run is niced (O9); the main lane never is (D6).
+  ATT_L0="$(gate_load1)" || ATT_L0="?"
   RUNNING=1
   { set -m; } 2>/dev/null
   T0="$(date +%s)"
@@ -470,13 +495,61 @@ run_once() {
       sleep 1
     done
   fi
-  if [ "$CAPPED" = 0 ]; then :
-  elif [ -n "$LEARNED_MIN" ]; then
-    printf 'gate: %s ran past its learned cap of %s min (%s × p95 of the last %s runs) — stopped\n' "$WHO" "$LEARNED_MIN" "$LEARNED_F" "$LEARNED_M" >&2
-  else printf 'gate: %s ran past %s min — stopped\n' "$WHO" "$CAP_MIN" >&2; fi
   POST=1; RUNNING=0
   CHILD=""
   HOLD_S=$(( $(date +%s) - T0 ))
+  ATT_L1="$(gate_load_peak)" || ATT_L1="?"
+}
+
+# cap_words — what stopped the run: `ran past <n> min` or the learned cap's words.
+cap_words() {
+  if [ -n "$LEARNED_MIN" ]; then
+    printf 'ran past its learned cap of %s min (%s × median of the last %s runs)\n' "$LEARNED_MIN" "$LEARNED_F" "$LEARNED_M"
+  else printf 'ran past %s min\n' "$CAP_MIN"; fi
+}
+# load_busy L — L is a reading at or above the load rule's threshold LOAD_T.
+load_busy() {
+  [ "$1" != "?" ] && [ "$LOAD_T" != "?" ] && awk -v l="$1" -v t="$LOAD_T" 'BEGIN { exit !(l + 0 >= t + 0) }'
+}
+# cap_decide — after an attempt the run cap stopped (CAPPED=1): 0 when it runs
+# once more (the line says so, LOAD_WAIT is set), else 1 with the stop line
+# printed. Only a main-lane 124 with no late signal is retried, once, when
+# the load was busy and two runs fit the flat cap (spec 2026-10-24 A2).
+cap_decide() {
+  _cd_c="$(gate_phys_cores)" && LOAD_T=$((_cd_c * 2)) || LOAD_T="?"
+  _cd_ld="load ${ATT_L0}→${ATT_L1}, busy at ${LOAD_T}"
+  if [ "$RETRIED" = 1 ]; then
+    printf 'gate: %s timed out twice — %s s under load %s→%s, then %s s exclusive under load %s→%s (busy at %s) — stopped\n' \
+      "$WHO" "$R_S" "$R_L0" "$R_L1" "$HOLD_S" "$ATT_L0" "$ATT_L1" "$LOAD_T" >&2
+    return 1
+  fi
+  if [ "$LANE" != main ] || [ "$ROW_RC" != 124 ] || [ -n "$LATE_SIG$EXT_SIG" ] || { ! load_busy "$ATT_L0" && ! load_busy "$ATT_L1"; }; then
+    printf 'gate: %s %s — stopped (%s: not retried)\n' "$WHO" "$(cap_words)" "$_cd_ld" >&2
+    return 1
+  fi
+  _cd_w=$((FLAT_SECS - 2 * CAP_SECS))
+  if [ "$_cd_w" -lt 0 ]; then
+    printf 'gate: %s %s — stopped (%s: no room for a second run inside the %s s cap)\n' "$WHO" "$(cap_words)" "$_cd_ld" "$FLAT_SECS" >&2
+    return 1
+  fi
+  case "${STUDIO_GATE_LOAD_WAIT_SECONDS:-}" in ''|*[!0-9]*) ;; *) _cd_w="$(decimal "$STUDIO_GATE_LOAD_WAIT_SECONDS")" ;; esac
+  printf 'gate: %s %s under load %s→%s (busy at %s) — running it again once, exclusive, when the load is below %s (waiting up to %s s)\n' \
+    "$WHO" "$(cap_words)" "$ATT_L0" "$ATT_L1" "$LOAD_T" "$LOAD_T" "$_cd_w" >&2
+  R_S="$HOLD_S"; R_L0="$ATT_L0"; R_L1="$ATT_L1"; LOAD_WAIT="$_cd_w"
+  return 0
+}
+# load_wait — before the retry's admission: poll until the load is below the
+# threshold, for at most LOAD_WAIT seconds, then run anyway.
+load_wait() {
+  _lw_end=$(( $(date +%s) + LOAD_WAIT ))
+  while ! _lw_l="$(gate_load_ok "${_cd_c:-}")"; do
+    if [ "$(date +%s)" -ge "$_lw_end" ]; then
+      printf 'gate: load still %s after %s s — running it again anyway\n' "$_lw_l" "$LOAD_WAIT" >&2
+      break
+    fi
+    sleep "$GATE_POLL"
+  done
+  LOAD_WAIT=""
 }
 
 # ---- leak scrub (T10) ----
@@ -511,11 +584,12 @@ gate_prescrub() {
   return 0
 }
 
-# row_lane — the row's lane: short, main:demoted, main:<the refusal at
+# row_lane — the row's lane: short, main:retry (the retry under load), main:demoted, main:<the refusal at
 # acquisition> for a short caller in the main lane (spaces as -), main:off for a
 # short check with the lane off, else main.
 row_lane() {
   if [ "$LANE" = short ]; then echo short
+  elif [ "$RETRIED" = 1 ]; then echo main:retry
   elif [ "$DEMOTED" = 1 ]; then echo main:demoted
   elif [ "$CLS" = short ]; then printf 'main:%s\n' "$(printf '%s' "$LAST_REASON" | sed 's/ [0-9?].*//; s/ /-/g')"
   elif [ "$ARGV_CLS" = short ]; then echo main:off
@@ -529,6 +603,7 @@ row_lane() {
 # mutex owner) the line is printed anyway, naming the main lock's holder.
 while :; do
   T_REQ="$(date +%s)"; waited=0; SAID=0; EVALD=0
+  [ -z "$LOAD_WAIT" ] || load_wait
   BLK_WHO=""; BLK_PID=""; BLK_NOTE=""; BLK_STUCK=""; REASON=""
   while :; do
     try_admit; _ta=$?
@@ -561,6 +636,15 @@ while :; do
   # session_minutes check most needs to see.
   gate_times_append "$ROOT/.studio/gate.times" "$(date +%s)" "$WHO" "$HOLD_S" "$ROW_RC" "$WAIT_S" \
     "$(row_lane)" "$([ "$LANE" = short ] && echo short || echo "$CLS")" "${TAG:--}"
+  if [ "$CAPPED" = 1 ] && cap_decide; then
+    lane_release; RETRIED=1; CLS=exclusive; MODE=main; POST=0
+    # A signal while the decision printed or the lane was released ends the gate here.
+    [ -z "$LATE_SIG" ] || exit "$LATE_SIG"
+    continue
+  fi
+  if [ "$RETRIED" = 1 ] && [ "$CAPPED" = 0 ] && [ "$ROW_RC" = 0 ]; then
+    printf 'gate: %s passed on the retry (%s s, exclusive, load %s→%s)\n' "$WHO" "$HOLD_S" "$ATT_L0" "$ATT_L1" >&2
+  fi
   if [ "$DEMOTED" = 0 ] && lane_after_run; then
     lane_release; DEMOTED=1; MODE=main; POST=0
     [ -z "$LATE_SIG" ] || exit "$LATE_SIG"

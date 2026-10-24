@@ -271,18 +271,21 @@ chan_event() { sh "$SELF_DIR/studio-event" "$CH_RUN" "$@" 2>> "$CH_RUN/hook.log"
 chan_chars() { LC_ALL=C tr -d '\200-\277' | wc -c | tr -d ' '; }
 
 # chan_say TEXT — AC1, AC5: the next id, the cap (story scope only), the
-# message, a message_queued event; prints the id.
+# message, a message_queued event; prints the id. The cap counts active,
+# pending and delivered directives, not retiring ones: a queued retire is
+# irrevocable and is delivered before any later message (lowest id first),
+# so a held story can swap a stale directive for a new one at once.
 chan_say() {
   _cs_sc=story; [ "$A_UNIT" = 0 ] || _cs_sc=unit
   CH_LEDGER="$(chan_ledger)"; export CH_LEDGER
   chan_lock
   if [ "$_cs_sc" = story ]; then
     _cs_l="$(chan_list "$CH_IB")"
-    _cs_used="$(printf '%s\n' "$_cs_l" | awk -F'\t' '$3 == "story" { printf "%s", $4 }' | chan_chars)"
+    _cs_used="$(printf '%s\n' "$_cs_l" | awk -F'\t' '$3 == "story" && $2 != "retiring" { printf "%s", $4 }' | chan_chars)"
     _cs_new="$(printf '%s' "$1" | tr '\n' ' ' | chan_chars)"
     if [ $((_cs_used + _cs_new)) -gt "$CH_DCHARS" ]; then
       inbox_unlock "$CH_IB"
-      say "say: story $CH_STORY would carry $((_cs_used + _cs_new)) directive characters, over directive_chars $CH_DCHARS — retire one (unsay) first:"
+      say "say: story $CH_STORY would carry $((_cs_used + _cs_new)) directive characters (retiring ones not counted), over directive_chars $CH_DCHARS — retire one (unsay) first:"
       printf '%s\n' "$_cs_l" | awk -F'\t' '$3 == "story" { printf "  %s  %s  %s\n", $1, $2, $4 }' >&2
       exit 1
     fi

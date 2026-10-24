@@ -509,7 +509,7 @@ test_overnight_caps_readout() {
   printf '1000 vitest 5 0 0 short short -\n1000 vitest 5 0 0 main exclusive -\n' >> "$P/.studio/gate.times"
   run_start --dry-run
   assert_eq 0 "$RS_STATUS" "dry run exits 0"
-  assert_contains "$RS_OUT" "^gate caps: studio-test 20 min (×4 p95); default 45 min for vitest (fewer than 5 runs)$" "learned caps, then the defaults"
+  assert_contains "$RS_OUT" "^gate caps: studio-test 20 min (×4 median); default 45 min for vitest (fewer than 5 runs)$" "learned caps, then the defaults"
   assert_contains "$RS_OUT" "STUDIO_GATE_CAP_FACTOR='4' OMEGA_AUTOPILOT=1" "the launch env carries the factor"
   assert_eq 1 "$(awk '/^one lane:/ { o = NR } /^gate caps:/ { c = NR } END { print (o && c == o + 1) ? 1 : 0 }' "$RS_OUT")" "the readout follows the one-lane line"
   cap_cfg() { printf '%s\n' "$1" > "$P/.studio/config.json"; ( cd "$P" && git add -A && git -c user.name=t -c user.email=t@t commit -qm cfg ) >/dev/null 2>&1; }
@@ -1593,6 +1593,46 @@ test_say_cap_counts_characters() {
   verb say - "$(printf '%300s' '' | sed 's/ /é/g')"; assert_eq 0 "$V_STATUS" "300 two-byte characters"
   verb say - "$(printf '%200s' '' | sed 's/ /é/g')"; assert_eq 0 "$V_STATUS" "500 characters (1000 bytes) fit a 500-character cap"
   verb say - "é";                                     assert_eq 1 "$V_STATUS" "the 501st character does not"
+  fake_run_end
+}
+# Gate-retry spec Part B: a retiring directive no longer counts toward
+# directive_chars, so a held story (no unit runs to record the retirement)
+# can swap a stale directive for a new one; the next unit gets the retires
+# before the new note, in one block.
+test_say_cap_retiring_not_counted() {
+  fixture scr; FR_CHARS=500
+  fake_run overnight-scr-1 manifest S="held stop: need art until 2026-10-04T05:00:00Z"; unset FR_CHARS
+  ( cd "$P" && STUDIO_STORY=S && export STUDIO_STORY \
+      && sh "$STATE_BIN" ledger "Directive 1: $(printf '%200s' '' | tr ' ' a)" \
+      && sh "$STATE_BIN" ledger "Directive 2: $(printf '%200s' '' | tr ' ' b)" \
+      && git add -A .studio/ledger && git -c user.name=t -c user.email=t@t commit -qm ledger ) >/dev/null 2>&1
+  IB="$FR_DIR/inbox/S"
+  verb say S "$(printf '%300s' '' | tr ' ' c)"
+  assert_eq 1 "$V_STATUS" "held at the cap: 700 of 500 is refused"
+  verb unsay S 1; assert_eq "retire queued: message 3 retires directive 1" "$(cat "$V_OUT")" "unsay 1 queues a retire"
+  verb unsay S 2; assert_eq "retire queued: message 4 retires directive 2" "$(cat "$V_OUT")" "unsay 2 queues a retire"
+  verb say S "$(printf '%300s' '' | tr ' ' c)"
+  assert_eq 0 "$V_STATUS" "with both retiring, 300 of 500 fits while the story is held"
+  assert_eq 5 "$(cat "$V_OUT")" "the new directive's id follows the retires"
+  verb said S
+  assert_eq "1  retiring  $(printf '%200s' '' | tr ' ' a)|2  retiring  $(printf '%200s' '' | tr ' ' b)|5  pending  $(printf '%300s' '' | tr ' ' c)" \
+    "$(tr '\n' '|' < "$V_OUT" | sed 's/|$//')" "said: two retiring, one pending"
+  # still over without the retiring rows: refused, and the refusal lists them
+  verb say S "$(printf '%201s' '' | tr ' ' d)"
+  assert_eq 1 "$V_STATUS" "300 + 201 is over 500 even with the retiring ones left out"
+  assert_contains "$V_ERR" "would carry 501 directive characters (retiring ones not counted), over directive_chars 500" "the count leaves the retiring text out"
+  assert_contains "$V_ERR" "^  1  retiring  aaaa" "the refusal lists retiring directive 1"
+  assert_contains "$V_ERR" "^  2  retiring  bbbb" "and retiring directive 2"
+  assert_contains "$V_ERR" "^  5  pending  cccc" "and the pending one"
+  assert_missing "$IB/6.msg" "nothing is written"
+  # the next unit's delivery block: the retires (lower ids) before the new note
+  printf '{"session_id":"s","hook_event_name":"SessionStart","source":"startup"}' \
+    | STUDIO_UNIT_TAG=tag-scr STUDIO_RUN_DIR="$FR_DIR" STUDIO_STORY=S \
+      sh "$REPO_ROOT/studios/game-dev/hooks/operator-inbox.sh" > "$TMP/scr.inbox"
+  assert_eq "[retire 1]|[retire 2]|[5, story]" \
+    "$(grep -E '^\[(retire [0-9]+|[0-9]+, story)\]' "$TMP/scr.inbox" | sed 's/^\(\[[^]]*\]\).*/\1/' | tr '\n' '|' | sed 's/|$//')" \
+    "one block: retire 1, retire 2, then the new directive 5"
+  assert_eq "3.msg 4.msg 5.msg" "$(ls "$IB/delivered/tag-scr" | sort -n | tr '\n' ' ' | sed 's/ $//')" "all three are claimed by the unit"
   fake_run_end
 }
 test_say_bad_directive_chars_defaults() {
@@ -3020,7 +3060,7 @@ run_tests test_overnight_setup_preflight_single test_overnight_help_setup_prefli
   test_say_empty_text_exit_2 \
   test_say_ids_ledger_and_inbox \
   test_say_cap \
-  test_say_cap_counts_characters test_say_bad_directive_chars_defaults test_inbox_lock_failures \
+  test_say_cap_counts_characters test_say_cap_retiring_not_counted test_say_bad_directive_chars_defaults test_inbox_lock_failures \
   test_said_lists_states \
   test_unsay_pending_active_delivered \
   test_unsay_id_prefix \

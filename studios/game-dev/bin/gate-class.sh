@@ -4,6 +4,9 @@
 # resolved $SELF_DIR/studio-dispatch) before gate_classify.
 #
 # Test-only knobs (production: unset, the machine is read):
+#   STUDIO_GATE_LOADAVG_FILE a file whose first line is the load average, read
+#                          on every reading (so a test can change it mid-run);
+#                          it wins over STUDIO_GATE_LOADAVG
 #   STUDIO_GATE_LOADAVG    the 1-minute load average (a decimal)
 #   STUDIO_GATE_PHYS_CORES the physical core count (a positive integer)
 #
@@ -247,19 +250,36 @@ gate_node_workers() {
   printf '%s\n' "$_gn_h"
 }
 
-# gate_load1 — the 1-minute load average (a decimal), else return 1.
-gate_load1() {
-  if [ -n "${STUDIO_GATE_LOADAVG+x}" ]; then
-    _gl_v="$STUDIO_GATE_LOADAVG"
+# _gate_loads — the 1- and 5-minute load averages, one line `<1m> <5m>`; a
+# seam gives its one value for both.
+_gate_loads() {
+  if [ -n "${STUDIO_GATE_LOADAVG_FILE:-}" ]; then
+    _gs_v="$(head -n 1 "$STUDIO_GATE_LOADAVG_FILE" 2>/dev/null)"; printf '%s %s\n' "$_gs_v" "$_gs_v"
+  elif [ -n "${STUDIO_GATE_LOADAVG+x}" ]; then
+    printf '%s %s\n' "$STUDIO_GATE_LOADAVG" "$STUDIO_GATE_LOADAVG"
   else
     case "$(uname -s 2>/dev/null)" in
-      Darwin) _gl_v="$(sysctl -n vm.loadavg 2>/dev/null | awk '{ print $2 }')" ;;
-      Linux)  _gl_v="$(awk '{ print $1 }' /proc/loadavg 2>/dev/null)" ;;
-      *) return 1 ;;
+      Darwin) sysctl -n vm.loadavg 2>/dev/null | awk '{ print $2, $3 }' ;;
+      Linux)  awk '{ print $1, $2 }' /proc/loadavg 2>/dev/null ;;
     esac
   fi
+}
+
+# gate_load1 — the 1-minute load average (a decimal), else return 1.
+gate_load1() {
+  _gl_v="$(_gate_loads | awk '{ print $1 }')"
   printf '%s\n' "$_gl_v" | grep -Eq '^[0-9]+(\.[0-9]+)?$' || return 1
   printf '%s\n' "$_gl_v"
+}
+
+# gate_load_peak — the higher of the 1- and 5-minute load averages (a
+# decimal), else return 1. studio-gate reads it when a run hits its cap: the
+# 5-minute average still shows a competing job that has just ended.
+gate_load_peak() {
+  _glp_v="$(_gate_loads | awk '
+    $1 ~ /^[0-9]+(\.[0-9]+)?$/ && $2 ~ /^[0-9]+(\.[0-9]+)?$/ { print ($2 + 0 > $1 + 0) ? $2 : $1 }')"
+  [ -n "$_glp_v" ] || return 1
+  printf '%s\n' "$_glp_v"
 }
 
 # gate_load_ok [CORES] — prints <load>/<threshold> (? for an unreadable side).

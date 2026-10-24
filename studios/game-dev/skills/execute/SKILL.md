@@ -165,8 +165,11 @@ is `STUDIO_STORY`:
   `studio-gate` stops a gate-routed command that runs past
   min(60, `session_minutes`/2) minutes (`STUDIO_GATE_MINUTES`); it then
   exits 124. A gate-routed command that exits 124 is a timed-out gate as
-  well: the same `Stop: gate timed out — <command> ran past <n> min` line,
-  then end the turn. A unit whose log stays silent for `idle_minutes`
+  well: `Stop: gate timed out — <command>: <the last output line that starts
+  with "gate: " and contains "— stopped", without "gate: ">` (no such line:
+  `ran past the gate cap`; the line names the cap, the load readings and,
+  when the gate already ran it again under load, both durations; the gate
+  retries on its own, so never run it again yourself), then end the turn. A unit whose log stays silent for `idle_minutes`
   outside a gate is ended and recorded `stalled`. Either way the runner
   ends any gate the unit leaves behind. §2 carries this rule into every subagent brief.
 - **Pass `timeout` only on gate-routed commands.**
