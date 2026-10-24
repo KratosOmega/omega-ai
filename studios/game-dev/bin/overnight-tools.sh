@@ -9,6 +9,8 @@
 # a bare cmd must be on PATH (run only for min_version). version_args
 # (default --version) is split on blanks.
 
+# Byte collation: under a UTF-8 locale macOS sh matches [a-z] by collation (A-Y too).
+unset LC_ALL; LC_COLLATE=C
 # tools_entries CONFIG — required_tools as TSV, one line per entry:
 # cmd<TAB>min<TAB>args<TAB>hint. Nothing (exit 0) when the key is absent or [].
 # A malformed key is one stderr line `config required_tools: <reason>` and
