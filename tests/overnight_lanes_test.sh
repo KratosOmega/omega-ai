@@ -120,10 +120,11 @@ export GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
 #                   runner error, exit 3)
 #   ruling <text>   modifier: ledgers <text> in the story worktree and
 #                   commits it, before auto runs
-#   block <check>   modifier: in the story worktree, writes tests/<check>.pending
+#   block <check> [<file>]
+#                   modifier: in the story worktree, writes tests/<check>.pending
 #                   (`BLOCKED <id> <check>: ticks — expected 12, got 13 — ...`),
-#                   appends `## <id> B1 — <check> — OPEN` to
-#                   docs/game-dev/playtests/demo-blocks.md (header if new),
+#                   appends `## <id> B1 — <check> — OPEN` to <file> (default
+#                   docs/game-dev/playtests/demo-blocks.md; header if new),
 #                   ledgers `T<k> Block: <check> — ticks: 12 vs 13 — blocks
 #                   <that path>` (k = the next task), commits all, before auto
 #                   commits its task (it runs inside auto, once the worktree
@@ -222,7 +223,7 @@ commit_ledger() { git add ".studio/ledger/$id.md" && git commit -qm "ledger($id)
 
 # block_write — the `block` action's work, in the story worktree (the cwd).
 block_write() {
-  _bf=docs/game-dev/playtests/demo-blocks.md; _bk=$((k + 1))
+  _bf="${blockfile:-docs/game-dev/playtests/demo-blocks.md}"; _bk=$((k + 1))
   mkdir -p tests "$(dirname "$_bf")" \
     && printf 'BLOCKED %s %s: ticks — expected 12, got 13 — fixtures/frozen.json\n' "$id" "$blockchk" > "tests/$blockchk.pending" \
     && { [ -f "$_bf" ] || printf '# demo — blocked checks\n\nA run names a failed check against a pinned reference and carries on. It never resolves a block itself: the author rules.\n' > "$_bf"; } \
@@ -302,7 +303,7 @@ push_to() {
     && printf '%s\n' "$1" > "$2" && git add "$2" && git commit -qm "$1 moves: $2" && git push -q origin "$1" ) >&2
   rm -rf "$_pd"
 }
-cost=1; code=0; terminal=0; conflict=""; post=""; blockchk=""
+cost=1; code=0; terminal=0; conflict=""; post=""; blockchk=""; blockfile=""
 old_ifs="$IFS"; IFS=';'
 set -f; set -- $line; set +f
 IFS="$old_ifs"
@@ -371,7 +372,8 @@ for act in "$@"; do
                         || { st ledger "Stop: gate red — $_g"; commit_ledger gate-red; }; } ) ;;
     "ruling "*)       w="$(story_wt)"
                       ( cd "$w" && st ledger "${act#ruling }" && commit_ledger ruling ) ;;
-    "block "*)        blockchk="${act#block }" ;;
+    "block "*)        blockchk="${act#block }"   # block CHECK [FILE]: FILE, the blocks file (default demo-blocks.md)
+                      case "$blockchk" in *" "*) blockfile="${blockchk#* }"; blockchk="${blockchk%% *}" ;; esac ;;
     "symlink "*)      w="$(story_wt)"; _sl="${act#symlink }"
                       ( cd "$w" && mkdir -p "$(dirname "${_sl% *}")" && ln -s "${_sl#* }" "${_sl% *}" \
                         && git add "${_sl% *}" && git commit -qm "symlink: ${_sl% *}" ) ;;
@@ -3378,6 +3380,44 @@ test_lanes_blocks_file_not_followed() {
   assert_not_contains "$GH/body-1" "^### \.\./x$" "a .. path gets no section"
   assert_not_contains "$(last_lanes_dir)/report.md" "reworded the Block:" "a mid-text Block: mention is not listed"
 }
+# #94: the blocks file is read only as content tracked at FINAL_W's HEAD: an untracked
+# .env that worktree_setup left in FINAL_W gets the note and never reaches the body. A
+# backticked path is the same path; a `gate Block:` line is listed like any Block line.
+test_lanes_blocks_file_tracked_only() {
+  LANES_TASKS=2; export LANES_TASKS
+  LANES_CONFIG='{"worktree_setup": "case $(pwd -P) in */integration-*) echo ENVSECRET-VALUE > .env;; esac"}'; export LANES_CONFIG
+  lanes_fixture btr integration A:-
+  printf 'block ring_ticks; auto\nruling T2 Block: env — a: 1 vs 2 — blocks .env; ruling T2 Block: bt — a: 1 vs 2 — blocks `docs/game-dev/playtests/demo-blocks.md`; ruling gate Block: golden — a: 1 vs 2 — blocks docs/game-dev/playtests/demo-blocks.md; auto\nauto\nauto\n' > "$SCEN/A"
+  run_lanes start "$MFP"
+  assert_eq 0 "$LS_STATUS" "the run is done"
+  assert_eq "ENVSECRET-VALUE" "$(cat "$P/.claude/worktrees/integration-demo/.env" 2>/dev/null)" "fixture: the setup left an untracked .env in FINAL_W"
+  assert_not_contains "$GH/body-1" "ENVSECRET" "an untracked file's content never reaches the body"
+  assert_contains "$GH/body-1" "^### \.env$" "the .env path has a heading"
+  assert_contains "$GH/body-1" "^(not on the branch as a regular file — read \.env on the branch)$" "and the note"
+  assert_contains "$GH/body-1" "^## A B1 — ring_ticks — OPEN$" "the tracked blocks file is still inlined"
+  assert_eq 1 "$(grep -c '^### docs/game-dev/playtests/demo-blocks.md$' "$GH/body-1")" "a backticked path is the same path: listed once"
+  assert_not_contains "$GH/body-1" '^### `' "no heading keeps the backticks"
+  assert_eq 1 "$(grep -c '^(not on the branch as a regular file' "$GH/body-1")" "only .env gets the note"
+  assert_contains "$GH/body-1" "^- [0-9-]* gate Block: golden — a: 1 vs 2 — blocks docs/game-dev/playtests/demo-blocks.md$" "the final PR body lists a gate Block line"
+  assert_contains "$(last_lanes_dir)/report.md" "^- [0-9-]* gate Block: golden — a: 1 vs 2 — blocks docs/game-dev/playtests/demo-blocks.md$" "the report lists a gate Block line"
+}
+# #94: the `## Blocks file` section holds at most 40000 bytes: from the first file that
+# would pass that, each remaining path is named with a pointer instead of inlined.
+test_lanes_blocks_file_total_cap() {
+  LANES_TASKS=2; STUB_BLOCKS_PAD=30000; export LANES_TASKS STUB_BLOCKS_PAD
+  lanes_fixture btc integration A:-
+  printf 'block ring_ticks; auto\nblock lap_count docs/game-dev/playtests/other-blocks.md; auto\nauto\nauto\n' > "$SCEN/A"
+  run_lanes start "$MFP"
+  unset STUB_BLOCKS_PAD
+  assert_eq 0 "$LS_STATUS" "the run is done"
+  assert_contains "$GH/body-1" "^### docs/game-dev/playtests/demo-blocks.md$" "the first path has a heading"
+  assert_contains "$GH/body-1" "^(truncated — read docs/game-dev/playtests/demo-blocks.md on the branch)$" "it is inlined, cut at 20000 bytes"
+  assert_contains "$GH/body-1" "^### docs/game-dev/playtests/other-blocks.md$" "the second path has a heading"
+  assert_contains "$GH/body-1" "^(not inlined — read docs/game-dev/playtests/other-blocks.md on the branch)$" "past the cap it is named, not inlined"
+  assert_not_contains "$GH/body-1" "^## A B1 — lap_count — OPEN$" "the second file's content is not in the body"
+  _btc="$(sed -n '/^## Blocks file$/,/^Gate: /p' "$GH/body-1" | sed '$d' | wc -c | tr -d ' ')"
+  assert_eq 1 "$([ "$_btc" -le 40200 ] && echo 1 || echo 0)" "the section stays within the cap plus the pointer lines ($_btc bytes)"
+}
 # #94: a missing tool is still a Stop, and still holds.
 test_lanes_missing_tool_still_stops() {
   lanes_fixture mts integration A:-
@@ -5218,7 +5258,7 @@ run_tests test_stub_waitexist_and_run_token test_lanes_setup_preflight_refuses_l
   test_lanes_stop_queued_story test_lanes_stop_running_story test_lanes_stop_waiting_story \
   test_lanes_hold_waiting_story_holds_at_start test_lanes_hold_running_then_resume test_lanes_run_stop_held_was_held \
   test_lanes_push_rejected_first_unit_holds test_lanes_origin_check_localcommit_holds \
-  test_lanes_block_carries_on test_lanes_blocks_file_capped test_lanes_blocks_file_not_followed test_lanes_missing_tool_still_stops \
+  test_lanes_block_carries_on test_lanes_blocks_file_capped test_lanes_blocks_file_not_followed test_lanes_blocks_file_tracked_only test_lanes_blocks_file_total_cap test_lanes_missing_tool_still_stops \
   test_lanes_final_step_no_delivery test_lanes_deadline \
   test_lanes_stop_at_done_never_lands test_lanes_stop_held_by_operator test_lanes_stop_pending_never_holds \
   test_lanes_gate_repair_own_stop_holds test_lanes_directive_cap_holds test_lanes_hold_during_last_unit_lands_and_clears \
