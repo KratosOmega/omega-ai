@@ -14,6 +14,15 @@ approval page in `artifacts/`.
 
 ## Log
 
+### 2026-10-23 — A pinned-reference mismatch blocks and carries on; the preflight checks tools; done follows a hand merge (#94, #95, #82)
+
+- Incident (phoenix bat-sonic-rings, Mac.lan): plan Task 46 said a difference "BLOCKS". The execute skill knew only `Stop:`, so the unit wrote `Stop: T46 BLOCK ...` and the lane held ~1 h until an operator sent `say` + `resume`. T34 held for a missing ffmpeg and a `.venv` built on python 3.9; `start` and `--dry-run` caught neither. #82: `final_gate` ran without `STUDIO_START_DIR`, and a final PR merged by hand left the record without `done`.
+- Fix 1 (#94): execute 6a defines a Block (a check against a pinned reference): mark only the failing assertions pending with `BLOCKED ...`, append to the blocks file, write a ledger `Block:` line, complete the task as progress. Never edit the reference. `studio-brief task` gains a `blocks:` line; `studio-brief final` prints `Block:` lines. The PR body gets `## Blocks`; the runner lists Blocks in `report.md` and the final PR body.
+- Fix 2 (#95): `required_tools` in `.studio/config.json`. `start`, `--dry-run` and `--detach` refuse a missing, too old or non-running tool with its hint. Path entries are checked after `worktree_setup`. A path `cmd` may not hold `..`; `version_args` takes only letters, digits, blanks and `. _ = + / : , -`. No key, no change.
+- Fix 3 (#82): the runner exports `STUDIO_START_DIR` to every gate it launches, and `runs_settle` marks a record `done` when its final PR was merged by hand.
+- Limits: no existing stop became a block; no per-plan tool list yet.
+- Install is pending: install after #93 lands and pid 10051 has exited.
+
 ### 2026-10-23 — A run that cannot push stops at once; holds remind (#90, #91, #92)
 
 - Incident (phoenix bat-sonic-rings, Mac.lan): the gh token on the new machine had scopes `gist, read:org, repo`, no `workflow`. Unit T19 edited `.github/workflows/web-tools-tests.yml`, and GitHub refuses a push that touches a workflow file without that scope.

@@ -176,11 +176,23 @@ stories as parallel lanes of dependency chains:
   `studio-overnight start` and `--dry-run` probe before launch. A miss refuses
   with the tool and its install hint. A `cmd` with a `/` is a path in the
   checkout, always run and required to exit 0; a bare `cmd` must be on PATH
-  and is run only with `min_version`. With `worktree_setup`, `start` probes
+  and is run only with `min_version`. A path `cmd` may not contain a `..`
+  component. `version_args` (default `--version`) takes only letters, digits,
+  blanks and `. _ = + / : , -`; quotes and shell metacharacters are refused.
+  With `worktree_setup`, `start` probes
   path entries in the scratch worktree after the setup built them
   (`--dry-run` probes the start checkout and says so). Example:
   `"required_tools": [{"cmd": "ffmpeg", "hint": "brew install ffmpeg"},
   {"cmd": ".venv/bin/python", "min_version": "3.10", "hint": "python3.12 -m venv .venv"}]`
+- Blocks (#94): a check that disagrees with a pinned reference (a frozen
+  fixture, golden, approved value or capture) does not stop the run. The unit
+  marks only the failing assertions pending with `BLOCKED <story> <check> ...`,
+  appends an entry to the run's blocks file, writes a ledger `Block:` line and
+  carries on; the story never holds. It never edits the reference. A Block
+  shows up in the single-plan `report.md`, the lanes report, and the final PR
+  body's `## Blocks` (the PR is still ready); the runner lists them without
+  parsing them into outcomes. A missing tool or a failing unpinned check stays
+  a Stop or ordinary work.
 - Each `.studio/gate.times` row is
   `<epoch> <who> <seconds> <rc> <wait s> <lane> <class> <unit|->`; `lane` is
   `main`, `short` or `main:<reason>`. Rows are kept if among the newest 50 per
