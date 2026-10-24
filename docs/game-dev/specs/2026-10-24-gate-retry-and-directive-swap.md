@@ -72,7 +72,7 @@ is unchanged: 5 rows minimum, F 0 = off, the 15 min floor, and STUDIO_GATE_MINUT
 
 Why the median:
 - With phoenix's 16 rows, nearest-rank p95 is the maximum, the one 629 s outlier: 4 × 629 s
-  → **42 min**. The median is 277 s: 4 × 277 s → **19 min**, which matches the issue's "fails in
+  → **42 min**. The median is 273 s: 4 × 273 s → **19 min**, which matches the issue's "fails in
   ~15 min, not 60".
 - One slow outlier must not stretch the cap for the next 50 runs. p95 over at most 50 rows is
   always one of the two largest.
@@ -100,8 +100,9 @@ signal, not the short slot's cap, which keeps its own demote path):
 3. **Budget.** The retry runs only when two attempts fit in the flat cap:
    `2 × CAP_SECS ≤ STUDIO_GATE_MINUTES × 60`. So the gate never runs longer than the old flat cap
    would have, and the session budget (`session_minutes`, which sets that cap to S/2) is
-   untouched. If the run is busy but there is no room, the line ends
-   `(load …, busy at …: no room for a retry inside <N> min)`.
+   untouched. An explicit `STUDIO_GATE_SECONDS` is the flat cap and the run cap at once, so such a
+   run never retries. If the run is busy but there is no room, the line ends
+   `(load …, busy at …: no room for a second run inside the <N> s cap)`.
 4. **The retry.** The gate prints
    `gate: <who> ran past <the cap's own words> under load L0→L1 (busy at t) — running it again once, exclusive, when the load is below t (waiting up to W s)`.
    It then:
@@ -110,7 +111,7 @@ signal, not the short slot's cap, which keeps its own demote path):
    - waits until `gate_load_ok`, polling at the gate poll, for at most
      `W = STUDIO_GATE_MINUTES × 60 − 2 × CAP_SECS` seconds. The seam is
      `STUDIO_GATE_LOAD_WAIT_SECONDS`. If the wait runs out it prints
-     `gate: load still <l>/<t> after <W> s — running it again anyway`;
+     `gate: load still <l> after <W> s — running it again anyway`;
    - queues again as **exclusive**: `CLS=exclusive`. It registers in `gate.wantx/`, so no new short
      check starts, and its lock's class is `exclusive`, so no short check runs beside it;
    - runs the same command under the same cap. Its row's lane is `main:retry`, which
@@ -122,11 +123,15 @@ signal, not the short slot's cap, which keeps its own demote path):
      `gate: <who> timed out twice — <s1> s under load L0→L1, then <s2> s exclusive under load L2→L3 (busy at t) — stopped`.
    - Any other non-zero status is just that status (a red suite is a red suite).
 6. A signal during the wait or the retry behaves as today: TERM/INT/HUP end the gate with
-   128+n, and the EXIT trap releases.
+   128+n, and the EXIT trap releases. A run that a signal reached is never retried, even when
+   the cap then fires on a command that ignores the signal (`not retried`), so a retry is never
+   orphaned from the unit's reaper.
 
 The execute skill's Stop line for a 124 changes from the fixed
 `Stop: gate timed out — <command> ran past <n> min` to quoting the gate:
-`Stop: gate timed out — <command>: <studio-gate's last "gate:" line, without "gate: ">`.
+`Stop: gate timed out — <command>: <the last output line that starts with "gate: " and contains "— stopped", without "gate: ">`
+(no such line: `ran past the gate cap`). The skill also says never to run it again by hand: the
+gate already retried when that made sense.
 So the held story's `why` carries both durations and the loads. `why` is free display text
 (overnight-events.md), so no event schema changes. The doc's example list gains the new
 form.
@@ -149,6 +154,16 @@ each read, so a test can change it mid-run) and `STUDIO_GATE_LOAD_WAIT_SECONDS`.
 - A machine-wide heavy-run gate is a different feature. It would need a shared lock across
   projects and agreement from every studio that uses omega-ai. Not done; A2 handles the symptom,
   and the retry itself runs exclusive in its project.
+
+### What this would have done for T53
+
+Honestly: probably not saved it. The load an hour later was ~10-12, below phoenix's `t = 24`, so
+the readings at the cap may well have read not busy, and the slowdown lasted the whole hour, so
+a retry would likely have been slow too. The gain for T53 is A1: the run stops at ~19 min, not
+60, and the stop line names the cap and the loads. A2 helps the case of a short spike.
+
+One caveat: a CPU-heavy suite that hangs adds its own load, so on a machine with few cores it
+can read as busy and earn one retry. That costs at most one more cap inside the old budget.
 
 ## Part B — retiring directives free their characters at once
 
@@ -185,6 +200,7 @@ Why this is safe:
   - the load wait: the load is high, then drops (through the load file), and the retry starts after
     it drops;
   - a short check is refused `beside exclusive` while the retry holds.
+  - a TERM reaches the gate and the cap then fires on a TERM-ignoring run: no retry, `not retried`.
 - `tests/gate_class_test.sh`: `gate_load_peak` and the load-file seam.
 - `tests/toolkit_test.sh`: the existing cap tests get `STUDIO_GATE_LOADAVG=0` (deterministic), and
   their pinned lines gain the readings.

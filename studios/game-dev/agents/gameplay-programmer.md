@@ -45,7 +45,8 @@ command keeps the default cap. A command that its timeout moved to the
 background is hung: stop it with the tool that stops background tasks, and
 do not wait for it. A `studio-test` that exits 124 ran past the gate run
 cap (the gate has already run it again if the machine was busy): report it as
-`gate timed out — <command>: <the gate's last stderr line, without "gate: ">`;
+`gate timed out — <command>: <the last output line that starts with "gate: "
+and contains "— stopped", without "gate: ">` (none: `ran past the gate cap`);
 it exits 124.
 
 For `Verify: playtest` and `Verify: visual` tasks: implement, commit (a task with no

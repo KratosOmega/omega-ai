@@ -171,7 +171,7 @@ test_learned_cap_median_and_clamp() {
   assert_eq "20" "$(cap "$F" w 4 60)" "4 x median 290 s = 19.3 min, rounded up to 20"
   F="$TMP/lco.times"; : > "$F"
   lcap_rows "$F" w main 0 241 254 293 267 273 277 273 285 282 279 280 269 629 307 268 269
-  assert_eq "19" "$(cap "$F" w 4 60)" "phoenix's 16 suites: one 629 s outlier leaves the cap at 4 x median 277 s (p95 would give 42)"
+  assert_eq "19" "$(cap "$F" w 4 60)" "phoenix's 16 suites: one 629 s outlier leaves the cap at 4 x median 273 s (p95 would give 42)"
   F="$TMP/lce.times"; : > "$F"
   lcap_rows "$F" w main 0 100 200 300 400 500 600
   assert_eq "20" "$(cap "$F" w 4 60)" "an even count takes the lower middle (the 3rd of 6: 300 s)"

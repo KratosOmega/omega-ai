@@ -602,7 +602,7 @@ test_execute_lane_gate_foreground() {
   assert_contains "$E" 'no `&` inside the command, no Monitor or notification' "no shell & and no notification wait"
   assert_contains "$E" '`tests/probes/bash_timeout_probe.sh` (2026-10-02)' "the probe result replaces the hedge"
   assert_contains "$E" 'Stop: gate timed out — <command> ran past <n> min' "a timed-out gate is a stated stop"
-  assert_contains "$E" 'Stop: gate timed out — <command>: <the gate.s last stderr line' "a gate exit 124 quotes the gate's own stop line"
+  assert_contains "$E" 'Stop: gate timed out — <command>: <the last output line that starts' "a gate exit 124 quotes the gate's own stop line"
   assert_file "$REPO_ROOT/tests/probes/bash_timeout_probe.sh" "the probe is in the repo"
   # The brief line §2 carries verbatim.
   assert_eq 1 "$(tr '\n' ' ' < "$E" | grep -c 'never in the background (no `run_in_background`, no `&`), and never end a turn to wait for one')" "§2's verbatim brief line"

@@ -676,6 +676,21 @@ test_gate_retry_not_when_idle_or_no_room() {
   assert_eq 1 "$(starts n)" "no room: no retry"
 }
 
+# exclusive-scan: test_gate_retry_not_after_a_signal in (b) a TERM reaches the gate while a TERM-ignoring run holds; the cap then fires on it
+test_gate_retry_not_after_a_signal() {
+  lanes_repo rsig; A="$(lanes_wt A)"
+  seed_suite 5
+  echo 12 > "$TMP/load.g"
+  retry_suite g "$A" LANES_TRAP=1
+  lanes_wait_mark '^s g '
+  kill -TERM "$(cat "$TMP/pid.g")"
+  lanes_done g > /dev/null
+  assert_eq 1 "$(starts g)" "a run a signal reached is not run again, though the cap then fired under load"
+  assert_not_contains "$TMP/err.g" 'running it again' "no retry line"
+  assert_contains "$TMP/err.g" '— stopped (load 12→12, busy at 8: not retried)$' "the stop line says not retried"
+  assert_eq 0 "$(rows studio-test | grep -c 'main:retry')" "no retry row"
+}
+
 # exclusive-scan: test_lanes_demote_reruns_once out (d) order only: event waits on the hand-off line and marks
 test_lanes_demote_reruns_once() {
   lanes_repo dem; A="$(lanes_wt A)"; B="$(lanes_wt B)"
@@ -898,7 +913,7 @@ test_lanes_short_cap_equal_run_cap_is_124() {
 TESTS_EXCLUSIVE="test_lanes_waiting_messages test_lanes_signal_after_command_keeps_rc \
   test_lanes_short_cap_reruns_in_main test_lanes_short_cap_under_run_cap_is_124 test_lanes_short_cap_term_ignorer \
   test_lanes_late_signal_no_rerun_line test_lanes_short_cap_equal_run_cap_is_124 test_gate_learned_cap_fires \
-  test_gate_retry_times_out_twice test_gate_retry_not_when_idle_or_no_room"
+  test_gate_retry_times_out_twice test_gate_retry_not_when_idle_or_no_room test_gate_retry_not_after_a_signal"
 run_tests test_lanes_beside_shareable test_lanes_never_beside_exclusive test_lanes_drain_and_no_starvation \
   test_lanes_three_way_never_overlaps_exclusive test_lanes_same_worktree_gut_goes_main \
   test_lanes_node_beside_suite_same_worktree test_lanes_second_node_same_worktree_waits \
@@ -917,4 +932,5 @@ run_tests test_lanes_beside_shareable test_lanes_never_beside_exclusive test_lan
   test_lanes_phys_cores_read_once test_lanes_short_cap_equal_run_cap_is_124 \
   test_gate_learned_cap_fires test_gate_learned_cap_production_default test_gate_learned_cap_factor_and_setup \
   test_gate_learned_cap_clamped_is_today \
-  test_gate_retry_under_load_passes test_gate_retry_times_out_twice test_gate_retry_not_when_idle_or_no_room
+  test_gate_retry_under_load_passes test_gate_retry_times_out_twice test_gate_retry_not_when_idle_or_no_room \
+  test_gate_retry_not_after_a_signal

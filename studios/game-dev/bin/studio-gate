@@ -62,7 +62,9 @@
 # loads at the end, t the load rule's 2 x physical cores (gate-class.sh).
 # Retry under load (spec 2026-10-24 A2): a main-lane run the cap stopped while
 # L0 or L1 was at t or more runs once more when two runs fit the flat cap
-# (2 x the cap <= STUDIO_GATE_SECONDS, else STUDIO_GATE_MINUTES x 60). It releases its lane, waits for
+# (2 x the cap <= STUDIO_GATE_MINUTES x 60; an explicit STUDIO_GATE_SECONDS is
+# the flat cap and the run cap at once, so it never retries; a run a signal
+# reached is never retried either). It releases its lane, waits for
 # the load to drop below t (at most the rest of the flat cap, else it runs
 # anyway), queues as exclusive and runs under the same cap; its row's lane is
 # main:retry. A pass prints `gate: <who> passed on the retry (…)`; a second cap
@@ -163,7 +165,9 @@ if [ "$KIND" != node ] && ( cd "$WT" 2>/dev/null && sh "$SELF_DIR/studio-dispatc
 OWNED=0; OWN_DIR=""; LANE=""; REASON=""; LAST_REASON=""; DEMOTED=0; LEAKED=0
 # The retry under load: RETRIED once it was granted; R_* the first attempt's
 # seconds and loads; LOAD_WAIT the pending wait in seconds (empty: none).
-RETRIED=0; R_S=""; R_L0=""; R_L1=""; LOAD_WAIT=""; ATT_L0="?"; ATT_L1="?"
+# EXT_SIG: a TERM/INT/HUP that reached a running attempt (the cap's own 124
+# overwrites SIGSTATUS, so it is kept apart): such a run is never retried.
+RETRIED=0; R_S=""; R_L0=""; R_L1=""; LOAD_WAIT=""; ATT_L0="?"; ATT_L1="?"; EXT_SIG=""
 BLK_WHO=""; BLK_PID=""; BLK_NOTE=""; BLK_STUCK=""
 
 HAVE_MUTEX=0
@@ -327,7 +331,7 @@ targets_alive() {
 # to LATE_SIG: the command's status and its row are kept, and no re-run starts.
 on_signal() {
   if [ "$RUNNING" = 1 ]; then
-    SIGSTATUS="$1"
+    SIGSTATUS="$1"; [ "$1" = 124 ] || EXT_SIG="$1"
     _c="${CHILD:-$!}"
     if [ -z "$TARGETS" ] && [ -n "$_c" ]; then TARGETS="$(targets "$_c")"; fi
     if [ -n "$TARGETS" ]; then kill -TERM $TARGETS 2>/dev/null; fi
@@ -519,7 +523,7 @@ cap_decide() {
       "$WHO" "$R_S" "$R_L0" "$R_L1" "$HOLD_S" "$ATT_L0" "$ATT_L1" "$LOAD_T" >&2
     return 1
   fi
-  if [ "$LANE" != main ] || [ "$ROW_RC" != 124 ] || [ -n "$LATE_SIG" ] || { ! load_busy "$ATT_L0" && ! load_busy "$ATT_L1"; }; then
+  if [ "$LANE" != main ] || [ "$ROW_RC" != 124 ] || [ -n "$LATE_SIG$EXT_SIG" ] || { ! load_busy "$ATT_L0" && ! load_busy "$ATT_L1"; }; then
     printf 'gate: %s %s — stopped (%s: not retried)\n' "$WHO" "$(cap_words)" "$_cd_ld" >&2
     return 1
   fi
@@ -634,6 +638,8 @@ while :; do
     "$(row_lane)" "$([ "$LANE" = short ] && echo short || echo "$CLS")" "${TAG:--}"
   if [ "$CAPPED" = 1 ] && cap_decide; then
     lane_release; RETRIED=1; CLS=exclusive; MODE=main; POST=0
+    # A signal while the decision printed or the lane was released ends the gate here.
+    [ -z "$LATE_SIG" ] || exit "$LATE_SIG"
     continue
   fi
   if [ "$RETRIED" = 1 ] && [ "$CAPPED" = 0 ] && [ "$ROW_RC" = 0 ]; then
