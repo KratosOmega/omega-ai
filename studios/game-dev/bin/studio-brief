@@ -269,6 +269,13 @@ directives_part() {
 checkpoint_part() {
   _cp_l="$(ledger_path)"
   [ -n "$_cp_l" ] && [ -f "$_cp_l" ] || return 0
+  if [ ! -f "$HERE/checkpoint.awk" ]; then
+    if [ -z "${_NOCP_WARNED:-}" ]; then
+      printf 'studio-brief: warning: %s missing — no checkpoint is shown (reinstall omega-ai)\n' "$HERE/checkpoint.awk" >&2
+      _NOCP_WARNED=1
+    fi
+    return 0
+  fi
   _cp="$(LC_ALL=C awk -v lb="$1" -v out=line -f "$HERE/checkpoint.awk" "$_cp_l")"
   [ -z "$_cp" ] || printf '==> %s (checkpoint)\n%s\n' "$_cp_l" "$_cp"
 }
