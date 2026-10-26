@@ -1992,10 +1992,12 @@ deny_note() {
 }
 # ---- Carry-over (spec 2026-10-26 §2-§4, C1-C5) ----
 # story_checkout — the story has a checkout of its own: snapshot's
-# FEATURE_DIR is not START_DIR, or the story has a branch recorded (single
-# plan, in place). Before a lanes story's first unit it has neither.
+# FEATURE_DIR is not START_DIR, or (single plan, in place) the story has a
+# branch recorded. A lanes story (CUR_ID) never works in START_DIR: before
+# its first unit, or with its worktree gone, it has none.
 story_checkout() {
   [ "${FEATURE_DIR:-$START_DIR}" = "$START_DIR" ] || return 0
+  [ -z "${CUR_ID:-}" ] || return 1
   case "$(state get branch 2>/dev/null)" in ''|-) return 1 ;; esac
 }
 # head0 — C4: the feature checkout's HEAD before a unit (after unit_pre);
@@ -2004,8 +2006,8 @@ head0() { ! story_checkout || git -C "$FEATURE_DIR" rev-parse -q --verify HEAD 2
 # unit_commits HEAD0 — C4: the count of the unit's own commits in the
 # feature checkout: HEAD0..HEAD, no merges, none on origin/<Target> (lanes:
 # the manifest's; single plan: the default branch), outside .studio/, the
-# story's docs-sync commit (`docs(<id>): …`, studio-docs-sync) left out.
-# 0 when HEAD0 is empty.
+# docs-sync commits left out (studio-docs-sync's subjects: `docs(<id>):
+# approved plan`, `docs(<id>): plan at run docs <rev>`). 0 when HEAD0 is empty.
 unit_commits() {
   [ -n "$1" ] || { echo 0; return 0; }
   _uc_t="${MF_TARGET:-${DEFAULT_BRANCH:-}}"; _uc_x=""
@@ -2013,28 +2015,38 @@ unit_commits() {
     _uc_x="^refs/remotes/origin/$_uc_t"
   fi
   git -C "$FEATURE_DIR" log --no-merges --format=%s "$1..HEAD" ${_uc_x:+"$_uc_x"} -- . ':!.studio/' 2>/dev/null \
-    | awk -v p="docs(${CUR_ID:-}): " 'p == "docs(): " || index($0, p) != 1 { k++ } END { print k + 0 }'
+    | awk '!/^docs\([^)]*\): (approved plan|plan at run docs )/ { k++ } END { print k + 0 }'
 }
-# checkpoint_lines LABEL — the feature ledger's `<LABEL> checkpoint: …` lines
-# written after the label's start, texts only, oldest first: T<n> starts at
-# the last `T<n-1> complete` line, any other label (final-review) at the last
-# `T<k> complete` line; either, when there is none, at the last `base` line
-# (studio-brief's checkpoint_part reads the newest).
-checkpoint_lines() {
-  ledger_of "$FEATURE_DIR" | LC_ALL=C awk -v lb="$1" '
-    BEGIN { p = "^T[0-9]+ complete "; if (lb ~ /^T[0-9]+$/) p = "^T" (substr(lb, 2) - 1) " complete " }
-    $0 !~ /^- [0-9-]+ / { next }
-    { t = $0; sub(/^- [0-9-]+ /, "", t) }
-    t ~ p { s = NR }
-    t ~ /^base / { b = NR }
-    index(t, lb " checkpoint: ") == 1 { L[NR] = substr(t, length(lb) + 14) }
-    END { st = s ? s : b; for (i = st + 1; i <= NR; i++) if (i in L) print L[i] }'
-}
-# checkpoint_of LABEL — the newest checkpoint_lines text, cut to 600 bytes;
+# ckpt_awk OUT LABEL — checkpoint.awk (shared with studio-brief) over the
+# ledger lines on stdin: OUT text (the newest `<LABEL> checkpoint:` text after
+# the label's start, escapes undone, on one line, cut to 600 bytes) or count.
+ckpt_awk() { LC_ALL=C awk -v out="$1" -v lb="$2" -f "$SELF_DIR/checkpoint.awk"; }
+# checkpoint_of LABEL — the feature ledger's newest LABEL checkpoint text;
 # empty when none.
-checkpoint_of() {
-  _co="$(checkpoint_lines "$1" | tail -n 1)"
-  [ -z "$_co" ] || printf '%s\n' "$_co" | cut_utf8 600
+checkpoint_of() { ledger_of "$FEATURE_DIR" | ckpt_awk text "$1"; }
+# ckpt_count LABEL — how many LABEL checkpoint lines the feature ledger holds
+# after the label's start.
+ckpt_count() { ledger_of "$FEATURE_DIR" | ckpt_awk count "$1"; }
+# ckpt_base — before a unit, the commit whose ledger stands for the unit's
+# own checkout should that checkout change: HEAD0 (head0), else origin's
+# story branch, which a new story worktree starts from; empty for neither.
+ckpt_base() {
+  [ -z "$_su_h0" ] || { printf '%s\n' "$_su_h0"; return 0; }
+  _cb="$(story_branch)"; case "$_cb" in ''|-) return 0 ;; esac
+  git -C "$START_DIR" rev-parse -q --verify "refs/remotes/origin/$_cb^{commit}" 2>/dev/null || true
+}
+# ckpt_wrote LABEL — 1 when the unit just ended wrote a LABEL checkpoint line,
+# else 0: the feature ledger's count is above the count before the unit,
+# read from the same ledger — the working copy (_su_ck0) when the feature
+# checkout did not change (_su_fd0), else the ledger file at _su_l0
+# (ckpt_base; 0 when empty).
+ckpt_wrote() {
+  if [ "$FEATURE_DIR" = "$_su_fd0" ]; then _cw0="$_su_ck0"
+  elif [ -n "$_su_l0" ]; then
+    _cw_n="$( (cd "$FEATURE_DIR" && sh "$STATE_BIN" show 2>/dev/null) | sed -n 's/^## Feature ledger: //p' | head -n 1)"
+    _cw0="$(git -C "$FEATURE_DIR" show "$_su_l0:.studio/ledger/$_cw_n.md" 2>/dev/null | ckpt_awk count "$1")"
+  else _cw0=0; fi
+  if [ "$(ckpt_count "$1")" -gt "${_cw0:-0}" ]; then echo 1; else echo 0; fi
 }
 # capped_count LABEL — §4: this run's capped units (units.tsv column 9 is 1)
 # of LABEL's task, retries included.
@@ -2077,6 +2089,15 @@ carry_note() {
 # (queue_note) after a task or final-review unit; no other label gets one.
 carry_queue() {
   case "$1" in T[0-9]*|final-review) queue_note "${CUR_ID:--}" "$1" "$2" || true ;; esac
+}
+# carry_hold LABEL — ruling 7: on a holdable ending of story_units, the unit
+# just ended (it did not finish its task, and the caller knows) gets its
+# fallback note queued for the unit a resume runs, unless it wrote a
+# checkpoint (studio-brief carries that).
+carry_hold() {
+  holdable || return 0
+  [ "$(ckpt_wrote "$1")" = 0 ] || return 0
+  carry_queue "$1" "$(carry_note 0)"
 }
 # write_report REASON — the morning report: how it ended, what it cost, the
 # rulings to check, what to play, the PR, and how to resume. A capped unit
@@ -2193,7 +2214,9 @@ on_exit() {
 # (unit_commits), counts toward task_timeouts and never toward retries; an
 # uncapped one counts toward retries. After a task or final-review unit that
 # did not finish its task, the runner's fallback note (carry_note) is queued
-# for the next unit, when there is one or a hold waits for one. Its scratch files
+# for the next unit: always before a retry, and on a holdable ending (a Stop:,
+# origin_check's stop, a directive not recorded, no progress, the bound)
+# when the unit wrote no checkpoint (carry_hold). Its scratch files
 # live in UNIT_DIR (the run dir; a lane's own dir in manifest mode). Unit
 # numbers run on from the caller's n (0 when unset), so a second call for the
 # same story (after a gate repair) never reuses a unit's file names.
@@ -2212,23 +2235,31 @@ story_units() {
     if run_budget_out; then ENDING="stop: run budget"; return 0; fi
     _base="${STUDIO_OVERNIGHT_LABEL:-$(label_for)}"
     unit_pre "$_base" || return 0
-    _before="$SIG"; _su_h0="$(head0)"; _su_ck="$(checkpoint_lines "$_base" | awk 'END { print NR }')"
+    _before="$SIG"; _su_h0="$(head0)"; _su_l0="$(ckpt_base)"; _su_fd0="$FEATURE_DIR"; _su_ck0="$(ckpt_count "$_base")"
     n=$((n + 1)); run_unit "$n" "$_base$suffix"
     [ "$UNIT_HALTED" = 0 ] || { ENDING="$(halt_reason)"; return 0; }   # halted waiting for a slot (D22)
     snapshot "$UNIT_DIR/stops.after"
     # C1: capped — killed at the cap (run_unit's UNIT_CAPPED), or ended at or
-    # past its wrap-up time with its label's task not done.
-    [ "$SIG" != "$_before" ] || [ "$UNIT_END" -lt "$UNIT_WRAP_AT" ] || UNIT_CAPPED=1
+    # past its wrap-up time with its label's task not done. An idle-watchdog
+    # kill is a stall, never a cap (ruling 6).
+    [ "$SIG" != "$_before" ] || [ "$UNIT_STALLED" = 1 ] || [ "$UNIT_END" -lt "$UNIT_WRAP_AT" ] || UNIT_CAPPED=1
     take_new_stop "$UNIT_DIR/stops.before" "$UNIT_DIR/stops.after"
-    if [ -n "$NEW_STOP" ]; then row "$n" "$_base$suffix" stop; ENDING="$STOP_ENDING$UNIT_DENY_NOTE"; return 0; fi
+    if [ -n "$NEW_STOP" ]; then
+      row "$n" "$_base$suffix" stop; ENDING="$STOP_ENDING$UNIT_DENY_NOTE"
+      [ "$SIG" != "$_before" ] || carry_hold "$_base"; return 0
+    fi
     # #91: a unit that would be done or progress must have its work on origin.
     if { [ "$SIG_STAGE" = idle ] && [ "$SIG_SHIPPED" -gt 0 ]; } || [ "$SIG" != "$_before" ]; then
-      if ! origin_check; then row "$n" "$_base$suffix" stop; ENDING="stop: $ORIGIN_WHY$UNIT_DENY_NOTE"; return 0; fi
+      if ! origin_check; then
+        # The work is done but not on origin: the note names what to push.
+        row "$n" "$_base$suffix" stop; ENDING="stop: $ORIGIN_WHY$UNIT_DENY_NOTE"; carry_hold "$_base"; return 0
+      fi
     fi
     if [ "$SIG_STAGE" = idle ] && [ "$SIG_SHIPPED" -gt 0 ]; then row "$n" "$_base$suffix" done; ENDING=done; return 0; fi
     if [ -n "$REQ_LIMIT" ]; then
       if [ "$SIG" != "$_before" ]; then _su_o=progress; else _su_o="$(unit_outcome)"; fi
-      row "$n" "$_base$suffix" "$_su_o"; ENDING="directive $REQ_LIMIT not recorded$UNIT_DENY_NOTE"; return 0
+      row "$n" "$_base$suffix" "$_su_o"; ENDING="directive $REQ_LIMIT not recorded$UNIT_DENY_NOTE"
+      [ "$SIG" != "$_before" ] || carry_hold "$_base"; return 0
     fi
     if [ "$SIG" != "$_before" ]; then row "$n" "$_base$suffix" progress; noprog=0; suffix=""; continue; fi
     # Spec §3-§4, C1: a capped unit feeds only the task_timeouts bound, and
@@ -2238,16 +2269,17 @@ story_units() {
     elif [ "$UNIT_CAPPED" = 1 ]; then _out="$(unit_outcome)"
     else _out="$(unit_outcome)"; noprog=$((noprog + 1)); fi
     row "$n" "$_base$suffix" "$_out"
-    _su_note="$(carry_note "$(checkpoint_lines "$_base" | awk -v k="$_su_ck" 'END { print (NR > k) ? 1 : 0 }')")"
+    _su_note="$(carry_note "$(ckpt_wrote "$_base")")"
     _su_cp="$(checkpoint_of "$_base")"
+    _su_k=0; [ "$UNIT_CAPPED" = 0 ] || _su_k="$(capped_count "$_base")"
     # C2: the bound's ending wins, with the checkpoint (else the fallback's head).
-    if [ "$UNIT_CAPPED" = 1 ] && [ "$(capped_count "$_base")" -ge "$TASK_TIMEOUTS" ]; then
-      ENDING="timed out on $_base (session_minutes $SESSION_MINUTES; $(capped_count "$_base") capped units) — checkpoint: ${_su_cp:-$(printf '%s\n' "$_su_note" | cut_utf8 300)}$UNIT_DENY_NOTE"
+    if [ "$UNIT_CAPPED" = 1 ] && [ "$_su_k" -ge "$TASK_TIMEOUTS" ]; then
+      ENDING="timed out on $_base (session_minutes $SESSION_MINUTES; $_su_k capped units) — checkpoint: ${_su_cp:-$(printf '%s\n' "$_su_note" | cut_utf8 300)}$UNIT_DENY_NOTE"
     elif [ "$noprog" -le "$RETRIES" ]; then suffix="-retry"; carry_queue "$_base" "$_su_note"; continue
     elif [ "$_out" = stalled ]; then ENDING="stalled on $_base$(stall_note)$UNIT_DENY_NOTE"
     else ENDING="no progress on $_base$(orphan_note "$_out")${_su_cp:+ — checkpoint: $_su_cp}$UNIT_DENY_NOTE"; fi
     # The note waits for the unit a resume runs; an ending that does not hold has none.
-    ! holdable || carry_queue "$_base" "$_su_note"
+    carry_hold "$_base"
     return 0
   done
 }

@@ -260,22 +260,16 @@ directives_part() {
   [ -z "$_dp" ] || printf '==> %s\n%s\n' "$_dp_l" "$_dp"
 }
 # checkpoint_part LABEL — spec §2: the newest `<LABEL> checkpoint: …` ledger
-# line written after the label's start, as one part headed `==> <ledger
-# path> (checkpoint)`; nothing when there is none. T<n> starts at the last
-# `T<n-1> complete` line, any other label (final-review) at the last
+# line written after the label's start, its escapes undone as directives_part
+# does and its text cut to 600 bytes, as one part headed `==> <ledger path>
+# (checkpoint)`; nothing when there is none. checkpoint.awk (shared with
+# studio-overnight's checkpoint_of) holds the start rule: T<n> starts at the
+# last `T<n-1> complete` line, any other label (final-review) at the last
 # `T<k> complete` line; either, when there is none, at the last `base` line.
-# studio-overnight's checkpoint_of reads the same line.
 checkpoint_part() {
   _cp_l="$(ledger_path)"
   [ -n "$_cp_l" ] && [ -f "$_cp_l" ] || return 0
-  _cp="$(LC_ALL=C awk -v lb="$1" '
-    BEGIN { p = "^T[0-9]+ complete "; if (lb ~ /^T[0-9]+$/) p = "^T" (substr(lb, 2) - 1) " complete " }
-    $0 !~ /^- [0-9-]+ / { next }
-    { t = $0; sub(/^- [0-9-]+ /, "", t) }
-    t ~ p { s = NR }
-    t ~ /^base / { b = NR }
-    index(t, lb " checkpoint: ") == 1 { L[NR] = $0 }
-    END { st = s ? s : b; for (i = NR; i > st; i--) if (i in L) { print L[i]; exit } }' "$_cp_l")"
+  _cp="$(LC_ALL=C awk -v lb="$1" -v out=line -f "$HERE/checkpoint.awk" "$_cp_l")"
   [ -z "$_cp" ] || printf '==> %s (checkpoint)\n%s\n' "$_cp_l" "$_cp"
 }
 

@@ -263,6 +263,23 @@ test_brief_task_checkpoint_part() {
   assert_contains "$TMP/cpf.txt" "^- [0-9-]* final-review checkpoint: fr-done x; left y; next z$" "final prints the final-review checkpoint"
   assert_not_contains "$TMP/cpf.txt" "T5 checkpoint" "and no task's"
 }
+# The checkpoint part undoes the ledger escapes as directives_part does and
+# cuts the text to 600 bytes, as the runner's checkpoint_of does.
+test_brief_checkpoint_unesc_and_cut() {
+  Q="$TMP/projcu"; build_fixture "$Q"
+  printf '\n### Task 5: t5\nMARK-T5\n' >> "$Q/docs/plan.md"
+  _cu_long="$(head -c 700 /dev/zero | tr '\0' x)"
+  ( cd "$Q" && STUDIO_STORY=S1 && export STUDIO_STORY
+    sh "$STATE_BIN" ledger 'T4 complete a..b'
+    sh "$STATE_BIN" ledger 'T5 checkpoint: done a\nleft b \\n c'
+    sh "$STATE_BIN" set task 4/5 ) >/dev/null 2>&1
+  ( cd "$Q" && STUDIO_STORY=S1 sh "$BRIEF" task 5 ) > "$TMP/cu1.txt"
+  assert_eq "$(printf '%s\n' 'T5 checkpoint: done a' 'left b \n c')" \
+    "$(sed -n '/(checkpoint)$/,$p' "$TMP/cu1.txt" | sed -n '2,3p' | sed 's/^- [0-9-]* //')" "\\n is a newline, \\\\ a backslash"
+  ( cd "$Q" && STUDIO_STORY=S1 sh "$STATE_BIN" ledger "T5 checkpoint: $_cu_long" ) >/dev/null 2>&1
+  ( cd "$Q" && STUDIO_STORY=S1 sh "$BRIEF" task 5 ) > "$TMP/cu2.txt"
+  assert_eq "600 1" "$(grep 'T5 checkpoint: xxx' "$TMP/cu2.txt" | tr -cd x | wc -c | tr -d ' ') $(grep -c 'T5 checkpoint: x*…$' "$TMP/cu2.txt")" "cut to 600 bytes, marked …"
+}
 test_brief_no_directives_no_part() {
   ( cd "$P" && STUDIO_STORY=S1 sh "$BRIEF" task 3 ) > "$TMP/nd.txt"
   assert_eq 0 "$(grep -c '^==> .*\.studio/ledger/' "$TMP/nd.txt")" "no directives: no ledger part in task"
@@ -979,4 +996,4 @@ test_brief_final_block_lines() {
   assert_not_contains "$out" "T1 complete" "other ledger lines are still absent"
 }
 
-run_tests test_godot_cmd_md_finds_bare_forms test_godot_cmd_md_span_edges test_godot_cmd_md_multiline test_brief_task test_brief_final test_brief_refusals test_brief_missing_sections test_brief_directives_task test_brief_directives_final test_brief_directive_text_not_ruling test_brief_directive_edge_cases test_brief_no_directives_no_part test_brief_task_directive_scoped test_brief_task_checkpoint_part test_brief_context_appended test_brief_context_cap test_brief_context_missing_file test_brief_context_no_glob test_brief_final_plan_acceptance test_brief_check_verb test_brief_check_uses_truth_region test_brief_final_reads_check_rulings test_brief_original_plan_item test_brief_usage_names_check test_brief_single_line_item test_brief_validate_good_plan test_brief_validate_reports_all test_brief_validate_duplicate_task test_brief_validate_missing_plan_and_no_state test_brief_validate_relative_to_caller test_brief_rewrite_wraps_only test_brief_task_check_final_rewritten test_brief_validate_godot_form test_brief_missing_detector test_brief_broken_detector test_brief_rewrite_no_tmpdir test_brief_rewrite_file test_brief_task_blocks_default test_brief_task_blocks_sources test_brief_final_block_lines test_tracks_two_groups test_tracks_after_joins test_tracks_normalizes_paths test_tracks_ignores_backlog_and_fences test_tracks_deterministic test_validate_after_forward_fails test_validate_after_unknown_fails test_validate_after_ok test_tracks_no_tasks
+run_tests test_godot_cmd_md_finds_bare_forms test_godot_cmd_md_span_edges test_godot_cmd_md_multiline test_brief_task test_brief_final test_brief_refusals test_brief_missing_sections test_brief_directives_task test_brief_directives_final test_brief_directive_text_not_ruling test_brief_directive_edge_cases test_brief_no_directives_no_part test_brief_task_directive_scoped test_brief_task_checkpoint_part test_brief_checkpoint_unesc_and_cut test_brief_context_appended test_brief_context_cap test_brief_context_missing_file test_brief_context_no_glob test_brief_final_plan_acceptance test_brief_check_verb test_brief_check_uses_truth_region test_brief_final_reads_check_rulings test_brief_original_plan_item test_brief_usage_names_check test_brief_single_line_item test_brief_validate_good_plan test_brief_validate_reports_all test_brief_validate_duplicate_task test_brief_validate_missing_plan_and_no_state test_brief_validate_relative_to_caller test_brief_rewrite_wraps_only test_brief_task_check_final_rewritten test_brief_validate_godot_form test_brief_missing_detector test_brief_broken_detector test_brief_rewrite_no_tmpdir test_brief_rewrite_file test_brief_task_blocks_default test_brief_task_blocks_sources test_brief_final_block_lines test_tracks_two_groups test_tracks_after_joins test_tracks_normalizes_paths test_tracks_ignores_backlog_and_fences test_tracks_deterministic test_validate_after_forward_fails test_validate_after_unknown_fails test_validate_after_ok test_tracks_no_tasks
