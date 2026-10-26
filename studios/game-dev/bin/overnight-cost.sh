@@ -4,8 +4,9 @@
 # SELF_DIR (model-prices.tsv beside it), RUN_DIR and STATE_ROOT.
 #
 # The naive cost of a stream-json transcript sums its assistant messages (a
-# subagent's too), each message id once: input, cache-write and cache-read
-# tokens from the message's first usage (exact); output tokens as the bytes of
+# subagent's too), each message id once: input, cache-write (5-minute and
+# 1-hour, from usage.cache_creation; all 5-minute when it has no split) and
+# cache-read tokens from the message's first usage (exact); output tokens as the bytes of
 # its content's text, thinking and tool_use input over all its events / 4
 # (usage.output_tokens is a start-of-message snapshot); priced per message
 # model from model-prices.tsv (USD per 1M tokens), an unknown model as the
@@ -14,8 +15,8 @@
 # UNIT_DIR/cost.samples (cost_sample: model, naive, modelUsage costUSD). A
 # model's factor is the median of costUSD / naive over the run's samples when
 # it has 3 or more, else the factor cached in STATE_ROOT/.studio/cost.calib
-# (`model factor epoch` lines; cost_calib_save rewrites it as a run ends),
-# else 1.
+# (`model factor epoch` lines; cost_calib_save rewrites it as a run ends; a
+# factor stamped before model-prices.tsv last changed is ignored), else 1.
 
 # Byte collation: under a UTF-8 locale macOS sh matches [a-z] by collation (A-Y too).
 unset LC_ALL; LC_COLLATE=C
@@ -32,6 +33,16 @@ cost_naive() {
     function str(s, k,   v) {
       if (!match(s, "\"" k "\"[ \t]*:[ \t]*\"[^\"]*\"")) return ""
       v = substr(s, RSTART, RLENGTH); sub(/^[^:]*:[ \t]*"/, "", v); return substr(v, 1, length(v) - 1)
+    }
+    # obj(s) — s starts at or before an object: s up to the brace that closes that object.
+    function obj(s,   i, L, c, d) {
+      L = length(s); d = 0
+      for (i = 1; i <= L; i++) {
+        c = substr(s, i, 1)
+        if (c == "{") d++
+        else if (c == "}" && --d == 0) return substr(s, 1, i)
+      }
+      return s
     }
     # cbytes(u) — u starts at the [ of message.content and holds no escaped
     # quote: the bytes of its blocks text and thinking strings and tool_use
@@ -72,8 +83,8 @@ cost_naive() {
     }
     BEGIN {
       while ((getline l < prices) > 0) {
-        if (l ~ /^#/ || split(l, f, "\t") < 5) continue
-        PI[f[1]] = f[2]; PO[f[1]] = f[3]; PW[f[1]] = f[4]; PR[f[1]] = f[5]
+        if (l ~ /^#/ || split(l, f, "\t") < 6) continue
+        PI[f[1]] = f[2]; PO[f[1]] = f[3]; PW[f[1]] = f[4]; PH[f[1]] = f[5]; PR[f[1]] = f[6]
         if (top == "" || f[2] + f[3] > PI[top] + PO[top]) top = f[1]
       }
     }
@@ -93,8 +104,10 @@ cost_naive() {
         if (CEND) rest = substr(t, cs + CEND)
       }
       if (!(id in IN) && match(rest, /"usage"[ \t]*:[ \t]*\{/)) {
-        u = substr(rest, RSTART)
-        IN[id] = num(u, "input_tokens"); CW[id] = num(u, "cache_creation_input_tokens"); CR[id] = num(u, "cache_read_input_tokens")
+        u = obj(substr(rest, RSTART))
+        IN[id] = num(u, "input_tokens"); CR[id] = num(u, "cache_read_input_tokens")
+        CW[id] = num(u, "ephemeral_5m_input_tokens"); CH[id] = num(u, "ephemeral_1h_input_tokens")
+        if (CW[id] + CH[id] == 0) CW[id] = num(u, "cache_creation_input_tokens")
         nu++
       }
     }
@@ -102,7 +115,7 @@ cost_naive() {
       if (!nu || top == "") exit
       for (i = 1; i <= n; i++) {
         id = ids[i]; m = MOD[id]; p = price(m)
-        C[m] += (IN[id] * PI[p] + CW[id] * PW[p] + CR[id] * PR[p] + OB[id] / 4 * PO[p]) / 1000000
+        C[m] += (IN[id] * PI[p] + CW[id] * PW[p] + CH[id] * PH[p] + CR[id] * PR[p] + OB[id] / 4 * PO[p]) / 1000000
       }
       for (m in C) printf "%s\t%.6f\n", m, C[m]
     }' "$1" 2>/dev/null | sort
@@ -148,12 +161,14 @@ cost_run_factors() {
       }'
 }
 # cost_calibration — the factor per model: `model<TAB>factor`, this run's
-# (cost_run_factors), else the cached one. A model not listed takes 1.
+# (cost_run_factors), else the cached one unless its epoch is older than
+# model-prices.tsv (a price change voids it). A model not listed takes 1.
 cost_calibration() {
-  { cost_run_factors; echo --; cat "$STATE_ROOT/.studio/cost.calib" 2>/dev/null; } | LC_ALL=C awk '
+  _ocs_m="$(stat -c %Y "$SELF_DIR/model-prices.tsv" 2>/dev/null || stat -f %m "$SELF_DIR/model-prices.tsv" 2>/dev/null)"
+  { cost_run_factors; echo --; cat "$STATE_ROOT/.studio/cost.calib" 2>/dev/null; } | LC_ALL=C awk -v mt="${_ocs_m:-0}" '
     $0 == "--" { c = 1; next }
     !c { split($0, f, "\t"); seen[f[1]] = 1; print; next }
-    NF >= 2 && !($1 in seen) && $2 ~ /^[0-9.]+$/ && $2 + 0 > 0 { seen[$1] = 1; printf "%s\t%s\n", $1, $2 }'
+    NF >= 3 && !($1 in seen) && $2 ~ /^[0-9.]+$/ && $2 + 0 > 0 && $3 ~ /^[0-9]+$/ && $3 + 0 >= mt + 0 { seen[$1] = 1; printf "%s\t%s\n", $1, $2 }'
 }
 # cost_calib_save — after a run: when it has a factor (3+ samples of a model),
 # rewrite STATE_ROOT/.studio/cost.calib with this run's factors (stamped now)

@@ -1186,14 +1186,17 @@ test_overnight_cost_no_result_estimated() {
 }
 
 # ---- A killed unit's cost (spec §6, C3, C5) ----
-# The fixtures: overnight-cost-killed.jsonl has two assistant messages, msg_A
+# The fixtures: overnight-cost-killed.jsonl has three assistant messages, msg_A
 # (opus, in two events with the same usage: 8 thinking bytes, a 32-byte tool
-# input; its signature and wire_tool_inputs are not output) and msg_B (sonnet,
-# a subagent's: 16 text bytes), plus a user event whose toolUseResult carries
-# a decoy usage. Naive: opus 10000 x 4 + 100000 x 5 + 1000000 x 0.2 + 40 / 4 x 20
-# = 740200; sonnet 5000 x 2 + 500000 x 0.2 + 16 / 4 x 10 = 110040; per 1M: 0.85024.
+# input; its signature and wire_tool_inputs are not output; its cache write is
+# all 1-hour), msg_B (sonnet, a subagent's: 16 text bytes; a 10000 5-minute +
+# 20000 1-hour cache write) and msg_D (sonnet: a 40000 cache write with no
+# split, priced as 5-minute), plus a user event whose toolUseResult carries a
+# decoy usage. Naive: opus 10000 x 4 + 100000 x 8 + 1000000 x 0.2 + 40 / 4 x 20
+# = 1040200; sonnet 5000 x 2 + 10000 x 2.5 + 20000 x 4 + 500000 x 0.1 + 16 / 4 x 10
+# = 165040, and 40000 x 2.5 = 100000; per 1M: 1.30524.
 # overnight-cost-calib.jsonl: one sonnet message of naive 1.00 (400000 x 2 +
-# 1000000 x 0.2) and a result whose modelUsage says sonnet cost 2.0.
+# 2000000 x 0.1) and a result whose modelUsage says sonnet cost 2.0.
 COST_FX="$REPO_ROOT/tests/fixtures"
 # cost_run CMD… — CMD with overnight-cost.sh sourced: SELF_DIR the plugin's bin,
 # RUN_DIR $CR_RUN, STATE_ROOT $CR_ROOT.
@@ -1209,13 +1212,21 @@ cost_dirs() {
 test_overnight_cost_estimate_helpers() {
   cost_dirs
   grep -v '"type":"result"' "$COST_FX/overnight-cost-calib.jsonl" > "$TMP/cr/calk.jsonl"
-  assert_eq 0.8502 "$(cost_run cost_estimate "$COST_FX/overnight-cost-killed.jsonl" 3)" \
+  assert_eq 1.3052 "$(cost_run cost_estimate "$COST_FX/overnight-cost-killed.jsonl" 3)" \
     "naive: usage once per message id, output from content bytes / 4, priced per message model"
+  # Cache writes: usage.cache_creation's 5-minute and 1-hour split, else all 5-minute.
+  printf '%s\n' '{"type":"assistant","message":{"model":"claude-opus-5-5","id":"s1","content":[],"usage":{"input_tokens":0,"cache_creation_input_tokens":200000,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":100000,"ephemeral_1h_input_tokens":100000},"output_tokens":1}}}' > "$TMP/cr/split.jsonl"
+  assert_eq 1.3000 "$(cost_run cost_estimate "$TMP/cr/split.jsonl" 3)" "a split cache write: 100000 x 5 (5-minute) + 100000 x 8 (1-hour)"
+  printf '%s\n' '{"type":"assistant","message":{"model":"claude-opus-5-5","id":"s2","content":[],"usage":{"input_tokens":0,"cache_creation_input_tokens":200000,"cache_read_input_tokens":0,"output_tokens":1}}}' > "$TMP/cr/nosplit.jsonl"
+  assert_eq 1.0000 "$(cost_run cost_estimate "$TMP/cr/nosplit.jsonl" 3)" "no split: cache_creation_input_tokens at the 5-minute price"
   printf '%s\n' '{"type":"assistant","message":{"model":"claude-mystery-9","id":"m1","content":[],"usage":{"input_tokens":100000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}' > "$TMP/cr/unk.jsonl"
   assert_eq 1.0000 "$(cost_run cost_estimate "$TMP/cr/unk.jsonl" 3)" "an unknown model takes the dearest row (fable input 10/M)"
   # Calibration: two samples fall back to the cache, else 1; three give the median.
   assert_eq 1.0000 "$(cost_run cost_estimate "$TMP/cr/calk.jsonl" 3)" "no samples, no cache: factor 1"
+  _now="$(date +%s)"
   printf 'claude-sonnet-5-5 3 100\n' > "$CR_ROOT/.studio/cost.calib"
+  assert_eq 1.0000 "$(cost_run cost_estimate "$TMP/cr/calk.jsonl" 3)" "a cached factor stamped before model-prices.tsv last changed is ignored"
+  printf 'claude-sonnet-5-5 3 %s\n' "$_now" > "$CR_ROOT/.studio/cost.calib"
   cost_run cost_sample "$COST_FX/overnight-cost-calib.jsonl" > "$CR_RUN/lanes/1/cost.samples"
   assert_eq "claude-sonnet-5-5	1.000000	2.0" "$(cat "$CR_RUN/lanes/1/cost.samples")" \
     "a result unit's sample: model, naive, modelUsage costUSD (a model with no messages is left out)"
@@ -1252,12 +1263,12 @@ test_overnight_cost_estimate_killed_unit() {
   STUDIO_OVERNIGHT_SESSION_SECONDS=8; export STUDIO_OVERNIGHT_SESSION_SECONDS
   run_start; unset STUDIO_OVERNIGHT_SESSION_SECONDS
   R="$(last_run_dir)"
-  assert_eq "1 0.8502 estimate" "$(awk -F'\t' 'NR == 1 { print $6, $4, $8 }' "$R/units.tsv")" \
+  assert_eq "1 1.3052 estimate" "$(awk -F'\t' 'NR == 1 { print $6, $4, $8 }' "$R/units.tsv")" \
     "a unit killed at its cap has its cost estimated from its transcript (factor 1: no result units) and marked"
   assert_eq 9 "$(awk -F'\t' 'NR == 1 { print NF }' "$R/units.tsv")" "units.tsv rows have 9 columns"
-  assert_contains "$R/events.jsonl" '"event":"unit_ended",.*"usd":0.8502,"usd_est":true' "unit_ended marks the estimate"
+  assert_contains "$R/events.jsonl" '"event":"unit_ended",.*"usd":1.3052,"usd_est":true' "unit_ended marks the estimate"
   assert_not_contains "$R/report.md" "cost unknown" "the report never says cost unknown"
-  assert_contains "$R/report.md" '^| 1 | T1 | [0-9]* | ≈0.8502 | ' "the report marks the estimated cost"
+  assert_contains "$R/report.md" '^| 1 | T1 | [0-9]* | ≈1.3052 | ' "the report marks the estimated cost"
 }
 
 test_overnight_cost_estimate_calibrated() {
@@ -1291,9 +1302,9 @@ test_overnight_cost_counts_toward_budget() {
   scenario "stage execute; emit $COST_FX/overnight-cost-killed.jsonl; sleep 30" "cost 1"
   STUDIO_OVERNIGHT_SESSION_SECONDS=8; export STUDIO_OVERNIGHT_SESSION_SECONDS
   run_start; unset STUDIO_OVERNIGHT_SESSION_SECONDS
-  assert_eq 1 "$(calls)" "the estimate (0.85) + session_usd (1) passes run_usd (1.5): no second unit"
+  assert_eq 1 "$(calls)" "the estimate (1.31) + session_usd (1) passes run_usd (1.5): no second unit"
   assert_contains "$(last_run_dir)/report.md" "^Ending: stop: run budget$" "budget is the ending"
-  assert_contains "$(last_run_dir)/report.md" '^Spent: \$0.85$' "the estimate is in the spend"
+  assert_contains "$(last_run_dir)/report.md" '^Spent: \$1.31$' "the estimate is in the spend"
 }
 
 test_overnight_unexpected_stage() {
