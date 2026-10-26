@@ -16,10 +16,17 @@
 # model's factor is the median of costUSD / naive over the run's samples when
 # it has 3 or more, else the factor cached in STATE_ROOT/.studio/cost.calib
 # (`model factor epoch` lines; cost_calib_save rewrites it as a run ends; a
-# factor stamped before model-prices.tsv last changed is ignored), else 1.
+# factor stamped before model-prices.tsv last changed is ignored), else
+# COST_DEFAULT_FACTOR.
 
 # Byte collation: under a UTF-8 locale macOS sh matches [a-z] by collation (A-Y too).
 unset LC_ALL; LC_COLLATE=C
+# COST_DEFAULT_FACTOR — the factor of a model with no calibration (under 3
+# result units in the run and no fresh cached factor). Phoenix unit 21
+# (bat-bite-vfx, 2026-10-25) observed real / naive 1.25 for sonnet and 1.41
+# for opus: the transcript redacts thinking text, so its output is undercounted.
+# A run budget should err high, not low.
+COST_DEFAULT_FACTOR=1.3
 # cost_naive FILE — FILE's naive cost per model: `model<TAB>usd` lines (%.6f).
 # Nothing when no assistant message carries a usage (empty, garbled, missing).
 cost_naive() {
@@ -162,7 +169,8 @@ cost_run_factors() {
 }
 # cost_calibration — the factor per model: `model<TAB>factor`, this run's
 # (cost_run_factors), else the cached one unless its epoch is older than
-# model-prices.tsv (a price change voids it). A model not listed takes 1.
+# model-prices.tsv (a price change voids it). A model not listed takes
+# COST_DEFAULT_FACTOR.
 cost_calibration() {
   _ocs_m="$(stat -c %Y "$SELF_DIR/model-prices.tsv" 2>/dev/null || stat -f %m "$SELF_DIR/model-prices.tsv" 2>/dev/null)"
   { cost_run_factors; echo --; cat "$STATE_ROOT/.studio/cost.calib" 2>/dev/null; } | LC_ALL=C awk -v mt="${_ocs_m:-0}" '
@@ -189,10 +197,10 @@ cost_calib_save() {
 # units.tsv (column 8 `result`, or an old 7-column row with a numeric cost;
 # rows of 0 minutes left out), else MINUTES x 0.50.
 cost_estimate() {
-  _ocs_e="$({ cost_calibration; echo --; cost_naive "$1"; } | LC_ALL=C awk -F'\t' '
+  _ocs_e="$({ cost_calibration; echo --; cost_naive "$1"; } | LC_ALL=C awk -F'\t' -v dflt="$COST_DEFAULT_FACTOR" '
     $0 == "--" { n = 1; next }
     !n { f[$1] = $2; next }
-    { s += $2 * (($1 in f) ? f[$1] : 1) }
+    { s += $2 * (($1 in f) ? f[$1] : dflt) }
     END { if (s > 0) printf "%.4f\n", s }')"
   if [ -z "$_ocs_e" ]; then
     _ocs_e="$(cat "$RUN_DIR/units.tsv" "$RUN_DIR"/lanes/*/units.tsv "$RUN_DIR/final/units.tsv" 2>/dev/null \
