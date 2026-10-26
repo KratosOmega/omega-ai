@@ -470,7 +470,7 @@ Config: .studio/config.json "overnight" (defaults, ranges):
                                     (\`timed out on T<n> (session_minutes N; <k> capped
                                     units) — checkpoint: …\`); after a resume the next
                                     capped unit holds again. A capped unit that pushed
-                                    commits of its own is \`partial\` progress
+                                    commits of its own (one is enough) is \`partial\` progress
   gate_cap_factor      4     0-10     a gate run is stopped at this factor x the median of the last 50
                                     main-lane passes of the same command in .studio/gate.times
                                     (STUDIO_GATE_CAP_FACTOR; at least 15 min, never past the cap
@@ -609,6 +609,12 @@ Test hooks (tests only; never set them for a real run; --detach strips them):
                      place of hold_minutes x 60; a whole number
   STUDIO_OVERNIGHT_INBOX_WAIT — test hook: seconds a verb waits for the
                      inbox lock (default 15)
+  STUDIO_OVERNIGHT_FETCH_SECONDS — test hook: the cap on the preflight's fetch
+                     of the runner's own checkout (default 15)
+  STUDIO_OVERNIGHT_RUNNER_CHECK — test hook: 0 skips the preflight's runner
+                     checkout check, its fetch included (tests/assert.sh sets
+                     it for every suite); read before the strip and passed to
+                     --detach's child
   STUDIO_OVERNIGHT_REAP_POLL_SECONDS — test hook: the poll while a TERMed
                      session or gate is given its grace: 1 (default), 0.5,
                      0.2 or 0.1; the grace stays in seconds
@@ -654,6 +660,10 @@ case "${STUDIO_OVERNIGHT_DETACH_WAIT_SECONDS:-300}" in
 esac
 [ -n "$DETACH_WAIT" ] && [ "$DETACH_WAIT" -le 3600 ] \
   || { say "STUDIO_OVERNIGHT_DETACH_WAIT_SECONDS must be a whole number from 1 to 3600, got $STUDIO_OVERNIGHT_DETACH_WAIT_SECONDS"; exit 2; }
+# runner_behind_warn's test hook: STUDIO_OVERNIGHT_RUNNER_CHECK=0 skips the
+# check, fetch included. Read here, so --detach's strip cannot drop it (its
+# child gets it back).
+RUNNER_CHECK="${STUDIO_OVERNIGHT_RUNNER_CHECK:-1}"
 
 START_DIR="$(sh "$STATE_BIN" root --work 2>/dev/null || true)"
 STATE_ROOT="$(sh "$STATE_BIN" root 2>/dev/null || true)"
@@ -989,10 +999,13 @@ suite_every_resolve() {
 # runner's own git checkout is behind its upstream on studios/game-dev. The
 # checkout is found through the runner's symlinks (SELF_DIR: production runs
 # ~/.claude-gamedev/bin/studio-overnight, a link into the checkout). Skipped
-# silently when it is not a work tree or its branch has no upstream. The fetch
+# silently when it is not a work tree or its branch has no upstream, and
+# under the test hook STUDIO_OVERNIGHT_RUNNER_CHECK=0 (RUNNER_CHECK: the
+# suites never fetch the real runner checkout's origin). The fetch
 # is bounded by STUDIO_OVERNIGHT_FETCH_SECONDS (default 15; a test hook); a
 # failed or timed-out fetch falls back to the last fetch and says how old it is.
 runner_behind_warn() {
+  [ "$RUNNER_CHECK" != 0 ] || return 0
   _rb_d="$(cd "$SELF_DIR/../../.." 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null)" || return 0
   [ -n "$_rb_d" ] || return 0
   _rb_u="$(git -C "$_rb_d" rev-parse --abbrev-ref '@{u}' 2>/dev/null)" || return 0
@@ -1196,6 +1209,10 @@ stop_requested() { [ -f "$STOP_FILE" ] || [ "$STOP_REQ" = 1 ]; }
 # spent — the run's cost so far: column 4 of units.tsv, a result or an
 # estimate (column 8); `unknown`, in a row written before estimates, counts 0.
 spent() { awk -F'\t' '$4 != "unknown" { s += $4 } END { printf "%.2f\n", s + 0 }' "$RUN_DIR/units.tsv" 2>/dev/null || echo 0.00; }
+# spent_mark — `≈` when a unit row spent sums is an estimate (column 8
+# `estimate`, spec §6), else nothing: report.md's `Spent: ≈$X`, as its unit
+# rows mark one. overnight-lanes.sh redefines it over every lane's rows.
+spent_mark() { awk -F'\t' '$8 == "estimate" { e = 1 } END { if (e) printf "≈" }' "$RUN_DIR/units.tsv" 2>/dev/null; }
 
 # ---- The event log (spec AC28-29; docs/game-dev/overnight-events.md) ----
 # run_event EVENT FIELD… — one line in RUN_DIR/events.jsonl (studio-event);
@@ -2003,19 +2020,36 @@ story_checkout() {
 # head0 — C4: the feature checkout's HEAD before a unit (after unit_pre);
 # empty with no story checkout.
 head0() { ! story_checkout || git -C "$FEATURE_DIR" rev-parse -q --verify HEAD 2>/dev/null; }
-# unit_commits HEAD0 — C4: the count of the unit's own commits in the
-# feature checkout: HEAD0..HEAD, no merges, none on origin/<Target> (lanes:
-# the manifest's; single plan: the default branch), outside .studio/, the
-# docs-sync commits left out (studio-docs-sync's subjects: `docs(<id>):
-# approved plan`, `docs(<id>): plan at run docs <rev>`). 0 when HEAD0 is empty.
-unit_commits() {
-  [ -n "$1" ] || { echo 0; return 0; }
+# unit_commit_list HEAD0 — C4: the unit's own commits in the feature
+# checkout, one sha per line: HEAD0..HEAD, no merges, none on origin/<Target>
+# (lanes: the manifest's; single plan: the default branch), outside .studio/,
+# the docs-sync commits left out (studio-docs-sync's subjects: `docs(<id>):
+# approved plan`, `docs(<id>): plan at run docs <rev>`). None when HEAD0 is
+# empty.
+unit_commit_list() {
+  [ -n "$1" ] || return 0
   _uc_t="${MF_TARGET:-${DEFAULT_BRANCH:-}}"; _uc_x=""
   if [ -n "$_uc_t" ] && git -C "$FEATURE_DIR" rev-parse -q --verify "refs/remotes/origin/$_uc_t" >/dev/null 2>&1; then
     _uc_x="^refs/remotes/origin/$_uc_t"
   fi
-  git -C "$FEATURE_DIR" log --no-merges --format=%s "$1..HEAD" ${_uc_x:+"$_uc_x"} -- . ':!.studio/' 2>/dev/null \
-    | awk '!/^docs\([^)]*\): (approved plan|plan at run docs )/ { k++ } END { print k + 0 }'
+  git -C "$FEATURE_DIR" log --no-merges --format='%H %s' "$1..HEAD" ${_uc_x:+"$_uc_x"} -- . ':!.studio/' 2>/dev/null \
+    | awk '{ s = $0; sub(/^[^ ]* /, "", s) } s !~ /^docs\([^)]*\): (approved plan|plan at run docs )/ { print $1 }'
+}
+# unit_commits HEAD0 — C4: how many unit_commit_list names (0 for none).
+unit_commits() { unit_commit_list "$1" | awk 'END { print NR + 0 }'; }
+# unit_pushed HEAD0 — D2: the capped unit's pushed commits are progress. 0
+# when origin_check passes (all of HEAD on origin, or a story it skips: no
+# branch, in place on the default branch, not checked out), else when at
+# least one of unit_commit_list is an ancestor of refs/remotes/origin/<branch>
+# as origin_check's fetch (or the unit's own push) left it.
+unit_pushed() {
+  origin_check && return 0
+  _up_r="refs/remotes/origin/$(story_branch)"
+  git -C "$FEATURE_DIR" rev-parse -q --verify "$_up_r^{commit}" >/dev/null 2>&1 || return 1
+  for _up_c in $(unit_commit_list "$1"); do
+    git -C "$FEATURE_DIR" merge-base --is-ancestor "$_up_c" "$_up_r" 2>/dev/null && return 0
+  done
+  return 1
 }
 # ckpt_awk OUT LABEL — checkpoint.awk (shared with studio-brief) over the
 # ledger lines on stdin: OUT text (the newest `<LABEL> checkpoint:` text after
@@ -2116,7 +2150,7 @@ write_report() {
     printf 'Plan: %s\n' "$(state get plan 2>/dev/null)"
     printf 'Branch: %s\n' "$(state get branch 2>/dev/null)"
     printf 'PR: %s\n' "${_pr:-none}"
-    printf 'Spent: $%s\n' "$_spent"
+    printf 'Spent: %s$%s\n' "$(spent_mark)" "$_spent"
     printf 'Started: %s · Ended: %s\n\n' "${_started:-unknown}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     printf '## Units\n\n| # | Unit | Exit | Cost | Minutes | Timed out | Outcome |\n|---|------|------|------|---------|-----------|---------|\n'
     awk -F'\t' '{ printf "| %s | %s | %s | %s%s | %s | %s | %s%s |\n", $1, $2, $3, ($8 == "estimate" ? "≈" : ""), $4, $5, $6, $7, ($9 == 1 && $6 != 1 ? " (capped)" : "") }' "$_tsv"
@@ -2211,8 +2245,9 @@ on_exit() {
 # stop: unexpected stage <s> · unit_pre's (lanes: sync repair: <reason>, or
 # the halt reason). A unit that changed nothing and did not stop is capped
 # (C1) or not: a capped one is `partial` when it pushed commits of its own
-# (unit_commits), counts toward task_timeouts and never toward retries; an
-# uncapped one counts toward retries. After a task or final-review unit that
+# (unit_commits, unit_pushed: one pushed is enough), counts toward
+# task_timeouts and never toward retries; an uncapped one counts toward
+# retries. After a task or final-review unit that
 # did not finish its task, the runner's fallback note (carry_note) is queued
 # for the next unit: always before a retry, and on a holdable ending (a Stop:,
 # origin_check's stop, a directive not recorded, no progress, the bound)
@@ -2263,9 +2298,10 @@ story_units() {
     fi
     if [ "$SIG" != "$_before" ]; then row "$n" "$_base$suffix" progress; noprog=0; suffix=""; continue; fi
     # Spec §3-§4, C1: a capped unit feeds only the task_timeouts bound, and
-    # with pushed commits of its own (C4) it is partial progress (noprog 0);
-    # an uncapped one is no progress, pushed commits or not.
-    if [ "$UNIT_CAPPED" = 1 ] && [ "$(unit_commits "$_su_h0")" -gt 0 ] && origin_check; then _out=partial; noprog=0
+    # with commits of its own (C4), one or more of them pushed (unit_pushed),
+    # it is partial progress (noprog 0); an uncapped one is no progress,
+    # pushed commits or not.
+    if [ "$UNIT_CAPPED" = 1 ] && [ "$(unit_commits "$_su_h0")" -gt 0 ] && unit_pushed "$_su_h0"; then _out=partial; noprog=0
     elif [ "$UNIT_CAPPED" = 1 ]; then _out="$(unit_outcome)"
     else _out="$(unit_outcome)"; noprog=$((noprog + 1)); fi
     row "$n" "$_base$suffix" "$_out"
@@ -2351,10 +2387,11 @@ detach_start() {
   fi
   mkdir -p "$REPORTS" || { say "cannot create $REPORTS"; exit 2; }
   _dlog="$REPORTS/overnight-$_dslug-detached-$(date +%Y%m%d-%H%M%S).log"
+  _drk=""; [ "$RUNNER_CHECK" != 0 ] || _drk="STUDIO_OVERNIGHT_RUNNER_CHECK=0"
   if [ -n "$_dhc" ]; then
-    nohup env ${RUN_ORIGIN:+"STUDIO_RUN_ORIGIN=$RUN_ORIGIN"} ${_dck:+"STUDIO_OVERNIGHT_SETUP_CHECKED=$_dck"} perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV' sh -c "$_dhc" </dev/null >"$_dlog" 2>&1 &
+    nohup env ${RUN_ORIGIN:+"STUDIO_RUN_ORIGIN=$RUN_ORIGIN"} ${_dck:+"STUDIO_OVERNIGHT_SETUP_CHECKED=$_dck"} ${_drk:+"$_drk"} perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV' sh -c "$_dhc" </dev/null >"$_dlog" 2>&1 &
   else
-    nohup env ${RUN_ORIGIN:+"STUDIO_RUN_ORIGIN=$RUN_ORIGIN"} ${_dck:+"STUDIO_OVERNIGHT_SETUP_CHECKED=$_dck"} perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV' sh "$SELF_ABS" start "$_dm" </dev/null >"$_dlog" 2>&1 &
+    nohup env ${RUN_ORIGIN:+"STUDIO_RUN_ORIGIN=$RUN_ORIGIN"} ${_dck:+"STUDIO_OVERNIGHT_SETUP_CHECKED=$_dck"} ${_drk:+"$_drk"} perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV' sh "$SELF_ABS" start "$_dm" </dev/null >"$_dlog" 2>&1 &
   fi
   _dpid=$!
   _ddl=$(( $(date +%s) + DETACH_WAIT ))
@@ -2558,13 +2595,14 @@ lock_lost() {
 # run_excludes — the run's machine-local paths into the common git dir's
 # info/exclude, each once (D6): the single-plan lock and stop flag, the
 # per-run records and locks, the session slots, both mutexes and their reap
-# locks (mx_reap), and the final step's worktrees. Sets _excl.
+# locks (mx_reap), the final step's worktrees and the cost calibration cache
+# (cost_calib_save excludes it too). Sets _excl.
 run_excludes() {
   _excl="$(git -C "$START_DIR" rev-parse --path-format=absolute --git-common-dir)/info/exclude"
   mkdir -p "$(dirname "$_excl")"
   for _e in .studio/overnight.lock .studio/overnight.stop .studio/runs/ .studio/sessions/ \
             .studio/runs.mutex .studio/sessions.mutex .studio/runs.mutex.reap/ .studio/sessions.mutex.reap/ \
-            .claude/worktrees/; do
+            .claude/worktrees/ .studio/cost.calib; do
     grep -qxF "$_e" "$_excl" 2>/dev/null || printf '%s\n' "$_e" >> "$_excl"
   done
 }

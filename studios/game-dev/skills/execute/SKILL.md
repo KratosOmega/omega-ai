@@ -1195,13 +1195,15 @@ then resumes the story: the next task, or a fresh finish, which runs the full ga
   the start checkout.
 - **Operator messages** are recorded here, after entering (see §8, Operator messages).
 - **Preconditions:** `stage execute`, no `shipped` line in the feature
-  ledger, its latest `Stop:` line is a `gate red` one, and `STUDIO_REPAIR`
-  starts with `gate:`. They also hold in the middle of a story: a red
+  ledger, its latest `Stop:` line is a `gate red` one (or a `gate repair
+  out of time` one: an earlier repair cut short at wrap-up, §8, and resumed),
+  and `STUDIO_REPAIR` starts with `gate:`. They also hold in the middle of a story: a red
   checkpoint suite (§8) ends with `Stop: gate red — checkpoint after T<n> — …`
   while `task` is below `N`. Repair it the same way; the runner then resumes
   at the next task, and the finish gate is still run once at the end.
-- **Read the failure:** the `Stop: gate red — <failing command and line>`
-  line names the red command. For `studio-test`, read the failing tests'
+- **Read the failure:** the newest `Stop: gate red — <failing command and line>`
+  line names the red command (after an out-of-time repair, also read its
+  `done …; left …`). For `studio-test`, read the failing tests'
   names and output from the log at `<log>` (for `gate_command`, the log the Stop
   line names); when `<log>` is `-` or shows no
   failure, the Stop line's failing line is the failure.

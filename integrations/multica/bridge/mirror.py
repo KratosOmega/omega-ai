@@ -31,9 +31,10 @@ WAKE_FAILED_NOTE = ("studio: could not arm the end-of-run wake on %s (%s). Arm i
                     "--mode once --expires-in 336h`")
 
 
-def cost(usd) -> str:
+def cost(usd, est=False) -> str:
+    """`$x.xx`; an estimated cost (unit_ended's usd_est: a unit killed at its cap) is `≈$x.xx`, as in the reports."""
     try:
-        return "$%.2f" % float(usd)
+        return ("≈$%.2f" if est is True else "$%.2f") % float(usd)
     except (TypeError, ValueError):
         return "cost unknown"
 
@@ -91,7 +92,8 @@ def event_writes(st, ev, superseded: bool = False):
     if e == "unit_started":
         return [say("unit %s (%s) started" % (ev.get("unit"), ev.get("label")))]
     if e == "unit_ended":
-        return [say("unit %s (%s) ended: %s, %s" % (ev.get("unit"), ev.get("label"), ev.get("outcome"), cost(ev.get("usd"))))]
+        return [say("unit %s (%s) ended: %s, %s" % (ev.get("unit"), ev.get("label"), ev.get("outcome"),
+                                                    cost(ev.get("usd"), ev.get("usd_est"))))]
     if e == "message_queued":
         scope = ev.get("scope")
         if scope == "task":   # `task T<n>` when the event names the task

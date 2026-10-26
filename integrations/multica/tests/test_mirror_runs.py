@@ -350,6 +350,18 @@ class MirrorRunsTest(MirrorCase):
         w = self.mirror.event_writes(st, ev("unit_ended", story="A", unit="u", label="l", outcome="done", usd=None))
         self.assertEqual(w, [("comment", "A", "studio: unit u (l) ended: done, cost unknown")])
 
+    def test_usd_estimate_marked(self):
+        # A unit killed at its cap has an estimated cost (usd_est): ≈, as in the reports.
+        self.assertEqual(self.mirror.cost(1.6968, True), "≈$1.70")
+        self.assertEqual(self.mirror.cost(1.5, False), "$1.50")
+        self.assertEqual(self.mirror.cost(None, True), "cost unknown")
+        st = {"mode": "manifest", "story_failed": [], "run_dir": "/x"}
+        w = self.mirror.event_writes(st, ev("unit_ended", story="A", unit="u", label="T1", outcome="timed out",
+                                            usd=1.6968, usd_est=True))
+        self.assertEqual(w, [("comment", "A", "studio: unit u (T1) ended: timed out, ≈$1.70")])
+        w = self.mirror.event_writes(st, ev("unit_ended", story="A", unit="u", label="T1", outcome="done", usd=2))
+        self.assertEqual(w, [("comment", "A", "studio: unit u (T1) ended: done, $2.00")])
+
     def test_single_plan_routes_to_run_issue(self):
         run = self.mk()
         until = "2026-10-04T01:00:00Z"

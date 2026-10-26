@@ -2616,7 +2616,7 @@ test_lanes_report_every_ending() {
   assert_contains "$R" "^Ending: partial: 1 landed, 1 stopped, 1 skipped$" "the partial ending counts each kind"
   assert_contains "$R" "^Mode: integration$" "mode"
   assert_contains "$R" "^Target: integration/demo$" "target"
-  assert_contains "$R" '^Spent: [$][0-9.]*$' "spend"
+  assert_contains "$R" '^Spent: [$][0-9.]*$' "spend (no estimate in it: no ≈)"
   assert_contains "$R" "^Started: .* · Ended: " "start and end times"
   assert_contains "$R" "^Final PR: https://gh.test/pr/1 (green)$" "the final PR"
   assert_eq "A B C" "$(sed -n 's/^## \([ABC]\)$/\1/p' "$R" | tr '\n' ' ' | sed 's/ $//')" "a section per story, in manifest order"
@@ -2656,6 +2656,7 @@ test_lanes_report_cost_estimate() {
   R="$(last_lanes_dir)/report.md"
   assert_eq "estimate result result" "$(cut -f8 "$(last_lanes_dir)/lanes/1/units.tsv" | paste -sd' ' -)" "A-T1 is estimated, its later units are results"
   assert_contains "$R" '^| 1 | A-T1 | 0 | ≈[0-9.]* | ' "the estimated row is marked"
+  assert_contains "$R" '^Spent: ≈[$][0-9.]*$' "and so is the total it is in"
   assert_contains "$R" '^| 2 | A-final-review | 0 | 1 | ' "a result row is not"
   assert_not_contains "$R" "cost unknown" "no cost is unknown"
 }
@@ -2855,6 +2856,7 @@ test_lanes_detach_strips_env() {
   assert_contains "$CALLS/1.fullenv" "^CLAUDE_CONFIG_DIR=$TMP/cfg$" "CLAUDE_CONFIG_DIR is kept"
   assert_contains "$CALLS/1.fullenv" "^PATH=" "PATH is kept"
   assert_contains "$CALLS/1.fullenv" "^STUDIO_STORY=A$" "the runner's own STUDIO_STORY is set fresh"
+  assert_contains "$CALLS/1.fullenv" "^STUDIO_OVERNIGHT_RUNNER_CHECK=0$" "the runner-check test hook reaches the child: its preflight fetches nothing"
   _dl="$(ls "$P"/.studio/reports/overnight-demo-detached-*.log 2>/dev/null | head -n 1)"
   assert_eq 1 "$([ -n "$_dl" ] && echo 1 || echo 0)" "the detached log is under reports"
   _dr="$(ls -d "$P"/.studio/reports/overnight-demo-[0-9]* 2>/dev/null | tail -n 1)"
@@ -3556,6 +3558,28 @@ test_lanes_gate_repair_noprog_holds() {
     "$(story_rows A)" "repair, hold, repair, fresh finish"
   lholds_off
 }
+# Execute §8: a gate repair cut short at wrap-up writes `Stop: gate repair
+# out of time — …`; the hold's resume goes back to the gate repair, not to a
+# fresh finish (the gate is still red).
+test_lanes_resume_after_gate_repair_out_of_time() {
+  LANES_CONFIG='{"overnight": {"gate_repairs": 1}}'; export LANES_CONFIG
+  lanes_fixture gro integration A:-
+  lholds_on 120
+  printf 'auto\nauto\ngatelog; stop gate red — gate_command exit 3 — log .studio/reports/gate-20261004-000000.log\nauto\n' > "$SCEN/A"
+  printf 'stop gate repair out of time — done a, left b\ngaterepair\n' > "$SCEN/A.gate"
+  lanes_bg
+  wait_for 'is_held A' 60
+  assert_contains "$(last_lanes_dir)/stories/A" "^held stop: gate repair out of time — done a, left b until " "the out-of-time repair holds"
+  lverb resume A
+  wait_pid_or_fail "$RPID" 120 "the run finishes"
+  assert_contains "$(last_lanes_dir)/stories/A" "^landed " "A lands"
+  assert_eq 2 "$(gate_calls)" "the resume gets a repair unit"
+  assert_eq "1 A-T1 progress,2 A-final-review progress,3 A-finish stop,4 A-gate-repair stop,5 A-gate-repair progress,6 A-finish done," \
+    "$(story_rows A)" "repair, hold, repair, fresh finish"
+  n="$(grep -l -- '--gate-repair' "$CALLS"/*.argv 2>/dev/null | sed 's#.*/\([0-9]*\)\.argv#\1#' | sort -n | tail -n 1)"
+  assert_contains "$CALLS/${n:-0}.env" "^STUDIO_REPAIR=gate:/.*/A-b/\.studio/reports/gate-20261004-000000\.log$" "its log is the gate red Stop's, not the out-of-time one's"
+  lholds_off
+}
 # #66 R5 + Review Focus 4: the note on a held gate repair (exact-pattern
 # holdable), a land repair's stopped record, and the final repair's note.
 test_lanes_permission_route_note() {
@@ -3963,6 +3987,16 @@ test_lanes_commit_then_killed_is_partial() {
   assert_eq "A-T2-retry" "$(ucol 3 2)" "the next unit retries the task"
   assert_eq 0 "$(ucol 3 9)" "a unit that finishes its task is not capped"
   assert_contains "$(last_lanes_dir)/events.jsonl" '"event":"unit_ended","story":"A","unit":"[^"]*-2-A-T2","label":"T2","outcome":"partial"' "its unit_ended event"
+}
+# D2: a capped unit that pushed one commit of its own, then made a second it
+# never pushed, is partial too (lanes share story_units' rule).
+test_lanes_partly_pushed_is_partial() {
+  LANES_CONFIG='{"overnight": {"kill_grace_seconds": 5}}'; LANES_TASKS=2; export LANES_CONFIG LANES_TASKS
+  lanes_fixture ckq integration A:-
+  printf 'auto\nwtcommit f1.gd; pushwt; wtcommit f2.gd; sleep 30\npushwt\n' > "$SCEN/A"
+  cap_on; run_lanes start "$MFP"; cap_off
+  assert_eq "partial|1|1" "$(ucol 2 7)|$(ucol 2 6)|$(ucol 2 9)" "row 2: partial with one commit of two on origin"
+  assert_contains "$(last_lanes_dir)/stories/A" "^landed " "A lands"
 }
 # Done-when 3: task_timeouts (2) capped units of one task hold the story,
 # the checkpoint in the held why; nothing more runs until a resume.
@@ -4608,7 +4642,7 @@ test_lanes_excludes_before_lock() {
   _ex="$(git -C "$P" rev-parse --path-format=absolute --git-common-dir)/info/exclude"
   STUDIO_OVERNIGHT_LOCK_HOOK="cp '$_ex' '$TMP/excl.at-lock'"; export STUDIO_OVERNIGHT_LOCK_HOOK
   run_lanes start "$MFP"; unset STUDIO_OVERNIGHT_LOCK_HOOK
-  for _e in .studio/runs/ .studio/sessions/ .studio/runs.mutex .studio/sessions.mutex .studio/runs.mutex.reap/ .studio/sessions.mutex.reap/ .studio/overnight.lock .studio/overnight.stop .claude/worktrees/; do
+  for _e in .studio/runs/ .studio/sessions/ .studio/runs.mutex .studio/sessions.mutex .studio/runs.mutex.reap/ .studio/sessions.mutex.reap/ .studio/overnight.lock .studio/overnight.stop .claude/worktrees/ .studio/cost.calib; do
     assert_contains "$TMP/excl.at-lock" "^$(printf '%s' "$_e" | sed 's/\./\\./g')\$" "$_e excluded before the lock (D6)"
   done
 }
@@ -5822,7 +5856,7 @@ run_tests test_stub_waitexist_and_run_token test_lanes_setup_preflight_refuses_l
   test_lanes_preflight_direct_gate_warn test_lanes_direct_gate_red_repairs \
   test_lanes_gate_room_warning test_lanes_gate_times_non_integer test_lanes_check_truth_region test_lanes_gate_log_from_stop test_lanes_story_listed_events test_lanes_unit_env_run_dir \
   test_lanes_held_dependents_wait test_lanes_resume_after_gate_red_runs_gate_repair test_lanes_resume_gate_repairs_counted \
-  test_lanes_resume_not_gate_red_no_repair_unit test_lanes_gate_repair_noprog_holds test_lanes_permission_route_note test_lanes_landing_never_holds \
+  test_lanes_resume_not_gate_red_no_repair_unit test_lanes_gate_repair_noprog_holds test_lanes_resume_after_gate_repair_out_of_time test_lanes_permission_route_note test_lanes_landing_never_holds \
   test_lanes_stop_queued_story test_lanes_stop_running_story test_lanes_stop_waiting_story \
   test_lanes_hold_waiting_story_holds_at_start test_lanes_hold_running_then_resume test_lanes_run_stop_held_was_held \
   test_lanes_push_rejected_first_unit_holds test_lanes_origin_check_localcommit_holds \
@@ -5831,7 +5865,7 @@ run_tests test_stub_waitexist_and_run_token test_lanes_setup_preflight_refuses_l
   test_lanes_stop_at_done_never_lands test_lanes_stop_held_by_operator test_lanes_stop_pending_never_holds \
   test_lanes_gate_repair_own_stop_holds test_lanes_directive_cap_holds test_lanes_hold_during_last_unit_lands_and_clears \
   test_lanes_checkpoint_reaches_retry test_lanes_commit_then_killed_is_partial test_lanes_bound_holds_with_checkpoint \
-  test_lanes_bound_resume_one_more test_lanes_partial_counts_toward_bound test_lanes_uncapped_early_end_is_noprog \
+  test_lanes_bound_resume_one_more test_lanes_partial_counts_toward_bound test_lanes_partly_pushed_is_partial test_lanes_uncapped_early_end_is_noprog \
   test_lanes_fallback_note_without_checkpoint test_lanes_stop_capped_holds_with_note test_lanes_checkpoint_judged_in_own_checkout \
   test_lanes_next_adopted_planned test_lanes_context_preflight test_lanes_check_unit_first test_lanes_adopt_sync_fail_holds test_lanes_setup_fail_holds test_lanes_setup_fail_final_red test_lanes_setup_silent_fail_final_red test_lanes_setup_fail_path_specials test_lanes_direct_setup_fail_note test_lanes_setup_gets_start_dir test_lanes_run_config_reaches_every_worktree test_lanes_final_repair_sees_run_config test_lanes_setup_preflight_requires_a_run test_lanes_gate_command_final test_lanes_gate_command_finish_red_repair test_lanes_report_adopted_lines test_lanes_adopt_seeded_runs_rest test_lanes_adopt_round_trip \
   test_lanes_per_run_lock_paths test_lanes_excludes_before_lock test_lanes_two_runs_each_own_lock \

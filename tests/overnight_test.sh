@@ -479,6 +479,8 @@ run_start_via() {
 # checkout is behind its upstream on studios/game-dev. The runner here is a
 # scratch copy (reached through a symlink, as in production), never this repo.
 test_preflight_runner_behind_warns() {
+  # The one test that runs the check: assert.sh turns it off for every suite.
+  unset STUDIO_OVERNIGHT_RUNNER_CHECK
   fixture rbw
   runner_copy rbw-rc || { TESTS_RUN=$((TESTS_RUN + 1)); _fail "runner copy: setup failed"; return 0; }
   ln -s "$RC_W/studios/game-dev/bin/studio-overnight" "$TMP/rbw-link"
@@ -491,6 +493,14 @@ test_preflight_runner_behind_warns() {
   assert_eq 0 "$RS_STATUS" "behind: a warning, not a refusal"
   assert_contains "$RS_ERR" "warning: runner checkout .*rbw-rc/work is 1 commit behind origin/main on studios/game-dev (touch studios/game-dev/x) — update it before starting$" "behind on studios/game-dev"
   assert_eq "$head0" "$(git -C "$RC_W" rev-parse HEAD)" "never pulls"
+  # The test hook: STUDIO_OVERNIGHT_RUNNER_CHECK=0 skips the check, fetch included.
+  rm -f "$RC_W/.git/FETCH_HEAD"
+  STUDIO_OVERNIGHT_RUNNER_CHECK=0; export STUDIO_OVERNIGHT_RUNNER_CHECK
+  run_start_via "$TMP/rbw-link" --dry-run
+  unset STUDIO_OVERNIGHT_RUNNER_CHECK
+  assert_eq 0 "$RS_STATUS" "hook 0: dry run exits 0"
+  assert_not_contains "$RS_ERR" "runner checkout .* behind" "hook 0: no warning"
+  assert_missing "$RC_W/.git/FETCH_HEAD" "hook 0: no fetch"
   # A commit touching only docs/: not behind on studios/game-dev.
   runner_copy rbw-rc2 && rc_push docs/y
   run_start_via "$RC_W/studios/game-dev/bin/studio-overnight" --dry-run
@@ -507,6 +517,7 @@ test_preflight_runner_behind_warns() {
   run_start_via "$RC_W/studios/game-dev/bin/studio-overnight" --dry-run
   assert_eq 0 "$RS_STATUS" "fetch failed: still exits 0"
   assert_contains "$RS_ERR" "1 commit behind origin/main on studios/game-dev (touch studios/game-dev/z) — update it before starting (fetch failed; last fetch [0-9]* min ago)$" "fetch failed: warns from the last fetch"
+  STUDIO_OVERNIGHT_RUNNER_CHECK=0; export STUDIO_OVERNIGHT_RUNNER_CHECK
 }
 
 # refuse_case NAME MESSAGE-PATTERN — run start in the current fixture and
@@ -1330,6 +1341,13 @@ test_overnight_cost_estimate_helpers() {
   rm -f "$CR_RUN/cost.samples"; printf 'claude-sonnet-5-5 9 100\n' > "$CR_ROOT/.studio/cost.calib"
   cost_run cost_calib_save
   assert_eq "claude-sonnet-5-5 9 100" "$(cat "$CR_ROOT/.studio/cost.calib")" "a run with fewer than 3 samples leaves the cache"
+  # A save in a checkout whose exclude file does not name it yet (no run_excludes): it excludes it.
+  rm -f "$CR_ROOT/.studio/cost.calib"; git init -q "$CR_ROOT"
+  printf 'claude-sonnet-5-5\t1.000000\t2.0\n' > "$CR_RUN/cost.samples"
+  cost_run cost_calib_save; cost_run cost_calib_save
+  assert_file "$CR_ROOT/.studio/cost.calib" "saved in a git checkout"
+  assert_eq "" "$(git -C "$CR_ROOT" status --porcelain --untracked-files=all)" "the save keeps it out of git status"
+  assert_eq 1 "$(grep -cxF .studio/cost.calib "$CR_ROOT/.git/info/exclude")" "excluded once"
   # No usage: minutes x the median $/min of the run's result rows (old 7-column rows too).
   cost_dirs
   printf '1\tT1\t0\t3\t0.5\t0\tprogress\n' > "$CR_RUN/units.tsv"
@@ -1371,6 +1389,7 @@ test_overnight_cost_estimate_calibrated() {
   assert_eq 1 "$(awk -F'\t' 'NR == 4 { print ($4 == 2 && $6 == 1) ? 1 : 0 }' "$R/units.tsv")" \
     "the killed unit's naive 1.00 is calibrated by the run's sonnet factor (2.0 / 1.00) to 2.00"
   assert_contains "$P/.studio/cost.calib" '^claude-sonnet-5-5 2 [0-9][0-9]*$' "the run's factor is cached for later runs"
+  assert_eq "" "$(git -C "$P" status --porcelain --untracked-files=all -- .studio/cost.calib)" "the cache is not in the project's git status"
 }
 
 test_overnight_cost_estimate_empty_transcript() {
@@ -1391,7 +1410,7 @@ test_overnight_cost_counts_toward_budget() {
   run_start; unset STUDIO_OVERNIGHT_SESSION_SECONDS
   assert_eq 1 "$(calls)" "the estimate (1.70) + session_usd (1) passes run_usd (1.5): no second unit"
   assert_contains "$(last_run_dir)/report.md" "^Ending: stop: run budget$" "budget is the ending"
-  assert_contains "$(last_run_dir)/report.md" '^Spent: \$1.70$' "the estimate is in the spend"
+  assert_contains "$(last_run_dir)/report.md" '^Spent: ≈\$1.70$' "the estimate is in the spend, the total marked as one"
 }
 
 test_overnight_unexpected_stage() {
@@ -1531,6 +1550,17 @@ test_overnight_unpushed_commit_stays_timed_out() {
   R="$(last_run_dir)"
   assert_eq "progress|timed out|timed out" "$(awk -F'\t' '{ printf "%s%s", (NR > 1 ? "|" : ""), $7 }' "$R/units.tsv")" "unpushed commits are not partial"
   assert_contains "$R/report.md" "^- 1 (note, requeues 0): uncommitted: none; unpushed: [0-9a-f]* fix: half; last words: none$" "the runner note names the unpushed commit"
+}
+# D2: a capped unit that pushed one commit of its own and was killed with a
+# second one unpushed is partial: pushed commits are progress, all or not.
+test_overnight_partly_pushed_capped_is_partial() {
+  fixture ppc '{ "overnight": { "kill_grace_seconds": 5 } }'
+  scenario "stage execute; branch fq; task 1/2" "wtcommit fix.gd fix: one; pushwt; wtcommit fix2.gd fix: two; hang" "pushwt; task 2/2"
+  STUDIO_OVERNIGHT_SESSION_SECONDS=8; export STUDIO_OVERNIGHT_SESSION_SECONDS
+  run_start; unset STUDIO_OVERNIGHT_SESSION_SECONDS
+  R="$(last_run_dir)"
+  assert_eq "progress 0|partial 1|progress 0" \
+    "$(awk -F'\t' 'NR <= 3 { printf "%s%s %s", (NR > 1 ? "|" : ""), $7, $9 }' "$R/units.tsv")" "one pushed commit of two makes the capped unit partial"
 }
 # C1: partial resets noprog — noprog, partial, noprog still retries (retries 1).
 test_overnight_partial_resets_noprog() {
@@ -3883,7 +3913,7 @@ run_tests test_overnight_setup_preflight_single test_overnight_tools_after_setup
   test_overnight_session_seconds_refused test_overnight_claim_without_run_dir \
   test_overnight_report_runner_error test_overnight_crash_resume test_overnight_status test_overnight_status_short_lane \
   test_overnight_timeout test_overnight_kill_after_grace test_overnight_bound_single_plan test_overnight_wrap_capped_unit test_overnight_stall_past_wrap_not_capped \
-  test_overnight_docs_sync_commit_not_partial test_overnight_unpushed_commit_stays_timed_out test_overnight_partial_resets_noprog \
+  test_overnight_docs_sync_commit_not_partial test_overnight_unpushed_commit_stays_timed_out test_overnight_partly_pushed_capped_is_partial test_overnight_partial_resets_noprog \
   test_overnight_reap_poll_keeps_budget test_overnight_reap_poll_rejects_bad_value \
   test_overnight_stop_file test_overnight_sigterm test_overnight_sigint test_overnight_sighup \
   test_overnight_stop_no_run test_overnight_inhibitor test_overnight_no_inhibitor \

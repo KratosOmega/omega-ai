@@ -766,6 +766,7 @@ test_execute_gate_repair() {
   assert_contains "$E" '^- `--gate-repair`' "§1 lists --gate-repair"
   assert_contains "$E" 'STUDIO_REPAIR=gate:<log>' "the repair reads the red gate's log"
   assert_contains "$E" 'its latest `Stop:` line is a `gate red` one' "§11's preconditions name the gate red stop"
+  assert_contains "$E" 'out of time` one: an earlier repair cut short at wrap-up, §8, and resumed)' "and accept a resumed out-of-time repair's stop (last_stop_gate_red)"
   assert_contains "$E" 'fix(gate): <summary>' "the repair commit"
   assert_contains "$E" '`studio-test --file <path>\[,<path>…\]` with every' "the repair re-runs only the failing test files, in one file run"
   assert_contains "$E" '`STUDIO_GATE_MINUTES`) and' "§11's env list names the gate cap"

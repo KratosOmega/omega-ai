@@ -753,11 +753,12 @@ land_repair() {
 }
 
 # gate_log_of DIR — the log of DIR's red gate (D14): the path the feature
-# ledger's newest `Stop:` line ends with (` — log <path>`; a relative path
-# is prefixed with DIR/), else the newest studio-test log under
+# ledger's newest `Stop: gate red` line ends with (` — log <path>`; a
+# relative path is prefixed with DIR/; a later `gate repair out of time`
+# Stop names none), else the newest studio-test log under
 # DIR/.studio/reports (the adapter's test-<stamp>.log); `-` when there is none.
 gate_log_of() {
-  _gl="$(ledger_of "$1" | grep '^- [0-9-]* Stop: ' | tail -n 1 | sed -n 's/.* — log \(.*\)$/\1/p')"
+  _gl="$(ledger_of "$1" | grep '^- [0-9-]* Stop: gate red — ' | tail -n 1 | sed -n 's/.* — log \(.*\)$/\1/p')"
   case "$_gl" in '') ;; /*) printf '%s\n' "$_gl"; return ;; *) printf '%s\n' "$1/$_gl"; return ;; esac
   _gl="$(ls -t "$1"/.studio/reports/test-*.log 2>/dev/null | head -n 1)"
   printf '%s\n' "${_gl:--}"
@@ -961,6 +962,10 @@ spent_all() {
     | awk -F'\t' '$4 != "unknown" { s += $4 } END { printf "%.2f\n", s + 0 }'
 }
 spent() { spent_all; }
+spent_mark() {
+  cat "$RUN_DIR"/lanes/*/units.tsv "$RUN_DIR"/final/units.tsv 2>/dev/null \
+    | awk -F'\t' '$8 == "estimate" { e = 1 } END { if (e) printf "≈" }'
+}
 
 # lane_halt — true when this lane must claim and launch no more: the stop
 # file exists, the runner is gone, or the lane hit the run budget.
@@ -1029,9 +1034,12 @@ lane_slot_drop() {
   SESS_ME=$$; sess_drop_owner "$_ld_p"
 }
 # last_stop_gate_red — the feature ledger's latest Stop: line is a red finish
-# gate, `Stop: gate red — …` (the resume's precondition; AC20, R29).
+# gate, `Stop: gate red — …`, or a gate repair cut short at wrap-up, `Stop:
+# gate repair out of time — …` (execute §8: the gate is still red), the
+# resume's precondition for a gate repair (AC20, R29).
 last_stop_gate_red() {
-  ledger_of "$FEATURE_DIR" | grep '^- [0-9-]* Stop: ' | tail -n 1 | grep -q '^- [0-9-]* Stop: gate red — '
+  ledger_of "$FEATURE_DIR" | grep '^- [0-9-]* Stop: ' | tail -n 1 \
+    | grep -Eq '^- [0-9-]* Stop: gate (red|repair out of time) — '
 }
 # lane_stopflag — a signal to a lane requests the run's stop; it never
 # truncates a stop file that already carries the runner's reason.
@@ -1459,7 +1467,7 @@ lanes_report() {
     printf '# Overnight run — %s\n\n' "$MF_SLUG"
     printf 'Ending: %s\n' "$1"
     printf 'Mode: %s\nTarget: %s\n' "$MF_MODE" "$MF_TARGET"
-    printf 'Spent: $%s\n' "$_r_sp"
+    printf 'Spent: %s$%s\n' "$(spent_mark)" "$_r_sp"
     printf 'Started: %s · Ended: %s\n' "${_r_st:-unknown}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     printf 'Stories: %s landed, %s stopped, %s skipped\n' "$LC_N" "$LC_S" "$LC_K"
     if [ -n "${FINAL_PR:-}" ]; then printf 'Final PR: %s (%s)\n' "$FINAL_PR" "${FINAL_COLOR:-red}"

@@ -4,7 +4,10 @@
 # On source: unsets CLAUDECODE, AI_AGENT, CLAUDE_*, OMEGA_*, STUDIO_* and GIT_DIR,
 # GIT_WORK_TREE, GIT_INDEX_FILE, GIT_COMMON_DIR, GIT_OBJECT_DIRECTORY,
 # GIT_ALTERNATE_OBJECT_DIRECTORIES, GIT_NAMESPACE (a suite never inherits an
-# autopilot unit's or a repo's context). TESTS_ONLY and TEST_* are kept.
+# autopilot unit's or a repo's context). TESTS_ONLY and TEST_* are kept. Then
+# exports STUDIO_OVERNIGHT_RUNNER_CHECK=0: no suite's start or --dry-run
+# fetches the real runner checkout's origin (test_preflight_runner_behind_warns
+# unsets it).
 # Environment (empty = unset):
 #   TESTS_ONLY="a b"  run only these (intersected with the partition)
 #   TEST_PHASE        unset: every test in listed order · parallel: this shard,
@@ -17,6 +20,7 @@
 for __rt_v in $(env | sed -nE 's/^(CLAUDECODE|AI_AGENT|CLAUDE_[A-Za-z0-9_]*|OMEGA_[A-Za-z0-9_]*|STUDIO_[A-Za-z0-9_]*|GIT_DIR|GIT_WORK_TREE|GIT_INDEX_FILE|GIT_COMMON_DIR|GIT_OBJECT_DIRECTORY|GIT_ALTERNATE_OBJECT_DIRECTORIES|GIT_NAMESPACE)=.*/\1/p'); do
   unset "$__rt_v"
 done
+STUDIO_OVERNIGHT_RUNNER_CHECK=0; export STUDIO_OVERNIGHT_RUNNER_CHECK
 
 TESTS_RUN=0
 TESTS_FAILED=0

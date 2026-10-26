@@ -181,9 +181,19 @@ cost_calibration() {
 # cost_calib_save — after a run: when it has a factor (3+ samples of a model),
 # rewrite STATE_ROOT/.studio/cost.calib with this run's factors (stamped now)
 # and the cached lines of every other model. A run with none leaves it as is.
+# The file is machine-local: the save names it in the common git dir's
+# info/exclude first, once (run_excludes does too, for a file an older
+# runner left), so it never shows in git status or a runner note.
 cost_calib_save() {
   _ocs_n="$(cost_run_factors)"; [ -n "$_ocs_n" ] || return 0
   _ocs_f="$STATE_ROOT/.studio/cost.calib"
+  _ocs_x="$(git -C "$STATE_ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)/info/exclude"
+  case "$_ocs_x" in /*/info/exclude)
+    mkdir -p "${_ocs_x%/exclude}" 2>/dev/null
+    grep -qxF .studio/cost.calib "$_ocs_x" 2>/dev/null || {
+      if [ -s "$_ocs_x" ] && [ -n "$(tail -c 1 "$_ocs_x")" ]; then printf '\n' >> "$_ocs_x"; fi
+      printf '%s\n' .studio/cost.calib >> "$_ocs_x"; } 2>/dev/null ;;
+  esac
   { printf '%s\n' "$_ocs_n"; echo --; cat "$_ocs_f" 2>/dev/null; } | LC_ALL=C awk -v now="$(date +%s)" '
     $0 == "--" { c = 1; next }
     !c { split($0, f, "\t"); seen[f[1]] = 1; print f[1], f[2], now; next }
