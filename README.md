@@ -152,7 +152,9 @@ stories as parallel lanes of dependency chains:
   re-runs only the failing tests, then a fresh finish, which runs the full gate
   again. It does this up to `overnight.gate_repairs` times (default 2; 0 stops
   the story at the first red gate). Hard stops (no Godot, GUT missing, a
-  timed-out gate) are never repaired.
+  timed-out gate) are never repaired. A gate repair that runs out of time
+  writes `Stop: gate repair out of time — done …; left …`; the story holds,
+  and `resume` goes back to the gate repair, not to a fresh finish.
 - One gate lock per project (`.studio/gate.lock`): `studio-test`, `studio-run`,
   the merge command and the final gate take it, so only one test or gate run
   happens at a time across all lanes. With no config keys that is the whole
@@ -272,13 +274,18 @@ stories as parallel lanes of dependency chains:
   `studio-brief task` shows the newest one; when the unit wrote none, the
   runner queues a fallback note from git and the killed transcript. A capped
   unit (killed at the cap, or ended past its wrap time with the task
-  undone) that pushed commits of its own is `partial` progress; it resets
+  undone) that pushed commits of its own (one is enough; a later one may be
+  unpushed) is `partial` progress; it resets
   `no progress` and counts toward `overnight.task_timeouts` (default 2, range
   1-5), never toward retries. A task capped that many times holds the story
   with its checkpoint in the hold message (`timed out on T<n> (session_minutes
   N; <k> capped units) — checkpoint: …`) instead of retrying blind; `resume`
   runs one more capped unit. A killed unit's cost is estimated from its
-  transcript (`usd_est`, units.tsv `cost_src` `estimate`), never null.
+  transcript (`usd_est`, units.tsv `cost_src` `estimate`), never null. An
+  estimate shows as `≈`: the report's unit row, its `Spent: ≈$X` total when
+  any unit in it is one, and the Multica unit comment (`≈$x.xx`). The
+  calibration cache, `.studio/cost.calib`, is machine-local and kept out of
+  git (`info/exclude`).
 - Talking to a live run: `studio-overnight say <story> '<text>'` queues a
   message (`--unit` for this unit only; `--task [T<n>]` until that task
   completes; `--file <path>` or `-` for a long or multi-line text, delivered
