@@ -480,9 +480,9 @@ run_start_via() {
 # scratch copy (reached through a symlink, as in production), never this repo.
 test_preflight_runner_behind_warns() {
   # The one test that runs the check: assert.sh turns it off for every suite.
-  unset STUDIO_OVERNIGHT_RUNNER_CHECK
   fixture rbw
   runner_copy rbw-rc || { TESTS_RUN=$((TESTS_RUN + 1)); _fail "runner copy: setup failed"; return 0; }
+  unset STUDIO_OVERNIGHT_RUNNER_CHECK
   ln -s "$RC_W/studios/game-dev/bin/studio-overnight" "$TMP/rbw-link"
   run_start_via "$TMP/rbw-link" --dry-run
   assert_eq 0 "$RS_STATUS" "up to date: dry run exits 0"
