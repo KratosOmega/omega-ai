@@ -3236,6 +3236,35 @@ test_lanes_gate_cap_warning() {
   run_lanes start --dry-run "$MFP"
   assert_not_contains "$LS_ERR" "warning: gate run cap" "file runs are not read; a 10-minute suite fits 45"
 }
+# Direct mode with a merge_command and no gate_command: the merge's own gate is
+# the first full run, so a red lands as a failed landing, not a finish repair.
+test_lanes_preflight_direct_gate_warn() {
+  LANES_CONFIG='{"merge_command": "scripts/merge.sh <pr>"}'; export LANES_CONFIG
+  lanes_fixture dgw direct A:-
+  run_lanes start --dry-run "$MFP"
+  assert_eq 0 "$LS_STATUS" "a warning, not a refusal"
+  assert_contains "$LS_ERR" "warning: direct mode: merge_command's own gate is the first full run — set gate_command to that gate minus the merge (e.g. .github/scripts/run-tests.sh) so a red goes to a finish repair, not the landing" "direct, merge_command, no gate_command"
+  LANES_CONFIG='{"merge_command": "scripts/merge.sh <pr>", "gate_command": "true"}'; export LANES_CONFIG
+  lanes_fixture dgw2 direct A:-
+  run_lanes start --dry-run "$MFP"
+  assert_not_contains "$LS_ERR" "warning: direct mode" "gate_command set: no warning"
+  lanes_fixture dgw3 integration A:-
+  run_lanes start --dry-run "$MFP"
+  assert_not_contains "$LS_ERR" "warning: direct mode" "integration mode: no warning"
+}
+# A direct-mode red finish gate goes to the gate-repair loop, not the landing.
+test_lanes_direct_gate_red_repairs() {
+  LANES_CONFIG='{"merge_command": "scripts/merge.sh <pr>"}'; export LANES_CONFIG
+  lanes_fixture dgr direct A:-
+  printf 'auto\nauto\ngatelog; stop gate red — gate_command exit 1 — log x\n' > "$SCEN/A"
+  printf 'gaterepair\n' > "$SCEN/A.gate"
+  run_lanes start "$MFP"
+  assert_eq 1 "$(gate_calls)" "exactly one gate-repair unit in direct mode"
+  assert_eq "1 A-T1 progress,2 A-final-review progress,3 A-finish stop,4 A-gate-repair progress,5 A-finish done," \
+    "$(story_rows A)" "a fresh finish follows the repair"
+  assert_contains "$(last_lanes_dir)/stories/A" "^landed " "it lands only after the repaired finish"
+  assert_eq 1 "$(grep -c '^s merge' "$CALLS/gate.iv" 2>/dev/null)" "the merge program ran once, after the repair"
+}
 # The preflight warns when the slowest recent studio-test leaves a finish
 # unit too little room under session_minutes.
 test_lanes_gate_room_warning() {
@@ -5546,6 +5575,7 @@ run_tests test_stub_waitexist_and_run_token test_lanes_setup_preflight_refuses_l
   test_lanes_help_modes test_lanes_left_gate_reaped test_lanes_timed_out_outcome test_lanes_heartbeat \
   test_lanes_activity_verb test_lanes_status_anywhere test_lanes_status_ended_partial test_lanes_watch \
   test_lanes_unit_caps test_lanes_runner_gates_uncapped test_lanes_gate_cap_warning \
+  test_lanes_preflight_direct_gate_warn test_lanes_direct_gate_red_repairs \
   test_lanes_gate_room_warning test_lanes_gate_times_non_integer test_lanes_check_truth_region test_lanes_gate_log_from_stop test_lanes_story_listed_events test_lanes_unit_env_run_dir \
   test_lanes_held_dependents_wait test_lanes_resume_after_gate_red_runs_gate_repair test_lanes_resume_gate_repairs_counted \
   test_lanes_resume_not_gate_red_no_repair_unit test_lanes_gate_repair_noprog_holds test_lanes_permission_route_note test_lanes_landing_never_holds \
