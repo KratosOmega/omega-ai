@@ -424,6 +424,65 @@ test_overnight_preflight_env_warns_not_blocks() {
   assert_contains "$RS_OUT" "^    firefox 2.9 GB$" "and the top list"
 }
 
+# runner_copy NAME — a scratch git checkout of the runner tree (studios/game-dev
+# only) at $TMP/NAME/work, tracking a bare upstream; RC_UP is that upstream.
+runner_copy() {
+  _rc="$TMP/$1"; rm -rf "$_rc"; mkdir -p "$_rc/work/docs"
+  RC_UP="$_rc/up.git"; RC_W="$_rc/work"
+  cp -R "$REPO_ROOT/studios" "$RC_W/studios" || return 1
+  ( cd "$RC_W" && git init -q -b main && : > docs/keep && git add -A \
+      && git -c user.name=t -c user.email=t@t commit -qm base \
+      && git init -q --bare "$RC_UP" && git remote add origin "$RC_UP" \
+      && git push -q -u origin main ) >/dev/null 2>&1
+}
+# rc_push FILE — a commit touching FILE, pushed to the runner copy's upstream
+# from a second clone (the copy itself stays behind).
+rc_push() {
+  rm -rf "$TMP/rc-other"
+  git clone -q "$RC_UP" "$TMP/rc-other" >/dev/null 2>&1 \
+    && ( cd "$TMP/rc-other" && mkdir -p "$(dirname "$1")" && echo x >> "$1" && git add -A \
+         && git -c user.name=t -c user.email=t@t commit -qm "touch $1" && git push -q origin main ) >/dev/null 2>&1
+}
+# run_start_via RUNNER [ARGS] — start ARGS in $P through the given runner path.
+run_start_via() {
+  RS_STATUS=0; _rv="$1"; shift
+  ( cd "$P" && sh "$_rv" start "$@" ) > "$TMP/rs.out" 2> "$TMP/rs.err" || RS_STATUS=$?
+  RS_OUT="$TMP/rs.out"; RS_ERR="$TMP/rs.err"
+}
+# The preflight warns, never pulls and never refuses, when the runner's own
+# checkout is behind its upstream on studios/game-dev. The runner here is a
+# scratch copy (reached through a symlink, as in production), never this repo.
+test_preflight_runner_behind_warns() {
+  fixture rbw
+  runner_copy rbw-rc || { TESTS_RUN=$((TESTS_RUN + 1)); _fail "runner copy: setup failed"; return 0; }
+  ln -s "$RC_W/studios/game-dev/bin/studio-overnight" "$TMP/rbw-link"
+  run_start_via "$TMP/rbw-link" --dry-run
+  assert_eq 0 "$RS_STATUS" "up to date: dry run exits 0"
+  assert_not_contains "$RS_ERR" "commits behind" "up to date: no warning"
+  rc_push studios/game-dev/x
+  head0="$(git -C "$RC_W" rev-parse HEAD)"
+  run_start_via "$TMP/rbw-link" --dry-run
+  assert_eq 0 "$RS_STATUS" "behind: a warning, not a refusal"
+  assert_contains "$RS_ERR" "warning: runner checkout .*rbw-rc/work is 1 commits behind origin/main on studios/game-dev (touch studios/game-dev/x) — update it before starting$" "behind on studios/game-dev"
+  assert_eq "$head0" "$(git -C "$RC_W" rev-parse HEAD)" "never pulls"
+  # A commit touching only docs/: not behind on studios/game-dev.
+  runner_copy rbw-rc2 && rc_push docs/y
+  run_start_via "$RC_W/studios/game-dev/bin/studio-overnight" --dry-run
+  assert_not_contains "$RS_ERR" "commits behind" "docs-only commit: no warning"
+  # Not a work tree: no warning.
+  rm -rf "$TMP/rbw-nogit"; mkdir -p "$TMP/rbw-nogit"; cp -R "$REPO_ROOT/studios" "$TMP/rbw-nogit/studios"
+  run_start_via "$TMP/rbw-nogit/studios/game-dev/bin/studio-overnight" --dry-run
+  assert_eq 0 "$RS_STATUS" "non-git copy: dry run exits 0"
+  assert_not_contains "$RS_ERR" "commits behind" "non-git copy: no warning"
+  # A fetch that cannot run: the last fetch is used and its age named.
+  runner_copy rbw-rc3 && rc_push studios/game-dev/z
+  git -C "$RC_W" fetch -q
+  git -C "$RC_W" remote set-url origin "$TMP/rbw-gone.git"
+  run_start_via "$RC_W/studios/game-dev/bin/studio-overnight" --dry-run
+  assert_eq 0 "$RS_STATUS" "fetch failed: still exits 0"
+  assert_contains "$RS_ERR" "1 commits behind origin/main on studios/game-dev (touch studios/game-dev/z) — update it before starting (fetch failed; last fetch [0-9]* min ago)$" "fetch failed: warns from the last fetch"
+}
+
 # refuse_case NAME MESSAGE-PATTERN — run start in the current fixture and
 # assert a one-line refusal, exit 2, no lock, no session.
 refuse_case() {
@@ -3338,7 +3397,7 @@ run_tests test_overnight_setup_preflight_single test_overnight_tools_after_setup
   test_overnight_fixture_copy_equals_build test_overnight_fixture_failed_build_not_reused \
   test_overnight_open_calls test_overnight_denied_scan test_overnight_permission_route_ending test_overnight_idle_stall test_overnight_idle_spares_gate_call \
   test_overnight_idle_off_and_refusals test_overnight_idle_default_seams test_overnight_stall_holds_with_until_command \
-  test_overnight_report_done test_overnight_report_not_done test_overnight_preflight_env_warns_not_blocks \
+  test_overnight_report_done test_overnight_report_not_done test_overnight_preflight_env_warns_not_blocks test_preflight_runner_behind_warns \
   test_overnight_report_anchors test_overnight_report_blocks test_overnight_report_gate_block test_overnight_resume_quote test_overnight_label_t1 \
   test_overnight_session_seconds_refused test_overnight_claim_without_run_dir \
   test_overnight_report_runner_error test_overnight_crash_resume test_overnight_status test_overnight_status_short_lane \

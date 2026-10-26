@@ -162,6 +162,14 @@ mf_overlap_warn() {
   return 0
 }
 
+# direct_gate_warn — a warning (never a refusal): in direct mode with a
+# merge_command but no gate_command, the merge command's own gate is the first
+# full run, so a red lands as a failed landing instead of a finish repair.
+direct_gate_warn() {
+  [ "$MF_MODE" = direct ] && [ -n "${MERGE_COMMAND:-}" ] && [ -z "${GATE_COMMAND:-}" ] || return 0
+  say "warning: direct mode: merge_command's own gate is the first full run — set gate_command to that gate minus the merge (e.g. .github/scripts/run-tests.sh) so a red goes to a finish repair, not the landing"
+}
+
 # mf_check — the manifest preflight: one refuse per failure (spec 806-815).
 mf_check() {
   # #82: a record whose final PR was merged is done before any record is read.
@@ -203,6 +211,7 @@ EOF_MC
       [ -n "${MERGE_COMMAND:-}" ] || refuse "manifest: Mode direct needs merge_command in .studio/config.json" ;;
     *) _want=""; refuse "manifest: Mode must be integration or direct, got '$MF_MODE'" ;;
   esac
+  direct_gate_warn
   [ -z "$_want" ] || [ "$MF_TARGET" = "$_want" ] \
     || refuse "manifest: Target must be $_want for Mode $MF_MODE, got '$MF_TARGET'"
   [ -n "$MF_GOAL" ] || refuse "manifest: no Goal: line"

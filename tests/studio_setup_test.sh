@@ -252,6 +252,26 @@ test_setup_run_config_reaches_story_worktree() {
     "a reader with no STUDIO_START_DIR (a hand session) now sees the run's keys too"
   assert_missing "$P/.studio/reports/ran.txt" "nothing ran in the main checkout"
 }
+# A fresh story worktree of a project whose .studio/config.json is untracked
+# (only in the start checkout) runs the project's worktree_setup: the setup
+# runs in the worktree, and prints no skip.
+test_setup_fresh_story_worktree_runs_setup() {
+  P="$TMP/fsw"; SW="$TMP/fsw-story"; rm -rf "$P" "$SW"; mkdir -p "$P"
+  ( set -e; cd "$P"; git init -q -b main; sh "$STATE_BIN" init >/dev/null
+    printf '.studio/config.json\n' >> .git/info/exclude
+    git add -A; git -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
+    printf '%s\n' '{ "overnight": { "worktree_setup": "touch setup-ran" } }' > .studio/config.json
+    git worktree add -q -b story "$SW" main ) >/dev/null 2>&1 \
+    || { TESTS_RUN=$((TESTS_RUN + 1)); _fail "fresh story worktree: setup failed"; return 0; }
+  assert_missing "$SW/.studio/config.json" "the fresh worktree has no config of its own"
+  SU_STATUS=0
+  ( cd "$SW" && STUDIO_START_DIR="$P" && export STUDIO_START_DIR && sh "$SETUP" ) > "$TMP/su.out" 2> "$TMP/su.err" || SU_STATUS=$?
+  assert_eq 0 "$SU_STATUS" "the setup exits 0"
+  assert_file "$SW/setup-ran" "worktree_setup ran in the fresh story worktree"
+  assert_missing "$P/setup-ran" "and not in the start checkout"
+  assert_not_contains "$TMP/su.err" "skip" "no skip is printed (stderr)"
+  assert_not_contains "$TMP/su.out" "skip" "no skip is printed (stdout)"
+}
 # Resolution order: the tree's key, then $STUDIO_START_DIR's, then the state root's.
 test_setup_resolution_order() {
   run_shape ord '{ "worktree_setup": "echo start >> .studio/reports/ran.txt" }' '{ "worktree_setup": "echo root >> .studio/reports/ran.txt", "worktree_setup_minutes": 0 }'
@@ -329,5 +349,5 @@ run_tests test_setup_unset_is_silent test_setup_runs_under_lock_and_logs test_se
   test_setup_signal_stops_child_and_releases_lock test_setup_timeout_kills_term_ignorer \
   test_setup_quoted_minutes_refused test_setup_logs_unique_per_run test_setup_gate_backslash_refused \
   test_setup_no_studio_dir test_setup_poll_keeps_budget test_setup_poll_rejects_bad_value \
-  test_setup_run_config_reaches_story_worktree test_setup_resolution_order \
+  test_setup_run_config_reaches_story_worktree test_setup_fresh_story_worktree_runs_setup test_setup_resolution_order \
   test_setup_unset_in_and_out_of_run_silent test_setup_run_config_unresolved_fails_loud test_setup_seed_rules
