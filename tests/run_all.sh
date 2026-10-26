@@ -78,7 +78,8 @@ overnight_sessions_test      1       23
 sync_test                    1       8
 pointer_skills_route_test    1       15
 pointer_skills_omega_test    1       16
-pointer_skills_execute_test  1       14
+pointer_skills_execute_test  1       32
+pointer_skills_plan_test     1       6
 EOF
 }
 

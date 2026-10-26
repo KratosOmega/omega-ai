@@ -401,7 +401,7 @@ Under a lane, every implementer, fixer and reviewer brief also carries this line
 
 Every implementer, fixer and reviewer brief also carries this line verbatim (§0, The deadline): "Return to the orchestrator by `$STUDIO_UNIT_WRAP_AT` (`studio-deadline` prints it) with what is done and what is left. Never start a command that cannot finish by then: `studio-deadline fits <gate>` answers that. Pass `timeout` only on gate-routed commands (`studio-test`, `studio-run`, `studio-setup`, `studio-gate`); never on `sh tools/…`, `python`, `git` or any other command — a raised timeout lets a hung command outlive its cap."
 
-Every implementer and fixer brief also carries §4a rule 7 verbatim and: "run one test file with
+Every implementer and fixer brief also carries: "commit each fix that passes its owning tests as it lands; never batch fixes to the end of the task; never push: the orchestrator pushes; run one test file with
 `studio-test --file <test file>`; never build a Godot or GUT command by
 hand; run a Godot script or import as `studio-gate godot -- <command>`; a gate-routed command
 that exits 124 is `Stop: gate timed out`; a targeted vitest runs as
@@ -531,9 +531,10 @@ This overrides `superpowers:subagent-driven-development`'s fix loop (rounds 1–
    A Block (§6a) never holds a task: its check is pending, not red, so the
    task completes by this rule once everything else is green. It is not parked.
 7. **Commit as it lands.** In a round, and in any loop a task runs (fix,
-   re-run, until clean): commit each fix that passes its owning tests as it lands (and push under a lane); never batch fixes to the end of the task.
-   A kill at the cap keeps only what is committed and pushed, and only
-   pushed commits count as progress.
+   re-run, until clean): commit each fix that passes its owning tests as it lands (and push under a lane); never batch fixes to the end of the task:
+   only pushed commits survive a kill and count as progress. Under a lane the
+   orchestrator pushes (`git push -u origin <Branch>`, §8's push rule) after
+   each report that names new commits; §9 pushes only after its gate is green.
 
 ## 5. Final review
 
@@ -914,7 +915,7 @@ runs exactly one unit, writes its state, commits, pushes, and ends the turn.
   - a task unit whose §0 sync reported `T<k+1> in progress: <first>..<last>` adds to the
     implementer's brief: `commits already on the branch for this task: <first>..<last> — check and finish them; do not start over`;
   - a `T<n> checkpoint:` part in `studio-brief task <n>`, or a `RUNNER NOTE` block, goes in the implementer's brief: `previous attempt: <text> — continue from "next"; do not redo "done" steps unless a file their evidence names has changed since`;
-    a final-review unit puts `studio-brief final`'s `final-review checkpoint:` part in its reviewer's or fix wave's brief the same way;
+    in a final-review unit, a `final-review checkpoint:` part in `studio-brief final`, or a `RUNNER NOTE` block, goes in its reviewer's or fix wave's brief the same way;
   - `studio-brief task <n>` ends with a `blocks: <path>` line: that path is
     the blocks file (§6a step 2), and it goes in the implementer's brief (§2);
     a check unit, a final-review unit and a gate repair (§11) also read the
@@ -1011,7 +1012,7 @@ runs exactly one unit, writes its state, commits, pushes, and ends the turn.
   one line of at most ~600 characters that names its evidence (logs, probe
   outputs) by path or sha, so the retry need not re-measure, and never the
   words `in progress`; `git add .studio/ledger`;
-  `git commit -m "chore(studio): checkpoint T<n>"`; push (§8's push rule);
+  `git commit -m "chore(studio): checkpoint T<n>"`; push (`git push -u origin <branch>`, §8's push rule);
   end the turn. A final-review unit writes `final-review checkpoint: …` and
   commits `chore(studio): checkpoint final-review`. Repair units (§9, §11)
   have no retry: they write
@@ -1070,7 +1071,7 @@ block to the session, at its start or after any tool call. Each message is an in
 - `retire` — stop following directive `<target>`, and record
   `studio-state ledger 'Directive <target> retired'` the same way.
 - `note` — a `RUNNER NOTE` block: the runner's account of the previous
-  attempt of `T<n>`, not an instruction. It goes in the brief (§8, Inputs).
+  attempt of `<label>` (`T<n>` or `final-review`), not an instruction. It goes in the brief (§8, Inputs).
   Never record it.
 
 **Recording point.** Record only at your unit kind's point. An earlier line

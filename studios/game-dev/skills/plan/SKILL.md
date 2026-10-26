@@ -226,7 +226,7 @@ stays a run task with every outcome stated.
 killed at `session_minutes` (`overnight.session_minutes`, default 90). For
 each task, estimate its verify time from `Verify:` and its steps: each
 full-suite run × the `studio-test` median in the main checkout's
-`.studio/gate.times` (field 3, seconds; no rows: 10 min), plus each windowed
+`.studio/gate.times` (its `studio-test` rows with rc 0, field 3 in seconds; no rows: `session_minutes / 4`), plus each windowed
 or probe series × its count, plus each fix round × its re-run. A task over
 `session_minutes / 2`, or with an unbounded loop ("until 0", "every
 difference", "fix and re-run"), is split; the task says so, and a loop task
