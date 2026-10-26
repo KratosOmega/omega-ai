@@ -1,0 +1,102 @@
+#!/bin/sh
+# studio-deadline — the overnight unit's time: how long is left and whether a
+# gate run or a subagent fits before the unit's wrap-up time. Read-only. The
+# runner exports both times to every unit session (studio-overnight --help):
+#   STUDIO_UNIT_DEADLINE  epoch seconds when the watchdog ends the session
+#   STUDIO_UNIT_WRAP_AT   epoch seconds to wrap up by (the deadline when unset)
+#
+#   studio-deadline         `left <m> min · wrap at <HH:MM> (<m> min) · hard stop <HH:MM>`
+#                           (minutes rounded, never negative), or `no deadline`
+#                           outside a unit (no numeric STUDIO_UNIT_DEADLINE).
+#   studio-deadline fits <who> [<minutes>]
+#                           exit 0 `fits: <who> ~<m> min, <m> min to wrap` when a
+#                           run of <who> would end by STUDIO_UNIT_WRAP_AT, else
+#                           exit 1 `does not fit: <who> ~<m> min, <m> min to wrap
+#                           at <HH:MM>`. Outside a unit: exit 0, `no deadline`.
+#
+# <who> is the gate's own name, as studio-gate writes it to gate.times:
+# studio-test, studio-test-file, studio-run, gate (`studio-setup gate`), setup
+# (worktree_setup), vitest, tsc, godot. The estimate is p90 x 1.2 of <who>'s
+# newest 50 hold times (gate_times_holds over <state root>/.studio/gate.times;
+# p90 by nearest rank) once there are 5; with fewer, <minutes> when given, else
+# STUDIO_GATE_MINUTES / 2 (60 / 2 when it is unset or 0). `agent` (a subagent
+# dispatch) is STUDIO_DEADLINE_AGENT_MIN minutes (default 20).
+#
+# Exit: 0 (see above) · 1 does not fit · 2 bad usage
+# Byte collation: under a UTF-8 locale macOS sh matches [a-z] by collation (A-Y too).
+unset LC_ALL; LC_COLLATE=C
+set -u
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+
+usage() {
+  printf 'usage: studio-deadline [fits <who>|agent [<minutes>]]\n' >&2
+  exit 2
+}
+fail() { printf 'studio-deadline: %s\n' "$*" >&2; exit 1; }
+
+# whole V — V is a whole number (no sign, at least one digit).
+whole() { case "$1" in ''|*[!0-9]*) return 1 ;; esac; }
+# dec V — whole number V without leading zeros (`090` would be octal in $(( ))).
+dec() { _d="${1#"${1%%[!0]*}"}"; printf '%s\n' "${_d:-0}"; }
+# hm EPOCH — local HH:MM (BSD date, else GNU date).
+hm() { date -r "$1" +%H:%M 2>/dev/null || date -d "@$1" +%H:%M 2>/dev/null || printf '??:??\n'; }
+# mins SECS — SECS in whole minutes, rounded, never negative.
+mins() { if [ "$1" -le 0 ]; then echo 0; else echo $(( ($1 + 30) / 60 )); fi; }
+# estimate WHO MINUTES — the run's seconds (see the header).
+estimate() {
+  if [ "$1" = agent ]; then
+    _ea="${STUDIO_DEADLINE_AGENT_MIN:-20}"; whole "$_ea" && _ea="$(dec "$_ea")" || _ea=20
+    echo $(( _ea * 60 )); return
+  fi
+  _er=""
+  _eroot="$(sh "$HERE/studio-state" root 2>/dev/null)" || _eroot=""
+  if [ -n "$_eroot" ]; then
+    . "$HERE/gate-times.sh"
+    _er="$(gate_times_holds "$_eroot/.studio/gate.times" "$1" | tail -n 50 | sort -n | awk '
+      { h[NR] = $1 }
+      END {
+        if (NR < 5) exit
+        r = int((9 * NR + 9) / 10)
+        print int((6 * h[r] + 4) / 5)
+      }')"
+  fi
+  if [ -n "$_er" ]; then echo "$_er"
+  elif [ -n "$2" ]; then echo $(( $(dec "$2") * 60 ))
+  else
+    _eg="${STUDIO_GATE_MINUTES:-}"; whole "$_eg" && _eg="$(dec "$_eg")" || _eg=60
+    [ "$_eg" -gt 0 ] || _eg=60
+    echo $(( _eg * 60 / 2 ))
+  fi
+}
+
+case "${1:-}" in
+  --help|-h) sed -n '2,/^# Exit:/p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  '') [ "$#" -eq 0 ] || usage ;;
+  fits)
+    [ "$#" -ge 2 ] && [ "$#" -le 3 ] && [ -n "$2" ] || usage
+    case "$2" in -*) usage ;; esac
+    if [ "$#" -eq 3 ]; then whole "$3" && [ "$(dec "$3")" -gt 0 ] || usage; fi ;;
+  *) usage ;;
+esac
+
+D="${STUDIO_UNIT_DEADLINE:-}"
+if ! whole "$D"; then echo "no deadline"; exit 0; fi
+D="$(dec "$D")"
+W="${STUDIO_UNIT_WRAP_AT:-}"; if whole "$W"; then W="$(dec "$W")"; else W="$D"; fi
+NOW="$(date +%s)" || fail "cannot read the clock"
+
+if [ "$#" -eq 0 ]; then
+  printf 'left %s min · wrap at %s (%s min) · hard stop %s\n' \
+    "$(mins $((D - NOW)))" "$(hm "$W")" "$(mins $((W - NOW)))" "$(hm "$D")"
+  exit 0
+fi
+
+WHO="$2"; EST="$(estimate "$WHO" "${3:-}")"; LEFT=$((W - NOW))
+EM=$(( (EST + 59) / 60 ))
+if [ "$EST" -le "$LEFT" ]; then
+  printf 'fits: %s ~%s min, %s min to wrap\n' "$WHO" "$EM" "$(mins "$LEFT")"
+  exit 0
+fi
+printf 'does not fit: %s ~%s min, %s min to wrap at %s\n' "$WHO" "$EM" "$(mins "$LEFT")" "$(hm "$W")"
+exit 1

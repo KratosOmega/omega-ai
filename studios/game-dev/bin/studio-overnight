@@ -544,13 +544,21 @@ Environment:
                      start skips the check when it names the base's commit
                      and refuses (exit 2) when the base has moved since.
                      Never set it yourself
+Every unit session gets (the runner sets them; never set them yourself):
+  STUDIO_UNIT_DEADLINE — epoch seconds when the watchdog ends the session
+                     (its start + session_minutes)
+  STUDIO_UNIT_WRAP_AT — epoch seconds to wrap up by: STUDIO_UNIT_DEADLINE less
+                     max(10 min, session_minutes / 6), never more than half the
+                     session. studio-deadline prints both;
+                     studio-deadline fits <who>|agent [<minutes>] exits 1 when a
+                     gate run or a subagent would not finish by the wrap time
 
 Test hooks (tests only; never set them for a real run; --detach strips them):
   STUDIO_OVERNIGHT_POLL_SECONDS — test hook: a whole number of seconds between
                      a lane's polls of a wait or a lock (default 5)
-  STUDIO_OVERNIGHT_NOTIFY_CMD — shell text run as `sh -c "$CMD" notify TEXT` for a
+  STUDIO_OVERNIGHT_NOTIFY_CMD — shell text run as \`sh -c "\$CMD" notify TEXT\` for a
                      hold's banner and reminder (else terminal-notifier, else
-                     osascript on macOS); tests set it to `: `
+                     osascript on macOS); tests set it to \`: \`
   STUDIO_OVERNIGHT_NOTIFY_SECONDS — test hook: the notifier's cap (default 10)
   STUDIO_OVERNIGHT_TOOLS_SECONDS — test hook: the cap on one required_tools
                      probe run (default 10; a capped run is exit 124), and on
@@ -1643,11 +1651,14 @@ reg_end() {
 # the story's pointer is (story_dir: START_DIR until a hand-off, #42).
 # STUDIO_UNIT_TAG (UNIT_TAG) marks every studio-gate the session starts, so
 # unit_reap can end the ones it leaves behind. STUDIO_START_DIR is
-# the run's start dir, for every unit (AC30, D42).
+# the run's start dir, for every unit (AC30, D42). STUDIO_UNIT_DEADLINE and
+# STUDIO_UNIT_WRAP_AT (UNIT_DEADLINE, UNIT_WRAP_AT: run_unit's) are the
+# watchdog's kill time and the time to wrap up by, in epoch seconds.
 start_session() {
   set -m 2>/dev/null || true   # own process group: a terminal Ctrl-C reaches only the runner (D6; a lane subshell too, D1c)
   ( cd "${UNIT_CWD:-$(story_dir)}" && unset STUDIO_GATE_HELD STUDIO_SUITE_EVERY && eval "export ${LAUNCH_ENV:-$(caps_env) OMEGA_AUTOPILOT=1}" \
       && STUDIO_UNIT_TAG="$UNIT_TAG" && export STUDIO_UNIT_TAG \
+      && STUDIO_UNIT_DEADLINE="$UNIT_DEADLINE" && STUDIO_UNIT_WRAP_AT="$UNIT_WRAP_AT" && export STUDIO_UNIT_DEADLINE STUDIO_UNIT_WRAP_AT \
       && STUDIO_RUN_DIR="$RUN_DIR" && export STUDIO_RUN_DIR \
       && STUDIO_START_DIR="$START_DIR" && export STUDIO_START_DIR && exec claude-gd -p "$@" ) \
     > "$UNIT_DIR/$UNIT_STEM.jsonl" 2> "$UNIT_DIR/$UNIT_STEM.err" < /dev/null &
@@ -1672,8 +1683,9 @@ unit_pre() { return 0; }
 # CUR_ID (empty in single-plan mode) names the story: stem N-ID-LABEL, and
 # $UNIT_DIR/current reads "ID LABEL". The model comes from the bare LABEL.
 # While it runs, $UNIT_DIR/unit.now reads "<start epoch> <stem>" (status and
-# the heartbeat). Once the session is gone, the gates it left are ended
-# (unit_reap; UNIT_REAPED).
+# the heartbeat). UNIT_DEADLINE and UNIT_WRAP_AT are the session's
+# STUDIO_UNIT_DEADLINE and STUDIO_UNIT_WRAP_AT, kept after it ends. Once the
+# session is gone, the gates it left are ended (unit_reap; UNIT_REAPED).
 run_unit() {
   UNIT_DENY_NOTE=""
   UNIT_STEM="$UNIT_PREFIX$1-${CUR_ID:+$CUR_ID-}$2"; printf '%s\n' "${CUR_ID:+$CUR_ID }$2" > "$UNIT_DIR/current"
@@ -1685,10 +1697,15 @@ run_unit() {
   _t0="$(date +%s)"
   printf '%s %s\n' "$_t0" "$UNIT_STEM" > "$UNIT_DIR/unit.now"
   say "${CUR_ID:+$CUR_ID }$2 · started${LANE_K:+ (lane $LANE_K)}"
+  # The unit's deadline (the watchdog's cap) and its wrap-up time, a margin
+  # of max(600, _secs / 6) s before it, never more than _secs / 2 (D3).
+  _secs="${STUDIO_OVERNIGHT_SESSION_SECONDS:-$((SESSION_MINUTES * 60))}"
+  UNIT_DEADLINE=$((_t0 + _secs))
+  _mg=$((_secs / 6)); [ "$_mg" -ge 600 ] || _mg=600; [ "$_mg" -le $((_secs / 2)) ] || _mg=$((_secs / 2))
+  UNIT_WRAP_AT=$((UNIT_DEADLINE - _mg))
   with_launch_args start_session
   session_started "$CPID"
   heartbeat_start
-  _secs="${STUDIO_OVERNIGHT_SESSION_SECONDS:-$((SESSION_MINUTES * 60))}"
   _idle=""; [ "${IDLE_MINUTES:-0}" -eq 0 ] || _idle="${STUDIO_OVERNIGHT_IDLE_SECONDS:-$((IDLE_MINUTES * 60))}"
   _poll="${STUDIO_OVERNIGHT_IDLE_POLL_SECONDS:-30}"
   _log="$UNIT_DIR/$UNIT_STEM.jsonl"; _greg="$STATE_ROOT/.studio/gate.units/$UNIT_TAG"
