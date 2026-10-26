@@ -196,6 +196,18 @@ is `STUDIO_STORY`:
   foreground, not worked around. The runner records a unit that died this
   way `orphaned`.
 
+**The deadline** (every overnight unit kind, lane or not). The runner kills
+the session at `STUDIO_UNIT_DEADLINE` and exports `STUDIO_UNIT_WRAP_AT`, the
+time to wrap up, some minutes before it; `studio-deadline` prints both.
+Before a full gate-routed run (`studio-test` without `--file`, `studio-run`,
+`studio-setup gate`) and before each subagent dispatch, run
+`studio-deadline fits <who>` (`studio-test`, `studio-run`, `gate` for
+`studio-setup gate`, `agent` for a dispatch). On exit 1, do not start it.
+That refusal, the hook's `WRAP-UP` notice, or `studio-deadline` showing the
+wrap time passed: start no gate and no subagent, wrap up (§8, Wrap-up) and
+end the turn. Outside an overnight unit it prints `no deadline`, and `fits`
+exits 0.
+
 **Isolation.** First note the current branch (`git branch --show-current`)
 — the noted branch — along with the spec's and plan's noted hashes. Then:
 
@@ -387,9 +399,11 @@ verbatim (§0, The gate runs in the foreground): "run `studio-test` and
 
 Under a lane, every implementer, fixer and reviewer brief also carries this line verbatim: "Worktree isolation refuses some shell forms. Run git as one plain command per Bash call. Never `cd <dir> &&` before a command: the shell starts in the worktree, so use `git -C`, `npm --prefix`, or a verb's `--dir`. No `$(…)` or `$VAR` in a git command: write the value. Write and edit files with the Write and Edit tools, not heredocs or inline scripts."
 
-Every implementer and fixer brief also carries: "run one test file with
+Every implementer, fixer and reviewer brief also carries this line verbatim (§0, The deadline): "Return to the orchestrator by `$STUDIO_UNIT_WRAP_AT` (`studio-deadline` prints it) with what is done and what is left. Never start a command that cannot finish by then: `studio-deadline fits <gate>` answers that. Pass `timeout` only on gate-routed commands (`studio-test`, `studio-run`, `studio-setup`, `studio-gate`); never on `sh tools/…`, `python`, `git` or any other command — a raised timeout lets a hung command outlive its cap."
+
+Every implementer and fixer brief also carries §4a rule 7 verbatim and: "run one test file with
 `studio-test --file <test file>`; never build a Godot or GUT command by
-hand; run a Godot script or import as `studio-gate godot -- <command>`; pass `timeout` only on gate-routed commands; a gate-routed command
+hand; run a Godot script or import as `studio-gate godot -- <command>`; a gate-routed command
 that exits 124 is `Stop: gate timed out`; a targeted vitest runs as
 `studio-vitest <file>…`, tsc as `studio-tsc` — each changes into the node dir and runs under the gate;
 never a `cd <node dir> &&` chain, never `sh -c` inside the gate; the whole suite runs only when `Verify:` includes `suite`".
@@ -516,6 +530,10 @@ This overrides `superpowers:subagent-driven-development`'s fix loop (rounds 1–
    (the summary line it pasted); it gets no review here, and its findings fold into the final review (§5).
    A Block (§6a) never holds a task: its check is pending, not red, so the
    task completes by this rule once everything else is green. It is not parked.
+7. **Commit as it lands.** In a round, and in any loop a task runs (fix,
+   re-run, until clean): commit each fix that passes its owning tests as it lands (and push under a lane); never batch fixes to the end of the task.
+   A kill at the cap keeps only what is committed and pushed, and only
+   pushed commits count as progress.
 
 ## 5. Final review
 
@@ -871,8 +889,8 @@ runner's (`STUDIO_RUN`'s header), and the base is `origin/<Target>`:
   times. Every other stop here is hard: the runner records the story stopped.
   Otherwise step 3 (PROGRESS) is skipped; step 4 pushes `<Branch>` and
   opens no PR; `studio-state ledger "shipped <Branch>"`.
-- **Direct:** step 1 is skipped (the runner's merge command is the gate).
-  Direct mode runs no finish gate, so `gate_command` does not run there;
+- **Direct:** step 1 runs as under **Integration** (`gate_command` included;
+  a `gate red` stop goes to the gate repair, §11, not to the landing);
   step 3 is skipped; step 4 pushes, then does this: open a **draft** PR into the default branch
   (`--base <Target>`); `studio-state ledger "shipped <url>"`.
 - Under a lane, step 5 still commits the ledger (`shipped …`) and pushes it
@@ -895,6 +913,8 @@ runs exactly one unit, writes its state, commits, pushes, and ends the turn.
     or reviewer reports name; a check unit reads only `studio-brief check <k>` (k from `task`);
   - a task unit whose §0 sync reported `T<k+1> in progress: <first>..<last>` adds to the
     implementer's brief: `commits already on the branch for this task: <first>..<last> — check and finish them; do not start over`;
+  - a `T<n> checkpoint:` part in `studio-brief task <n>`, or a `RUNNER NOTE` block, goes in the implementer's brief: `previous attempt: <text> — continue from "next"; do not redo "done" steps unless a file their evidence names has changed since`;
+    a final-review unit puts `studio-brief final`'s `final-review checkpoint:` part in its reviewer's or fix wave's brief the same way;
   - `studio-brief task <n>` ends with a `blocks: <path>` line: that path is
     the blocks file (§6a step 2), and it goes in the implementer's brief (§2);
     a check unit, a final-review unit and a gate repair (§11) also read the
@@ -974,7 +994,7 @@ runs exactly one unit, writes its state, commits, pushes, and ends the turn.
     `final review done` lines committed, then the push;
   - the finish: §7 as written, its lane changes included (`P<k> Play:`
     lines; outside a lane or under direct, the draft PR and `shipped <url>`;
-    under integration, no PR and `shipped <Branch>`; a red integration gate, `Stop:` and no `shipped` line;
+    under integration, no PR and `shipped <Branch>`; a red lane gate, `Stop:` and no `shipped` line;
     `stage idle`, `task -`).
 
   Under `--one`, a push that fails for any reason is a stop the first time
@@ -983,6 +1003,21 @@ runs exactly one unit, writes its state, commits, pushes, and ends the turn.
   This unit and every later unit never writes a `Ruling:` about a push. An
   earlier `Ruling: push rejected` line is a record only; it is not a stop and
   not a reason to skip a push.
+- **Wrap-up** (§0, The deadline; also any end that leaves the task
+  incomplete). Start nothing new. In order, each step only when the one
+  before succeeded: commit the green fixes not yet committed (§4a rule 7;
+  never a half edit or debug code);
+  `studio-state ledger "T<n> checkpoint: done <steps/evidence paths>; left <steps>; next <first action>"`,
+  one line of at most ~600 characters that names its evidence (logs, probe
+  outputs) by path or sha, so the retry need not re-measure, and never the
+  words `in progress`; `git add .studio/ledger`;
+  `git commit -m "chore(studio): checkpoint T<n>"`; push (§8's push rule);
+  end the turn. A final-review unit writes `final-review checkpoint: …` and
+  commits `chore(studio): checkpoint final-review`. Repair units (§9, §11)
+  have no retry: they write
+  `Stop: <kind> repair out of time — done …; left …` instead (`<kind>`:
+  `land`, `sync` or `gate`), committed as their red stop is. A check or
+  finish unit commits and pushes its green fixes and ends the turn.
 - **Every stop** (§0's preconditions and isolation stops, §6's hard-stop
   list, §7 step 1's exit 2 and exit 3, a red gate under a lane, a failed push
   (§8's push rule)): run
@@ -1028,9 +1063,15 @@ block to the session, at its start or after any tool call. Each message is an in
 - `story` — follow it for the rest of the story, and record it in
   the **feature checkout's** ledger, single-quoted, exactly as the block prints it:
   `studio-state ledger 'Directive <id>: <text>'`.
+- `task` — follow it until task `T<n>` is complete, and record it the same
+  way: `studio-state ledger 'Directive <id> T<n>: <text>'`. It retires by
+  itself when `T<n>` completes: no line.
 - `unit` — follow it in this unit only. Do not record it.
 - `retire` — stop following directive `<target>`, and record
   `studio-state ledger 'Directive <target> retired'` the same way.
+- `note` — a `RUNNER NOTE` block: the runner's account of the previous
+  attempt of `T<n>`, not an instruction. It goes in the brief (§8, Inputs).
+  Never record it.
 
 **Recording point.** Record only at your unit kind's point. An earlier line
 is overwritten, or makes a merge abort:
@@ -1053,7 +1094,7 @@ pushed under the same rule (a rejected push: §8's push rule).
 **Conflicts.** If a message conflicts with the approved plan or spec,
 follow it for how you work; for what you build, record a `Stop:` with the conflict instead (§8's stop rule).
 
-After the unit, the runner checks that each `story` and `retire` message it
+After the unit, the runner checks that each `story`, `task` and `retire` message it
 delivered has its line in the feature ledger. An unrecorded one is delivered
 again, and repeated misses hold the story.
 
