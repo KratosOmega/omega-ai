@@ -600,6 +600,28 @@ test_inbox_wrap_notice_subagent() {
   assert_contains "$TMP/ib.out" 'Start no gate' "the main session still gets its own"
   wrap_unenv
 }
+test_inbox_wrap_notice_agent_id_top_level() {
+  ib_fresh single; wrap_env -5 1200
+  inbox_run none '{"session_id":"s","agent_id":"a1","hook_event_name":"PostToolUse","tool_name":"Bash","tool_response":{"agent_id":"zz"}}'
+  assert_file "$IR/deadline/tagA.agent-a1.wrap" "the marker names the top-level agent_id"
+  assert_missing "$IR/deadline/tagA.agent-zz.wrap" "not a nested one"
+  wrap_unenv
+}
+test_inbox_wrap_notice_compact_reshows() {
+  ib_fresh single; wrap_env -600 120
+  inbox_run none "$PTU"
+  inbox_run none "$SS_COMPACT"
+  assert_contains "$TMP/ib.out" '^WRAP-UP (STUDIO_UNIT_WRAP_AT passed)' "compact: the wrap-up again"
+  assert_contains "$TMP/ib.out" '^FINAL: 2 min left' "and the final line"
+  ib_fresh single; wrap_env -5 1200
+  inbox_run none "$SS_COMPACT"
+  assert_contains "$TMP/ib.out" '^WRAP-UP' "compact past WRAP_AT with no notice sent yet: it is sent (and marked)"
+  assert_file "$IR/deadline/tagA.main.wrap" "marked"
+  wrap_env 300 1200; ib_fresh single
+  inbox_run none "$SS_COMPACT"
+  assert_eq "" "$(cat "$TMP/ib.out")" "compact before WRAP_AT: silent"
+  wrap_unenv
+}
 test_inbox_wrap_notice_final_unit() {
   ib_fresh manifest; wrap_env -5 1200
   inbox_run none "$PTU"
@@ -1366,7 +1388,7 @@ run_tests test_lanes_guard_registered test_lanes_guard_denies_commit_with_lanes_
   test_autopilot_guard_registered test_autopilot_guard_denies_background_agent \
   test_autopilot_guard_allows_foreground_agent test_autopilot_guard_reads_the_field_not_the_prompt \
   test_autopilot_guard_bash_and_monitor test_autopilot_guard_off_outside_autopilot \
-  test_inbox_hook_skips_storyless_manifest_unit test_inbox_wrap_notice_once test_inbox_wrap_notice_subagent test_inbox_wrap_notice_final_unit test_inbox_wrap_notice_before_wrap_silent test_inbox_final_notice test_inbox_hook_skips_subagent test_inbox_agent_id_top_level_only \
+  test_inbox_hook_skips_storyless_manifest_unit test_inbox_wrap_notice_once test_inbox_wrap_notice_subagent test_inbox_wrap_notice_agent_id_top_level test_inbox_wrap_notice_compact_reshows test_inbox_wrap_notice_final_unit test_inbox_wrap_notice_before_wrap_silent test_inbox_final_notice test_inbox_hook_skips_subagent test_inbox_agent_id_top_level_only \
   test_inbox_session_start_plain test_inbox_post_tool_use_json test_inbox_claim_moves_to_delivered \
   test_inbox_one_claim_under_two_hooks test_inbox_compact_reshows \
   test_inbox_escapes_quotes_dollar_backticks_newlines test_inbox_task_scope_recorded test_inbox_note_shown_not_recorded test_inbox_hook_never_fails test_inbox_lost_claim_race_not_logged test_inbox_invalid_utf8_body_whole \

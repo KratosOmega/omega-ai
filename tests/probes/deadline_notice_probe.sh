@@ -32,7 +32,7 @@ cat > "$D/ptu.sh" <<EOS
 #!/bin/sh
 IN="\$(cat)"
 printf '%s\n' "\$IN" | tr -d '\\n' >> '$D/ptu.log'; echo >> '$D/ptu.log'
-if printf '%s' "\$IN" | grep -q '"agent_id"'; then
+if printf '%s' "\$IN" | grep -q '"agent_id"' && printf '%s' "\$IN" | grep -q '"tool_name": *"Bash"'; then
   printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":"WRAP-UP canary: $CANARY"}}'
 fi
 exit 0

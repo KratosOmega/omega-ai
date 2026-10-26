@@ -53,9 +53,10 @@ sq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 # esc TEXT — TEXT as one ledger line: \ doubled, each newline written \n
 # (studio-brief and `said` undo both).
 esc() { printf '%s' "$1" | LC_ALL=C sed 's/\\/\\\\/g' | LC_ALL=C awk 'NR > 1 { printf "\\n" } { printf "%s", $0 }'; }
-# top_agent_id — true when the hook input has a top-level agent_id (a
-# subagent's call). A cheap grep first; only a match pays for the depth scan
-# that ignores an agent_id key nested in tool_input or tool_response.
+# top_agent_id — prints the top-level agent_id's value (x when empty) and
+# succeeds when the hook input has one (a subagent's call). A cheap grep
+# first; only a match pays for the depth scan that ignores an agent_id key
+# nested in tool_input or tool_response.
 top_agent_id() {
   printf '%s' "$IN" | grep -q '"agent_id"' || return 1
   printf '%s' "$IN" | tr -d '\n' | awk '{
@@ -69,7 +70,20 @@ top_agent_id() {
       } else if (c == "\"") { ins = 1; cur = "" }
       else if (c == "{" || c == "[") d++
       else if (c == "}" || c == "]") d--
-      else if (c == ":" && d == 1 && lastd == 1 && last == "agent_id") exit 0
+      else if (c == ":" && d == 1 && lastd == 1 && last == "agent_id") {
+        i++; while (substr($0, i, 1) ~ /[ \t]/) i++
+        v = ""
+        if (substr($0, i, 1) == "\"") {
+          for (i++; i <= n; i++) {
+            c = substr($0, i, 1)
+            if (c == "\\") i++
+            else if (c == "\"") break
+            else v = v c
+          }
+        }
+        gsub(/[^A-Za-z0-9_-]/, "_", v)
+        print (v == "" ? "x" : v); exit 0
+      }
     }
     exit 1 }'
 }
@@ -89,6 +103,15 @@ notice_once() {
   mkdir -p "$RD/deadline" 2>/dev/null || return 1
   ( set -C; : > "$_mk" ) 2>/dev/null
 }
+# wrap_text / final_text — the main session's notice lines (NOW, _dl set).
+wrap_text() {
+  if [ -n "$_dl" ]; then
+    printf 'WRAP-UP (STUDIO_UNIT_WRAP_AT passed): %s min to the hard stop at %s. Start no gate and no subagent. Commit and push green work, write the T<n> checkpoint ledger line (execute §8), end the turn.' "$(( (_dl - NOW > 0 ? _dl - NOW + 59 : 0) / 60 ))" "$(hhmm "$_dl")"
+  else
+    printf 'WRAP-UP (STUDIO_UNIT_WRAP_AT passed): the hard stop is near. Start no gate and no subagent. Commit and push green work, write the T<n> checkpoint ledger line (execute §8), end the turn.'
+  fi
+}
+final_text() { printf 'FINAL: %s min left — commit what is green and end now.' "$(( (_dl - NOW > 0 ? _dl - NOW + 59 : 0) / 60 ))"; }
 # deadline_notices WHO — NOTICE: the lines due now for session WHO (main or an
 # agent id). Called only once NOW >= WRAP_AT, or for the final line.
 deadline_notices() {
@@ -97,17 +120,13 @@ deadline_notices() {
   case "$_dl" in ''|*[!0-9]*) _dl="" ;; esac
   if [ "$NOW" -ge "$STUDIO_UNIT_WRAP_AT" ] && notice_once wrap "$1"; then
     if [ "$1" = main ]; then
-      if [ -n "$_dl" ]; then
-        NOTICE="WRAP-UP (STUDIO_UNIT_WRAP_AT passed): $(( (_dl - NOW > 0 ? _dl - NOW + 59 : 0) / 60 )) min to the hard stop at $(hhmm "$_dl"). Start no gate and no subagent. Commit and push green work, write the T<n> checkpoint ledger line (execute §8), end the turn."
-      else
-        NOTICE="WRAP-UP (STUDIO_UNIT_WRAP_AT passed): the hard stop is near. Start no gate and no subagent. Commit and push green work, write the T<n> checkpoint ledger line (execute §8), end the turn."
-      fi
+      NOTICE="$(wrap_text)"
     else
       NOTICE="WRAP-UP: return to the orchestrator now with what is done and what is left; start nothing new."
     fi
   fi
   if [ -n "$_dl" ] && [ "$NOW" -ge $(( _dl - 180 )) ] && notice_once final "$1"; then
-    _f="FINAL: $(( (_dl - NOW > 0 ? _dl - NOW + 59 : 0) / 60 )) min left — commit what is green and end now."
+    _f="$(final_text)"
     NOTICE="${NOTICE:+$NOTICE
 }$_f"
   fi
@@ -123,7 +142,7 @@ case "$EVN" in
       *) exit 0 ;;
     esac ;;
   PostToolUse)
-    top_agent_id && AGENT=1
+    AGENT_ID="$(top_agent_id)" && AGENT=1
     MODE=claim; VIA=tool_call ;;
   *) exit 0 ;;
 esac
@@ -131,9 +150,18 @@ NOTICE=""
 if [ -n "$NOW" ] && [ "$NOW" -ge "$STUDIO_UNIT_WRAP_AT" ]; then
   WHO=main
   if [ "$AGENT" = 1 ]; then
-    WHO="$(field agent_id | tr -c 'A-Za-z0-9_-' '_')"; WHO="agent-${WHO:-x}"
+    WHO="agent-$AGENT_ID"
   fi
   deadline_notices "$WHO"
+fi
+# A compaction must not drop the nudge: re-show what the main session was told.
+if [ "$MODE" = reshow ] && [ -n "$NOW" ]; then
+  _dl="${STUDIO_UNIT_DEADLINE:-}"; case "$_dl" in ''|*[!0-9]*) _dl="" ;; esac
+  if [ -f "$RD/deadline/$TAG.main.wrap" ]; then NOTICE="$(wrap_text)"; fi
+  if [ -n "$_dl" ] && [ -f "$RD/deadline/$TAG.main.final" ]; then
+    NOTICE="${NOTICE:+$NOTICE
+}$(final_text)"
+  fi
 fi
 
 BLOCKOUT=""
