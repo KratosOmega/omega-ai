@@ -80,6 +80,12 @@ for act in "$@"; do
                   git push -q -u origin feat >/dev/null 2>&1 ;;
     # unpushed: an empty commit in the story worktree, not pushed (#91).
     unpushed)     git -C "$(sh "$STUB_STATE_BIN" worktree)" -c user.name=t -c user.email=t@t commit -q --allow-empty -m unpushed ;;
+    # wtcommit FILE SUBJECT: commit FILE (content: SUBJECT) in the story worktree, not pushed.
+    "wtcommit "*) _wc="${act#wtcommit }"; _wcw="$(sh "$STUB_STATE_BIN" worktree)"
+                  mkdir -p "$_wcw/$(dirname "${_wc%% *}")" && printf '%s\n' "${_wc#* }" > "$_wcw/${_wc%% *}" \
+                    && git -C "$_wcw" add "${_wc%% *}" && git -C "$_wcw" -c user.name=t -c user.email=t@t commit -q -m "${_wc#* }" ;;
+    # lastwords TEXT: an assistant text event on stdout (the unit's stream-json).
+    "lastwords "*) printf '{"type":"assistant","message":{"content":[{"type":"text","text":"%s"}]},"parent_tool_use_id":null}\n' "${act#lastwords }" ;;
     # pushwt: push the story worktree's branch to origin.
     pushwt)       _pw="$(sh "$STUB_STATE_BIN" worktree)"
                   git -C "$_pw" push -q origin "$(git -C "$_pw" symbolic-ref --short HEAD)" >/dev/null 2>&1 ;;
@@ -1476,8 +1482,78 @@ test_overnight_kill_after_grace() {
   STUDIO_OVERNIGHT_SESSION_SECONDS=1; export STUDIO_OVERNIGHT_SESSION_SECONDS
   run_start; unset STUDIO_OVERNIGHT_SESSION_SECONDS
   assert_eq 2 "$(calls)" "a session that ignores TERM is killed after the grace, and counted"
-  assert_contains "$(last_run_dir)/report.md" "^Ending: timed out on T1 (session_minutes " "two killed sessions with no progress stop the run, named as timed out"
+  assert_contains "$(last_run_dir)/report.md" "^Ending: timed out on T1 (session_minutes [0-9]*; 2 capped units) — checkpoint: " "two killed sessions with no progress stop the run at the task_timeouts bound, named as timed out"
   assert_eq "timed out" "$(awk -F'\t' 'NR == 1 { print $7 }' "$(last_run_dir)/units.tsv")" "a unit the watchdog ended with no progress is recorded timed out, not noprog"
+}
+# C1: a unit that ends on its own past its wrap-up time without finishing its
+# task is capped too (not killed: Timed out 0), and feeds only the bound. A
+# 20 s session wraps at 10 s; each unit ends at 12 s, far inside the cap.
+test_overnight_wrap_capped_unit() {
+  fixture wcu
+  scenario "stage execute; branch fw; task 1/2" "sleep 12" "sleep 12" "task 2/2"
+  STUDIO_OVERNIGHT_SESSION_SECONDS=20; export STUDIO_OVERNIGHT_SESSION_SECONDS
+  run_start; unset STUDIO_OVERNIGHT_SESSION_SECONDS
+  assert_eq "progress 0 0|noprog 0 1|noprog 0 1" \
+    "$(awk -F'\t' '{ printf "%s%s %s %s", (NR > 1 ? "|" : ""), $7, $6, $9 }' "$(last_run_dir)/units.tsv")" "outcome, timed out and capped per unit"
+  assert_contains "$(last_run_dir)/report.md" "^Ending: timed out on T2 (session_minutes [0-9]*; 2 capped units) — checkpoint: uncommitted: none; unpushed: none; last words: none$" "the bound, not retries, ends it; no checkpoint: the fallback's head"
+  assert_contains "$(last_run_dir)/report.md" "^| 2 | T2 | 0 | [^|]* | [^|]* | 0 | noprog (capped) |$" "the report marks a capped unit the cap did not end"
+  assert_contains "$(last_run_dir)/report.md" "^- 1 (note, requeues 0): uncommitted: none; unpushed: none; last words: none$" "the first unit's runner note is left for a unit that never read it"
+}
+# Ruling 6: an idle-watchdog kill past WRAP_AT is a stall, not a cap: it
+# keeps the stall ending and never feeds task_timeouts. A 20 s session wraps
+# at 10 s; the 12 s idle window ends the unit at about 13 s.
+test_overnight_stall_past_wrap_not_capped() {
+  fixture spw '{ "overnight": { "retries": 0 } }'
+  stall_log "$TMP/spw.jsonl" "sleep 999"
+  scenario "emit $TMP/spw.jsonl; hang"
+  idle_on 12 1 20; run_start; idle_off
+  R="$(last_run_dir)"
+  assert_eq "stalled 0 0" "$(awk -F'\t' 'NR == 1 { print $7, $6, $9 }' "$R/units.tsv")" "stalled, not timed out, not capped"
+  assert_eq yes "$(awk -F'\t' 'NR == 1 { print ($5 * 60 >= 10 ? "yes" : $5) }' "$R/units.tsv")" "it ended past its wrap-up time"
+  assert_contains "$R/report.md" '^Ending: stalled on T1 (no output for 20 min: Bash: sleep 999)$' "the stall ending, not the bound's"
+}
+# C4: a capped unit whose only own commit is studio-docs-sync's is not partial.
+test_overnight_docs_sync_commit_not_partial() {
+  fixture dsp '{ "overnight": { "kill_grace_seconds": 5 } }'
+  scenario "stage execute; branch fd; task 1/2" \
+    "wtcommit docs/plan.md docs(S1): plan at run docs abc1234; pushwt; hang" \
+    "wtcommit docs/spec.md docs(S1): approved plan; pushwt; hang"
+  STUDIO_OVERNIGHT_SESSION_SECONDS=8; export STUDIO_OVERNIGHT_SESSION_SECONDS
+  run_start; unset STUDIO_OVERNIGHT_SESSION_SECONDS
+  assert_eq "progress|timed out|timed out" "$(awk -F'\t' '{ printf "%s%s", (NR > 1 ? "|" : ""), $7 }' "$(last_run_dir)/units.tsv")" "docs-sync commits are not the unit's own"
+}
+# §3: commits a capped unit never pushed are no progress: it stays timed out.
+test_overnight_unpushed_commit_stays_timed_out() {
+  fixture upc '{ "overnight": { "kill_grace_seconds": 5 } }'
+  scenario "stage execute; branch fu; task 1/2" "wtcommit fix.gd fix: half; hang" "wtcommit fix2.gd fix: more; hang"
+  STUDIO_OVERNIGHT_SESSION_SECONDS=8; export STUDIO_OVERNIGHT_SESSION_SECONDS
+  run_start; unset STUDIO_OVERNIGHT_SESSION_SECONDS
+  R="$(last_run_dir)"
+  assert_eq "progress|timed out|timed out" "$(awk -F'\t' '{ printf "%s%s", (NR > 1 ? "|" : ""), $7 }' "$R/units.tsv")" "unpushed commits are not partial"
+  assert_contains "$R/report.md" "^- 1 (note, requeues 0): uncommitted: none; unpushed: [0-9a-f]* fix: half; last words: none$" "the runner note names the unpushed commit"
+}
+# C1: partial resets noprog — noprog, partial, noprog still retries (retries 1).
+test_overnight_partial_resets_noprog() {
+  fixture prn '{ "overnight": { "kill_grace_seconds": 5 } }'
+  scenario "stage execute; branch fp; task 1/2" "" "wtcommit fix.gd fix: part; pushwt; hang" "" "task 2/2"
+  STUDIO_OVERNIGHT_SESSION_SECONDS=8; export STUDIO_OVERNIGHT_SESSION_SECONDS
+  run_start; unset STUDIO_OVERNIGHT_SESSION_SECONDS
+  assert_eq "progress|noprog|partial|noprog|progress" \
+    "$(awk -F'\t' 'NR <= 5 { printf "%s%s", (NR > 1 ? "|" : ""), $7 }' "$(last_run_dir)/units.tsv")" "the noprog after the partial is retried"
+}
+# Spec §4, single-plan: task_timeouts (2) capped units of one task end the
+# run (holds off) with the newest checkpoint in the ending.
+test_overnight_bound_single_plan() {
+  fixture bsp '{ "overnight": { "kill_grace_seconds": 5 } }'
+  scenario "stage execute; branch fb; task 1/2" \
+    "wtledger T2 checkpoint: done A, left B, next C; hang" \
+    "wtledger T2 checkpoint: done D, left E, next F; hang" "task 2/2"
+  STUDIO_OVERNIGHT_SESSION_SECONDS=8; export STUDIO_OVERNIGHT_SESSION_SECONDS
+  run_start; unset STUDIO_OVERNIGHT_SESSION_SECONDS
+  assert_eq 3 "$(calls)" "no third attempt of T2"
+  assert_contains "$(last_run_dir)/report.md" "^Ending: timed out on T2 (session_minutes [0-9]*; 2 capped units) — checkpoint: done D, left E, next F$" "the bound's ending carries the newest checkpoint"
+  assert_eq "progress 0|timed out 1|timed out 1" \
+    "$(awk -F'\t' '{ printf "%s%s %s", (NR > 1 ? "|" : ""), $7, $9 }' "$(last_run_dir)/units.tsv")" "outcome and capped per unit"
 }
 
 test_overnight_reap_poll_keeps_budget() {
@@ -2759,19 +2835,23 @@ test_overnight_resume_runs_next_unit() {
   scenario "$ISO1" "wtledger Stop: need art" "inbox; task 2/2; wtledger T2 complete b..c" \
            "wtledger final review done" "wtledger shipped https://x/pull/3; stage idle; task -"
   start_bg; wait_held 60
-  verb say - "use the bus"; assert_eq 1 "$(cat "$V_OUT")" "say on the held story: id 1"
+  # Ruling 7: the held unit left no checkpoint, so its runner note took id 1.
+  assert_contains "$(last_run_dir)/inbox/-/1.msg" "^scope: note$" "the held unit's runner note is id 1"
+  verb say - "use the bus"; assert_eq 2 "$(cat "$V_OUT")" "say on the held story: id 2"
   verb say - --unit "skip polish"
   verb resume -; assert_eq "resume requested: - resumes within one poll" "$(cat "$V_OUT")" "resume -"
   bg_end 60 "the resumed run finishes"
   assert_eq 0 "$BG_STATUS" "it ends done"
   assert_eq "1 2 3 4 5" "$(unit_col 1)" "unit numbers run on after the hold"
-  assert_contains "$CALLS/3.inbox" '^\[1, story\] use the bus$' "the next unit got the directive at startup"
-  assert_contains "$CALLS/3.inbox" '^\[2, unit\] skip polish$' "and the unit message"
-  assert_contains "$R/events.jsonl" '"event":"message_requeued","story":"-","id":1,"unit":"[^"]*-0-3-T2","requeues":1}$' "the unrecorded directive was requeued (AC13)"
-  assert_contains "$R/inbox/-/1.msg" "^requeues: 1$" "back in pending with requeues 1"
-  assert_missing "$R/inbox/-/2.msg" "a unit message is never requeued"
+  assert_contains "$CALLS/3.inbox" '^RUNNER NOTE (previous attempt of T2)$' "the next unit got the runner note"
+  assert_contains "$CALLS/3.inbox" '^\[2, story\] use the bus$' "and the directive at startup"
+  assert_contains "$CALLS/3.inbox" '^\[3, unit\] skip polish$' "and the unit message"
+  assert_contains "$R/events.jsonl" '"event":"message_requeued","story":"-","id":2,"unit":"[^"]*-0-3-T2","requeues":1}$' "the unrecorded directive was requeued (AC13)"
+  assert_contains "$R/inbox/-/2.msg" "^requeues: 1$" "back in pending with requeues 1"
+  assert_missing "$R/inbox/-/1.msg" "a runner note is never requeued"
+  assert_missing "$R/inbox/-/3.msg" "a unit message is never requeued"
   assert_contains "$R/report.md" "^## Operator messages left$" "the report lists the messages left (AC14)"
-  assert_contains "$R/report.md" "^- 1 (story, requeues 1): use the bus$" "id, scope, requeues, text"
+  assert_contains "$R/report.md" "^- 2 (story, requeues 1): use the bus$" "id, scope, requeues, text"
   assert_contains "$R/events.jsonl" '"state":"running"}$' "a running event after the resume"
   holds_off
 }
@@ -3446,7 +3526,8 @@ test_channel_ledger_follows_story() {
   assert_contains "$V_OUT" "^7  active  keep the bus$" "said reads the ledger where the story's pointer is"
   verb say - x
   assert_eq 0 "$V_STATUS" "say - succeeds during the hold"
-  assert_eq 8 "$(cat "$V_OUT")" "the next id counts the story worktree's Directive lines"
+  # 8 went to the held unit's runner note (ruling 7), which counted them too.
+  assert_eq 9 "$(cat "$V_OUT")" "the next id counts the story worktree's Directive lines"
   verb stop -; bg_end 60 "the run ends"
   assert_contains "$R/report.md" "^Ending: stop: need art$" "with the story's Stop:"
   holds_off
@@ -3801,7 +3882,8 @@ run_tests test_overnight_setup_preflight_single test_overnight_tools_after_setup
   test_overnight_report_anchors test_overnight_report_blocks test_overnight_report_gate_block test_overnight_resume_quote test_overnight_label_t1 \
   test_overnight_session_seconds_refused test_overnight_claim_without_run_dir \
   test_overnight_report_runner_error test_overnight_crash_resume test_overnight_status test_overnight_status_short_lane \
-  test_overnight_timeout test_overnight_kill_after_grace \
+  test_overnight_timeout test_overnight_kill_after_grace test_overnight_bound_single_plan test_overnight_wrap_capped_unit test_overnight_stall_past_wrap_not_capped \
+  test_overnight_docs_sync_commit_not_partial test_overnight_unpushed_commit_stays_timed_out test_overnight_partial_resets_noprog \
   test_overnight_reap_poll_keeps_budget test_overnight_reap_poll_rejects_bad_value \
   test_overnight_stop_file test_overnight_sigterm test_overnight_sigint test_overnight_sighup \
   test_overnight_stop_no_run test_overnight_inhibitor test_overnight_no_inhibitor \

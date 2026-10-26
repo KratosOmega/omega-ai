@@ -1416,12 +1416,14 @@ story_ledger_text() {
 story_ledger_lines() { story_ledger_text "$1" | grep -E '^- [0-9-]+ (([^ ]+ )?(Ruling|Block): |P[0-9]+ Play: )'; }
 # story_units_table ID — ID's rows of every lane's units.tsv (the label is
 # `<id>-<unit label>`) as a markdown table, an estimated cost (column 8
-# `estimate`, spec §6) as ≈<usd>; `(no units)` when none ran.
+# `estimate`, spec §6) as ≈<usd>, and a capped unit the cap did not end
+# (column 9 1, Timed out 0: it ended past its wrap-up time, C1) as
+# `<outcome> (capped)`; `(no units)` when none ran.
 story_units_table() {
   cat "$RUN_DIR"/lanes/*/units.tsv 2>/dev/null | awk -F'\t' -v p="$1-" '
     index($2, p) == 1 && substr($2, length(p) + 1) ~ /^(T[0-9]+|check|final-review|finish|repair|gate-repair|sync-repair)(-retry)?$/ {
       if (!n++) print "| # | Unit | Exit | Cost | Minutes | Timed out | Outcome |\n|---|------|------|------|---------|-----------|---------|"
-      printf "| %s | %s | %s | %s%s | %s | %s | %s |\n", $1, $2, $3, ($8 == "estimate" ? "≈" : ""), $4, $5, $6, $7 }
+      printf "| %s | %s | %s | %s%s | %s | %s | %s%s |\n", $1, $2, $3, ($8 == "estimate" ? "≈" : ""), $4, $5, $6, $7, ($9 == 1 && $6 != 1 ? " (capped)" : "") }
     END { if (!n) print "(no units)" }'
 }
 # final_why ENDING — why there is no final PR.
