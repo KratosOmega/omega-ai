@@ -916,7 +916,7 @@ test_execute_adopt() {
   assert_eq 1 "$([ "$(sed -n '/^## 6\. /,/^## 7\. /p' "$E" | grep -c 'first>^1')" -ge 1 ] && echo 1 || echo 0)" "the rule sits in §6"
   assert_contains "$E" "the task's ledger range (§6: it starts at .<first>^1.)" "§0 points the sync report at the §6 range"
   assert_contains "$E" 'verify with the command that failed' "§11 (AC20)"
-  assert_contains "$E" 'Direct mode runs no finish gate, so `gate_command` does not run there' "direct mode (AC20)"
+  assert_contains "$E" 'step 1 runs as under \*\*Integration\*\*' "direct mode runs the finish gate, gate_command included (AC20; unit-deadline D6)"
 }
 
 # #41: SDD scripts are found with sdd-script, never by searching or by an

@@ -222,11 +222,24 @@ ledgers it under the new number, before the next stop. A check
 that needs a person (a look, a feel call) or the Godot MCP is not a spike: it
 stays a run task with every outcome stated.
 
+**Each task fits the session.** An overnight unit runs one task and is
+killed at `session_minutes` (`overnight.session_minutes`, default 90). For
+each task, estimate its verify time from `Verify:` and its steps: each
+full-suite run × the `studio-test` median in the main checkout's
+`.studio/gate.times` (its `studio-test` rows with rc 0, field 3 in seconds; no rows: `session_minutes / 4`), plus each windowed
+or probe series × its count, plus each fix round × its re-run. A task over
+`session_minutes / 2`, or with an unbounded loop ("until 0", "every
+difference", "fix and re-run"), is split; the task says so, and a loop task
+names its max rounds, then a Block or a Stop. Example: a T12 that loops a
+probe until 0 differences, then checks a 30-log clean-exit series, is two
+tasks: the probe-to-zero loop (max rounds, then a Block per remaining
+difference) and the clean-exit series.
+
 Run the writing-plans self-review (spec coverage, placeholder scan, name
 consistency). Additionally check: every acceptance criterion in the spec maps
 to a task; every `Verify: unit` task names a test file; every
 `Verify: playtest` task states its playtest item; every task has
-a `Spec:` line and a `Review:` line; every plan-time probe has a measured-input block, or is a run task with every outcome stated; every go/no-go spike has a `Spike:` line and a `spike T<n> pass <plan path>` ledger line. Then run `studio-brief validate <plan path>`
+a `Spec:` line and a `Review:` line; every plan-time probe has a measured-input block, or is a run task with every outcome stated; every go/no-go spike has a `Spike:` line and a `spike T<n> pass <plan path>` ledger line; every task fits the session (above). Then run `studio-brief validate <plan path>`
 and fix the plan until it exits 0: it checks every task's `Spec:` items (the
 file, the range, the heading) the way execute's brief will read them. It also fails on a bare Godot script/import run anywhere in the plan, naming the line and the gated form to write.
 
