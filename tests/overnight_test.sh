@@ -981,7 +981,7 @@ test_overnight_deny_file_required() {
   # The runner reads overnight-deny.txt beside itself: run a copy whose
   # sibling deny file holds only comments.
   fixture deny
-  mkdir -p "$TMP/denybin"; cp "$RUNNER" "$STATE_BIN" "$REPO_ROOT/studios/game-dev/bin/overnight-channel.sh" "$REPO_ROOT/studios/game-dev/bin/overnight-runs.sh" "$REPO_ROOT/studios/game-dev/bin/gate-times.sh" "$REPO_ROOT/studios/game-dev/bin/overnight-tools.sh" "$REPO_ROOT/studios/game-dev/bin/overnight-sessions.sh" "$REPO_ROOT/studios/game-dev/bin/overnight-progress.sh" "$REPO_ROOT/studios/game-dev/bin/studio-env" "$TMP/denybin/"
+  mkdir -p "$TMP/denybin"; cp "$RUNNER" "$STATE_BIN" "$REPO_ROOT/studios/game-dev/bin/overnight-channel.sh" "$REPO_ROOT/studios/game-dev/bin/overnight-runs.sh" "$REPO_ROOT/studios/game-dev/bin/gate-times.sh" "$REPO_ROOT/studios/game-dev/bin/overnight-tools.sh" "$REPO_ROOT/studios/game-dev/bin/overnight-sessions.sh" "$REPO_ROOT/studios/game-dev/bin/overnight-progress.sh" "$REPO_ROOT/studios/game-dev/bin/overnight-cost.sh" "$REPO_ROOT/studios/game-dev/bin/studio-env" "$TMP/denybin/"
   printf '# only a comment\n\n' > "$TMP/denybin/overnight-deny.txt"
   RS_STATUS=0; ( cd "$P" && sh "$TMP/denybin/studio-overnight" start ) > "$TMP/rs.out" 2> "$TMP/rs.err" || RS_STATUS=$?
   assert_eq 2 "$RS_STATUS" "a deny file with no rules refuses"
@@ -1239,11 +1239,136 @@ test_overnight_run_budget() {
   assert_contains "$(last_run_dir)/report.md" "stop: run budget" "budget is the ending"
 }
 
-test_overnight_cost_unknown() {
+test_overnight_cost_no_result_estimated() {
   fixture nocost; scenario "stage execute; task 1/1; nocost" "ledger final review done" \
     "ledger shipped https://x/pull/2; stage idle; task -"
   run_start
-  assert_eq "unknown" "$(awk -F'\t' 'NR == 1 { print $4 }' "$(last_run_dir)/units.tsv")" "a session with no result event costs unknown"
+  assert_eq "1 estimate" "$(awk -F'\t' 'NR == 1 { print ($4 ~ /^[0-9]+[.][0-9]+$/), $8 }' "$(last_run_dir)/units.tsv")" \
+    "a session with no result event has an estimated number, never unknown"
+}
+
+# ---- A killed unit's cost (spec §6, C3, C5) ----
+# The fixtures: overnight-cost-killed.jsonl has three assistant messages, msg_A
+# (opus, in two events with the same usage: 8 thinking bytes, a 32-byte tool
+# input; its signature and wire_tool_inputs are not output; its cache write is
+# all 1-hour), msg_B (sonnet, a subagent's: 16 text bytes; a 10000 5-minute +
+# 20000 1-hour cache write) and msg_D (sonnet: a 40000 cache write with no
+# split, priced as 5-minute), plus a user event whose toolUseResult carries a
+# decoy usage. Naive: opus 10000 x 4 + 100000 x 8 + 1000000 x 0.2 + 40 / 4 x 20
+# = 1040200; sonnet 5000 x 2 + 10000 x 2.5 + 20000 x 4 + 500000 x 0.1 + 16 / 4 x 10
+# = 165040, and 40000 x 2.5 = 100000; per 1M: 1.30524. Uncalibrated, an
+# estimate is naive x COST_DEFAULT_FACTOR (1.3): 1.30524 x 1.3 = 1.696812.
+# overnight-cost-calib.jsonl: one sonnet message of naive 1.00 (400000 x 2 +
+# 2000000 x 0.1) and a result whose modelUsage says sonnet cost 2.0.
+COST_FX="$REPO_ROOT/tests/fixtures"
+# cost_run CMD… — CMD with overnight-cost.sh sourced: SELF_DIR the plugin's bin,
+# RUN_DIR $CR_RUN, STATE_ROOT $CR_ROOT.
+cost_run() {
+  ( SELF_DIR="$REPO_ROOT/studios/game-dev/bin"; RUN_DIR="$CR_RUN"; STATE_ROOT="$CR_ROOT"
+    . "$SELF_DIR/overnight-cost.sh"; "$@" )
+}
+# cost_dirs — a fresh CR_RUN (with lanes/1) and CR_ROOT (with .studio).
+cost_dirs() {
+  CR_RUN="$TMP/cr/run"; CR_ROOT="$TMP/cr/root"; rm -rf "$TMP/cr"
+  mkdir -p "$CR_RUN/lanes/1" "$CR_ROOT/.studio"
+}
+test_overnight_cost_estimate_helpers() {
+  cost_dirs
+  grep -v '"type":"result"' "$COST_FX/overnight-cost-calib.jsonl" > "$TMP/cr/calk.jsonl"
+  assert_eq 1.3 "$(cost_run eval 'printf %s "$COST_DEFAULT_FACTOR"')" "the default factor is 1.3"
+  assert_eq 1.6968 "$(cost_run cost_estimate "$COST_FX/overnight-cost-killed.jsonl" 3)" \
+    "naive 1.30524 x 1.3: usage once per message id, output from content bytes / 4, priced per message model"
+  # Cache writes: usage.cache_creation's 5-minute and 1-hour split, else all 5-minute.
+  printf '%s\n' '{"type":"assistant","message":{"model":"claude-opus-5-5","id":"s1","content":[],"usage":{"input_tokens":0,"cache_creation_input_tokens":200000,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":100000,"ephemeral_1h_input_tokens":100000},"output_tokens":1}}}' > "$TMP/cr/split.jsonl"
+  assert_eq 1.6900 "$(cost_run cost_estimate "$TMP/cr/split.jsonl" 3)" "a split cache write: (100000 x 5 (5-minute) + 100000 x 8 (1-hour)) x 1.3"
+  printf '%s\n' '{"type":"assistant","message":{"model":"claude-opus-5-5","id":"s2","content":[],"usage":{"input_tokens":0,"cache_creation_input_tokens":200000,"cache_read_input_tokens":0,"output_tokens":1}}}' > "$TMP/cr/nosplit.jsonl"
+  assert_eq 1.3000 "$(cost_run cost_estimate "$TMP/cr/nosplit.jsonl" 3)" "no split: cache_creation_input_tokens at the 5-minute price (1.00 x 1.3)"
+  printf '%s\n' '{"type":"assistant","message":{"model":"claude-mystery-9","id":"m1","content":[],"usage":{"input_tokens":100000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}' > "$TMP/cr/unk.jsonl"
+  assert_eq 1.3000 "$(cost_run cost_estimate "$TMP/cr/unk.jsonl" 3)" "an unknown model takes the dearest row (fable input 10/M; 1.00 x 1.3)"
+  # Calibration: two samples fall back to the cache, else the default; three give the median.
+  assert_eq 1.3000 "$(cost_run cost_estimate "$TMP/cr/calk.jsonl" 3)" "no samples, no cache: the default factor 1.3"
+  _now="$(date +%s)"
+  printf 'claude-sonnet-5-5 3 100\n' > "$CR_ROOT/.studio/cost.calib"
+  assert_eq 1.3000 "$(cost_run cost_estimate "$TMP/cr/calk.jsonl" 3)" "a cached factor stamped before model-prices.tsv last changed is ignored (the default)"
+  printf 'claude-sonnet-5-5 3 %s\n' "$_now" > "$CR_ROOT/.studio/cost.calib"
+  cost_run cost_sample "$COST_FX/overnight-cost-calib.jsonl" > "$CR_RUN/lanes/1/cost.samples"
+  assert_eq "claude-sonnet-5-5	1.000000	2.0" "$(cat "$CR_RUN/lanes/1/cost.samples")" \
+    "a result unit's sample: model, naive, modelUsage costUSD (a model with no messages is left out)"
+  cost_run cost_sample "$COST_FX/overnight-cost-calib.jsonl" > "$CR_RUN/cost.samples"
+  assert_eq 3.0000 "$(cost_run cost_estimate "$TMP/cr/calk.jsonl" 3)" "two samples: the cached factor"
+  printf 'claude-sonnet-5-5\t1.000000\t4\n' >> "$CR_RUN/lanes/1/cost.samples"
+  assert_eq 2.0000 "$(cost_run cost_estimate "$TMP/cr/calk.jsonl" 3)" "three samples (2, 2, 4): their median, over the run's lanes"
+  # cost_calib_save: this run's medians replace those models' lines, others are kept.
+  printf 'claude-opus-5-5 1.5 100\nclaude-sonnet-5-5 3 100\n' > "$CR_ROOT/.studio/cost.calib"
+  cost_run cost_calib_save
+  assert_eq "claude-opus-5-5 1.5 100" "$(grep '^claude-opus-5-5 ' "$CR_ROOT/.studio/cost.calib")" "save keeps a model this run did not sample"
+  assert_contains "$CR_ROOT/.studio/cost.calib" '^claude-sonnet-5-5 2 [0-9][0-9]*$' "save writes the run's median with an epoch"
+  assert_eq 2 "$(wc -l < "$CR_ROOT/.studio/cost.calib" | tr -d ' ')" "one line per model"
+  rm -f "$CR_RUN/cost.samples"; printf 'claude-sonnet-5-5 9 100\n' > "$CR_ROOT/.studio/cost.calib"
+  cost_run cost_calib_save
+  assert_eq "claude-sonnet-5-5 9 100" "$(cat "$CR_ROOT/.studio/cost.calib")" "a run with fewer than 3 samples leaves the cache"
+  # No usage: minutes x the median $/min of the run's result rows (old 7-column rows too).
+  cost_dirs
+  printf '1\tT1\t0\t3\t0.5\t0\tprogress\n' > "$CR_RUN/units.tsv"
+  printf '2\tT2\t0\t2\t1.0\t0\tprogress\tresult\t0\n3\tT3\t143\t99\t1.0\t1\ttimed out\testimate\t1\n4\tT4\t0\tunknown\t1.0\t0\tnoprog\n5\tT5\t0\t7\t0.0\t0\tprogress\tresult\t0\n' > "$CR_RUN/lanes/1/units.tsv"
+  : > "$TMP/cr/empty.jsonl"
+  assert_eq 2.0000 "$(cost_run cost_estimate "$TMP/cr/empty.jsonl" 0.5)" \
+    "an empty transcript: 0.5 min x the median of 6 and 2 \$/min (estimate, unknown and 0-minute rows left out)"
+  printf '{not json\n{"type":"assistant","message":{"model":"claude-opus-5-5"\n' > "$TMP/cr/garbled.jsonl"
+  assert_eq 2.0000 "$(cost_run cost_estimate "$TMP/cr/garbled.jsonl" 0.5)" "a garbled transcript: the same"
+  rm -f "$CR_RUN/units.tsv" "$CR_RUN/lanes/1/units.tsv"
+  assert_eq 1.0000 "$(cost_run cost_estimate "$TMP/cr/empty.jsonl" 2)" "no basis in the run: 0.50 \$/min"
+  assert_eq 0.0000 "$(cost_run cost_estimate "$TMP/cr/missing.jsonl" 0)" "zero minutes, no file: 0, never empty"
+}
+
+test_overnight_cost_estimate_killed_unit() {
+  fixture cek; scenario "stage execute; emit $COST_FX/overnight-cost-killed.jsonl; sleep 30" "cost 1"
+  # 8 s: the cap must not land before the stub's emit (its preamble can take ~2 s under load).
+  STUDIO_OVERNIGHT_SESSION_SECONDS=8; export STUDIO_OVERNIGHT_SESSION_SECONDS
+  run_start; unset STUDIO_OVERNIGHT_SESSION_SECONDS
+  R="$(last_run_dir)"
+  assert_eq "1 1.6968 estimate" "$(awk -F'\t' 'NR == 1 { print $6, $4, $8 }' "$R/units.tsv")" \
+    "a unit killed at its cap has its cost estimated from its transcript (default factor 1.3: no result units) and marked"
+  assert_eq 9 "$(awk -F'\t' 'NR == 1 { print NF }' "$R/units.tsv")" "units.tsv rows have 9 columns"
+  assert_contains "$R/events.jsonl" '"event":"unit_ended",.*"usd":1.6968,"usd_est":true' "unit_ended marks the estimate"
+  assert_not_contains "$R/report.md" "cost unknown" "the report never says cost unknown"
+  assert_contains "$R/report.md" '^| 1 | T1 | [0-9]* | ≈1.6968 | ' "the report marks the estimated cost"
+}
+
+test_overnight_cost_estimate_calibrated() {
+  fixture cec; CAL="$COST_FX/overnight-cost-calib.jsonl"
+  grep -v '"type":"result"' "$CAL" > "$TMP/cec-killed.jsonl"
+  scenario "stage execute; task 1/4; emit $CAL; cost 2" "task 2/4; emit $CAL; cost 2" "task 3/4; emit $CAL; cost 2" \
+    "emit $TMP/cec-killed.jsonl; sleep 30"
+  STUDIO_OVERNIGHT_SESSION_SECONDS=8; export STUDIO_OVERNIGHT_SESSION_SECONDS
+  run_start; unset STUDIO_OVERNIGHT_SESSION_SECONDS
+  R="$(last_run_dir)"
+  assert_eq "result result result estimate" "$(awk -F'\t' 'NR <= 4 { printf "%s%s", (NR > 1 ? " " : ""), $8 }' "$R/units.tsv")" \
+    "three result units, then the killed one"
+  assert_eq 1 "$(awk -F'\t' 'NR == 4 { print ($4 == 2 && $6 == 1) ? 1 : 0 }' "$R/units.tsv")" \
+    "the killed unit's naive 1.00 is calibrated by the run's sonnet factor (2.0 / 1.00) to 2.00"
+  assert_contains "$P/.studio/cost.calib" '^claude-sonnet-5-5 2 [0-9][0-9]*$' "the run's factor is cached for later runs"
+}
+
+test_overnight_cost_estimate_empty_transcript() {
+  fixture cee; scenario "stage execute; task 1/2; cost 3; sleep 4" "sleep 30"
+  STUDIO_OVERNIGHT_SESSION_SECONDS=12; export STUDIO_OVERNIGHT_SESSION_SECONDS
+  run_start; unset STUDIO_OVERNIGHT_SESSION_SECONDS
+  R="$(last_run_dir)"
+  assert_eq result "$(awk -F'\t' 'NR == 1 { print $8 }' "$R/units.tsv")" "the first unit: \$3 in about 0.1 min"
+  assert_eq "1 estimate" "$(awk -F'\t' 'NR == 2 { print $6, $8 }' "$R/units.tsv")" "the killed unit with an empty transcript is estimated"
+  assert_eq 1 "$(awk -F'\t' 'NR == 2 { print ($4 >= 2 ? 1 : 0) }' "$R/units.tsv")" \
+    "from its minutes x the run's \$30/min, not the 0.50 \$/min default ($(awk -F'\t' 'NR == 2 { print $4 }' "$R/units.tsv"))"
+}
+
+test_overnight_cost_counts_toward_budget() {
+  fixture ceb '{ "overnight": { "session_usd": 1, "run_usd": 1.5 } }'
+  scenario "stage execute; emit $COST_FX/overnight-cost-killed.jsonl; sleep 30" "cost 1"
+  STUDIO_OVERNIGHT_SESSION_SECONDS=8; export STUDIO_OVERNIGHT_SESSION_SECONDS
+  run_start; unset STUDIO_OVERNIGHT_SESSION_SECONDS
+  assert_eq 1 "$(calls)" "the estimate (1.70) + session_usd (1) passes run_usd (1.5): no second unit"
+  assert_contains "$(last_run_dir)/report.md" "^Ending: stop: run budget$" "budget is the ending"
+  assert_contains "$(last_run_dir)/report.md" '^Spent: \$1.70$' "the estimate is in the spend"
 }
 
 test_overnight_unexpected_stage() {
@@ -1525,7 +1650,8 @@ test_overnight_report_not_done() {
   fixture repn; scenario "cost 1" "nocost"; run_start
   R="$(last_run_dir)/report.md"
   assert_contains "$R" "^Ending: no progress on T1$" "report: the stop reason"
-  assert_contains "$R" "cost unknown" "report: an unknown cost is said next to the total"
+  assert_not_contains "$R" "cost unknown" "report: no cost is unknown"
+  assert_contains "$R" '^| 2 | T1-retry | 0 | ≈[0-9.]* | ' "report: the result-less unit's cost is marked as an estimate"
   assert_contains "$R" "^## Resume" "report: a resume section when not done"
   assert_contains "$R" "cd '$P' && '$RUNNER' start" "report: the absolute resume command (D16)"
   assert_contains "$R" "^PR: none$" "report: no PR yet"
@@ -2742,7 +2868,7 @@ test_overnight_origin_check_holds_unpushed() {
   assert_contains "$R/control/-.held" "^held stop: $PUSH_WHY until " "the held record names the branch, the local head and origin's"
   assert_eq stop "$(unit_col 7)" "unit 1's outcome is stop"
   assert_eq 1 "$(calls)" "no other unit runs"
-  assert_not_contains "$R/units.tsv" "	progress$" "the unit is not counted as progress"
+  assert_not_contains "$R/units.tsv" "	progress	" "the unit is not counted as progress"
   verb stop -; bg_end 20 "the run ends within a poll"
   assert_contains "$R/report.md" "^Ending: stop: $PUSH_WHY$" "the stop keeps the why"
   holds_off
@@ -3390,6 +3516,7 @@ FAKE
   assert_file "$TMP/tpl/o-$_fb_key/ok" "the rebuilt template is marked ok"
   assert_eq '{"t":1}' "$(cat "$TMP/fb2/.studio/config.json")" "and the project carries the config"
 }
+# exclusive-scan: test_overnight_cost_estimate_empty_transcript out (d) the first unit's sleep 4 is a floor that gives it 0.1 min of a $3 cost; a late start only lengthens it (a lower $/min, still far above the default), and the 12 s cap leaves 8 s for the stub
 # exclusive-scan: test_overnight_overhead in (a) it bounds the runner's own gap between units, a pure elapsed ceiling that a loaded machine breaks
 # exclusive-scan: test_overnight_timeout in (a) it asserts the watchdog cut a long session far short of its sleep, which needs a quiet machine
 # exclusive-scan: test_overnight_kill_after_grace out (d) the one-second watchdog only has to fire, and a late start gives the same ending; the grace runs on the real clock, so the test is also in the real-clock list
@@ -3460,7 +3587,9 @@ run_tests test_overnight_setup_preflight_single test_overnight_tools_after_setup
   test_overnight_sequence_to_done test_overnight_launch_argv test_overnight_launch_allow_rules test_overnight_ignores_inherited_lane_vars \
   test_overnight_retry_then_no_progress test_overnight_orphaned_unit test_overnight_progress_resets_retry \
   test_overnight_retries_zero test_overnight_stop_line test_overnight_copied_stop_not_new \
-  test_overnight_run_budget test_overnight_cost_unknown test_overnight_unexpected_stage \
+  test_overnight_run_budget test_overnight_cost_no_result_estimated test_overnight_cost_estimate_helpers \
+  test_overnight_cost_estimate_killed_unit test_overnight_cost_estimate_calibrated test_overnight_cost_estimate_empty_transcript \
+  test_overnight_cost_counts_toward_budget test_overnight_unexpected_stage \
   test_overnight_overhead test_overnight_unknown_label_stops \
   test_overnight_models_by_unit test_overnight_check_unit test_overnight_adopt_config_refusals test_overnight_config_refusals_v2 \
   test_overnight_default_branch_required test_overnight_deny_merge_basename \

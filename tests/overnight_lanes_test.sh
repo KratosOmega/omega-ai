@@ -80,6 +80,7 @@ export GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
 #   conflict <file> modifier: auto's task commit writes <file> (content: the
 #                   story id) instead of <id>-T<k>.txt
 #   cost <usd>      the result event's total_cost_usd (default 1)
+#   nocost          no result event (the runner estimates the unit's cost)
 #   sleep <s>       sleep s seconds
 #   waitfor <path>  poll up to 60 s for <path> to exist and be non-empty
 #                   (e.g. a peer run's landed.tsv); the unit then goes on
@@ -322,6 +323,7 @@ for act in "$@"; do
     ''|auto)          ;;
     "conflict "*)     conflict="${act#conflict }" ;;
     "cost "*)         cost="${act#cost }" ;;
+    nocost)           cost="" ;;
     "sleep "*)        sleep "${act#sleep }" ;;
     "waitfor "*)      _wf="$(printf '%s' "${act#waitfor }" | sed "s|@RUN@|${STUDIO_RUN_DIR:-@RUN@}|g")"; _wi=0
                       while [ ! -s "$_wf" ] && [ "$_wi" -lt "${STUB_WAIT_TICKS:-600}" ]; do sleep 0.1; _wi=$((_wi + 1)); done
@@ -1958,7 +1960,7 @@ test_lanes_gate_repair_no_progress() {
   printf 'noop\n' > "$SCEN/A.gate"
   run_lanes start "$MFP"
   assert_contains "$(last_lanes_dir)/stories/A" "^stopped gate repair made no progress$" "a repair with no Repair: line stops"
-  assert_contains "$(last_lanes_dir)/lanes/1/units.tsv" "	A-gate-repair	.*	noprog$" "its row says noprog"
+  assert_contains "$(last_lanes_dir)/lanes/1/units.tsv" "	A-gate-repair	.*	noprog	" "its row says noprog"
   lanes_fixture gatered integration A:-
   printf 'auto\nauto\nstop gate red — studio-test: 1 failed\n' > "$SCEN/A"
   printf 'stop gate repair red — studio-test: 1 failed\n' > "$SCEN/A.gate"
@@ -2615,6 +2617,18 @@ test_lanes_report_every_ending() {
   assert_missing "$P/.studio/runs/demo/done" "no done marker"
   assert_missing "$P/.studio/overnight.lock" "the run releases its lock"
 }
+# Spec §6: a unit with no result event has an estimated cost, marked ≈ in its
+# story's units table; the run report never says `cost unknown`.
+test_lanes_report_cost_estimate() {
+  lanes_fixture repest integration A:-
+  printf 'nocost\n' > "$SCEN/A"
+  run_lanes start "$MFP"
+  R="$(last_lanes_dir)/report.md"
+  assert_eq "estimate result result" "$(cut -f8 "$(last_lanes_dir)/lanes/1/units.tsv" | paste -sd' ' -)" "A-T1 is estimated, its later units are results"
+  assert_contains "$R" '^| 1 | A-T1 | 0 | ≈[0-9.]* | ' "the estimated row is marked"
+  assert_contains "$R" '^| 2 | A-final-review | 0 | 1 | ' "a result row is not"
+  assert_not_contains "$R" "cost unknown" "no cost is unknown"
+}
 test_lanes_report_on_lane_crash() {
   lanes_fixture repcrash integration A:-
   printf 'hang\n' > "$SCEN/A"
@@ -3105,7 +3119,7 @@ test_lanes_left_gate_reaped() {
   assert_contains "$LS_ERR" "left a gate running after it ended (pid [0-9]*) — ended it" "the runner says it ended the gate"
   assert_eq 1 "$(grep -c '^s A ' "$CALLS/gate.iv" 2>/dev/null)" "the retry's own gate ran"
   assert_eq yes "$([ "$_secs" -lt 60 ] && echo yes || echo "no ($_secs s)")" "the retry never waited behind the 100 s gate"
-  assert_contains "$(last_lanes_dir)/lanes/1/units.tsv" "	A-T1	0	[^	]*	[^	]*	0	noprog$" "the unit that left the gate made no progress"
+  assert_contains "$(last_lanes_dir)/lanes/1/units.tsv" "	A-T1	0	[^	]*	[^	]*	0	noprog	" "the unit that left the gate made no progress"
   assert_contains "$CALLS/1.fullenv" "^STUDIO_UNIT_TAG=overnight-demo-[0-9-]*-1-1-A-T1$" "each session carries its unit tag"
 }
 # A unit the session cap ends with no progress is `timed out`, not noprog,
@@ -5616,7 +5630,7 @@ run_tests test_stub_waitexist_and_run_token test_lanes_setup_preflight_refuses_l
   test_lanes_final_skipped_on_stop_or_nothing_landed test_lanes_final_stop_before_setup test_lanes_final_gate_default test_lanes_direct_progress_landing \
   test_lanes_final_dirty_unit_is_red test_lanes_final_unit_stop_pointer_invisible test_lanes_final_budget test_lanes_final_conflict_then_red test_lanes_final_gate_interrupted_not_recorded \
   test_lanes_direct_merge_timeout_after_merge_lands test_lanes_direct_merge_timeout_term_ignored \
-  test_lanes_status_dead_old_lock_not_masking test_lanes_status_per_story test_lanes_report_every_ending test_lanes_report_on_lane_crash \
+  test_lanes_status_dead_old_lock_not_masking test_lanes_status_per_story test_lanes_report_every_ending test_lanes_report_cost_estimate test_lanes_report_on_lane_crash \
   test_lanes_done_marker test_lanes_settle_keeps_open test_lanes_settle_start_and_check test_lanes_status_reaps_dead_runner test_lanes_reap_names_final_pr \
   test_lanes_detach_strips_env test_lanes_detach_shows_push_warning test_lanes_push_check_target_workflows test_lanes_detach_refusal_in_foreground test_lanes_detach_child_refusal_surfaces \
   test_lanes_detach_timeout_lock_held_points_at_status test_lanes_detach_timeout_no_lock_ends_child \
