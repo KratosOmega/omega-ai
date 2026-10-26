@@ -972,13 +972,17 @@ runner_behind_warn() {
   [ -n "$_rb_u" ] || return 0
   _rb_n="${STUDIO_OVERNIGHT_FETCH_SECONDS:-15}"
   case "$_rb_n" in ''|*[!0-9]*) _rb_n=15 ;; esac
-  GIT_TERMINAL_PROMPT=0 git -C "$_rb_d" fetch -q </dev/null >/dev/null 2>&1 &
+  GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh} -o BatchMode=yes" git -C "$_rb_d" fetch -q </dev/null >/dev/null 2>&1 &
   _rb_p=$!
   _rb_i=0; _rb_max=$((_rb_n * 5))
   while kill -0 "$_rb_p" 2>/dev/null && [ "$_rb_i" -lt "$_rb_max" ]; do sleep 0.2; _rb_i=$((_rb_i + 1)); done
   _rb_note=""
   if kill -0 "$_rb_p" 2>/dev/null; then
-    kill "$_rb_p" 2>/dev/null; wait "$_rb_p" 2>/dev/null; _rb_ok=1
+    kill "$_rb_p" 2>/dev/null
+    _rb_i=0
+    while kill -0 "$_rb_p" 2>/dev/null && [ "$_rb_i" -lt 10 ]; do sleep 0.2; _rb_i=$((_rb_i + 1)); done
+    ! kill -0 "$_rb_p" 2>/dev/null || kill -9 "$_rb_p" 2>/dev/null
+    wait "$_rb_p" 2>/dev/null; _rb_ok=1
   else
     wait "$_rb_p" 2>/dev/null; _rb_ok=$?
   fi
@@ -998,7 +1002,8 @@ runner_behind_warn() {
   _rb_k="$(git -C "$_rb_d" rev-list --count 'HEAD..@{u}' -- studios/game-dev 2>/dev/null)" || return 0
   case "$_rb_k" in ''|*[!0-9]*|0) return 0 ;; esac
   _rb_s="$(git -C "$_rb_d" log -1 --format=%s 'HEAD..@{u}' -- studios/game-dev 2>/dev/null)"
-  say "warning: runner checkout $_rb_d is $_rb_k commits behind $_rb_u on studios/game-dev ($_rb_s) — update it before starting$_rb_note"
+  _rb_w=commits; [ "$_rb_k" -ne 1 ] || _rb_w=commit
+  say "warning: runner checkout $_rb_d is $_rb_k $_rb_w behind $_rb_u on studios/game-dev ($_rb_s) — update it before starting$_rb_note"
 }
 
 # gate_room_check — a warning (never a refusal) when the slowest of the last

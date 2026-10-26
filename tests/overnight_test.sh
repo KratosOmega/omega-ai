@@ -458,29 +458,29 @@ test_preflight_runner_behind_warns() {
   ln -s "$RC_W/studios/game-dev/bin/studio-overnight" "$TMP/rbw-link"
   run_start_via "$TMP/rbw-link" --dry-run
   assert_eq 0 "$RS_STATUS" "up to date: dry run exits 0"
-  assert_not_contains "$RS_ERR" "commits behind" "up to date: no warning"
+  assert_not_contains "$RS_ERR" "runner checkout .* behind" "up to date: no warning"
   rc_push studios/game-dev/x
   head0="$(git -C "$RC_W" rev-parse HEAD)"
   run_start_via "$TMP/rbw-link" --dry-run
   assert_eq 0 "$RS_STATUS" "behind: a warning, not a refusal"
-  assert_contains "$RS_ERR" "warning: runner checkout .*rbw-rc/work is 1 commits behind origin/main on studios/game-dev (touch studios/game-dev/x) — update it before starting$" "behind on studios/game-dev"
+  assert_contains "$RS_ERR" "warning: runner checkout .*rbw-rc/work is 1 commit behind origin/main on studios/game-dev (touch studios/game-dev/x) — update it before starting$" "behind on studios/game-dev"
   assert_eq "$head0" "$(git -C "$RC_W" rev-parse HEAD)" "never pulls"
   # A commit touching only docs/: not behind on studios/game-dev.
   runner_copy rbw-rc2 && rc_push docs/y
   run_start_via "$RC_W/studios/game-dev/bin/studio-overnight" --dry-run
-  assert_not_contains "$RS_ERR" "commits behind" "docs-only commit: no warning"
+  assert_not_contains "$RS_ERR" "runner checkout .* behind" "docs-only commit: no warning"
   # Not a work tree: no warning.
   rm -rf "$TMP/rbw-nogit"; mkdir -p "$TMP/rbw-nogit"; cp -R "$REPO_ROOT/studios" "$TMP/rbw-nogit/studios"
   run_start_via "$TMP/rbw-nogit/studios/game-dev/bin/studio-overnight" --dry-run
   assert_eq 0 "$RS_STATUS" "non-git copy: dry run exits 0"
-  assert_not_contains "$RS_ERR" "commits behind" "non-git copy: no warning"
+  assert_not_contains "$RS_ERR" "runner checkout .* behind" "non-git copy: no warning"
   # A fetch that cannot run: the last fetch is used and its age named.
   runner_copy rbw-rc3 && rc_push studios/game-dev/z
   git -C "$RC_W" fetch -q
   git -C "$RC_W" remote set-url origin "$TMP/rbw-gone.git"
   run_start_via "$RC_W/studios/game-dev/bin/studio-overnight" --dry-run
   assert_eq 0 "$RS_STATUS" "fetch failed: still exits 0"
-  assert_contains "$RS_ERR" "1 commits behind origin/main on studios/game-dev (touch studios/game-dev/z) — update it before starting (fetch failed; last fetch [0-9]* min ago)$" "fetch failed: warns from the last fetch"
+  assert_contains "$RS_ERR" "1 commit behind origin/main on studios/game-dev (touch studios/game-dev/z) — update it before starting (fetch failed; last fetch [0-9]* min ago)$" "fetch failed: warns from the last fetch"
 }
 
 # refuse_case NAME MESSAGE-PATTERN — run start in the current fixture and
