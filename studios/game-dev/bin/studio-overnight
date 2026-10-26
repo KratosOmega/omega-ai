@@ -648,6 +648,8 @@ TOOLS_MODE=start
 . "$SELF_DIR/gate-times.sh"
 # The project-wide session cap (#39 AC27): sess_*; slots are taken by manifest units only (D19).
 . "$SELF_DIR/overnight-sessions.sh"
+# A killed unit's cost (spec §6): cost_estimate, cost_sample, cost_calib_save.
+. "$SELF_DIR/overnight-cost.sh"
 
 # preflight [manifest] — bundle 2's checks. With `manifest`, the single-plan
 # checks (spec, plan, ledger, stage on STATE.md) are skipped and a failure
@@ -1117,6 +1119,8 @@ cost_of() {
 }
 spent_all() { spent; }
 stop_requested() { [ -f "$STOP_FILE" ] || [ "$STOP_REQ" = 1 ]; }
+# spent — the run's cost so far: column 4 of units.tsv, a result or an
+# estimate (column 8); `unknown`, in a row written before estimates, counts 0.
 spent() { awk -F'\t' '$4 != "unknown" { s += $4 } END { printf "%.2f\n", s + 0 }' "$RUN_DIR/units.tsv" 2>/dev/null || echo 0.00; }
 
 # ---- The event log (spec AC28-29; docs/game-dev/overnight-events.md) ----
@@ -1757,16 +1761,31 @@ run_unit() {
   rm -rf "$_claim" "$_claim.stall"
   [ "$UNIT_STALLED" = 0 ] || run_event unit_stalled "story=${CUR_ID:--}" "unit=$UNIT_TAG" "label=$2" "idle_min:=${UNIT_STALL_MIN:-0}" "command=${UNIT_STALL_CMD:--}"
   unit_reap "$UNIT_TAG"; [ -z "${LDIR:-}" ] || rm -f "$LDIR/utag"
-  UNIT_MIN="$(awk -v s="$(( $(date +%s) - _t0 ))" 'BEGIN { printf "%.1f", s / 60 }')"
-  UNIT_COST="$(cost_of "$UNIT_DIR/$UNIT_STEM.jsonl")"; [ -n "$UNIT_COST" ] || UNIT_COST=unknown
+  _usec=$(( $(date +%s) - _t0 ))
+  UNIT_MIN="$(awk -v s="$_usec" 'BEGIN { printf "%.1f", s / 60 }')"
+  # No result event (killed at the cap, or a crash): the cost is estimated
+  # from the transcript (spec §6), never unknown. A result unit leaves its
+  # calibration samples.
+  UNIT_COST="$(cost_of "$_log")"; UNIT_COST_SRC=result
+  if [ -n "$UNIT_COST" ]; then
+    _samp="$(cost_sample "$_log")"; [ -z "$_samp" ] || printf '%s\n' "$_samp" >> "$UNIT_DIR/cost.samples"
+  else
+    UNIT_COST_SRC=estimate
+    UNIT_COST="$(cost_estimate "$_log" "$(awk -v s="$_usec" 'BEGIN { printf "%.4f", s / 60 }')")"
+  fi
   UNIT_DENY_NOTE="$(deny_note "$_log")"   # #66 R5: appended by the caller to a non-done ending
   requeue_check
 }
-row() {  # row N LABEL OUTCOME — the label column is ID-LABEL when CUR_ID is set
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$1" "${CUR_ID:+$CUR_ID-}$2" "$UNIT_EXIT" "$UNIT_COST" "$UNIT_MIN" "$UNIT_TIMED_OUT" "$3" \
+# row N LABEL OUTCOME — the unit's units.tsv row: n, label (ID-LABEL when
+# CUR_ID is set), exit, cost, minutes, timed out, outcome, cost_src
+# (result|estimate) and capped (0|1, UNIT_CAPPED); its unit_ended event.
+row() {
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$1" "${CUR_ID:+$CUR_ID-}$2" "$UNIT_EXIT" "$UNIT_COST" "$UNIT_MIN" "$UNIT_TIMED_OUT" "$3" \
+    "${UNIT_COST_SRC:-result}" "${UNIT_CAPPED:-0}" \
     >> "$UNIT_DIR/units.tsv" || { say "cannot write $UNIT_DIR/units.tsv"; exit 3; }
   say "${CUR_ID:+$CUR_ID }$2 · ended: $3 · exit $UNIT_EXIT · $UNIT_MIN min${UNIT_REAPED:+ · a left-behind gate was ended}"
-  run_event unit_ended "story=${CUR_ID:--}" "unit=$UNIT_TAG" "label=$2" "outcome=$3" "usd:=$UNIT_COST"
+  _ue=""; [ "${UNIT_COST_SRC:-result}" != estimate ] || _ue=1
+  run_event unit_ended "story=${CUR_ID:--}" "unit=$UNIT_TAG" "label=$2" "outcome=$3" "usd:=$UNIT_COST" ${_ue:+"usd_est:=true"}
 }
 # unit_outcome — a unit that changed nothing: `timed out` when the session
 # cap ended it (UNIT_TIMED_OUT); `stalled` when the idle watchdog ended it
@@ -1819,8 +1838,8 @@ write_report() {
   _ld="$(ledger_of "$(feature_dir)")"
   _tsv="$RUN_DIR/units.tsv"; [ -f "$_tsv" ] || _tsv=/dev/null
   _pr="$(printf '%s\n' "$_ld" | sed -n 's/^- [0-9-]* shipped //p' | tail -n 1)"
-  _unk="$(awk -F'\t' '$4 == "unknown" { n++ } END { print n + 0 }' "$_tsv")"
-  _spent="$(spent)"; [ "$_unk" -eq 0 ] || _spent="$_spent (cost unknown for $_unk unit(s))"
+  _spent="$(spent)"
+  cost_calib_save
   _started="$(sed -n 's/^started=//p' "$LOCK" 2>/dev/null | head -n 1)"
   {
     printf '# Overnight run — %s\n\n' "$(basename "$RUN_DIR")"
@@ -1831,7 +1850,7 @@ write_report() {
     printf 'Spent: $%s\n' "$_spent"
     printf 'Started: %s · Ended: %s\n\n' "${_started:-unknown}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     printf '## Units\n\n| # | Unit | Exit | Cost | Minutes | Timed out | Outcome |\n|---|------|------|------|---------|-----------|---------|\n'
-    awk -F'\t' '{ printf "| %s | %s | %s | %s | %s | %s | %s |\n", $1, $2, $3, $4, $5, $6, $7 }' "$_tsv"
+    awk -F'\t' '{ printf "| %s | %s | %s | %s%s | %s | %s | %s |\n", $1, $2, $3, ($8 == "estimate" ? "≈" : ""), $4, $5, $6, $7 }' "$_tsv"
     printf '\n## Rulings\n\n'
     printf '%s\n' "$_ld" | grep -E '^- [0-9-]* ([^ ]+ )?Ruling: ' || echo '(none)'
     printf '\n## Blocks\n\n'

@@ -5,7 +5,8 @@
 #
 #   studio-event RUN_DIR EVENT [FIELD…]
 #     FIELD  key=text        a JSON string (escaped, cut to 500 characters)
-#            key:=number     a JSON number; anything else ('unknown', '') is null
+#            key:=number     a JSON number, or true / false (booleans); anything
+#                            else ('unknown', '') is null
 #            key[]=a,b,…     a JSON array of strings (empty: [])
 #
 # EVENT and every key match [a-z_]+. The line is {"v":1,"ts":"<UTC>",
@@ -50,7 +51,7 @@ _line="$(LC_ALL=C awk -v ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)" -v run="${_d##*/}" 
     return s
   }
   function str(s) { return "\"" esc(cut(s, 500)) "\"" }
-  function num(s) { return (s ~ /^-?[0-9]+(\.[0-9]+)?([eE][-+]?[0-9]+)?$/) ? s : "null" }
+  function num(s) { return (s ~ /^-?[0-9]+(\.[0-9]+)?([eE][-+]?[0-9]+)?$/ || s == "true" || s == "false") ? s : "null" }
   function arr(s,   n, a, i, o) {
     if (s == "") return "[]"
     n = split(s, a, ","); o = "["

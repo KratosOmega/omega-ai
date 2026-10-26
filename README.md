@@ -416,6 +416,7 @@ studios/<name>/
 │   ├── studio-overnight         overnight runner: one fresh session per unit to a draft PR
 │   ├── godot-cmd.awk            the Godot command detector, shared by godot-guard and studio-brief
 │   ├── overnight-allow.txt      the runner's allow list: gate verbs, gated Godot (data)
+│   ├── model-prices.tsv         per-model USD prices for a killed unit's cost estimate (data)
 │   └── overnight-deny.txt       the runner's deny list (data)
 └── CLAUDE.md settings.json memory/   installed into the config root
 

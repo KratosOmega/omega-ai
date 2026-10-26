@@ -1,0 +1,7 @@
+# model	input	output	cache_write	cache_read — USD per 1M tokens, 2026-10 Anthropic list
+# prices (cache_write = 1.25 x input). Read by overnight-cost.sh; a model not
+# listed is priced as the dearest row. Tab-separated.
+claude-fable-5-1	10.00	50.00	12.50	0.25
+claude-opus-5-5	4.00	20.00	5.00	0.20
+claude-sonnet-5-5	2.00	10.00	2.50	0.20
+claude-haiku-5-5	0.10	0.50	0.125	0.01
