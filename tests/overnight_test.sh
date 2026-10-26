@@ -25,10 +25,10 @@ HOME="$TMP/home"; export HOME; mkdir -p "$HOME"
 FAKE="$TMP/fakebin"
 mkdir -p "$FAKE"
 
-# The stub session. Records argv (one element per line), cwd, the
-# OMEGA_AUTOPILOT value, start/end epoch seconds, STUDIO_UNIT_DEADLINE and
-# STUDIO_UNIT_WRAP_AT (.deadline), copies of the lock and the runner's
-# unit.now (.unow), then runs this call's scenario line.
+# The stub session. Records first STUDIO_UNIT_DEADLINE and STUDIO_UNIT_WRAP_AT
+# (.deadline) and a copy of the runner's unit.now (.unow), then argv (one
+# element per line), cwd, the OMEGA_AUTOPILOT value, start/end epoch seconds
+# and a copy of the lock, then runs this call's scenario line.
 cat > "$FAKE/claude" <<'STUB'
 #!/bin/sh
 if [ "${1:-}" = "--version" ]; then
@@ -37,6 +37,8 @@ if [ "${1:-}" = "--version" ]; then
 fi
 n=$(( $(cat "$CALLS/count" 2>/dev/null || echo 0) + 1 ))
 echo "$n" > "$CALLS/count"
+printf '%s %s\n' "${STUDIO_UNIT_DEADLINE:-unset}" "${STUDIO_UNIT_WRAP_AT:-unset}" > "$CALLS/$n.deadline"
+cp "${STUDIO_RUN_DIR:-/nonexistent}/unit.now" "$CALLS/$n.unow" 2>/dev/null
 echo "$$" > "$CALLS/$n.pid"
 date +%s > "$CALLS/$n.t0"
 for a in "$@"; do printf '%s\n' "$a"; done > "$CALLS/$n.argv"
@@ -45,8 +47,6 @@ printf '%s %s\n' "${STUDIO_UNIT_TAG:-unset}" "${STUDIO_RUN_DIR:-unset}" > "$CALL
 printf '%s\n' "${OMEGA_AUTOPILOT:-unset}" > "$CALLS/$n.env"
 printf '%s\n' "${STUDIO_SUITE_EVERY:-unset}" > "$CALLS/$n.suite"
 printf '%s %s %s\n' "${BASH_DEFAULT_TIMEOUT_MS:-unset}" "${BASH_MAX_TIMEOUT_MS:-unset}" "${STUDIO_GATE_MINUTES:-unset}" > "$CALLS/$n.caps"
-printf '%s %s\n' "${STUDIO_UNIT_DEADLINE:-unset}" "${STUDIO_UNIT_WRAP_AT:-unset}" > "$CALLS/$n.deadline"
-cp "${STUDIO_RUN_DIR:-/nonexistent}/unit.now" "$CALLS/$n.unow" 2>/dev/null
 root="$(sh "$STUB_STATE_BIN" root)"
 cp "$root/.studio/overnight.lock" "$CALLS/$n.lock" 2>/dev/null
 [ -f "$CALLS/caffeinate.pid" ] && kill -0 "$(cat "$CALLS/caffeinate.pid")" 2>/dev/null && echo alive > "$CALLS/$n.caf"
@@ -1061,7 +1061,7 @@ test_overnight_launch_allow_rules() {
   _di="$(grep -nx -- '--disallowedTools' "$a" | cut -d: -f1)"
   assert_eq "$(cat "$TMP/allow.txt")" "$(sed -n "$((_ai + 1)),$((_ai + N))p" "$a")" "every allow rule follows it, one argument each, in file order"
   assert_eq "$((_ai + N + 1))" "$_di" "--disallowedTools comes right after the allow rules"
-  for r in 'Bash(studio-test:*)' 'Bash(studio-run:*)' 'Bash(studio-vitest:*)' 'Bash(studio-tsc:*)' 'Bash(sdd-run:*)' 'Bash(studio-docs-sync:*)' 'Bash(studio-gate godot -- Godot *)' 'Bash(studio-gate godot -- godot *)' \
+  for r in 'Bash(studio-test:*)' 'Bash(studio-run:*)' 'Bash(studio-vitest:*)' 'Bash(studio-tsc:*)' 'Bash(sdd-run:*)' 'Bash(studio-docs-sync:*)' 'Bash(studio-deadline:*)' 'Bash(studio-gate godot -- Godot *)' 'Bash(studio-gate godot -- godot *)' \
            'Bash(studio-gate godot -- /Applications/Godot.app/Contents/MacOS/Godot *)' \
            'Bash(studio-gate godot -- /Applications/Godot_mono.app/Contents/MacOS/Godot *)'; do
     TESTS_RUN=$((TESTS_RUN + 1))
@@ -1811,12 +1811,12 @@ test_overnight_deadline_exported() {
   assert_eq ok "$(awk -v d="$_dlx_d" -v t="$_dlx_t0" 'BEGIN { print (d - t <= 120 && d - t >= 110) ? "ok" : d - t }')" \
     "the session's own clock: its deadline is 120 s past the unit's start, less the launch"
 }
-# exclusive-scan: test_overnight_deadline_small_session in (d) the stub must record its environment before the 1-second watchdog ends the session
+# exclusive-scan: test_overnight_deadline_small_session in (d) the stub's first action records its environment, which must still beat the 2-second watchdog
 test_overnight_deadline_small_session() {
   fixture dls; scenario "stage execute; task 1/2; ledger T1 complete a..b"
-  STUDIO_OVERNIGHT_SESSION_SECONDS=1; export STUDIO_OVERNIGHT_SESSION_SECONDS
+  STUDIO_OVERNIGHT_SESSION_SECONDS=2; export STUDIO_OVERNIGHT_SESSION_SECONDS
   run_start; unset STUDIO_OVERNIGHT_SESSION_SECONDS
-  assert_eq "1 0" "$(deadline_offsets | cut -d, -f1)" "session 1 s: DEADLINE = start + 1, WRAP_AT = DEADLINE (1/2 = a 0 margin)"
+  assert_eq "2 1" "$(deadline_offsets | cut -d, -f1)" "session 2 s: DEADLINE = start + 2, WRAP_AT = DEADLINE - 1 (2/2 caps max(600, 0))"
 }
 test_help_exits_clean() {
   _hx=0; sh "$RUNNER" --help > "$TMP/helpx.out" 2> "$TMP/helpx.err" || _hx=$?

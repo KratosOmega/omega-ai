@@ -58,8 +58,8 @@ test_deadline_fits_from_history() {
   assert_eq "0 fits: studio-test ~6 min, 45 min to wrap" "$DL_STATUS $DL_OUT" "6 rows of 300 s: p90 x 1.2 = 6 min fits in 45"
   dl $((now + 900)) $((now + 300)) fits studio-test
   assert_eq "1 does not fit: studio-test ~6 min, 5 min to wrap at $(hm $((now + 300)))" "$DL_STATUS $DL_OUT" "6 min does not fit in 5: exit 1 and why"
-  dl $((now + 900)) $((now + 300)) fits studio-test 1
-  assert_eq 1 "$DL_STATUS" "with 5 or more rows the history wins over <minutes>"
+  dl $((now + 900)) $((now + 300)) fits studio-test 4
+  assert_eq "0 fits: studio-test ~4 min, 5 min to wrap" "$DL_STATUS $DL_OUT" "<minutes> wins over 5 or more rows of history"
   dl $((now + 3600)) $((now + 2700)) fits studio-run
   assert_eq "0 fits: studio-run ~30 min, 45 min to wrap" "$DL_STATUS $DL_OUT" "another gate's rows do not count (STUDIO_GATE_MINUTES unset: 60 / 2)"
   # p90 by nearest rank over the newest 50: 10 rows, nine of 60 s and one of 3000 s -> the 9th smallest, 60 s.
@@ -80,6 +80,12 @@ test_deadline_fits_agent() {
   assert_eq "0 fits: agent ~20 min, 45 min to wrap" "$DL_STATUS $DL_OUT" "20 min fits in 45"
   ( STUDIO_DEADLINE_AGENT_MIN=10; export STUDIO_DEADLINE_AGENT_MIN; dl $((now + 1500)) $((now + 900)) fits agent; printf '%s|%s' "$DL_STATUS" "$DL_OUT" ) > "$TMP/ag.out"
   assert_eq "0|fits: agent ~10 min, 15 min to wrap" "$(cat "$TMP/ag.out")" "STUDIO_DEADLINE_AGENT_MIN sets the subagent's minutes"
+  for _am in 0 x 00; do
+    ( STUDIO_DEADLINE_AGENT_MIN="$_am"; export STUDIO_DEADLINE_AGENT_MIN; dl $((now + 1500)) $((now + 900)) fits agent; printf '%s|%s' "$DL_STATUS" "$DL_OUT" ) > "$TMP/ag.out"
+    assert_eq "1|does not fit: agent ~20 min, 15 min to wrap at $(hm $((now + 900)))" "$(cat "$TMP/ag.out")" "STUDIO_DEADLINE_AGENT_MIN=$_am is 20"
+  done
+  dl $((now + 1500)) $((now + 900)) fits agent 5
+  assert_eq "0 fits: agent ~5 min, 15 min to wrap" "$DL_STATUS $DL_OUT" "<minutes> wins for agent: 5 fits in 15"
   dl $((now + 60)) $((now - 60)) fits agent
   assert_eq 1 "$DL_STATUS" "past WRAP_AT nothing fits"
 }

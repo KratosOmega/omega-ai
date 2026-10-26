@@ -16,11 +16,12 @@
 #
 # <who> is the gate's own name, as studio-gate writes it to gate.times:
 # studio-test, studio-test-file, studio-run, gate (`studio-setup gate`), setup
-# (worktree_setup), vitest, tsc, godot. The estimate is p90 x 1.2 of <who>'s
-# newest 50 hold times (gate_times_holds over <state root>/.studio/gate.times;
-# p90 by nearest rank) once there are 5; with fewer, <minutes> when given, else
-# STUDIO_GATE_MINUTES / 2 (60 / 2 when it is unset or 0). `agent` (a subagent
-# dispatch) is STUDIO_DEADLINE_AGENT_MIN minutes (default 20).
+# (worktree_setup), vitest, tsc, godot. The estimate is <minutes> when given;
+# else, for a gate, p90 x 1.2 of <who>'s newest 50 hold times (gate_times_holds
+# over <state root>/.studio/gate.times; p90 by nearest rank) once there are 5,
+# else STUDIO_GATE_MINUTES / 2 (60 / 2 when it is unset or 0); for `agent` (a
+# subagent dispatch), STUDIO_DEADLINE_AGENT_MIN minutes (20 when it is unset, 0
+# or not a whole number).
 #
 # Exit: 0 (see above) · 1 does not fit · 2 bad usage
 # Byte collation: under a UTF-8 locale macOS sh matches [a-z] by collation (A-Y too).
@@ -45,8 +46,10 @@ hm() { date -r "$1" +%H:%M 2>/dev/null || date -d "@$1" +%H:%M 2>/dev/null || pr
 mins() { if [ "$1" -le 0 ]; then echo 0; else echo $(( ($1 + 30) / 60 )); fi; }
 # estimate WHO MINUTES — the run's seconds (see the header).
 estimate() {
+  if [ -n "$2" ]; then echo $(( $(dec "$2") * 60 )); return; fi
   if [ "$1" = agent ]; then
-    _ea="${STUDIO_DEADLINE_AGENT_MIN:-20}"; whole "$_ea" && _ea="$(dec "$_ea")" || _ea=20
+    _ea="${STUDIO_DEADLINE_AGENT_MIN:-}"; whole "$_ea" && _ea="$(dec "$_ea")" || _ea=0
+    [ "$_ea" -gt 0 ] || _ea=20
     echo $(( _ea * 60 )); return
   fi
   _er=""
@@ -62,7 +65,6 @@ estimate() {
       }')"
   fi
   if [ -n "$_er" ]; then echo "$_er"
-  elif [ -n "$2" ]; then echo $(( $(dec "$2") * 60 ))
   else
     _eg="${STUDIO_GATE_MINUTES:-}"; whole "$_eg" && _eg="$(dec "$_eg")" || _eg=60
     [ "$_eg" -gt 0 ] || _eg=60

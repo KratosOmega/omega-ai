@@ -527,8 +527,8 @@ Deny rules: $DENY_FILE
 
 Allow rules: $ALLOW_FILE
   one --allowedTools rule per line: studio-test, studio-run, studio-vitest, studio-tsc,
-  sdd-run, studio-docs-sync and the gated Godot forms; no file or no rules: no
-  --allowedTools.
+  sdd-run, studio-docs-sync, studio-deadline and the gated Godot forms; no file or
+  no rules: no --allowedTools.
 
 The morning report is written to .studio/reports/overnight-<ts>/report.md on
 every ending (manifest mode: overnight-<slug>-<ts>/report.md, a section per
@@ -1697,8 +1697,9 @@ run_unit() {
   _t0="$(date +%s)"
   printf '%s %s\n' "$_t0" "$UNIT_STEM" > "$UNIT_DIR/unit.now"
   say "${CUR_ID:+$CUR_ID }$2 · started${LANE_K:+ (lane $LANE_K)}"
-  # The unit's deadline (the watchdog's cap) and its wrap-up time, a margin
-  # of max(600, _secs / 6) s before it, never more than _secs / 2 (D3).
+  # The unit's deadline (the watchdog ends the session at it) and its
+  # wrap-up time, a margin of max(600, _secs / 6) s before it, never more
+  # than _secs / 2 (D3).
   _secs="${STUDIO_OVERNIGHT_SESSION_SECONDS:-$((SESSION_MINUTES * 60))}"
   UNIT_DEADLINE=$((_t0 + _secs))
   _mg=$((_secs / 6)); [ "$_mg" -ge 600 ] || _mg=600; [ "$_mg" -le $((_secs / 2)) ] || _mg=$((_secs / 2))
@@ -1723,7 +1724,7 @@ run_unit() {
   # moves the marker inside it (D5), then ends the session as the cap does.
   # With the idle check off (idle_minutes 0) it naps once, to the deadline.
   ( _sp=; _why=; trap 'kill $_sp 2>/dev/null; exit 0' TERM
-    _end=$(( $(date +%s) + _secs )); _sz=""; _quiet=$(date +%s)
+    _end="$UNIT_DEADLINE"; _sz=""; _quiet=$(date +%s)
     while :; do
       _left=$(( _end - $(date +%s) )); [ "$_left" -gt 0 ] || break
       _nap="$_left"; [ -z "$_idle" ] || [ "$_nap" -le "$_poll" ] || _nap="$_poll"
