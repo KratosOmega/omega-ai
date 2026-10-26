@@ -720,7 +720,7 @@ test_help_lists_new_keys() {
   assert_contains "$TMP/help-top.txt" "node_workers  *auto  *auto|1-32" "node_workers is in the top-level block"
   assert_contains "$TMP/help-top.txt" "node_dir  *\"\"" "node_dir is in the top-level block"
   assert_contains "$TMP/help2.txt" "studio-test, studio-run, studio-vitest, studio-tsc," "the allow rules line names the verbs"
-  assert_contains "$TMP/help2.txt" "sdd-run, studio-docs-sync and the gated Godot forms" "all of them"
+  assert_contains "$TMP/help2.txt" "sdd-run, studio-docs-sync, studio-deadline and the gated Godot forms" "all of them"
   assert_not_contains "$TMP/help2.txt" "the gate verbs" "not just the gate verbs"
   assert_eq 0 "$(cat "$TMP/help-ov.txt" "$TMP/help-top.txt" | awk 'length > 110' | grep -c .)" "no config help line is wider than 110 columns"
 }
