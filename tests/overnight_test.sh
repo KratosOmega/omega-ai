@@ -25,9 +25,10 @@ HOME="$TMP/home"; export HOME; mkdir -p "$HOME"
 FAKE="$TMP/fakebin"
 mkdir -p "$FAKE"
 
-# The stub session. Records argv (one element per line), cwd, the
-# OMEGA_AUTOPILOT value, start/end epoch seconds and a copy of the lock, then
-# runs this call's scenario line.
+# The stub session. Records first STUDIO_UNIT_DEADLINE and STUDIO_UNIT_WRAP_AT
+# (.deadline) and a copy of the runner's unit.now (.unow), then argv (one
+# element per line), cwd, the OMEGA_AUTOPILOT value, start/end epoch seconds
+# and a copy of the lock, then runs this call's scenario line.
 cat > "$FAKE/claude" <<'STUB'
 #!/bin/sh
 if [ "${1:-}" = "--version" ]; then
@@ -36,6 +37,8 @@ if [ "${1:-}" = "--version" ]; then
 fi
 n=$(( $(cat "$CALLS/count" 2>/dev/null || echo 0) + 1 ))
 echo "$n" > "$CALLS/count"
+printf '%s %s\n' "${STUDIO_UNIT_DEADLINE:-unset}" "${STUDIO_UNIT_WRAP_AT:-unset}" > "$CALLS/$n.deadline"
+cp "${STUDIO_RUN_DIR:-/nonexistent}/unit.now" "$CALLS/$n.unow" 2>/dev/null
 echo "$$" > "$CALLS/$n.pid"
 date +%s > "$CALLS/$n.t0"
 for a in "$@"; do printf '%s\n' "$a"; done > "$CALLS/$n.argv"
@@ -1117,7 +1120,7 @@ test_overnight_launch_allow_rules() {
   _di="$(grep -nx -- '--disallowedTools' "$a" | cut -d: -f1)"
   assert_eq "$(cat "$TMP/allow.txt")" "$(sed -n "$((_ai + 1)),$((_ai + N))p" "$a")" "every allow rule follows it, one argument each, in file order"
   assert_eq "$((_ai + N + 1))" "$_di" "--disallowedTools comes right after the allow rules"
-  for r in 'Bash(studio-test:*)' 'Bash(studio-run:*)' 'Bash(studio-vitest:*)' 'Bash(studio-tsc:*)' 'Bash(sdd-run:*)' 'Bash(studio-docs-sync:*)' 'Bash(studio-gate godot -- Godot *)' 'Bash(studio-gate godot -- godot *)' \
+  for r in 'Bash(studio-test:*)' 'Bash(studio-run:*)' 'Bash(studio-vitest:*)' 'Bash(studio-tsc:*)' 'Bash(sdd-run:*)' 'Bash(studio-docs-sync:*)' 'Bash(studio-deadline:*)' 'Bash(studio-gate godot -- Godot *)' 'Bash(studio-gate godot -- godot *)' \
            'Bash(studio-gate godot -- /Applications/Godot.app/Contents/MacOS/Godot *)' \
            'Bash(studio-gate godot -- /Applications/Godot_mono.app/Contents/MacOS/Godot *)'; do
     TESTS_RUN=$((TESTS_RUN + 1))
@@ -1844,6 +1847,43 @@ test_overnight_unit_env() {
   assert_eq "$(basename "$_r")-0-1-T1 $_r" "$(cat "$CALLS/1.chan")" "a unit gets STUDIO_UNIT_TAG and STUDIO_RUN_DIR"
   fixture uenv2; run_start --dry-run
   assert_not_contains "$RS_OUT" "STUDIO_RUN_DIR" "the dry-run launch line is unchanged"
+}
+# deadline_offsets — per call "<DEADLINE - the unit's start> <DEADLINE - WRAP_AT>",
+# each followed by a comma; the start is the runner's own (unit.now). `unset`
+# for a call whose session had no deadline.
+deadline_offsets() {
+  _dlo_i=1
+  while [ "$_dlo_i" -le "$(calls)" ]; do
+    cat "$CALLS/$_dlo_i.deadline" "$CALLS/$_dlo_i.unow" 2>/dev/null | tr '\n' ' ' \
+      | awk '{ if ($1 ~ /^[0-9]+$/ && $2 ~ /^[0-9]+$/ && $3 ~ /^[0-9]+$/) printf "%d %d,", $1 - $3, $1 - $2; else printf "unset," }'
+    _dlo_i=$((_dlo_i + 1))
+  done
+}
+test_overnight_deadline_exported() {
+  fixture dlx; scenario "$ISO1" "wtledger Stop: need art"
+  STUDIO_OVERNIGHT_SESSION_SECONDS=120; export STUDIO_OVERNIGHT_SESSION_SECONDS
+  run_start; unset STUDIO_OVERNIGHT_SESSION_SECONDS
+  assert_eq 2 "$(calls)" "two units ran"
+  assert_eq "120 60,120 60," "$(deadline_offsets)" \
+    "each unit: DEADLINE = its start + 120, WRAP_AT = DEADLINE - 60 (120/2 caps max(600, 120/6))"
+  _dlx_t0="$(cat "$CALLS/1.t0" 2>/dev/null)"; _dlx_d="$(cut -d' ' -f1 "$CALLS/1.deadline" 2>/dev/null)"
+  assert_eq ok "$(awk -v d="$_dlx_d" -v t="$_dlx_t0" 'BEGIN { print (d - t <= 120 && d - t >= 110) ? "ok" : d - t }')" \
+    "the session's own clock: its deadline is 120 s past the unit's start, less the launch"
+}
+# exclusive-scan: test_overnight_deadline_small_session in (d) the stub's first action records its environment, which must still beat the 2-second watchdog
+test_overnight_deadline_small_session() {
+  fixture dls; scenario "stage execute; task 1/2; ledger T1 complete a..b"
+  STUDIO_OVERNIGHT_SESSION_SECONDS=2; export STUDIO_OVERNIGHT_SESSION_SECONDS
+  run_start; unset STUDIO_OVERNIGHT_SESSION_SECONDS
+  assert_eq "2 1" "$(deadline_offsets | cut -d, -f1)" "session 2 s: DEADLINE = start + 2, WRAP_AT = DEADLINE - 1 (2/2 caps max(600, 0))"
+}
+test_help_exits_clean() {
+  _hx=0; sh "$RUNNER" --help > "$TMP/helpx.out" 2> "$TMP/helpx.err" || _hx=$?
+  assert_eq 0 "$_hx" "--help exits 0"
+  assert_eq "" "$(cat "$TMP/helpx.err")" "--help writes nothing on stderr"
+  for w in STUDIO_UNIT_DEADLINE STUDIO_UNIT_WRAP_AT studio-deadline 'sh -c "\$CMD" notify TEXT' 'tests set it to `: `'; do
+    assert_contains "$TMP/helpx.out" "$w" "help names $w"
+  done
 }
 test_overnight_events_two_units() {
   fixture ev2
@@ -3379,7 +3419,8 @@ FAKE
 # exclusive-scan: test_overnight_unit_caps out (static) reads the caps the stub recorded from its environment; no clock
 # exclusive-scan: test_overnight_open_calls out (d) a false hit: "--seconds 5" is text in a fixture log line; activity only parses the log
 TESTS_EXCLUSIVE="test_overnight_hold_on_feature_stop test_overnight_stop_held_by_operator test_overnight_overhead test_overnight_timeout test_overnight_inhibitor test_overnight_claim_without_run_dir test_inbox_lock_busy test_overnight_sighup_while_held test_overnight_sigterm test_overnight_sigint test_overnight_stop_beats_resume test_overnight_resume_wins_at_deadline \
-  test_overnight_idle_stall test_overnight_idle_spares_gate_call test_overnight_stall_holds_with_until_command"
+  test_overnight_idle_stall test_overnight_idle_spares_gate_call test_overnight_stall_holds_with_until_command \
+  test_overnight_deadline_small_session"
 TESTS_REAL_CLOCK="test_overnight_kill_after_grace test_overnight_sighup test_inbox_lock_released_on_signal test_overnight_hold_default_poll"
 # The knobs run at their production value in the real-clock and exclusive tests; every
 # other test polls fast. A test that sets its own POLL_SECONDS (holds_on) still wins.
@@ -3429,6 +3470,7 @@ run_tests test_overnight_setup_preflight_single test_overnight_tools_after_setup
   test_overnight_deny_rules_usage test_overnight_deny_rules_match_launch \
   test_overnight_origin_written test_overnight_origin_absent_without_variable test_overnight_origin_refused \
   test_overnight_hold_config_refused test_overnight_channel_file test_overnight_unit_env \
+  test_overnight_deadline_exported test_overnight_deadline_small_session test_help_exits_clean \
   test_overnight_events_two_units \
   test_say_writes_message \
   test_say_dash_text_and_unit \

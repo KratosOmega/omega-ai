@@ -46,7 +46,9 @@ export GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
 #   $CALLS/<n>.argv (one element per line), .story, .prompt, .pid, .pwd,
 #   .peers (the peer-runs hook's output; only with STUDIO_UNIT_TAG set),
 #   .env (OMEGA_AUTOPILOT, STUDIO_RUN, STUDIO_DOCS_REV, STUDIO_REPAIR,
-#   STUDIO_GATE_HELD, STUDIO_SUITE_EVERY as KEY=value lines), .t0 and .t1 (epoch seconds).
+#   STUDIO_GATE_HELD, STUDIO_SUITE_EVERY as KEY=value lines), .deadline
+#   (STUDIO_UNIT_DEADLINE and STUDIO_UNIT_WRAP_AT, `unset` when absent), .t0
+#   and .t1 (epoch seconds).
 # - Live count (#39): $CALLS/live/<pid> while a call runs; $CALLS/max holds
 #   the most calls seen running at once.
 # - Scenario: line m of $SCEN/<id> (unit prompts), $SCEN/<id>.land
@@ -201,6 +203,7 @@ pwd -P > "$CALLS/$n.pwd"
 printf 'OMEGA_AUTOPILOT=%s\nSTUDIO_RUN=%s\nSTUDIO_DOCS_REV=%s\nSTUDIO_REPAIR=%s\nSTUDIO_GATE_HELD=%s\nSTUDIO_SUITE_EVERY=%s\n' \
   "${OMEGA_AUTOPILOT:-}" "${STUDIO_RUN:-}" "${STUDIO_DOCS_REV:-}" "${STUDIO_REPAIR:-}" "${STUDIO_GATE_HELD:-}" "${STUDIO_SUITE_EVERY:-}" > "$CALLS/$n.env"
 env > "$CALLS/$n.fullenv"
+printf '%s %s\n' "${STUDIO_UNIT_DEADLINE:-unset}" "${STUDIO_UNIT_WRAP_AT:-unset}" > "$CALLS/$n.deadline"
 # #39: a unit session starts under the peers hook, as SessionStart runs it.
 [ -z "${STUDIO_UNIT_TAG:-}" ] || sh "$STUB_PLUGIN/hooks/peer-runs.sh" < /dev/null > "$CALLS/$n.peers" 2>/dev/null
 line="$(sed -n "${m}p" "$SCEN/$kind" 2>/dev/null)"
@@ -1769,6 +1772,55 @@ test_lanes_gate_repair_then_lands() {
   assert_eq "1 A-T1 progress,2 A-final-review progress,3 A-finish stop,4 A-gate-repair progress,5 A-finish done," \
     "$(story_rows A)" "a fresh finish follows the repair; unit numbers run on"
   assert_contains "$(last_lanes_dir)/report.md" "^| 4 | A-gate-repair | " "the report lists the gate-repair unit"
+}
+# bad_deadlines — every call of $CALLS whose session did not get DEADLINE = its
+# start + 5400 (session_minutes 90; the stub's start is up to 60 s late) and
+# WRAP_AT = DEADLINE - 900 (5400 / 6), as "<n>:<DEADLINE>/<WRAP_AT>" words, then
+# "missing:<k>" when k calls recorded no .deadline. Empty when all are right.
+bad_deadlines() {
+  _bd_k=0
+  for _bd in "$CALLS"/[0-9]*.deadline; do
+    [ -f "$_bd" ] || continue
+    _bd_k=$((_bd_k + 1)); _bd_n="$(basename "$_bd" .deadline)"
+    cat "$_bd" "$CALLS/$_bd_n.t0" 2>/dev/null | tr '\n' ' ' | awk -v n="$_bd_n" '
+      { ok = $1 ~ /^[0-9]+$/ && $2 ~ /^[0-9]+$/ && $3 ~ /^[0-9]+$/ && $1 - $2 == 900 && $1 - $3 <= 5400 && $1 - $3 >= 5340
+        if (!ok) printf "%s:%s/%s ", n, $1, $2 }'
+  done
+  [ "$_bd_k" = "$(calls)" ] || printf 'missing:%s' "$(( $(calls) - _bd_k ))"
+}
+# Every unit kind run_unit starts gets the deadline: check, task, final review,
+# finish, gate repair, the progress unit and a final repair (one run), a sync
+# repair, and a landing repair.
+test_lanes_deadline_every_unit_kind() {
+  LANES_PROGRESS=1; export LANES_PROGRESS
+  lanes_fixture dlkinds integration A:-
+  printf -- '- 2026-10-01 check requested\n' >> "$P/.studio/ledger/A.md"
+  redocs
+  printf 'auto\nauto\nauto\ngatelog; stop gate red — studio-test: 1 failed\n' > "$SCEN/A"
+  printf 'gaterepair\n' > "$SCEN/A.gate"
+  printf 'progress\n' > "$SCEN/progress"; printf 'fixgate\n' > "$SCEN/final-repair"
+  use_gate "[ -f fixed ]"
+  run_lanes start "$MFP"
+  use_gate true
+  assert_eq "1 A-check progress,2 A-T1 progress,3 A-final-review progress,4 A-finish stop,5 A-gate-repair progress,6 A-finish done," \
+    "$(story_rows A)" "the fixture: check, task, final review, a red finish, its gate repair, the finish again"
+  assert_eq "progress final-repair" "$(cut -f2 "$(last_lanes_dir)/final/units.tsv" 2>/dev/null | paste -sd' ' -)" \
+    "the fixture: the progress unit, then a final repair of the red gate"
+  assert_eq "" "$(bad_deadlines)" "every unit and final unit gets DEADLINE and WRAP_AT"
+  LANES_TASKS=2; export LANES_TASKS
+  lanes_fixture dlsync integration A:-
+  printf 'push_target A-T1.txt\n' > "$SCEN/A"
+  printf 'syncrepair\n' > "$SCEN/A.sync"
+  run_lanes start "$MFP"
+  assert_eq 1 "$(cat "$CALLS/m-A.sync" 2>/dev/null)" "the fixture: one sync repair"
+  assert_eq "" "$(bad_deadlines)" "a sync repair gets DEADLINE and WRAP_AT"
+  lanes_fixture dlland integration A:- B:-
+  printf 'conflict shared.txt\n' > "$SCEN/A"; printf 'conflict shared.txt\nauto\nwaitfor %s\n' "$P/.studio/runs/demo/landed.tsv" > "$SCEN/B"
+  printf 'repair\n' > "$SCEN/B.land"
+  run_lanes start "$MFP"
+  assert_eq 1 "$(land_calls)" "the fixture: one landing repair"
+  assert_eq "" "$(bad_deadlines)" "a landing repair gets DEADLINE and WRAP_AT"
+  assert_missing "$CALLS/wait.timeout" "no stub wait hit its ceiling"
 }
 # seed_suite_times FILE N SECS — N well-formed main-lane studio-test rows of SECS seconds.
 seed_suite_times() {
@@ -5552,7 +5604,7 @@ run_tests test_stub_waitexist_and_run_token test_lanes_setup_preflight_refuses_l
   test_lanes_land_second_conflict_stops test_lanes_land_repair_no_progress test_lanes_direct_refused_then_repaired test_lanes_direct_merged_never_repairs test_lanes_direct_merge_timeout test_lanes_direct_merge_runs_in_story_checkout test_lanes_direct_merge_program_changed_by_story test_lanes_land_program_resolution \
   test_lanes_land_once_explicit_branch test_lanes_land_idempotent \
   test_lanes_land_crash_after_push test_lanes_land_lock_reclaim test_lanes_land_shipped_resume \
-  test_lanes_gate_never_overlaps test_lanes_gate_repair_then_lands test_lanes_gate_repair_cap test_suite_every_auto_on test_suite_every_auto_off_slow test_suite_every_newest_ten_window test_suite_every_median_boundary test_suite_every_few_rows test_suite_every_config test_lanes_suite_every_env test_lanes_checkpoint_red_repairs_then_next_task \
+  test_lanes_gate_never_overlaps test_lanes_gate_repair_then_lands test_lanes_deadline_every_unit_kind test_lanes_gate_repair_cap test_suite_every_auto_on test_suite_every_auto_off_slow test_suite_every_newest_ten_window test_suite_every_median_boundary test_suite_every_few_rows test_suite_every_config test_lanes_suite_every_env test_lanes_checkpoint_red_repairs_then_next_task \
   test_lanes_gate_repair_same_stop_twice test_lanes_gate_repairs_zero test_lanes_gate_hard_stops_no_repair \
   test_lanes_gate_repair_no_progress test_lanes_gate_repair_model_and_no_log test_lanes_gate_repair_budget test_lanes_gate_repair_halt \
   test_lanes_sync_clean_merge_no_session test_lanes_sync_skips test_lanes_sync_integration_two_refs \
