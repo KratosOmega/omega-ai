@@ -30,10 +30,14 @@ IN="$(cat)"
 field() { printf '%s' "$IN" | tr -d '\n' | sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" | head -n 1; }
 # msg_get and msg_body are the same as in overnight-channel.sh, and sq the
 # same as in studio-overnight (kept identical; byte-wise, so invalid UTF-8 in
-# a message body is carried whole).
+# a message body is carried whole). msg_body is the text verbatim, its lines
+# kept (a `say --file` handoff is multi-line).
 msg_get() { LC_ALL=C sed -n "1,/^--\$/s/^$1: //p" "$2" 2>/dev/null | head -n 1; }
-msg_body() { LC_ALL=C sed '1,/^--$/d' "$1" 2>/dev/null | LC_ALL=C tr '\n' ' ' | LC_ALL=C sed 's/ *$//'; }
+msg_body() { LC_ALL=C sed '1,/^--$/d' "$1" 2>/dev/null; }
 sq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
+# esc TEXT — TEXT as one ledger line: \ doubled, each newline written \n
+# (studio-brief and `said` undo both).
+esc() { printf '%s' "$1" | LC_ALL=C sed 's/\\/\\\\/g' | LC_ALL=C awk 'NR > 1 { printf "\\n" } { printf "%s", $0 }'; }
 # top_agent_id — true when the hook input has a top-level agent_id (a
 # subagent's call). A cheap grep first; only a match pays for the depth scan
 # that ignores an agent_id key nested in tool_input or tool_response.
@@ -81,7 +85,7 @@ if [ "$MODE" = claim ]; then
   HEAD="OPERATOR MESSAGES — from the user, for story $S (overnight run)."
   for m in $(list "$IB"); do
     case "$(msg_get scope "$IB/$m")" in
-      story|unit|retire) ;;
+      story|unit|task|retire|note) ;;
       *) [ -f "$IB/$m" ] || continue   # another hook claimed it first: not malformed
          # a malformed message is logged once, not on every tool call
          grep -qF "operator-inbox: $IB/$m has no scope header" "$RD/hook.log" 2>/dev/null \
@@ -99,19 +103,42 @@ else
 fi
 [ -n "$(printf '%s' "$SHOW" | tr -d ' \n')" ] || exit 0
 
+# record_how — the recording instruction's lines after its first, shared by
+# story and task messages.
+record_how() {
+  printf '%s\n' "    ledger at your recording point — after §0 step (c), not merely after" \
+    "    EnterWorktree; in a --land or --gate-repair unit, after entering the" \
+    "    feature checkout — single-quoted, and commit it with your next ledger" \
+    "    commit (push only what you would push anyway):"
+}
+# block — the runner's notes first (each under its own heading, never
+# recorded), then the operator's messages under HEAD.
 block() {
+  OPS=0
+  for m in $SHOW; do
+    f="$DL/$m"
+    if [ "$(msg_get scope "$f")" != note ]; then OPS=1; continue; fi
+    printf 'RUNNER NOTE (previous attempt of %s)\n' "$(msg_get task "$f")"
+    printf '%s\n' "$(msg_body "$f")"
+    printf '%s\n' "  → From the overnight runner, not the user: where the last unit left this" \
+      "    task. Pick up from it; do not record it."
+  done
+  [ "$OPS" = 1 ] || return 0
   printf '%s\n' "$HEAD"
   for m in $SHOW; do
     f="$DL/$m"; id="${m%.msg}"
     case "$(msg_get scope "$f")" in
       story)
         printf '[%s, story] %s\n' "$id" "$(msg_body "$f")"
-        printf '%s\n' "  → Follow this for the rest of the story. Record it in the feature checkout's" \
-          "    ledger at your recording point — after §0 step (c), not merely after" \
-          "    EnterWorktree; in a --land or --gate-repair unit, after entering the" \
-          "    feature checkout — single-quoted, and commit it with your next ledger" \
-          "    commit (push only what you would push anyway):"
-        printf '    studio-state ledger %s\n' "$(sq "Directive $id: $(msg_body "$f")")" ;;
+        printf '%s\n' "  → Follow this for the rest of the story. Record it in the feature checkout's"
+        record_how
+        printf '    studio-state ledger %s\n' "$(sq "Directive $id: $(esc "$(msg_body "$f")")")" ;;
+      task)
+        tk="$(msg_get task "$f")"
+        printf '[%s, task %s] %s\n' "$id" "$tk" "$(msg_body "$f")"
+        printf '%s\n' "  → Follow this until $tk is complete. Record it in the feature checkout's"
+        record_how
+        printf '    studio-state ledger %s\n' "$(sq "Directive $id $tk: $(esc "$(msg_body "$f")")")" ;;
       unit)
         printf '[%s, unit] %s\n' "$id" "$(msg_body "$f")"
         printf '%s\n' "  → Follow this in this unit only. Do not record it." ;;

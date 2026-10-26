@@ -13,8 +13,9 @@ CH_TAB="$(printf '\t')"
 
 # msg_get KEY FILE — a message header's value (header lines only).
 msg_get() { LC_ALL=C sed -n "1,/^--\$/s/^$1: //p" "$2" 2>/dev/null | head -n 1; }
-# msg_body FILE — the message text, its newlines folded to spaces.
-msg_body() { LC_ALL=C sed '1,/^--$/d' "$1" 2>/dev/null | LC_ALL=C tr '\n' ' ' | LC_ALL=C sed 's/ *$//'; }
+# msg_body FILE — the message text, verbatim (its lines kept: a `say --file`
+# handoff is multi-line). Kept identical to operator-inbox.sh's copy.
+msg_body() { LC_ALL=C sed '1,/^--$/d' "$1" 2>/dev/null; }
 # mtime PATH — PATH's modification time in epoch seconds (GNU, else BSD).
 mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null; }
 
@@ -75,23 +76,28 @@ chan_lock() {
 }
 chan_usage() {
   {
-    echo "usage: studio-overnight say <story> [--unit] [--run <run>] '<text>' | say <story> [--unit] [--run <run>] -- <text>"
+    echo "usage: studio-overnight say <story> [--unit | --task [T<n>]] [--run <run>] ('<text>' | -- <text> | --file <path> | -)"
     echo "       studio-overnight said|hold|resume|stop <story> [--run <run>] | unsay <story> <id> [--run <run>] | stop [--run <run>]"
     echo "       (<story> is - in a single-plan run; <run> is the run dir's basename)"
   } >&2
   exit 2
 }
-# chan_args ARGS… — A_RUN, A_UNIT, A_DASH, A_TEXT (every word after --,
-# joined by spaces), A_N positionals in A_P1..A_P3. Returns 2 on an unknown
-# option, --run with no value, or a fourth positional.
+# chan_args ARGS… — A_RUN, A_UNIT, A_TASK (1 with --task) and A_TASKN (its
+# T<n>, empty for a bare --task: a next word T<n> is taken as its value),
+# A_FILE (--file), A_DASH, A_TEXT (every word after --, joined by spaces),
+# A_N positionals in A_P1..A_P3 (a lone - is one: say's stdin). Returns 2 on
+# an unknown option, --run or --file with no value, or a fourth positional.
 chan_args() {
-  A_RUN=""; A_UNIT=0; A_DASH=0; A_TEXT=""; A_N=0; A_P1=""; A_P2=""; A_P3=""
+  A_RUN=""; A_UNIT=0; A_TASK=0; A_TASKN=""; A_FILE=""; A_DASH=0; A_TEXT=""; A_N=0; A_P1=""; A_P2=""; A_P3=""
   while [ "$#" -gt 0 ]; do
     if [ "$A_DASH" = 1 ]; then A_TEXT="${A_TEXT:+$A_TEXT }$1"; shift; continue; fi
     case "$1" in
       --) A_DASH=1 ;;
       --run) [ "$#" -ge 2 ] || return 2; A_RUN="$2"; shift ;;
       --unit) A_UNIT=1 ;;
+      --task) A_TASK=1
+              case "${2:-}" in T[1-9]*) case "${2#T}" in *[!0-9]*) ;; *) A_TASKN="$2"; shift ;; esac ;; esac ;;
+      --file) [ "$#" -ge 2 ] || return 2; A_FILE="$2"; shift ;;
       -?*) return 2 ;;
       *) [ "$A_N" -lt 3 ] || return 2; A_N=$((A_N + 1)); eval "A_P$A_N=\$1" ;;
     esac
@@ -182,12 +188,13 @@ chan_open() {
   case "$CH_REC" in landed*|stopped*|skipped*) chan_fail 1 "story $2 has ended: $CH_REC" ;; esac
   CH_IB="$CH_RUN/inbox/$2"; CH_CTL="$CH_RUN/control"
 }
-# chan_ledger — the story's feature-ledger lines (`- <date> <text>`), read in
-# its feature checkout when one exists, else in the start checkout. Never
-# the verb's cwd (R22). A single-plan story (-) is read where its pointer is,
-# through the run's persisted spec (studio-overnight's story_dir, #42 AC38),
-# never from worktree's candidate list.
-chan_ledger() {
+# chan_show — the story's `studio-state show` (its pointer header, then its
+# feature-ledger lines `- <date> <text>`), read in its feature checkout when
+# one exists, else in the start checkout. Never the verb's cwd (R22). A
+# single-plan story (-) is read where its pointer is, through the run's
+# persisted spec (studio-overnight's story_dir, #42 AC38), never from
+# worktree's candidate list.
+chan_show() {
   ( cd "$CH_START" 2>/dev/null || exit 0
     if [ "$CH_STORY" = - ]; then
       unset STUDIO_STORY
@@ -198,50 +205,100 @@ chan_ledger() {
       _cl_w="$(sh "$STATE_BIN" worktree 2>/dev/null)"
       [ -z "$_cl_w" ] || [ ! -d "$_cl_w" ] || cd "$_cl_w"
     fi
-    sh "$STATE_BIN" show 2>/dev/null ) | sed -n '/^## Feature ledger: /,$p' | sed 1d
+    sh "$STATE_BIN" show 2>/dev/null )
+}
+# chan_load — from chan_show: CH_LEDGER (the feature-ledger lines), CH_STAGE,
+# CH_TASK (`k/N` or -) and CH_K, the tasks done: k, else 0, or every task
+# once the ledger has a `shipped` line (task - again). CH_LEDGER and CH_K are
+# exported for chan_list.
+chan_load() {
+  _ld="$(chan_show)"
+  CH_LEDGER="$(printf '%s\n' "$_ld" | sed -n '/^## Feature ledger: /,$p' | sed 1d)"
+  _ld_h="$(printf '%s\n' "$_ld" | sed '/^## /,$d')"
+  CH_STAGE="$(printf '%s\n' "$_ld_h" | sed -n 's/^stage: //p' | head -n 1)"
+  CH_TASK="$(printf '%s\n' "$_ld_h" | sed -n 's/^task: //p' | head -n 1)"
+  case "$CH_TASK" in
+    [0-9]*/[0-9]*) CH_K="${CH_TASK%%/*}" ;;
+    *) if printf '%s\n' "$CH_LEDGER" | grep -q '^- [0-9-]* shipped '; then CH_K=999999; else CH_K=0; fi ;;
+  esac
+  case "$CH_K" in ''|*[!0-9]*) CH_K=0 ;; esac
+  export CH_LEDGER CH_K
 }
 # chan_list DIR — the story's directives and messages, one TSV row each,
 # `id state scope text target`, in id order. It reads the ledger lines in
-# CH_LEDGER (exported) and DIR's pending and delivered files. States:
-# active and retiring (ledgered); pending (any scope); delivered (a story
-# message not yet ledgered, or a retire whose target is not yet retired).
-# Retired directives and spent unit messages are not listed.
+# CH_LEDGER and the tasks done CH_K (both exported) and DIR's pending and
+# delivered files. States: active and retiring (ledgered); pending (any
+# scope); delivered (a story or task message not yet ledgered, or a retire
+# whose target is not yet retired); retired, a task directive (ledgered,
+# pending or delivered) whose task k has reached. A task or note row's
+# target is its T<n>. A runner message (`from: runner`) is a note. Ledger
+# text is unescaped (\n a space, \\ a backslash) and every tab is a space,
+# so a row stays one line. Retired story directives and spent unit and note
+# messages are not listed.
 chan_list() {
   _cl_d="$1"; set --
   for _cl_f in "$_cl_d"/[0-9]*.msg "$_cl_d"/delivered/*/[0-9]*.msg; do [ -f "$_cl_f" ] && set -- "$@" "$_cl_f"; done
   [ "$#" -gt 0 ] || set -- /dev/null
-  awk '
+  LC_ALL=C awk '
     function out(a, b, c, d, e) { print a "\t" b "\t" c "\t" d "\t" e }
+    function unesc(s,   o, i, c, n) {
+      o = ""; n = length(s)
+      for (i = 1; i <= n; i++) {
+        c = substr(s, i, 1)
+        if (c == "\\" && i < n) {
+          c = substr(s, i + 1, 1)
+          if (c == "n") { o = o " "; i++; continue }
+          if (c == "\\") { o = o "\\"; i++; continue }
+          c = "\\"
+        }
+        o = o c
+      }
+      gsub(/\t/, " ", o)
+      return o
+    }
+    # done(t) — task T<n> is done (k >= n)
+    function done(t) { return t != "" && substr(t, 2) + 0 <= K }
     BEGIN {
+      K = ENVIRON["CH_K"] + 0
       n = split(ENVIRON["CH_LEDGER"], L, "\n")
       for (i = 1; i <= n; i++) {
         l = L[i]
-        if (match(l, /^- [0-9-]+ Directive [0-9]+: /)) {
-          h = substr(l, 1, RLENGTH - 2); sub(/.* /, "", h)
-          if (!(h in act)) act[h] = substr(l, RLENGTH + 1)
+        if (match(l, /^- [0-9-]+ Directive [0-9]+( T[0-9]+)?: /)) {
+          h = substr(l, 1, RLENGTH - 2); sub(/^- [0-9-]+ Directive /, "", h); t = h; sub(/ .*/, "", h)
+          if (!(h in act)) { act[h] = unesc(substr(l, RLENGTH + 1)); atk[h] = (t ~ / T/) ? substr(t, index(t, "T")) : "" }
         } else if (l ~ /^- [0-9-]+ Directive [0-9]+ retired *$/) {
           h = l; sub(/^- [0-9-]+ Directive /, "", h); sub(/ .*/, "", h); ret[h] = 1
         }
       }
     }
     FILENAME == "/dev/null" { next }
-    FNR == 1 { f = FILENAME; F[++nf] = f; inb[f] = 0; tg[f] = "-"; dl[f] = (f ~ /\/delivered\//) }
+    FNR == 1 { f = FILENAME; F[++nf] = f; inb[f] = 0; tg[f] = "-"; tk[f] = ""; fr[f] = ""; dl[f] = (f ~ /\/delivered\//) }
     !inb[f] {
-      if ($0 == "--") { inb[f] = 1; next }
+      if ($0 == "--") {
+        inb[f] = 1
+        if (fr[f] == "runner") sc[f] = "note"
+        if (sc[f] == "task" || sc[f] == "note") tg[f] = (tk[f] == "" ? "-" : tk[f])
+        next
+      }
       if (match($0, /^[a-z]+: /)) {
         k = substr($0, 1, RLENGTH - 2); v = substr($0, RLENGTH + 1)
         if (k == "id") id[f] = v; else if (k == "scope") sc[f] = v; else if (k == "target") tg[f] = v
+        else if (k == "task") tk[f] = v; else if (k == "from") fr[f] = v
       }
       next
     }
     { gsub(/\t/, " "); tx[f] = (tx[f] == "" ? $0 : tx[f] " " $0) }
     END {
       for (i = 1; i <= nf; i++) { f = F[i]; if (sc[f] == "retire" && !(tg[f] in ret)) rt[tg[f]] = id[f] }
-      for (h in act) if (!(h in ret)) out(h, (h in rt) ? "retiring" : "active", "story", act[h], "-")
+      for (h in act) if (!(h in ret)) {
+        if (atk[h] == "") out(h, (h in rt) ? "retiring" : "active", "story", act[h], "-")
+        else out(h, done(atk[h]) ? "retired" : (h in rt) ? "retiring" : "active", "task", act[h], atk[h])
+      }
       for (i = 1; i <= nf; i++) {
         f = F[i]
-        if (!dl[f]) out(id[f], "pending", sc[f], tx[f], tg[f])
-        else if (sc[f] == "story" && !(id[f] in act) && !(id[f] in ret)) out(id[f], (id[f] in rt) ? "retiring" : "delivered", "story", tx[f], "-")
+        if (!dl[f]) out(id[f], (sc[f] == "task" && done(tk[f])) ? "retired" : "pending", sc[f], tx[f], tg[f])
+        else if ((sc[f] == "story" || sc[f] == "task") && !(id[f] in act) && !(id[f] in ret))
+          out(id[f], (sc[f] == "task" && done(tk[f])) ? "retired" : (id[f] in rt) ? "retiring" : "delivered", sc[f], tx[f], tg[f])
         else if (sc[f] == "retire" && !(tg[f] in ret)) out(id[f], "delivered", "retire", tx[f], tg[f])
       }
     }' "$@" | sort -t "$CH_TAB" -k1,1n
@@ -256,12 +313,15 @@ chan_next_id() {
     for _ni_b in "$@"; do printf '%s\n' "${_ni_b%.msg}"; done
   } | awk '$1 + 0 > m { m = $1 + 0 } END { print m + 1 }'
 }
-# chan_write_msg ID SCOPE TARGET TEXT — CH_IB/ID.msg, by temp file then mv.
+# chan_write_msg ID SCOPE TARGET TEXT [T<n> [FROM]] — CH_IB/ID.msg, by temp
+# file then mv: a `task: T<n>` header when T<n> is given (task and note), and
+# `from:` FROM (default operator; the runner's notes are runner).
 chan_write_msg() {
   _wm_t="$CH_IB/.say.$$"
-  printf 'id: %s\nscope: %s\ntarget: %s\nstory: %s\nqueued: %s\nrequeues: 0\n--\n%s\n' \
-    "$1" "$2" "$3" "$CH_STORY" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$4" 2>/dev/null > "$_wm_t" \
-    && mv -f "$_wm_t" "$CH_IB/$1.msg" && return 0
+  { printf 'id: %s\nscope: %s\ntarget: %s\nstory: %s\n' "$1" "$2" "$3" "$CH_STORY"
+    [ -z "${5:-}" ] || printf 'task: %s\n' "$5"
+    printf 'from: %s\nqueued: %s\nrequeues: 0\n--\n%s\n' "${6:-operator}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$4"
+  } 2>/dev/null > "$_wm_t" && mv -f "$_wm_t" "$CH_IB/$1.msg" && return 0
   rm -f "$_wm_t"; return 1
 }
 # chan_event EVENT FIELD… — studio-event into the run's log; a failure is
@@ -270,45 +330,83 @@ chan_event() { sh "$SELF_DIR/studio-event" "$CH_RUN" "$@" 2>> "$CH_RUN/hook.log"
 # chan_chars — the character count of stdin (UTF-8 lead bytes; R13).
 chan_chars() { LC_ALL=C tr -d '\200-\277' | wc -c | tr -d ' '; }
 
-# chan_say TEXT — AC1, AC5: the next id, the cap (story scope only), the
-# message, a message_queued event; prints the id. The cap counts active,
-# pending and delivered directives, not retiring ones: a queued retire is
-# irrevocable and is delivered before any later message (lowest id first),
-# so a held story can swap a stale directive for a new one at once.
+# chan_rows [directives] — chan_list rows on stdin as `id  state  text`
+# lines (said's form): a task row's state names its task (`active (T5)`,
+# `retired (T5 done)`), a pending unit message is `pending (unit)` and a
+# pending runner note `pending (note T<n>)`; retire rows are left out, and
+# with `directives` every row but story and task ones.
+chan_rows() {
+  awk -F'\t' -v only="${1:-}" '$3 == "retire" { next }
+    only != "" && $3 != "story" && $3 != "task" { next }
+    { s = $2
+      if ($3 == "task") s = (s == "retired") ? "retired (" $5 " done)" : s " (" $5 ")"
+      else if ($3 == "unit" && s == "pending") s = "pending (unit)"
+      else if ($3 == "note") s = s " (note " $5 ")"
+      printf "%s  %s  %s\n", $1, s, $4 }'
+}
+# chan_task_scope — say --task: the T<n> (CH_TASKN), a bare --task resolved
+# to the story's current task k+1 (stage execute and `task k/N`, k < N), or
+# exit 1 when the story is not at a task or T<n> is already done (n <= k).
+chan_task_scope() {
+  CH_TASKN="$A_TASKN"
+  if [ -z "$CH_TASKN" ]; then
+    _ts_n="${CH_TASK#*/}"
+    case "$CH_STAGE:$CH_TASK" in
+      execute:[0-9]*/[0-9]*) [ "$CH_K" -lt "$_ts_n" ] 2>/dev/null || chan_fail 1 "say: story $CH_STORY is not at a task — use --task T<n>" ;;
+      *) chan_fail 1 "say: story $CH_STORY is not at a task — use --task T<n>" ;;
+    esac
+    CH_TASKN="T$((CH_K + 1))"
+  fi
+  [ "${CH_TASKN#T}" -gt "$CH_K" ] 2>/dev/null || chan_fail 1 "say: $CH_TASKN is already complete"
+}
+# chan_say TEXT — AC1, AC5: the next id, the cap (story and task scope), the
+# message, a message_queued event (with task=T<n> for a task message);
+# prints the id. The cap counts active, pending and delivered directives,
+# not retiring or retired ones (nor unit messages or the runner's notes): a
+# queued retire is irrevocable and is delivered before any later message
+# (lowest id first), so a held story can swap a stale directive for a new
+# one at once.
 chan_say() {
-  _cs_sc=story; [ "$A_UNIT" = 0 ] || _cs_sc=unit
-  CH_LEDGER="$(chan_ledger)"; export CH_LEDGER
+  _cs_sc=story; [ "$A_UNIT" = 0 ] || _cs_sc=unit; [ "$A_TASK" = 0 ] || _cs_sc=task
+  chan_load
+  CH_TASKN=""; [ "$_cs_sc" != task ] || chan_task_scope
   chan_lock
-  if [ "$_cs_sc" = story ]; then
+  if [ "$_cs_sc" != unit ]; then
     _cs_l="$(chan_list "$CH_IB")"
-    _cs_used="$(printf '%s\n' "$_cs_l" | awk -F'\t' '$3 == "story" && $2 != "retiring" { printf "%s", $4 }' | chan_chars)"
+    _cs_used="$(printf '%s\n' "$_cs_l" | awk -F'\t' '($3 == "story" || $3 == "task") && $2 != "retiring" && $2 != "retired" { printf "%s", $4 }' | chan_chars)"
     _cs_new="$(printf '%s' "$1" | tr '\n' ' ' | chan_chars)"
     if [ $((_cs_used + _cs_new)) -gt "$CH_DCHARS" ]; then
       inbox_unlock "$CH_IB"
       say "say: story $CH_STORY would carry $((_cs_used + _cs_new)) directive characters (retiring ones not counted), over directive_chars $CH_DCHARS — retire one (unsay) first:"
-      printf '%s\n' "$_cs_l" | awk -F'\t' '$3 == "story" { printf "  %s  %s  %s\n", $1, $2, $4 }' >&2
+      printf '%s\n' "$_cs_l" | chan_rows directives | sed 's/^/  /' >&2
       exit 1
     fi
   fi
   _cs_id="$(chan_next_id "$CH_IB")"
-  chan_write_msg "$_cs_id" "$_cs_sc" - "$1" || { inbox_unlock "$CH_IB"; chan_fail 1 "cannot write $CH_IB/$_cs_id.msg"; }
+  chan_write_msg "$_cs_id" "$_cs_sc" - "$1" "$CH_TASKN" || { inbox_unlock "$CH_IB"; chan_fail 1 "cannot write $CH_IB/$_cs_id.msg"; }
   inbox_unlock "$CH_IB"
-  chan_event message_queued "story=$CH_STORY" "id:=$_cs_id" "scope=$_cs_sc"
+  if [ -n "$CH_TASKN" ]; then
+    chan_event message_queued "story=$CH_STORY" "id:=$_cs_id" scope=task "task=$CH_TASKN"
+  else
+    chan_event message_queued "story=$CH_STORY" "id:=$_cs_id" "scope=$_cs_sc"
+  fi
   printf '%s\n' "$_cs_id"
 }
 # chan_said — AC3, R15.
 chan_said() {
-  CH_LEDGER="$(chan_ledger)"; export CH_LEDGER
-  _sd="$(chan_list "$CH_IB" | awk -F'\t' '$3 == "retire" { next }
-    { s = $2; if (s == "pending" && $3 == "unit") s = "pending (unit)"; printf "%s  %s  %s\n", $1, s, $4 }')"
+  chan_load
+  _sd="$(chan_list "$CH_IB" | chan_rows)"
   if [ -n "$_sd" ]; then printf '%s\n' "$_sd"; else echo "(no directives)"; fi
 }
 # chan_unsay ID — AC2, R12.
 chan_unsay() {
-  CH_LEDGER="$(chan_ledger)"; export CH_LEDGER
+  chan_load
   chan_lock
   _us="$(chan_list "$CH_IB" | awk -F'\t' -v id="$1" '$1 == id { print $2 "\t" $3; exit }')"
   _us_st="${_us%%"$CH_TAB"*}"; _us_sc="${_us#*"$CH_TAB"}"
+  # a task directive whose task is done but which is still pending is
+  # withdrawn like any pending message
+  [ "$_us_st" != retired ] || [ ! -f "$CH_IB/$1.msg" ] || _us_st=pending
   case "$_us_st:$_us_sc" in
     pending:retire) inbox_unlock "$CH_IB"; chan_fail 1 "message $1 is a retire message: unsay retires directives, not retires" ;;
     pending:*)
@@ -317,13 +415,14 @@ chan_unsay() {
         echo "removed message $1 (it was not delivered)"; return 0
       fi
       inbox_unlock "$CH_IB"; chan_fail 1 "unsay: message $1 was just delivered; run unsay $1 again to retire it" ;;
-    active:story|delivered:story)
+    active:story|delivered:story|active:task|delivered:task)
       _us_id="$(chan_next_id "$CH_IB")"
       chan_write_msg "$_us_id" retire "$1" "retire directive $1" || { inbox_unlock "$CH_IB"; chan_fail 1 "cannot write $CH_IB/$_us_id.msg"; }
       inbox_unlock "$CH_IB"
       chan_event message_queued "story=$CH_STORY" "id:=$_us_id" scope=retire
       echo "retire queued: message $_us_id retires directive $1"; return 0 ;;
     retiring:*) inbox_unlock "$CH_IB"; chan_fail 1 "directive $1 is already retiring" ;;
+    retired:*) inbox_unlock "$CH_IB"; chan_fail 1 "directive $1 is already retired (its task is done)" ;;
     delivered:retire) inbox_unlock "$CH_IB"; chan_fail 1 "message $1 is a retire message: unsay retires directives, not retires" ;;
   esac
   inbox_unlock "$CH_IB"
@@ -394,11 +493,20 @@ chan_stop() {
 chan_main() {
   CH_VERB="$1"; shift
   chan_args "$@" || chan_usage
-  [ "$CH_VERB" = say ] || { [ "$A_UNIT" = 0 ] && [ "$A_DASH" = 0 ]; } || chan_usage
+  [ "$CH_VERB" = say ] || { [ "$A_UNIT" = 0 ] && [ "$A_TASK" = 0 ] && [ -z "$A_FILE" ] && [ "$A_DASH" = 0 ]; } || chan_usage
+  { [ "$A_UNIT" = 0 ] || [ "$A_TASK" = 0 ]; } || chan_usage
   case "$CH_VERB" in
     say)
-      if [ "$A_DASH" = 1 ]; then [ "$A_N" -eq 1 ] || chan_usage; _cm_t="$A_TEXT"
-      else [ "$A_N" -eq 2 ] || chan_usage; _cm_t="$A_P2"; fi
+      # the text: --file <path>, a lone - (stdin), -- <words>, or one word
+      if [ -n "$A_FILE" ]; then
+        { [ "$A_DASH" = 0 ] && [ "$A_N" -eq 1 ]; } || chan_usage
+        [ -f "$A_FILE" ] && [ -r "$A_FILE" ] || chan_fail 1 "say: cannot read $A_FILE"
+        _cm_t="$(cat "$A_FILE")" || chan_fail 1 "say: cannot read $A_FILE"
+      elif [ "$A_DASH" = 1 ]; then [ "$A_N" -eq 1 ] || chan_usage; _cm_t="$A_TEXT"
+      else
+        [ "$A_N" -eq 2 ] || chan_usage
+        if [ "$A_P2" = - ]; then _cm_t="$(cat)"; else _cm_t="$A_P2"; fi
+      fi
       chan_text_check "$_cm_t" ;;
     said) [ "$A_N" -eq 1 ] || chan_usage ;;
     unsay) [ "$A_N" -eq 2 ] || chan_usage

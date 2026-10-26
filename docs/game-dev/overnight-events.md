@@ -106,7 +106,7 @@ envelope, in this order:
 | `unit_ended` | `story`, `unit`, `label`, `outcome`, `usd` | `outcome`: `progress`, `done`, `stop`, `noprog`, `timed out`, `stalled`, `orphaned`; `usd` is a number or `null` |
 | `unit_stalled` | `story`, `unit`, `label`, `idle_min`, `command` | `idle_min` is a number (overnight.idle_minutes); `command` is the newest open tool call, rendered as the status activity is and cut to 120 chars, or `-`; written before that unit's `unit_ended`, whose outcome is `stalled` unless the unit moved the state or recorded a stop |
 | `session_wait` | `lane`, `story`, `since` | `lane` is the lane number or `final`; `story` is `-` for a final-step unit; `since` is ISO-8601 UTC; once per wait, when the first slot request fails; the unit's own `unit_started` follows when it gets a slot |
-| `message_queued` | `story`, `id`, `scope` | `id` is a number; `scope`: `story`, `unit`, `retire` |
+| `message_queued` | `story`, `id`, `scope`, `task` (scope `task` only) | `id` is a number; `scope`: `story`, `unit`, `task`, `retire`, `note` (the runner's carry-over note); `task` is `T<n>`, the task a `say --task` message lasts until |
 | `message_delivered` | `story`, `id`, `scope`, `unit`, `via` | `via`: `session_start`, `tool_call`; a compact re-show of a delivered message is not logged |
 | `message_requeued` | `story`, `id`, `unit`, `requeues` | `id` and `requeues` are numbers |
 | `hold_reminder` | `story`, `until`, `why` | once per hold, at 25% of the hold left (`until` is ISO-8601 UTC; `story` is `-` in a single-plan run); the runner raises the operator banner itself; it comes before the held story's resolution |

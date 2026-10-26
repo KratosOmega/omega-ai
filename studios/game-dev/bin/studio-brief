@@ -9,7 +9,8 @@
 #   studio-brief task <n>   the plan's ## Global Constraints and ## Decisions,
 #                           the `### Task <n>:` block, and every range on that
 #                           block's `Spec:` line, then the story ledger's active directives
-#                           (`Directive <id>:` lines not later retired) as a
+#                           (`Directive <id>:` lines not later retired, and
+#                           `Directive <id> T<n>:` ones while task k < n) as a
 #                           part `==> <ledger>`, then a last line
 #                           `blocks: <path>`: the run's blocks file (#94), from
 #                           the plan's Global Constraints `Blocks file: <path>`
@@ -212,17 +213,45 @@ ledger_path() {
   printf '%s\n' "$WORK/.studio/ledger/$(basename "$_lp_s" | sed -e 's/\.md$//' -e 's/^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}-//').md"
 }
 # directives_part — AC15: the ledger's active directives (a `Directive <id>:`
-# line with no later `Directive <id> retired`), as one part headed
-# `==> <ledger path>`; nothing when there are none.
+# or `Directive <id> T<n>:` line with no later `Directive <id> retired`), as
+# one part headed `==> <ledger path>`; nothing when there are none. A
+# task-scoped line is active only while the story's task pointer k < n (a
+# story with no `task k/N` has k 0, or every task done once the ledger has a
+# `shipped` line). Its text's escapes are undone: `\n` a newline, `\\` a
+# backslash (the record command writes both).
 directives_part() {
   _dp_l="$(ledger_path)"
   [ -n "$_dp_l" ] && [ -f "$_dp_l" ] || return 0
-  _dp="$(awk '
+  _dp_k="$(sh "$STATE_BIN" get task 2>/dev/null)"
+  case "$_dp_k" in
+    [0-9]*/[0-9]*) _dp_k="${_dp_k%%/*}" ;;
+    *) if grep -q '^- [0-9-]* shipped ' "$_dp_l"; then _dp_k=999999; else _dp_k=0; fi ;;
+  esac
+  case "$_dp_k" in ''|*[!0-9]*) _dp_k=0 ;; esac
+  _dp="$(LC_ALL=C awk -v k="$_dp_k" '
+    function unesc(s,   o, i, c, n) {
+      o = ""; n = length(s)
+      for (i = 1; i <= n; i++) {
+        c = substr(s, i, 1)
+        if (c == "\\" && i < n) {
+          c = substr(s, i + 1, 1)
+          if (c == "n") { o = o "\n"; i++; continue }
+          if (c == "\\") { o = o "\\"; i++; continue }
+          c = "\\"
+        }
+        o = o c
+      }
+      return o
+    }
     $0 !~ /^- [0-9-]+ / { next }
     { t = $0; sub(/^- [0-9-]+ /, "", t) }
-    t ~ /^Directive [0-9]+: / { id = t; sub(/^Directive /, "", id); sub(/:.*/, "", id); L[NR] = $0; D[NR] = id; next }
+    t ~ /^Directive [0-9]+( T[0-9]+)?: / {
+      id = t; sub(/^Directive /, "", id); sub(/[ :].*/, "", id)
+      if (t ~ /^Directive [0-9]+ T/) { n = t; sub(/^Directive [0-9]+ T/, "", n); sub(/:.*/, "", n); if (n + 0 <= k + 0) next }
+      L[NR] = $0; D[NR] = id; next
+    }
     t ~ /^Directive [0-9]+ retired *$/ { id = t; sub(/^Directive /, "", id); sub(/ .*/, "", id); R[id] = NR }
-    END { for (i = 1; i <= NR; i++) if ((i in L) && !((D[i] in R) && R[D[i]] > i)) print L[i] }' "$_dp_l")"
+    END { for (i = 1; i <= NR; i++) if ((i in L) && !((D[i] in R) && R[D[i]] > i)) print unesc(L[i]) }' "$_dp_l")"
   [ -z "$_dp" ] || printf '==> %s\n%s\n' "$_dp_l" "$_dp"
 }
 
