@@ -32,6 +32,7 @@ class ParseTest(unittest.TestCase):
             return commands.plan_call(word, text, "run", None, single, B)
 
         usage = lambda w: ("reply", "studio: ✗ usage: /%s <text>" % w)  # noqa: E731
+        task_usage = ("reply", "studio: ✗ usage: /say --task [T<n>] <text>")
         unsay_usage = ("reply", "studio: ✗ usage: /unsay <id> — the id is the number /said lists")
         rows = [
             ("story say", story("say", "hi there"), ("call", ["say", "--run", B, "A", "--", "hi there"])),
@@ -49,6 +50,23 @@ class ParseTest(unittest.TestCase):
             ("single bare stop", run("stop", "", True), ("call", ["stop", "--run", B, "-"])),
             ("single stop run", run("stop", "run", True), ("call", ["stop", "--run", B])),
             ("single hold", run("hold", "", True), ("call", ["hold", "--run", B, "-"])),
+            ("say --task T12", story("say", "--task T12 left x"),
+             ("call", ["say", "--run", B, "A", "--task", "T12", "--", "left x"])),
+            ("say bare --task", story("say", "--task do the thing"),
+             ("call", ["say", "--run", B, "A", "--task", "--", "do the thing"])),
+            ("say --task t7 is text", story("say", "--task t7 x"),
+             ("call", ["say", "--run", B, "A", "--task", "--", "t7 x"])),
+            ("say --task T3x is text", story("say", "--task T3x"),
+             ("call", ["say", "--run", B, "A", "--task", "--", "T3x"])),
+            ("say --task multi-line", story("say", "--task T2\nline1\nline2"),
+             ("call", ["say", "--run", B, "A", "--task", "T2", "--", "line1\nline2"])),
+            ("say --taskx is plain text", story("say", "--taskx y"), ("call", ["say", "--run", B, "A", "--", "--taskx y"])),
+            ("single say --task", run("say", "--task T4 z", True),
+             ("call", ["say", "--run", B, "-", "--task", "T4", "--", "z"])),
+            ("say --task no text", story("say", "--task"), task_usage),
+            ("say --task T5 no text", story("say", "--task T5"), task_usage),
+            ("unit --task is plain text", story("unit", "--task T5 x"),
+             ("call", ["say", "--run", B, "A", "--unit", "--", "--task T5 x"])),
             ("empty say", story("say"), usage("say")),
             ("empty unit", story("unit"), usage("unit")),
             ("unsay x", story("unsay", "x"), unsay_usage),

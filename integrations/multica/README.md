@@ -187,6 +187,7 @@ On a story's own issue:
 | Command | Does |
 |---|---|
 | `/say <text>` | Send a message to the story's next unit. |
+| `/say --task [T<n>] <text>` | Send a message scoped to one task: it is briefed until that task is done, then retires. A bare `--task` means the story's current task. A held timeout (`timed out on T<n> …`) suggests it. |
 | `/unit <text>` | Send a message to the unit that is running now. |
 | `/hold` | Hold the story. |
 | `/resume` | Resume a held story. |

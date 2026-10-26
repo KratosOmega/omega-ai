@@ -16,6 +16,8 @@ WARN = "studio: ⚠ may or may not have applied — check `/said` or the board"
 HELP = ("studio: commands — on a story issue: /say <text>, /unit <text>, /hold, /resume, /stop, "
         "/unsay <id>, /said; on the Run issue: /stop run (a single-plan run takes every command there)")
 _WORD = re.compile(r"(\S*)(.*)", re.S)
+_TASK = re.compile(r"--task(?:\s+(.*))?\Z", re.S)           # /say --task [T<n>] <text>
+_TASK_ID = re.compile(r"(T[0-9]+)(?:\s+(.*))?\Z", re.S)
 
 
 def parse(content):
@@ -58,7 +60,17 @@ def plan_call(word, text, where, story, single, basename):
         if word in ("say", "unit"):
             if not text:
                 return "reply", "studio: ✗ usage: /%s <text>" % word
-            return "call", ["say", "--run", basename, s] + (["--unit"] if word == "unit" else []) + ["--", text]
+            scope = []
+            m = _TASK.match(text) if word == "say" else None
+            if m:
+                text = (m.group(1) or "").strip()
+                t = _TASK_ID.match(text)
+                scope = ["--task"] + ([t.group(1)] if t else [])
+                if t:
+                    text = (t.group(2) or "").strip()
+                if not text:
+                    return "reply", "studio: ✗ usage: /say --task [T<n>] <text>"
+            return "call", ["say", "--run", basename, s] + (["--unit"] if word == "unit" else scope) + ["--", text]
         if word in ("hold", "resume", "stop", "said"):
             return "call", [word, "--run", basename, s]
         if word == "unsay":
