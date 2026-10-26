@@ -557,6 +557,109 @@ test_inbox_hook_skips_storyless_manifest_unit() {
   assert_file "$IS/1.msg" "the message stays pending"
   inbox_run none "$SS_START"; assert_eq "" "$(cat "$TMP/ib.out")" "nor at startup"
 }
+# ---- the deadline notices: WRAP-UP at STUDIO_UNIT_WRAP_AT, FINAL at DEADLINE - 180 ----
+# wrap_env WRAP_OFFSET DEADLINE_OFFSET — export the unit's clock, relative to now.
+wrap_env() {
+  _n="$(date +%s)"
+  STUDIO_UNIT_WRAP_AT=$((_n + $1)); STUDIO_UNIT_DEADLINE=$((_n + $2)); export STUDIO_UNIT_WRAP_AT STUDIO_UNIT_DEADLINE
+}
+wrap_unenv() { unset STUDIO_UNIT_WRAP_AT STUDIO_UNIT_DEADLINE; }
+test_inbox_wrap_notice_once() {
+  ib_fresh single; wrap_env -5 1200
+  inbox_run none "$PTU"
+  assert_eq 0 "$IB_ST" "exit 0"
+  assert_contains "$TMP/ib.out" '"hookEventName":"PostToolUse"' "PostToolUse JSON"
+  assert_contains "$TMP/ib.out" 'WRAP-UP (STUDIO_UNIT_WRAP_AT passed): 20 min to the hard stop at [0-9?:]*\. Start no gate and no subagent' "the main text, minutes to the stop"
+  assert_contains "$TMP/ib.out" 'checkpoint ledger line (execute §8), end the turn' "its tail"
+  assert_file "$IR/deadline/tagA.main.wrap" "the marker"
+  inbox_run none "$PTU"
+  assert_eq "" "$(cat "$TMP/ib.out")" "the second call: silent"
+  TG=tagB inbox_run none "$PTU"
+  assert_contains "$TMP/ib.out" 'WRAP-UP' "another unit tag: its own notice"
+  ib_fresh single; inbox_run none "$SS_START"
+  assert_contains "$TMP/ib.out" '^WRAP-UP (STUDIO_UNIT_WRAP_AT passed)' "SessionStart: plain text"
+  assert_not_contains "$TMP/ib.out" 'hookSpecificOutput' "not JSON"
+  ib_fresh single; put_msg "$IS" 1 story "use the bus"
+  inbox_run none "$PTU"
+  assert_eq 1 "$(grep -c 'hookSpecificOutput' "$TMP/ib.out")" "with a message: one block"
+  assert_contains "$TMP/ib.out" 'WRAP-UP.*OPERATOR MESSAGES' "the notice first, then the messages"
+  wrap_unenv
+}
+test_inbox_wrap_notice_subagent() {
+  ib_fresh single; put_msg "$IS" 1 story "use the bus"; wrap_env -5 1200
+  inbox_run none "$PTU_SUB"
+  assert_contains "$TMP/ib.out" 'WRAP-UP: return to the orchestrator now with what is done and what is left; start nothing new\.' "the subagent text"
+  assert_not_contains "$TMP/ib.out" 'Start no gate' "not the main text"
+  assert_not_contains "$TMP/ib.out" 'OPERATOR MESSAGES' "no inbox delivery to a subagent"
+  assert_file "$IS/1.msg" "the message stays pending"
+  assert_file "$IR/deadline/tagA.agent-a1.wrap" "its own marker"
+  assert_missing "$IR/deadline/tagA.main.wrap" "the main marker untouched"
+  inbox_run none "$PTU_SUB"
+  assert_eq "" "$(cat "$TMP/ib.out")" "once per agent"
+  inbox_run none "$PTU"
+  assert_contains "$TMP/ib.out" 'Start no gate' "the main session still gets its own"
+  wrap_unenv
+}
+test_inbox_wrap_notice_agent_id_top_level() {
+  ib_fresh single; wrap_env -5 1200
+  inbox_run none '{"session_id":"s","agent_id":"a1","hook_event_name":"PostToolUse","tool_name":"Bash","tool_response":{"agent_id":"zz"}}'
+  assert_file "$IR/deadline/tagA.agent-a1.wrap" "the marker names the top-level agent_id"
+  assert_missing "$IR/deadline/tagA.agent-zz.wrap" "not a nested one"
+  wrap_unenv
+}
+test_inbox_wrap_notice_compact_reshows() {
+  ib_fresh single; wrap_env -600 120
+  inbox_run none "$PTU"
+  inbox_run none "$SS_COMPACT"
+  assert_contains "$TMP/ib.out" '^WRAP-UP (STUDIO_UNIT_WRAP_AT passed)' "compact: the wrap-up again"
+  assert_contains "$TMP/ib.out" '^FINAL: 2 min left' "and the final line"
+  ib_fresh single; wrap_env -5 1200
+  inbox_run none "$SS_COMPACT"
+  assert_contains "$TMP/ib.out" '^WRAP-UP' "compact past WRAP_AT with no notice sent yet: it is sent (and marked)"
+  assert_file "$IR/deadline/tagA.main.wrap" "marked"
+  wrap_env 300 1200; ib_fresh single
+  inbox_run none "$SS_COMPACT"
+  assert_eq "" "$(cat "$TMP/ib.out")" "compact before WRAP_AT: silent"
+  wrap_unenv
+}
+test_inbox_wrap_notice_final_unit() {
+  ib_fresh manifest; wrap_env -5 1200
+  inbox_run none "$PTU"
+  assert_contains "$TMP/ib.out" 'WRAP-UP' "a storyless manifest unit still gets the notice"
+  inbox_run none "$SS_START"; assert_eq "" "$(cat "$TMP/ib.out")" "and once only"
+  wrap_unenv
+}
+test_inbox_wrap_notice_before_wrap_silent() {
+  ib_fresh single; wrap_env 300 1200
+  inbox_run none "$PTU"
+  assert_eq "" "$(cat "$TMP/ib.out")" "before WRAP_AT: nothing"
+  assert_missing "$IR/deadline" "and no marker dir"
+  ib_fresh manifest; inbox_run none "$PTU"; assert_eq "" "$(cat "$TMP/ib.out")" "storyless: nothing"
+  ib_fresh single; put_msg "$IS" 1 story "use the bus"; inbox_run none "$PTU"
+  assert_not_contains "$TMP/ib.out" 'WRAP-UP' "a message alone: no notice"
+  assert_contains "$TMP/ib.out" '\[1, story\] use the bus' "the message as before"
+  wrap_unenv
+  ib_fresh single; STUDIO_UNIT_WRAP_AT=garbage; export STUDIO_UNIT_WRAP_AT
+  inbox_run none "$PTU"; assert_eq 0 "$IB_ST" "a garbled WRAP_AT: exit 0"; assert_eq "" "$(cat "$TMP/ib.out")" "and silent"
+  wrap_unenv
+}
+test_inbox_final_notice() {
+  ib_fresh single; wrap_env -600 120
+  inbox_run none "$PTU"
+  assert_contains "$TMP/ib.out" 'WRAP-UP' "wrap first"
+  assert_contains "$TMP/ib.out" 'FINAL: 2 min left — commit what is green and end now\.' "and the final line"
+  assert_file "$IR/deadline/tagA.main.final" "its marker"
+  inbox_run none "$PTU"; assert_eq "" "$(cat "$TMP/ib.out")" "both once"
+  ib_fresh single; wrap_env -600 400
+  inbox_run none "$PTU"
+  assert_contains "$TMP/ib.out" 'WRAP-UP' "wrap passed"
+  assert_not_contains "$TMP/ib.out" 'FINAL' "final not yet due (400 s left)"
+  wrap_env -700 100
+  inbox_run none "$PTU"
+  assert_contains "$TMP/ib.out" 'FINAL: 2 min left' "final later, alone"
+  assert_not_contains "$TMP/ib.out" 'WRAP-UP' "wrap not repeated"
+  wrap_unenv
+}
 test_inbox_hook_skips_subagent() {
   ib_fresh single; put_msg "$IS" 1 story "use the bus"
   inbox_run none "$PTU_SUB"
@@ -1285,7 +1388,7 @@ run_tests test_lanes_guard_registered test_lanes_guard_denies_commit_with_lanes_
   test_autopilot_guard_registered test_autopilot_guard_denies_background_agent \
   test_autopilot_guard_allows_foreground_agent test_autopilot_guard_reads_the_field_not_the_prompt \
   test_autopilot_guard_bash_and_monitor test_autopilot_guard_off_outside_autopilot \
-  test_inbox_hook_skips_storyless_manifest_unit test_inbox_hook_skips_subagent test_inbox_agent_id_top_level_only \
+  test_inbox_hook_skips_storyless_manifest_unit test_inbox_wrap_notice_once test_inbox_wrap_notice_subagent test_inbox_wrap_notice_agent_id_top_level test_inbox_wrap_notice_compact_reshows test_inbox_wrap_notice_final_unit test_inbox_wrap_notice_before_wrap_silent test_inbox_final_notice test_inbox_hook_skips_subagent test_inbox_agent_id_top_level_only \
   test_inbox_session_start_plain test_inbox_post_tool_use_json test_inbox_claim_moves_to_delivered \
   test_inbox_one_claim_under_two_hooks test_inbox_compact_reshows \
   test_inbox_escapes_quotes_dollar_backticks_newlines test_inbox_task_scope_recorded test_inbox_note_shown_not_recorded test_inbox_hook_never_fails test_inbox_lost_claim_race_not_logged test_inbox_invalid_utf8_body_whole \
