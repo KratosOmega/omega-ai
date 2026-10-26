@@ -2078,6 +2078,9 @@ test_channel_say_task_bare_resolves_current() {
   assert_contains "$FR_DIR/inbox/-/2.msg" "^task: T7$" "an explicit T7"
   verb said -
   assert_eq "1  pending (T5)  x|2  pending (T7)  later" "$(tr '\n' '|' < "$V_OUT" | sed 's/|$//')" "said names each one's task"
+  verb say - --task t6 -- y
+  assert_eq 0 "$V_STATUS" "--task t6 is accepted"
+  assert_contains "$FR_DIR/inbox/-/3.msg" "^task: T6$" "t6 is normalised to T6"
   fake_run_end
 }
 test_channel_say_task_refusals() {
@@ -2090,6 +2093,13 @@ test_channel_say_task_refusals() {
   assert_eq 1 "$V_STATUS" "T4 at task 4/12: exit 1"
   assert_eq "studio-overnight: say: T4 is already complete" "$(cat "$V_ERR")" "one line names it"
   verb say - --task T1 x;            assert_eq 1 "$V_STATUS" "T1 too"
+  verb say - --task T0 -- x;         assert_eq 2 "$V_STATUS" "T0 is usage"
+  verb say - --task T05 -- x;        assert_eq 2 "$V_STATUS" "a leading zero is usage"
+  verb say - --task t05 -- x;        assert_eq 2 "$V_STATUS" "lower case too"
+  verb say - --task T13 -- x
+  assert_eq 1 "$V_STATUS" "T13 at task 4/12: exit 1"
+  assert_eq "studio-overnight: say: T13 is past the plan's last task T12" "$(cat "$V_ERR")" "one line names the last task"
+  assert_missing "$FR_DIR/inbox/-/1.msg" "no refusal wrote a message"
   ( cd "$P" && sh "$STATE_BIN" set task 12/12 ) >/dev/null 2>&1
   verb say - --task -- x
   assert_eq 1 "$V_STATUS" "a bare --task at task 12/12: exit 1"
@@ -2197,16 +2207,17 @@ test_queue_note_writes_runner_note() {
   QN="$(sed -n '/^queue_note() {/,/^}/p' "$REPO_ROOT/studios/game-dev/bin/studio-overnight")"
   assert_eq 1 "$([ -n "$QN" ] && echo 1 || echo 0)" "studio-overnight defines queue_note"
   ( SELF_DIR="$REPO_ROOT/studios/game-dev/bin"; . "$SELF_DIR/overnight-channel.sh"
-    RUN_DIR="$D"; CUR_ID=S1
+    RUN_DIR="$D"; CUR_ID=OTHER
     say() { printf '%s\n' "$*" >> "$D/say"; }
     run_event() { printf '%s\n' "$*" >> "$D/events"; }
     feature_dir() { printf '%s\n' "$D"; }
-    ledger_of() { printf '%s\n' '- 2026-10-26 Directive 9: older' '- 2026-10-26 T1 complete'; }
+    # the given story's ledger (STUDIO_STORY), not the current story's
+    ledger_of() { [ "${STUDIO_STORY:-}" = S1 ] && printf '%s\n' '- 2026-10-26 Directive 9: older' '- 2026-10-26 T1 complete'; }
     eval "$QN"
     queue_note S1 T3 "$(printf 'done: a\nleft: b$HOME')" ) > "$TMP/qn.out" 2>&1
   assert_eq 0 "$?" "queue_note returns 0"
   M="$D/inbox/S1/10.msg"
-  assert_file "$M" "the next id passes the ledger's Directive 9"
+  assert_file "$M" "the next id passes STORY's ledger Directive 9 (CUR_ID is another story)"
   assert_contains "$M" "^scope: note$" "scope note"
   assert_contains "$M" "^from: runner$" "from runner"
   assert_contains "$M" "^task: T3$" "its task"
@@ -2214,6 +2225,35 @@ test_queue_note_writes_runner_note() {
   assert_eq "$(printf 'done: a\nleft: b$HOME')" "$(body "$M")" "the text verbatim"
   assert_missing "$D/inbox/S1/.lock" "the inbox lock is released"
   assert_eq "message_queued story=S1 id:=10 scope=note" "$(cat "$D/events")" "a message_queued event, scope note"
+  if [ "$(id -u)" != 0 ]; then
+    chmod 555 "$D/inbox"
+    ( SELF_DIR="$REPO_ROOT/studios/game-dev/bin"; . "$SELF_DIR/overnight-channel.sh"
+      RUN_DIR="$D"; CUR_ID=S2
+      say() { printf '%s\n' "$*" >> "$D/say"; }
+      run_event() { :; }; feature_dir() { printf '%s\n' "$D"; }; ledger_of() { :; }
+      eval "$QN"
+      queue_note S2 T1 x ) > /dev/null 2>&1; _qn_st=$?
+    chmod 755 "$D/inbox"
+    assert_eq 1 "$_qn_st" "an inbox that cannot be created: 1"
+    assert_eq "cannot create $D/inbox/S2: the runner note for T1 was not queued" "$(tail -n 1 "$D/say")" "named as such, not busy"
+  fi
+}
+# spec §5: a pending task message whose task is done is not delivered; the
+# runner moves it aside after the unit that finished the task.
+test_requeue_stale_task_not_delivered() {
+  fixture rst
+  scenario "stage execute; branch feat; task 1/3; wtledger T1 complete a..b; saytask T2 stale; saytask T3 keep" \
+           "task 2/3; wtledger T2 complete b..c" \
+           "inbox; record; said 3; task 3/3; wtledger T3 complete c..d" \
+           "wtledger final review done" "wtledger shipped https://x/pull/12; stage idle; task -"
+  run_start; R="$(last_run_dir)"
+  assert_eq 0 "$RS_STATUS" "done"
+  assert_not_contains "$CALLS/3.inbox" "stale" "the T2 message, queued but not claimed before task 2/3, is not delivered"
+  assert_contains "$CALLS/3.inbox" "^\[2, task T3\] keep$" "the open T3 message is"
+  assert_file "$R/inbox/-/delivered/retired/1.msg" "the stale one is moved aside"
+  assert_contains "$CALLS/3.said.3" "^1  retired (T2 done)  stale$" "said shows it retired"
+  assert_not_contains "$R/events.jsonl" '"event":"message_requeued"' "nothing is requeued"
+  assert_not_contains "$R/report.md" "Operator messages left" "nothing left"
 }
 
 test_hold_resume_stop_table() {
@@ -3625,7 +3665,7 @@ run_tests test_overnight_setup_preflight_single test_overnight_tools_after_setup
   test_single_plan_from_story_worktree test_single_plan_in_place_keeps_main_pointer \
   test_channel_say_task_scope_retires test_channel_say_task_bare_resolves_current test_channel_say_task_refusals \
   test_channel_say_file_verbatim test_channel_say_stdin test_requeue_task_directive_recorded \
-  test_requeue_note_never_requeued test_requeue_multiline_left_one_line test_queue_note_writes_runner_note \
+  test_requeue_note_never_requeued test_requeue_multiline_left_one_line test_queue_note_writes_runner_note test_requeue_stale_task_not_delivered \
   test_channel_ledger_follows_story test_status_reads_persisted_spec \
   test_single_plan_follows_adopted_legacy_story test_single_plan_legacybranch_in_unit_follows \
   test_single_plan_ignores_new_story_in_start

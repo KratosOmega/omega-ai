@@ -78,12 +78,14 @@ chan_usage() {
   {
     echo "usage: studio-overnight say <story> [--unit | --task [T<n>]] [--run <run>] ('<text>' | -- <text> | --file <path> | -)"
     echo "       studio-overnight said|hold|resume|stop <story> [--run <run>] | unsay <story> <id> [--run <run>] | stop [--run <run>]"
-    echo "       (<story> is - in a single-plan run; <run> is the run dir's basename)"
+    echo "       (<story> is - in a single-plan run; <run> is the run dir's basename;"
+    echo "       --file and - keep the text verbatim except its trailing blank lines, which are dropped)"
   } >&2
   exit 2
 }
 # chan_args ARGS… — A_RUN, A_UNIT, A_TASK (1 with --task) and A_TASKN (its
-# T<n>, empty for a bare --task: a next word T<n> is taken as its value),
+# T<n>, empty for a bare --task: a next word T<n> or t<n> is taken as its
+# value, as T<n>; T0 or a leading zero such as T05 returns 2),
 # A_FILE (--file), A_DASH, A_TEXT (every word after --, joined by spaces),
 # A_N positionals in A_P1..A_P3 (a lone - is one: say's stdin). Returns 2 on
 # an unknown option, --run or --file with no value, or a fourth positional.
@@ -96,7 +98,14 @@ chan_args() {
       --run) [ "$#" -ge 2 ] || return 2; A_RUN="$2"; shift ;;
       --unit) A_UNIT=1 ;;
       --task) A_TASK=1
-              case "${2:-}" in T[1-9]*) case "${2#T}" in *[!0-9]*) ;; *) A_TASKN="$2"; shift ;; esac ;; esac ;;
+              # T<n> or t<n> (normalised to T<n>); T0 or a leading zero is usage
+              case "${2:-}" in
+                [Tt][0-9]*) case "${2#?}" in
+                              *[!0-9]*) ;;
+                              0*) return 2 ;;
+                              *) A_TASKN="T${2#?}"; shift ;;
+                            esac ;;
+              esac ;;
       --file) [ "$#" -ge 2 ] || return 2; A_FILE="$2"; shift ;;
       -?*) return 2 ;;
       *) [ "$A_N" -lt 3 ] || return 2; A_N=$((A_N + 1)); eval "A_P$A_N=\$1" ;;
@@ -346,7 +355,8 @@ chan_rows() {
 }
 # chan_task_scope — say --task: the T<n> (CH_TASKN), a bare --task resolved
 # to the story's current task k+1 (stage execute and `task k/N`, k < N), or
-# exit 1 when the story is not at a task or T<n> is already done (n <= k).
+# exit 1 when the story is not at a task, T<n> is already done (n <= k), or
+# T<n> is past the plan's last task (n > N, when `task k/N` is known).
 chan_task_scope() {
   CH_TASKN="$A_TASKN"
   if [ -z "$CH_TASKN" ]; then
@@ -358,6 +368,10 @@ chan_task_scope() {
     CH_TASKN="T$((CH_K + 1))"
   fi
   [ "${CH_TASKN#T}" -gt "$CH_K" ] 2>/dev/null || chan_fail 1 "say: $CH_TASKN is already complete"
+  case "$CH_TASK" in
+    [0-9]*/[0-9]*) [ "${CH_TASKN#T}" -le "${CH_TASK#*/}" ] 2>/dev/null \
+                     || chan_fail 1 "say: $CH_TASKN is past the plan's last task T${CH_TASK#*/}" ;;
+  esac
 }
 # chan_say TEXT — AC1, AC5: the next id, the cap (story and task scope), the
 # message, a message_queued event (with task=T<n> for a task message);
