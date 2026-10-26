@@ -401,6 +401,8 @@ Under a lane, every implementer, fixer and reviewer brief also carries this line
 
 Every implementer, fixer and reviewer brief also carries this line verbatim (§0, The deadline): "Return to the orchestrator by `$STUDIO_UNIT_WRAP_AT` (`studio-deadline` prints it) with what is done and what is left. Never start a command that cannot finish by then: `studio-deadline fits <gate>` answers that. Pass `timeout` only on gate-routed commands (`studio-test`, `studio-run`, `studio-setup`, `studio-gate`); never on `sh tools/…`, `python`, `git` or any other command — a raised timeout lets a hung command outlive its cap."
 
+The hook's `WRAP-UP` notice reaches subagents too: `tests/probes/deadline_notice_probe.sh` (2026-10-26) showed a subagent's model receives a PostToolUse hook's `additionalContext` after its own tool calls (the hook saw 2 subagent Bash calls; PASS). The brief's line above stays, since a subagent that makes no tool call gets no notice.
+
 Every implementer and fixer brief also carries: "commit each fix that passes its owning tests as it lands; never batch fixes to the end of the task; never push: the orchestrator pushes; run one test file with
 `studio-test --file <test file>`; never build a Godot or GUT command by
 hand; run a Godot script or import as `studio-gate godot -- <command>`; a gate-routed command

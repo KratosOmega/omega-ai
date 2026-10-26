@@ -12,6 +12,11 @@
 # it saw after its tool calls. The canary is known only to the hook, so it can
 # appear in the subagent's report only if the hook output reached the subagent.
 #
+# Result (2026-10-26, claude-gd, haiku): PASS. The hook saw 2 subagent Bash calls
+# and "PostToolUse additionalContext: reached the subagent": a subagent's model
+# receives a PostToolUse hook's additionalContext, so the wrap-up notice reaches
+# subagents. skills/execute/SKILL.md §2 records it.
+#
 # Not part of tests/run_all.sh: it spends real model calls (haiku, at most $1).
 #
 # Usage: deadline_notice_probe.sh [LAUNCHER]   (default claude-gd)

@@ -133,8 +133,8 @@ the brief rule below is the only subagent channel. Record the result in the prob
 - `studio-deadline fits <who> [<minutes>]` exits 0 when a run of `<who>` fits before WRAP_AT, and
   1 with a one-line reason when it does not. The estimate is p90 × 1.2 of `<who>`'s rows, read
   through `gate_times_holds`, or `<minutes>` when given. With fewer than 5 rows it uses
-  `STUDIO_GATE_MINUTES` / 2. `fits agent` (a subagent dispatch) uses 20 min (C6). `<who>` is the gate's own name (`studio-test`, `setup` for
-  `studio-setup gate`, `studio-run`, …). The builder confirms the names against `gate.times`.
+  `STUDIO_GATE_MINUTES` / 2. `fits agent` (a subagent dispatch) uses 20 min (C6). `<who>` is the gate's own name (`studio-test`, `gate` for
+  `studio-setup gate` (its `gate.times` name), `studio-run`, …). The builder confirms the names against `gate.times`.
 
 **Skill (execute).**
 - §0: the deadline rule. Before any gate-routed full run (`studio-test` without `--file`,
@@ -154,7 +154,7 @@ the brief rule below is the only subagent channel. Record the result in the prob
 ~600 characters. It names evidence by path or sha (logs, probe outputs) so the retry need not
 re-measure. The keyword `checkpoint` is new. It must not reuse `in progress`, which `studio-adopt
 sync` reports with a commit-range meaning. A final-review unit writes `final-review checkpoint:
-…`. Repair units write a `Stop:` with done/left instead (they have no retry).
+…` and commits it as `chore(studio): checkpoint final-review` (a task's: `chore(studio): checkpoint T<n>`). Repair units write a `Stop:` with done/left instead (they have no retry).
 
 **When.** At the wrap notice, after a `fits` refusal, or on any voluntary end that leaves the task
 incomplete. Order: commit green fixes, then the ledger line, then the ledger commit

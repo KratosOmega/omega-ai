@@ -90,7 +90,11 @@ envelope, in this order:
   text (for example `stop: need art`, or a timed-out gate's
   `stop: gate timed out — studio-test: studio-test timed out twice — 1140 s
   under load 25.1→24.6, then 1140 s exclusive under load 24.2→25.0 (busy at
-  24) — stopped`), possibly followed by ` (was held: …)`. To detect an operator stop, read the
+  24) — stopped`), possibly followed by ` (was held: …)`.
+  The `task_timeouts` bound's hold reads `timed out on T<n> (session_minutes N;
+  <k> capped units) — checkpoint: <text>` (the label's checkpoint, else the head
+  of the runner's fallback note); a `no progress on <label>` hold may end with
+  `— checkpoint: <text>` too. To detect an operator stop, read the
   `control` event (action `stop`) and the story's next terminal `story_state`.
 - A hold writes `story_state` held, then (unless resumed or ended first) one
   `hold_reminder` when 25% of the hold is left, then its resolution.
@@ -104,7 +108,7 @@ envelope, in this order:
 | `story_state` | `story`, `state`, `why`, `until` | `state`: `queued`, `waiting`, `running`, `repair`, `gate-repair`, `sync-repair`, `held`, `landing`, `landed`, `stopped`, `skipped`; `why` only for held, stopped, skipped; `until` only for held (ISO-8601 UTC) |
 | `story_synced` | `story`, `refs`, `sha`, `skipped`, `failed` | merged: `refs` (array, in merge order) and `sha` (the new head); `skipped`: `no-worktree`, `dirty`, `ahead`; `failed`: `fetch`, `merge-tree`, `merge`, `push`; no event when every ref is already merged; a merged line comes before a later `failed` one |
 | `unit_started` | `story`, `unit`, `label`, `model` | `unit` is the unit tag; `label` is for example `repair`, without the story id |
-| `unit_ended` | `story`, `unit`, `label`, `outcome`, `usd`, `usd_est` | `outcome`: `progress`, `done`, `stop`, `noprog`, `timed out`, `stalled`, `orphaned`; `usd` is a number: the session's result cost, or, when it left no result event (killed at its cap), an estimate from its transcript, calibrated per model; `usd_est` is `true` on an estimate and absent otherwise; logs written before estimates may hold `usd` `null` |
+| `unit_ended` | `story`, `unit`, `label`, `outcome`, `usd`, `usd_est` | `outcome`: `progress`, `partial` (a capped unit whose own commits are pushed), `done`, `stop`, `noprog`, `timed out`, `stalled`, `orphaned`; `usd` is a number: the session's result cost, or, when it left no result event (killed at its cap), an estimate from its transcript, calibrated per model; `usd_est` is `true` on an estimate and absent otherwise; logs written before estimates may hold `usd` `null` |
 | `unit_stalled` | `story`, `unit`, `label`, `idle_min`, `command` | `idle_min` is a number (overnight.idle_minutes); `command` is the newest open tool call, rendered as the status activity is and cut to 120 chars, or `-`; written before that unit's `unit_ended`, whose outcome is `stalled` unless the unit moved the state or recorded a stop |
 | `session_wait` | `lane`, `story`, `since` | `lane` is the lane number or `final`; `story` is `-` for a final-step unit; `since` is ISO-8601 UTC; once per wait, when the first slot request fails; the unit's own `unit_started` follows when it gets a slot |
 | `message_queued` | `story`, `id`, `scope`, `task` (scope `task` only) | `id` is a number; `scope`: `story`, `unit`, `task`, `retire`, `note` (the runner's carry-over note); `task` is `T<n>`, the task a `say --task` message lasts until |

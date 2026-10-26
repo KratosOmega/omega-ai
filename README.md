@@ -258,8 +258,31 @@ stories as parallel lanes of dependency chains:
   resume command. `watch [SECONDS]` (or `status --follow`) repeats it; a
   foreground `start` prints a heartbeat line about once a minute. The installer
   puts `studio-overnight` on `PATH` beside `claude-gd`.
+- A unit knows its deadline. The runner exports `STUDIO_UNIT_DEADLINE` (epoch
+  seconds when the watchdog ends the session) and `STUDIO_UNIT_WRAP_AT` (the
+  time to wrap up: the deadline less `max(600, session_minutes*60/6)` s, at
+  most half the session) to every unit kind. `studio-deadline` prints them and
+  `studio-deadline fits <gate>` says whether a gate or a subagent (`agent`)
+  fits before the wrap time; the execute skill starts nothing that does not.
+  At the wrap time the operator-inbox hook tells the session and its
+  subagents to wrap up.
+- Carry-over across a cap: a task unit that is out of time commits its green
+  fixes, writes a `T<n> checkpoint: done …; left …; next …` ledger line
+  (`final-review checkpoint:` for the final review) and ends. The retry's
+  `studio-brief task` shows the newest one; when the unit wrote none, the
+  runner queues a fallback note from git and the killed transcript. A capped
+  unit (killed at the cap, or ended past its wrap time with the task
+  undone) that pushed commits of its own is `partial` progress; it resets
+  `no progress` and counts toward `overnight.task_timeouts` (default 2, range
+  1-5), never toward retries. A task capped that many times holds the story
+  with its checkpoint in the hold message (`timed out on T<n> (session_minutes
+  N; <k> capped units) — checkpoint: …`) instead of retrying blind; `resume`
+  runs one more capped unit. A killed unit's cost is estimated from its
+  transcript (`usd_est`, units.tsv `cost_src` `estimate`), never null.
 - Talking to a live run: `studio-overnight say <story> '<text>'` queues a
-  message (`--unit` for this unit only; `said`, `unsay <story> <id>`), and
+  message (`--unit` for this unit only; `--task [T<n>]` until that task
+  completes; `--file <path>` or `-` for a long or multi-line text, delivered
+  verbatim; `said`, `unsay <story> <id>`), and
   `hold`, `resume` and `stop <story>` steer one story (`-` in a single-plan
   run; `--run <run>` names the run from anywhere). A message reaches the
   story's session at its start or its next tool call, so a session waiting
