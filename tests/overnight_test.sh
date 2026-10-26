@@ -1476,8 +1476,36 @@ test_overnight_kill_after_grace() {
   STUDIO_OVERNIGHT_SESSION_SECONDS=1; export STUDIO_OVERNIGHT_SESSION_SECONDS
   run_start; unset STUDIO_OVERNIGHT_SESSION_SECONDS
   assert_eq 2 "$(calls)" "a session that ignores TERM is killed after the grace, and counted"
-  assert_contains "$(last_run_dir)/report.md" "^Ending: timed out on T1 (session_minutes " "two killed sessions with no progress stop the run, named as timed out"
+  assert_contains "$(last_run_dir)/report.md" "^Ending: timed out on T1 (session_minutes [0-9]*; 2 capped units) — checkpoint: " "two killed sessions with no progress stop the run at the task_timeouts bound, named as timed out"
   assert_eq "timed out" "$(awk -F'\t' 'NR == 1 { print $7 }' "$(last_run_dir)/units.tsv")" "a unit the watchdog ended with no progress is recorded timed out, not noprog"
+}
+# C1: a unit that ends on its own past its wrap-up time without finishing its
+# task is capped too (not killed: Timed out 0), and feeds only the bound. A
+# 20 s session wraps at 10 s; each unit ends at 12 s, far inside the cap.
+test_overnight_wrap_capped_unit() {
+  fixture wcu
+  scenario "stage execute; branch fw; task 1/2" "sleep 12" "sleep 12" "task 2/2"
+  STUDIO_OVERNIGHT_SESSION_SECONDS=20; export STUDIO_OVERNIGHT_SESSION_SECONDS
+  run_start; unset STUDIO_OVERNIGHT_SESSION_SECONDS
+  assert_eq "progress 0 0|noprog 0 1|noprog 0 1" \
+    "$(awk -F'\t' '{ printf "%s%s %s %s", (NR > 1 ? "|" : ""), $7, $6, $9 }' "$(last_run_dir)/units.tsv")" "outcome, timed out and capped per unit"
+  assert_contains "$(last_run_dir)/report.md" "^Ending: timed out on T2 (session_minutes [0-9]*; 2 capped units) — checkpoint: uncommitted: none; unpushed: none; last words: none$" "the bound, not retries, ends it; no checkpoint: the fallback's head"
+  assert_contains "$(last_run_dir)/report.md" "^| 2 | T2 | 0 | [^|]* | [^|]* | 0 | noprog (capped) |$" "the report marks a capped unit the cap did not end"
+  assert_contains "$(last_run_dir)/report.md" "^- 1 (note, requeues 0): uncommitted: none; unpushed: none; last words: none$" "the first unit's runner note is left for a unit that never read it"
+}
+# Spec §4, single-plan: task_timeouts (2) capped units of one task end the
+# run (holds off) with the newest checkpoint in the ending.
+test_overnight_bound_single_plan() {
+  fixture bsp '{ "overnight": { "kill_grace_seconds": 5 } }'
+  scenario "stage execute; branch fb; task 1/2" \
+    "wtledger T2 checkpoint: done A, left B, next C; hang" \
+    "wtledger T2 checkpoint: done D, left E, next F; hang" "task 2/2"
+  STUDIO_OVERNIGHT_SESSION_SECONDS=8; export STUDIO_OVERNIGHT_SESSION_SECONDS
+  run_start; unset STUDIO_OVERNIGHT_SESSION_SECONDS
+  assert_eq 3 "$(calls)" "no third attempt of T2"
+  assert_contains "$(last_run_dir)/report.md" "^Ending: timed out on T2 (session_minutes [0-9]*; 2 capped units) — checkpoint: done D, left E, next F$" "the bound's ending carries the newest checkpoint"
+  assert_eq "progress 0|timed out 1|timed out 1" \
+    "$(awk -F'\t' '{ printf "%s%s %s", (NR > 1 ? "|" : ""), $7, $9 }' "$(last_run_dir)/units.tsv")" "outcome and capped per unit"
 }
 
 test_overnight_reap_poll_keeps_budget() {
@@ -3801,7 +3829,7 @@ run_tests test_overnight_setup_preflight_single test_overnight_tools_after_setup
   test_overnight_report_anchors test_overnight_report_blocks test_overnight_report_gate_block test_overnight_resume_quote test_overnight_label_t1 \
   test_overnight_session_seconds_refused test_overnight_claim_without_run_dir \
   test_overnight_report_runner_error test_overnight_crash_resume test_overnight_status test_overnight_status_short_lane \
-  test_overnight_timeout test_overnight_kill_after_grace \
+  test_overnight_timeout test_overnight_kill_after_grace test_overnight_bound_single_plan test_overnight_wrap_capped_unit \
   test_overnight_reap_poll_keeps_budget test_overnight_reap_poll_rejects_bad_value \
   test_overnight_stop_file test_overnight_sigterm test_overnight_sigint test_overnight_sighup \
   test_overnight_stop_no_run test_overnight_inhibitor test_overnight_no_inhibitor \
