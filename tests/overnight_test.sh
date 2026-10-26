@@ -121,6 +121,23 @@ for act in "$@"; do
     inbox)        printf '{"session_id":"s","hook_event_name":"SessionStart","source":"startup"}' \
                     | sh "$STUB_PLUGIN/hooks/operator-inbox.sh" > "$CALLS/$n.inbox" ;;
     "say "*)      sh "$STUB_RUNNER" say - -- "${act#say }" > /dev/null 2>&1 ;;
+    # saytask T<n> TEXT: a task-scoped directive (say --task T<n>).
+    "saytask "*)  _stk="${act#saytask }"; sh "$STUB_RUNNER" say - --task "${_stk%% *}" -- "${_stk#* }" > /dev/null 2>&1 ;;
+    # sayfile PATH: say --file PATH (the text multi-line, verbatim).
+    "sayfile "*)  sh "$STUB_RUNNER" say - --file "${act#sayfile }" > /dev/null 2>&1 ;;
+    # said NAME: the said listing into $CALLS/<n>.said.NAME.
+    "said "*)     sh "$STUB_RUNNER" said - > "$CALLS/$n.said.${act#said }" 2>&1 ;;
+    # record [ID]: run the ledger commands this session's inbox block printed
+    # (only directive ID's), in the story worktree, as a unit records them.
+    record|"record "*) _rid="${act#record}"; _rid="${_rid# }"
+                  sed -n 's/^    studio-state ledger //p' "$CALLS/$n.inbox" | while IFS= read -r _rc; do
+                    [ -z "$_rid" ] || case "$_rc" in "'Directive $_rid:"*|"'Directive $_rid "*) ;; *) continue ;; esac
+                    ( cd "$(sh "$STUB_STATE_BIN" worktree)" && eval "set -- $_rc" && sh "$STUB_STATE_BIN" ledger "$1" ) > /dev/null 2>&1
+                  done ;;
+    # note T<n> TEXT: a runner note (scope note, from runner) pending as id 90.
+    "note "*)     r="$(sed -n 's/^run=//p' "$root/.studio/overnight.lock")"; _nt="${act#note }"; mkdir -p "$r/inbox/-"
+                  printf 'id: 90\nscope: note\ntarget: -\nstory: -\ntask: %s\nfrom: runner\nqueued: 2026-10-26T01:00:00Z\nrequeues: 0\n--\n%s\n' \
+                    "${_nt%% *}" "${_nt#* }" > "$r/inbox/-/.n" && mv "$r/inbox/-/.n" "$r/inbox/-/90.msg" ;;
     "corruptrq "*) r="$(sed -n 's/^run=//p' "$root/.studio/overnight.lock")"
                   for f in "$r"/inbox/-/delivered/*/[0-9]*.msg; do
                     sed "s/^requeues: .*/requeues: ${act#corruptrq }/" "$f" > "$f.t" && mv "$f.t" "$f"
@@ -2036,7 +2053,7 @@ test_say_writes_message() {
   assert_eq 1 "$(cat "$V_OUT")" "say prints the id"
   M="$FR_DIR/inbox/-/1.msg"
   assert_file "$M" "the message is in the story's inbox"
-  assert_eq "id: 1|scope: story|target: -|story: -|requeues: 0|--" \
+  assert_eq "id: 1|scope: story|target: -|story: -|from: operator|requeues: 0|--" \
     "$(sed '/^--$/q' "$M" | grep -v '^queued: ' | tr '\n' '|' | sed 's/|$//')" "the header, in order"
   assert_contains "$M" '^queued: 20[0-9-]*T[0-9:]*Z$' "queued is ISO-8601 UTC"
   assert_eq 'Use the EventBus, not "signals" — it'\''s $HOME' "$(body "$M")" "the body is the text, verbatim"
@@ -2249,6 +2266,221 @@ test_unsay_id_prefix() {
   verb unsay - 1; assert_eq 1 "$V_STATUS" "a second unsay 1 is unknown"
   fake_run_end
 }
+# ---- say --task, --file and - (spec §5, D5) ----
+# a task directive is active while the task pointer k < n, then retired (T<n>
+# done): said shows it so, and directive_chars stops counting it.
+test_channel_say_task_scope_retires() {
+  fixture cts '{"overnight": {"directive_chars": 500}}'
+  a="$(printf '%300s' '' | tr ' ' a)"; b="$(printf '%300s' '' | tr ' ' b)"; c="$(printf '%300s' '' | tr ' ' c)"
+  scenario "stage execute; branch feat; task 0/3; saytask T2 $a; inbox; record; task 1/3; wtledger T1 complete a..b; say $b; said 1" \
+           "task 2/3; wtledger T2 complete b..c; said 2; say $c" \
+           "task 3/3; wtledger T3 complete c..d" \
+           "wtledger final review done" "wtledger shipped https://x/pull/4; stage idle; task -"
+  run_start; R="$(last_run_dir)"
+  assert_eq 0 "$RS_STATUS" "done"
+  M="$(ls "$R"/inbox/-/delivered/*/1.msg 2>/dev/null | head -n 1)"
+  assert_contains "$M" "^scope: task$" "the message's scope is task"
+  assert_contains "$M" "^task: T2$" "and its task T2"
+  assert_contains "$CALLS/1.inbox" "^    studio-state ledger 'Directive 1 T2: $a'$" "the unit is told to record Directive 1 T2:"
+  assert_eq "1  active (T2)  $a" "$(cat "$CALLS/1.said.1")" "said after unit 1 (task 1/3): active"
+  assert_eq "" "$(grep -rl bbb "$R/inbox" 2>/dev/null)" "while T2 is open its 300 characters count: 600 of 500 is refused"
+  assert_eq "1  retired (T2 done)  $a" "$(cat "$CALLS/2.said.2")" "said after task 2/3: retired (T2 done)"
+  assert_contains "$R/inbox/-/2.msg" "^$c$" "once T2 is done it no longer counts: 300 of 500 fits"
+  assert_not_contains "$R/events.jsonl" '"event":"message_requeued"' "the recorded task directive is not requeued"
+}
+test_channel_say_task_bare_resolves_current() {
+  fixture stb; ( cd "$P" && sh "$STATE_BIN" set stage execute && sh "$STATE_BIN" set task 4/12 ) >/dev/null 2>&1
+  fake_run overnight-stb-1 single
+  verb say - --task -- x
+  assert_eq 0 "$V_STATUS" "say --task exits 0"
+  assert_eq 1 "$(cat "$V_OUT")" "it prints the id"
+  M="$FR_DIR/inbox/-/1.msg"
+  assert_contains "$M" "^scope: task$" "scope task"
+  assert_contains "$M" "^task: T5$" "a bare --task at task 4/12 is T5"
+  assert_contains "$M" "^from: operator$" "from the operator"
+  assert_contains "$FR_DIR/events.jsonl" '"event":"message_queued","story":"-","id":1,"scope":"task","task":"T5"}$' "message_queued, scope task, its task"
+  verb say - --task T7 'later'
+  assert_contains "$FR_DIR/inbox/-/2.msg" "^task: T7$" "an explicit T7"
+  verb said -
+  assert_eq "1  pending (T5)  x|2  pending (T7)  later" "$(tr '\n' '|' < "$V_OUT" | sed 's/|$//')" "said names each one's task"
+  verb say - --task t6 -- y
+  assert_eq 0 "$V_STATUS" "--task t6 is accepted"
+  assert_contains "$FR_DIR/inbox/-/3.msg" "^task: T6$" "t6 is normalised to T6"
+  fake_run_end
+}
+test_channel_say_task_refusals() {
+  fixture str; ( cd "$P" && sh "$STATE_BIN" set stage execute && sh "$STATE_BIN" set task 4/12 ) >/dev/null 2>&1
+  fake_run overnight-str-1 single
+  verb say - --unit --task T5 -- x;  assert_eq 2 "$V_STATUS" "--unit with --task is usage"
+  verb say - --task --unit -- x;     assert_eq 2 "$V_STATUS" "--task with --unit is usage"
+  verb said - --task;                assert_eq 2 "$V_STATUS" "--task belongs to say only"
+  verb say - --task T4 -- x
+  assert_eq 1 "$V_STATUS" "T4 at task 4/12: exit 1"
+  assert_eq "studio-overnight: say: T4 is already complete" "$(cat "$V_ERR")" "one line names it"
+  verb say - --task T1 x;            assert_eq 1 "$V_STATUS" "T1 too"
+  verb say - --task T0 -- x;         assert_eq 2 "$V_STATUS" "T0 is usage"
+  verb say - --task T05 -- x;        assert_eq 2 "$V_STATUS" "a leading zero is usage"
+  verb say - --task t05 -- x;        assert_eq 2 "$V_STATUS" "lower case too"
+  verb say - --task T13 -- x
+  assert_eq 1 "$V_STATUS" "T13 at task 4/12: exit 1"
+  assert_eq "studio-overnight: say: T13 is past the plan's last task T12" "$(cat "$V_ERR")" "one line names the last task"
+  assert_missing "$FR_DIR/inbox/-/1.msg" "no refusal wrote a message"
+  ( cd "$P" && sh "$STATE_BIN" set task 12/12 ) >/dev/null 2>&1
+  verb say - --task -- x
+  assert_eq 1 "$V_STATUS" "a bare --task at task 12/12: exit 1"
+  assert_eq "studio-overnight: say: story - is not at a task — use --task T<n>" "$(cat "$V_ERR")" "the refusal"
+  ( cd "$P" && sh "$STATE_BIN" set stage plan && sh "$STATE_BIN" set task - ) >/dev/null 2>&1
+  verb say - --task -- x;            assert_eq 1 "$V_STATUS" "a bare --task before execute: exit 1"
+  assert_contains "$V_ERR" "is not at a task — use --task T<n>" "the same refusal"
+  verb say - --task T2 -- x;         assert_eq 0 "$V_STATUS" "an explicit T2 before execute is accepted"
+  assert_eq 1 "$(cat "$V_OUT")" "as message 1 (no refusal wrote one)"
+  fake_run_end
+}
+# say --file: the text verbatim through the .msg, the delivery block, and the
+# ledger record (escaped) back out of studio-brief.
+test_channel_say_file_verbatim() {
+  fixture sfv
+  printf '\n## Tasks\n\n### Task 1: one\nMARK-T1\n' >> "$P/docs/plan.md"
+  F="$TMP/sfv.txt"; printf 'line one\nit'\''s $HOME \\n literal\n\t\n\nlast\n' > "$F"
+  fake_run overnight-sfv-1 single
+  verb say - --file "$F"
+  assert_eq 0 "$V_STATUS" "say --file exits 0"
+  M="$FR_DIR/inbox/-/1.msg"
+  body "$M" > "$TMP/sfv.body"
+  assert_eq 0 "$(cmp -s "$F" "$TMP/sfv.body"; echo $?)" "the .msg body is the file, byte for byte"
+  printf '{"session_id":"s","hook_event_name":"SessionStart","source":"startup"}' \
+    | STUDIO_UNIT_TAG=tag-sfv STUDIO_RUN_DIR="$FR_DIR" sh "$REPO_ROOT/studios/game-dev/hooks/operator-inbox.sh" > "$TMP/sfv.inbox"
+  sed -n '/^\[1, story\] /,/^  → Follow/p' "$TMP/sfv.inbox" | sed '$d' | sed '1s/^\[1, story\] //' > "$TMP/sfv.shown"
+  assert_eq 0 "$(cmp -s "$F" "$TMP/sfv.shown"; echo $?)" "the delivery block shows it verbatim"
+  cmd="$(sed -n 's/^    studio-state ledger //p' "$TMP/sfv.inbox")"
+  assert_eq 1 "$(printf '%s\n' "$cmd" | grep -c .)" "the record command is one line"
+  ( cd "$P" && eval "set -- $cmd" && sh "$STATE_BIN" ledger "$1" ) >/dev/null 2>&1
+  ( cd "$P" && sh "$REPO_ROOT/studios/game-dev/bin/studio-brief" task 1 ) > "$TMP/sfv.brief" 2>&1
+  sed -n '/Directive 1: /,/^(task 1 has no Spec: line)$/p' "$TMP/sfv.brief" | sed '$d' | sed '1s/^- [0-9-]* Directive 1: //' > "$TMP/sfv.round"
+  assert_eq 0 "$(cmp -s "$F" "$TMP/sfv.round"; echo $?)" "the ledger text round-trips through studio-brief task to the same bytes"
+  verb said -
+  assert_eq "1  active  line one it's \$HOME \\n literal    last" "$(cat "$V_OUT")" "said shows the recorded text on one line (newlines and the tab as spaces)"
+  verb say - --file "$TMP/no-such-file"
+  assert_eq 1 "$V_STATUS" "an unreadable file: exit 1"
+  assert_contains "$V_ERR" "say: cannot read $TMP/no-such-file" "named"
+  : > "$TMP/sfv.empty"; verb say - --file "$TMP/sfv.empty"
+  assert_eq 2 "$V_STATUS" "an empty file is empty text"
+  verb say - --file "$F" -- x;       assert_eq 2 "$V_STATUS" "--file with -- text is usage"
+  verb say - --file "$F" x;          assert_eq 2 "$V_STATUS" "--file with text is usage"
+  verb say - --file;                 assert_eq 2 "$V_STATUS" "--file needs a value"
+  fake_run_end
+}
+test_channel_say_stdin() {
+  fixture ssi; fake_run overnight-ssi-1 single
+  V_STATUS=0; ( cd "$P" && printf 'a\nb\n' | sh "$RUNNER" say - - ) > "$TMP/v.out" 2> "$TMP/v.err" || V_STATUS=$?
+  assert_eq 0 "$V_STATUS" "say - - reads stdin"
+  assert_eq "$(printf 'a\nb')" "$(body "$FR_DIR/inbox/-/1.msg")" "the body is stdin, its lines kept"
+  V_STATUS=0; ( cd "$P" && printf 'c\n' | sh "$RUNNER" say - --task T3 - ) > "$TMP/v.out" 2> "$TMP/v.err" || V_STATUS=$?
+  assert_eq 0 "$V_STATUS" "with --task too"
+  assert_eq c "$(body "$FR_DIR/inbox/-/2.msg")" "its body"
+  V_STATUS=0; ( cd "$P" && printf '  \n' | sh "$RUNNER" say - - ) > "$TMP/v.out" 2> "$TMP/v.err" || V_STATUS=$?
+  assert_eq 2 "$V_STATUS" "blank stdin is empty text"
+  V_STATUS=0; ( cd "$P" && printf 'x\n' | sh "$RUNNER" say - - -- y ) > "$TMP/v.out" 2> "$TMP/v.err" || V_STATUS=$?
+  assert_eq 2 "$V_STATUS" "- with -- text is usage"
+  fake_run_end
+}
+# requeue_check: a task directive is recorded as `Directive <id> T<n>:`; one
+# whose task completed in the unit is retired, not requeued; an open one is.
+test_requeue_task_directive_recorded() {
+  fixture rtd
+  scenario "stage execute; branch feat; task 1/3; wtledger T1 complete a..b; saytask T3 one; saytask T2 two; saytask T3 three" \
+           "inbox; record 1; task 2/3; wtledger T2 complete b..c" \
+           "inbox; record 3; task 3/3; wtledger T3 complete c..d" \
+           "wtledger final review done" "wtledger shipped https://x/pull/6; stage idle; task -"
+  run_start; R="$(last_run_dir)"
+  assert_eq 0 "$RS_STATUS" "done"
+  assert_contains "$(ls -d "$TMP_WT"/wt-feat)/.studio/ledger/spec.md" "^- [0-9-]* Directive 1 T3: one$" "recorded with its task"
+  assert_not_contains "$R/events.jsonl" '"event":"message_requeued","story":"-","id":1,' "a recorded task directive is not requeued"
+  assert_not_contains "$R/events.jsonl" '"event":"message_requeued","story":"-","id":2,' "one whose task is done is retired, not requeued"
+  assert_eq 1 "$(grep -c '"event":"message_requeued","story":"-","id":3,' "$R/events.jsonl")" "an unrecorded open one is requeued once"
+  assert_contains "$CALLS/3.inbox" "^\[3, task T3\] three$" "and delivered again"
+  assert_not_contains "$R/report.md" "Operator messages left" "nothing left"
+}
+test_requeue_note_never_requeued() {
+  fixture rnn
+  scenario "stage execute; branch feat; task 1/3; wtledger T1 complete a..b; note T2 done: a; next: b" \
+           "inbox; task 2/3; wtledger T2 complete b..c" \
+           "task 3/3; wtledger T3 complete c..d" \
+           "wtledger final review done" "wtledger shipped https://x/pull/7; stage idle; task -"
+  run_start; R="$(last_run_dir)"
+  assert_eq 0 "$RS_STATUS" "done"
+  assert_contains "$CALLS/2.inbox" "^RUNNER NOTE (previous attempt of T2)$" "the note is shown at the next unit's start"
+  assert_contains "$CALLS/2.inbox" "^done: a$" "with its text"
+  assert_not_contains "$CALLS/2.inbox" "studio-state ledger" "and never recorded"
+  assert_not_contains "$R/events.jsonl" '"event":"message_requeued"' "a note is never requeued"
+  assert_eq 1 "$(ls "$R"/inbox/-/delivered/*/90.msg 2>/dev/null | wc -l | tr -d ' ')" "it is spent once delivered"
+  assert_not_contains "$R/report.md" "Operator messages left" "nothing left"
+}
+# a requeued multi-line message is still one line in the report's list
+test_requeue_multiline_left_one_line() {
+  fixture rml; printf 'first\nsecond\n' > "$TMP/rml.txt"
+  scenario "stage execute; branch feat; task 1/2; wtledger T1 complete a..b; sayfile $TMP/rml.txt" \
+           "inbox; task 2/2; wtledger T2 complete b..c" \
+           "wtledger final review done" "wtledger shipped https://x/pull/9; stage idle; task -"
+  run_start; R="$(last_run_dir)"
+  assert_contains "$R/report.md" "^- 1 (story, requeues 1): first second$" "listed on one line"
+}
+# queue_note STORY T<n> TEXT — the runner's note, under the inbox lock.
+test_queue_note_writes_runner_note() {
+  D="$TMP/qn"; rm -rf "$D"; mkdir -p "$D/inbox/S1/delivered/u1"
+  put_msg "$D/inbox/S1" 4 story four; put_msg "$D/inbox/S1/delivered/u1" 6 unit six
+  QN="$(sed -n '/^queue_note() {/,/^}/p' "$REPO_ROOT/studios/game-dev/bin/studio-overnight")"
+  assert_eq 1 "$([ -n "$QN" ] && echo 1 || echo 0)" "studio-overnight defines queue_note"
+  ( SELF_DIR="$REPO_ROOT/studios/game-dev/bin"; . "$SELF_DIR/overnight-channel.sh"
+    RUN_DIR="$D"; CUR_ID=OTHER
+    say() { printf '%s\n' "$*" >> "$D/say"; }
+    run_event() { printf '%s\n' "$*" >> "$D/events"; }
+    feature_dir() { printf '%s\n' "$D"; }
+    # the given story's ledger (STUDIO_STORY), not the current story's
+    ledger_of() { [ "${STUDIO_STORY:-}" = S1 ] && printf '%s\n' '- 2026-10-26 Directive 9: older' '- 2026-10-26 T1 complete'; }
+    eval "$QN"
+    queue_note S1 T3 "$(printf 'done: a\nleft: b$HOME')" ) > "$TMP/qn.out" 2>&1
+  assert_eq 0 "$?" "queue_note returns 0"
+  M="$D/inbox/S1/10.msg"
+  assert_file "$M" "the next id passes STORY's ledger Directive 9 (CUR_ID is another story)"
+  assert_contains "$M" "^scope: note$" "scope note"
+  assert_contains "$M" "^from: runner$" "from runner"
+  assert_contains "$M" "^task: T3$" "its task"
+  assert_contains "$M" "^story: S1$" "its story"
+  assert_eq "$(printf 'done: a\nleft: b$HOME')" "$(body "$M")" "the text verbatim"
+  assert_missing "$D/inbox/S1/.lock" "the inbox lock is released"
+  assert_eq "message_queued story=S1 id:=10 scope=note" "$(cat "$D/events")" "a message_queued event, scope note"
+  if [ "$(id -u)" != 0 ]; then
+    chmod 555 "$D/inbox"
+    ( SELF_DIR="$REPO_ROOT/studios/game-dev/bin"; . "$SELF_DIR/overnight-channel.sh"
+      RUN_DIR="$D"; CUR_ID=S2
+      say() { printf '%s\n' "$*" >> "$D/say"; }
+      run_event() { :; }; feature_dir() { printf '%s\n' "$D"; }; ledger_of() { :; }
+      eval "$QN"
+      queue_note S2 T1 x ) > /dev/null 2>&1; _qn_st=$?
+    chmod 755 "$D/inbox"
+    assert_eq 1 "$_qn_st" "an inbox that cannot be created: 1"
+    assert_eq "cannot create $D/inbox/S2: the runner note for T1 was not queued" "$(tail -n 1 "$D/say")" "named as such, not busy"
+  fi
+}
+# spec §5: a pending task message whose task is done is not delivered; the
+# runner moves it aside after the unit that finished the task.
+test_requeue_stale_task_not_delivered() {
+  fixture rst
+  scenario "stage execute; branch feat; task 1/3; wtledger T1 complete a..b; saytask T2 stale; saytask T3 keep" \
+           "task 2/3; wtledger T2 complete b..c" \
+           "inbox; record; said 3; task 3/3; wtledger T3 complete c..d" \
+           "wtledger final review done" "wtledger shipped https://x/pull/12; stage idle; task -"
+  run_start; R="$(last_run_dir)"
+  assert_eq 0 "$RS_STATUS" "done"
+  assert_not_contains "$CALLS/3.inbox" "stale" "the T2 message, queued but not claimed before task 2/3, is not delivered"
+  assert_contains "$CALLS/3.inbox" "^\[2, task T3\] keep$" "the open T3 message is"
+  assert_file "$R/inbox/-/delivered/retired/1.msg" "the stale one is moved aside"
+  assert_contains "$CALLS/3.said.3" "^1  retired (T2 done)  stale$" "said shows it retired"
+  assert_not_contains "$R/events.jsonl" '"event":"message_requeued"' "nothing is requeued"
+  assert_not_contains "$R/report.md" "Operator messages left" "nothing left"
+}
+
 test_hold_resume_stop_table() {
   fixture tb
   fake_run overnight-tb-1 manifest Q=queued W=waiting R=running G=gate-repair \
@@ -3661,6 +3893,9 @@ run_tests test_overnight_setup_preflight_single test_overnight_tools_after_setup
   test_single_plan_story_not_found_stops test_single_plan_resume_line_names_story_worktree \
   test_single_plan_ambiguous_story_stops test_single_plan_preflight_names_story \
   test_single_plan_from_story_worktree test_single_plan_in_place_keeps_main_pointer \
+  test_channel_say_task_scope_retires test_channel_say_task_bare_resolves_current test_channel_say_task_refusals \
+  test_channel_say_file_verbatim test_channel_say_stdin test_requeue_task_directive_recorded \
+  test_requeue_note_never_requeued test_requeue_multiline_left_one_line test_queue_note_writes_runner_note test_requeue_stale_task_not_delivered \
   test_channel_ledger_follows_story test_status_reads_persisted_spec \
   test_single_plan_follows_adopted_legacy_story test_single_plan_legacybranch_in_unit_follows \
   test_single_plan_ignores_new_story_in_start

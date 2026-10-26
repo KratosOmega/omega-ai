@@ -210,6 +210,33 @@ test_brief_directive_edge_cases() {
   assert_contains "$TMP/dslug.txt" "^==> .*/\.studio/ledger/demo\.md$" "no STUDIO_STORY: the part is headed by the dated spec name's slug ledger"
   assert_contains "$TMP/dslug.txt" "Directive 1: slug path" "and carries the directive"
 }
+# Task-scoped directives (`Directive <id> T<n>: …`) are active while the
+# story's task pointer k < n; ledger text escapes (\n, \\) are undone.
+test_brief_task_directive_scoped() {
+  Q="$TMP/projts"; build_fixture "$Q"
+  for _n in 5 6 7 8 9; do printf '\n### Task %s: t%s\nMARK-T%s\n' "$_n" "$_n" "$_n" >> "$Q/docs/plan.md"; done
+  ( cd "$Q" && STUDIO_STORY=S1 && export STUDIO_STORY
+    sh "$STATE_BIN" ledger 'Directive 3 T5: x'
+    sh "$STATE_BIN" ledger 'Directive 4: y'
+    sh "$STATE_BIN" set task 4/9 ) >/dev/null 2>&1
+  ( cd "$Q" && STUDIO_STORY=S1 sh "$BRIEF" task 5 ) > "$TMP/tsd.txt"; st=$?
+  assert_eq 0 "$st" "task 5 exits 0"
+  assert_contains "$TMP/tsd.txt" "^- [0-9-]* Directive 3 T5: x$" "at task 4/9 the T5 directive is active"
+  assert_contains "$TMP/tsd.txt" "^- [0-9-]* Directive 4: y$" "and the story directive"
+  ( cd "$Q" && STUDIO_STORY=S1 sh "$STATE_BIN" set task 5/9 ) >/dev/null 2>&1
+  ( cd "$Q" && STUDIO_STORY=S1 sh "$BRIEF" task 6 ) > "$TMP/tsd2.txt"
+  assert_not_contains "$TMP/tsd2.txt" "Directive 3" "at task 5/9 the T5 directive is retired"
+  assert_contains "$TMP/tsd2.txt" "^- [0-9-]* Directive 4: y$" "the story directive stays"
+  # a retire line retires a task directive too; escapes are undone
+  ( cd "$Q" && STUDIO_STORY=S1 && export STUDIO_STORY
+    sh "$STATE_BIN" ledger 'Directive 5 T9: gone'
+    sh "$STATE_BIN" ledger 'Directive 5 retired'
+    sh "$STATE_BIN" ledger 'Directive 6 T7: a\nb \\n c\\d' ) >/dev/null 2>&1
+  ( cd "$Q" && STUDIO_STORY=S1 sh "$BRIEF" task 6 ) > "$TMP/tsd3.txt"
+  assert_not_contains "$TMP/tsd3.txt" "Directive 5" "a retired task directive is left out"
+  assert_eq "$(printf '%s\n' 'Directive 6 T7: a' 'b \n c\d')" \
+    "$(sed -n '/Directive 6 T7: /,/^b /p' "$TMP/tsd3.txt" | sed 's/^- [0-9-]* //')" "\\n is a newline, \\\\ a backslash"
+}
 test_brief_no_directives_no_part() {
   ( cd "$P" && STUDIO_STORY=S1 sh "$BRIEF" task 3 ) > "$TMP/nd.txt"
   assert_eq 0 "$(grep -c '^==> .*\.studio/ledger/' "$TMP/nd.txt")" "no directives: no ledger part in task"
@@ -926,4 +953,4 @@ test_brief_final_block_lines() {
   assert_not_contains "$out" "T1 complete" "other ledger lines are still absent"
 }
 
-run_tests test_godot_cmd_md_finds_bare_forms test_godot_cmd_md_span_edges test_godot_cmd_md_multiline test_brief_task test_brief_final test_brief_refusals test_brief_missing_sections test_brief_directives_task test_brief_directives_final test_brief_directive_text_not_ruling test_brief_directive_edge_cases test_brief_no_directives_no_part test_brief_context_appended test_brief_context_cap test_brief_context_missing_file test_brief_context_no_glob test_brief_final_plan_acceptance test_brief_check_verb test_brief_check_uses_truth_region test_brief_final_reads_check_rulings test_brief_original_plan_item test_brief_usage_names_check test_brief_single_line_item test_brief_validate_good_plan test_brief_validate_reports_all test_brief_validate_duplicate_task test_brief_validate_missing_plan_and_no_state test_brief_validate_relative_to_caller test_brief_rewrite_wraps_only test_brief_task_check_final_rewritten test_brief_validate_godot_form test_brief_missing_detector test_brief_broken_detector test_brief_rewrite_no_tmpdir test_brief_rewrite_file test_brief_task_blocks_default test_brief_task_blocks_sources test_brief_final_block_lines test_tracks_two_groups test_tracks_after_joins test_tracks_normalizes_paths test_tracks_ignores_backlog_and_fences test_tracks_deterministic test_validate_after_forward_fails test_validate_after_unknown_fails test_validate_after_ok test_tracks_no_tasks
+run_tests test_godot_cmd_md_finds_bare_forms test_godot_cmd_md_span_edges test_godot_cmd_md_multiline test_brief_task test_brief_final test_brief_refusals test_brief_missing_sections test_brief_directives_task test_brief_directives_final test_brief_directive_text_not_ruling test_brief_directive_edge_cases test_brief_no_directives_no_part test_brief_task_directive_scoped test_brief_context_appended test_brief_context_cap test_brief_context_missing_file test_brief_context_no_glob test_brief_final_plan_acceptance test_brief_check_verb test_brief_check_uses_truth_region test_brief_final_reads_check_rulings test_brief_original_plan_item test_brief_usage_names_check test_brief_single_line_item test_brief_validate_good_plan test_brief_validate_reports_all test_brief_validate_duplicate_task test_brief_validate_missing_plan_and_no_state test_brief_validate_relative_to_caller test_brief_rewrite_wraps_only test_brief_task_check_final_rewritten test_brief_validate_godot_form test_brief_missing_detector test_brief_broken_detector test_brief_rewrite_no_tmpdir test_brief_rewrite_file test_brief_task_blocks_default test_brief_task_blocks_sources test_brief_final_block_lines test_tracks_two_groups test_tracks_after_joins test_tracks_normalizes_paths test_tracks_ignores_backlog_and_fences test_tracks_deterministic test_validate_after_forward_fails test_validate_after_unknown_fails test_validate_after_ok test_tracks_no_tasks

@@ -378,11 +378,19 @@ usage: $SELF_ABS start [--dry-run | --detach] [<manifest>] | status [--run <slug
 
 Talking to a live run (<story> is - in a single-plan run; every verb takes
 --run <run>, a run dir basename, and then acts only on that live run):
-  say <story> [--unit] '<text>' | say <story> [--unit] -- <text>
+  say <story> [--unit | --task [T<n>]] ('<text>' | -- <text> | --file <path> | -)
                      queue a message for the story's sessions; prints its id.
                      A story message is followed for the rest of the story and
                      recorded as a Directive ledger line; --unit: this unit
-                     only. It arrives at the session's start or at its
+                     only; --task T<n>: until T<n> is complete, then it
+                     retires on its own (said: retired (T<n> done)); a bare
+                     --task is the story's current task (exit 1 when it is
+                     not at one, or T<n> is already complete or past the
+                     plan's last task; t<n> is read as T<n>, T0 or T05 exits
+                     2). --file <path> or - (stdin): the text, multi-line,
+                     delivered verbatim except its trailing blank lines,
+                     which are dropped.
+                     It arrives at the session's start or at its
                      next tool call (a session waiting on a subagent or a
                      long gate reads it when that returns). Empty text exits 2.
   said <story>       the story's directives: id, state, text
@@ -1245,24 +1253,39 @@ notify_operator() {
 # ---- Operator messages and holds (#27; spec AC13-14, AC17-27) ----
 # requeue_check — after each unit: each story or retire message the unit
 # claimed (inbox/<story>/delivered/<UNIT_TAG>/) is checked against the
-# story's feature-checkout ledger (`Directive <id>:` or `Directive <target>
-# retired` at a line's start, after its date). One with no match goes back to
-# pending with requeues + 1 and a message_requeued event. REQ_LIMIT is the
-# first id whose requeues reach RETRIES + 1, when holds are on and the story
-# is isolated (R6, R9). Writes no studio state. A manifest run's storyless
-# unit (the final step) has no inbox.
+# story's feature-checkout ledger (`Directive <id>:`, `Directive <id> T<n>:`
+# for a task message, or `Directive <target> retired` at a line's start,
+# after its date). A task message whose task the story has done (task k/N,
+# k >= n; every task once `shipped`) is retired, not checked. Unit messages
+# and the runner's notes (scope note, or `from: runner`) are never recorded,
+# so never requeued. One with no match goes back to
+# pending with requeues + 1 and a message_requeued event. Then each pending
+# task message whose task is done (spec §5: not delivered) moves aside into
+# delivered/retired/ (its id stays taken; said shows it retired). REQ_LIMIT
+# is the first id whose requeues reach RETRIES + 1, when holds are on and the
+# story is isolated (R6, R9). Writes no studio state. A manifest run's
+# storyless unit (the final step) has no inbox.
 requeue_check() {
   REQ_LIMIT=""
   if [ -z "${CUR_ID:-}" ] && [ -f "$RUN_DIR/rows.tsv" ]; then return 0; fi
   _rq_s="${CUR_ID:--}"; _rq_ib="$RUN_DIR/inbox/$_rq_s"; _rq_dl="$_rq_ib/delivered/$UNIT_TAG"
-  [ -d "$_rq_dl" ] || return 0
-  _rq_fd="$(feature_dir)"; _rq_l="$(ledger_of "$_rq_fd")"
+  _rq_pt=""                                 # a pending task message exists
+  for _rq_f in "$_rq_ib"/[0-9]*.msg; do
+    if [ -f "$_rq_f" ] && [ "$(msg_get scope "$_rq_f")" = task ]; then _rq_pt=1; break; fi
+  done
+  [ -d "$_rq_dl" ] || [ -n "$_rq_pt" ] || return 0
+  _rq_fd="$(feature_dir)"; _rq_l="$(ledger_of "$_rq_fd")"; _rq_k=""
   inbox_lock "$_rq_ib" 5 || { say "inbox busy: the directive check after $UNIT_STEM was skipped"; return 0; }
   for _rq_f in "$_rq_dl"/[0-9]*.msg; do
     [ -f "$_rq_f" ] || continue
+    [ "$(msg_get from "$_rq_f")" != runner ] || continue
     _rq_id="$(msg_get id "$_rq_f")"
     case "$(msg_get scope "$_rq_f")" in
       story) _rq_p="Directive $_rq_id:" ;;
+      task)
+        _rq_tk="$(msg_get task "$_rq_f")"; _rq_p="Directive $_rq_id $_rq_tk:"
+        rq_tasks_done
+        [ "${_rq_tk#T}" -gt "$_rq_k" ] 2>/dev/null || continue ;;
       retire) _rq_p="Directive $(msg_get target "$_rq_f") retired" ;;
       *) continue ;;
     esac
@@ -1284,7 +1307,50 @@ requeue_check() {
       REQ_LIMIT="$_rq_id"
     fi
   done
+  for _rq_f in "$_rq_ib"/[0-9]*.msg; do
+    [ -f "$_rq_f" ] && [ "$(msg_get scope "$_rq_f")" = task ] || continue
+    rq_tasks_done
+    _rq_tk="$(msg_get task "$_rq_f")"
+    [ "${_rq_tk#T}" -le "$_rq_k" ] 2>/dev/null || continue
+    mkdir -p "$_rq_ib/delivered/retired" 2>/dev/null && mv -f "$_rq_f" "$_rq_ib/delivered/retired/" 2>/dev/null || true
+  done
   inbox_unlock "$_rq_ib"
+}
+# rq_tasks_done — requeue_check's _rq_k, the story's tasks done, read once
+# from its feature checkout (_rq_fd): k of `task k/N`, else 0, or every task
+# once its ledger (_rq_l) has a `shipped` line.
+rq_tasks_done() {
+  [ -z "$_rq_k" ] || return 0
+  _rq_k="$(cd "$_rq_fd" && sh "$STATE_BIN" get task 2>/dev/null)"
+  case "$_rq_k" in
+    [0-9]*/[0-9]*) _rq_k="${_rq_k%%/*}" ;;
+    *) _rq_k=0; if printf '%s\n' "$_rq_l" | grep -q '^- [0-9-]* shipped '; then _rq_k=999999; fi ;;
+  esac
+  case "$_rq_k" in ''|*[!0-9]*) _rq_k=0 ;; esac
+}
+# queue_note STORY T<n> TEXT — a runner-origin note (spec §5; the carry-over
+# fallback): inbox/STORY/<next id>.msg with `scope: note`, `task: T<n>` and
+# `from: runner`, by temp file then mv under the inbox lock (STORY is - in a
+# single-plan run). The hook shows it at the next unit's start under
+# `RUNNER NOTE (previous attempt of T<n>)`; it is never recorded, counted
+# toward directive_chars or requeued, and is spent once delivered. The next
+# id passes STORY's ledger Directive ids too (its feature checkout, found
+# under STUDIO_STORY=STORY; - as the single-plan story_dir finds it).
+# Returns 1 (one line) when it is not written.
+queue_note() {
+  _qn_ib="$RUN_DIR/inbox/$1"
+  CH_LEDGER="$( if [ "$1" = - ]; then unset STUDIO_STORY; else STUDIO_STORY="$1"; export STUDIO_STORY; fi
+                ledger_of "$(feature_dir)" )"
+  inbox_lock "$_qn_ib" 5; _qn_rc=$?
+  if [ "$_qn_rc" = 2 ]; then say "cannot create $_qn_ib: the runner note for $2 was not queued"; return 1; fi
+  [ "$_qn_rc" = 0 ] || { say "inbox busy: the runner note for $2 was not queued"; return 1; }
+  CH_IB="$_qn_ib"; CH_STORY="$1"
+  _qn_id="$(chan_next_id "$_qn_ib")"
+  if ! chan_write_msg "$_qn_id" note - "$3" "$2" runner; then
+    inbox_unlock "$_qn_ib"; say "cannot write $_qn_ib/$_qn_id.msg: the runner note for $2 was not queued"; return 1
+  fi
+  inbox_unlock "$_qn_ib"
+  run_event message_queued "story=$1" "id:=$_qn_id" scope=note
 }
 # ctl_take ID KIND — control/ID.KIND exists: remove it, return 0.
 ctl_take() { [ -f "$RUN_DIR/control/$1.$2" ] || return 1; rm -f "$RUN_DIR/control/$1.$2"; }
@@ -1394,12 +1460,12 @@ held_line() {
   printf 'held — %s — until %s — say / resume / stop %s\n' "${_hl_r% until *}" "$(hhmm_local "${_hl_r##* until }")" "$2"
 }
 # msgs_left ID — R21: the story's pending messages, lowest id first, as
-# `- <id> (<scope>, requeues <n>): <text>`.
+# `- <id> (<scope>, requeues <n>): <text>` (a multi-line text on one line).
 msgs_left() {
   for _ml_f in "$RUN_DIR/inbox/$1"/[0-9]*.msg; do
     [ -f "$_ml_f" ] || continue
     printf '%s\t- %s (%s, requeues %s): %s\n' "$(msg_get id "$_ml_f")" "$(msg_get id "$_ml_f")" \
-      "$(msg_get scope "$_ml_f")" "$(msg_get requeues "$_ml_f")" "$(msg_body "$_ml_f")"
+      "$(msg_get scope "$_ml_f")" "$(msg_get requeues "$_ml_f")" "$(msg_body "$_ml_f" | LC_ALL=C tr '\n' ' ' | LC_ALL=C sed 's/ *$//')"
   done | sort -n | awk '{ sub(/^[0-9]+\t/, ""); print }'
 }
 
