@@ -95,8 +95,8 @@ def event_writes(st, ev, superseded: bool = False):
     if e == "message_queued":
         scope = ev.get("scope")
         if scope == "task":   # `task T<n>` when the event names the task
-            n = str(ev.get("task") or "").strip()
-            scope = "task " + (n if n.startswith("T") else "T" + n) if n else "task"
+            n = str(ev.get("task") or "").strip().lstrip("Tt")
+            scope = "task T" + n if n else "task"
         return [say("message %s queued (%s)" % (ev.get("id"), scope))]
     if e == "message_delivered":
         return [say("message %s delivered to unit %s" % (ev.get("id"), ev.get("unit")))]

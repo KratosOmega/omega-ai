@@ -313,6 +313,7 @@ class MirrorRunsTest(MirrorCase):
             (ev("message_queued", story="B", id=3, scope="story"), None, "studio: message 3 queued (story)"),
             (ev("message_queued", story="B", id=4, scope="task", task="T12"), None, "studio: message 4 queued (task T12)"),
             (ev("message_queued", story="B", id=5, scope="task", task=7), None, "studio: message 5 queued (task T7)"),
+            (ev("message_queued", story="B", id=7, scope="task", task="t7"), None, "studio: message 7 queued (task T7)"),
             (ev("message_queued", story="B", id=6, scope="task"), None, "studio: message 6 queued (task)"),
             (ev("message_delivered", story="B", id=3, scope="story", unit="u1", via="tool_call"), None,
              "studio: message 3 delivered to unit u1"),

@@ -13,11 +13,11 @@ OVERLAP_SECONDS = 60
 REPOST_SLACK = 5            # D5: seconds of clock slack when matching a reply already on the board
 COMMANDS = ("say", "unit", "hold", "resume", "stop", "unsay", "said")
 WARN = "studio: ⚠ may or may not have applied — check `/said` or the board"
-HELP = ("studio: commands — on a story issue: /say <text>, /unit <text>, /hold, /resume, /stop, "
+HELP = ("studio: commands — on a story issue: /say <text>, /say --task [T<n>] <text>, /unit <text>, /hold, /resume, /stop, "
         "/unsay <id>, /said; on the Run issue: /stop run (a single-plan run takes every command there)")
 _WORD = re.compile(r"(\S*)(.*)", re.S)
 _TASK = re.compile(r"--task(?:\s+(.*))?\Z", re.S)           # /say --task [T<n>] <text>
-_TASK_ID = re.compile(r"(T[0-9]+)(?:\s+(.*))?\Z", re.S)
+_TASK_ID = re.compile(r"(T[0-9]+)(?:\s+(.*))?\Z", re.S | re.I)
 
 
 def parse(content):
@@ -65,7 +65,7 @@ def plan_call(word, text, where, story, single, basename):
             if m:
                 text = (m.group(1) or "").strip()
                 t = _TASK_ID.match(text)
-                scope = ["--task"] + ([t.group(1)] if t else [])
+                scope = ["--task"] + ([t.group(1).upper()] if t else [])
                 if t:
                     text = (t.group(2) or "").strip()
                 if not text:
