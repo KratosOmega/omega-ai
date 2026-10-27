@@ -70,6 +70,20 @@ class NoticeTextTest(unittest.TestCase):
             "Terminal: studio-overnight say B --run %s -- <text> · studio-overnight resume B --run %s"
             " · studio-overnight stop B --run %s" % (RUN, RUN, RUN)]))
 
+    def test_hold_body_timed_out_task(self):
+        why = "timed out on T12 (session_minutes 45; 2 capped units) — checkpoint: done a; left b; next c"
+        b = notice.hold_body("B", why, U, "OMEG-117", RUN).split("\n")
+        self.assertEqual(b[0], "story B held: " + why)
+        self.assertEqual(b[2], "Multica: on OMEG-117 post /say --task T12 <done/left/next>, then /resume — or /stop.")
+        self.assertEqual(b[3], "Terminal: studio-overnight say B --task T12 --run %s -- <text> · studio-overnight resume B --run %s"
+                         " · studio-overnight stop B --run %s" % (RUN, RUN, RUN))
+
+    def test_hold_body_timed_out_lookalikes_unchanged(self):
+        for why in ("timed out on the build", "timed out on T12", "stop: timed out on T3 x", "timed out on Tx "):
+            b = notice.hold_body("B", why, U, "OMEG-117", RUN).split("\n")
+            self.assertEqual(b[2], "Multica: on OMEG-117 post /say <text>, then /resume — or /stop.", why)
+            self.assertIn("say B --run %s -- <text>" % RUN, b[3])
+
     def test_hold_body_single(self):
         b = notice.hold_body("-", "w", U, "OMEG-12", RUN).split("\n")
         self.assertEqual(b[0], "the run is held: w")

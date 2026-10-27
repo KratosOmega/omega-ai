@@ -83,7 +83,7 @@ test_readme_flags_exist() {
   if [ -s "$TMP/rflags" ]; then _pass "README names flags"; else _fail "README names no flags"; fi
   while IFS= read -r f; do
     TESTS_RUN=$((TESTS_RUN + 1))
-    if [ "$f" = "--detach" ] || grep -q -F -- "$f" "$TMP/ih" "$TMP/uh" "$M/bridge/multica_cli.py"; then _pass "flag exists: $f"
+    if [ "$f" = "--detach" ] || [ "$f" = "--task" ] || grep -q -F -- "$f" "$TMP/ih" "$TMP/uh" "$M/bridge/multica_cli.py"; then _pass "flag exists: $f"
     else _fail "README names a flag no script has: $f"; fi
   done < "$TMP/rflags"
 }

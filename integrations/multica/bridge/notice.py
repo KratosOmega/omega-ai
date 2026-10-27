@@ -13,6 +13,8 @@ from .state import parse_ts
 NOTICE_TAIL = "Notify only: reply with one short line. Run no command; never resume, stop, say to or hold a story."
 # The runner's hold-expiry stop: `<why> (held <h>h<m>m, no reply)`, at the very end of the why.
 _EXPIRY = re.compile(r" \(held \d+h\d+m, no reply\)\Z")
+# A task-bounded hold (spec §4): `timed out on T<n> (session_minutes N; <k> capped units) — checkpoint: …`.
+_TIMED_OUT = re.compile(r"timed out on (T[0-9]+) ")
 
 
 def until_line(until) -> str:
@@ -45,16 +47,19 @@ def held_after(held: list, ev: dict) -> list:
 
 def hold_body(story: str, why, until, issue, run: str) -> str:
     """The held text without the leading `studio: `. `story == "-"` is the single-plan form."""
+    m = _TIMED_OUT.match(str(why or ""))
+    task = m.group(1) if m else None
     if story == "-":
         head = "the run is held: %s" % why
     else:
         head = "story %s held: %s" % (story, why)
     if issue:
-        multica = "Multica: on %s post /say <text>, then /resume — or /stop." % issue
+        multica = "Multica: on %s post /say %s, then /resume — or /stop." % (
+            issue, "--task %s <done/left/next>" % task if task else "<text>")
     else:
         multica = "Multica: %s has no issue — use the terminal." % story
-    term = "Terminal: studio-overnight say %s --run %s -- <text> · studio-overnight resume %s --run %s" \
-           " · studio-overnight stop %s --run %s" % (story, run, story, run, story, run)
+    term = "Terminal: studio-overnight say %s%s --run %s -- <text> · studio-overnight resume %s --run %s" \
+           " · studio-overnight stop %s --run %s" % (story, " --task %s" % task if task else "", run, story, run, story, run)
     return "\n".join([head, until_line(until), multica, term])
 
 

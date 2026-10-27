@@ -162,6 +162,14 @@ mf_overlap_warn() {
   return 0
 }
 
+# direct_gate_warn — a warning (never a refusal): in direct mode with a
+# merge_command but no gate_command, the merge command's own gate is the first
+# full run, so a red lands as a failed landing instead of a finish repair.
+direct_gate_warn() {
+  [ "$MF_MODE" = direct ] && [ -n "${MERGE_COMMAND:-}" ] && [ -z "${GATE_COMMAND:-}" ] || return 0
+  say "warning: direct mode: merge_command's own gate is the first full run — set gate_command to that gate minus the merge (e.g. .github/scripts/run-tests.sh) so a red goes to a finish repair, not the landing"
+}
+
 # mf_check — the manifest preflight: one refuse per failure (spec 806-815).
 mf_check() {
   # #82: a record whose final PR was merged is done before any record is read.
@@ -203,6 +211,7 @@ EOF_MC
       [ -n "${MERGE_COMMAND:-}" ] || refuse "manifest: Mode direct needs merge_command in .studio/config.json" ;;
     *) _want=""; refuse "manifest: Mode must be integration or direct, got '$MF_MODE'" ;;
   esac
+  direct_gate_warn
   [ -z "$_want" ] || [ "$MF_TARGET" = "$_want" ] \
     || refuse "manifest: Target must be $_want for Mode $MF_MODE, got '$MF_TARGET'"
   [ -n "$MF_GOAL" ] || refuse "manifest: no Goal: line"
@@ -744,11 +753,12 @@ land_repair() {
 }
 
 # gate_log_of DIR — the log of DIR's red gate (D14): the path the feature
-# ledger's newest `Stop:` line ends with (` — log <path>`; a relative path
-# is prefixed with DIR/), else the newest studio-test log under
+# ledger's newest `Stop: gate red` line ends with (` — log <path>`; a
+# relative path is prefixed with DIR/; a later `gate repair out of time`
+# Stop names none), else the newest studio-test log under
 # DIR/.studio/reports (the adapter's test-<stamp>.log); `-` when there is none.
 gate_log_of() {
-  _gl="$(ledger_of "$1" | grep '^- [0-9-]* Stop: ' | tail -n 1 | sed -n 's/.* — log \(.*\)$/\1/p')"
+  _gl="$(ledger_of "$1" | grep '^- [0-9-]* Stop: gate red — ' | tail -n 1 | sed -n 's/.* — log \(.*\)$/\1/p')"
   case "$_gl" in '') ;; /*) printf '%s\n' "$_gl"; return ;; *) printf '%s\n' "$1/$_gl"; return ;; esac
   _gl="$(ls -t "$1"/.studio/reports/test-*.log 2>/dev/null | head -n 1)"
   printf '%s\n' "${_gl:--}"
@@ -944,13 +954,18 @@ lanes_resume() {
 }
 
 # Manifest mode's story_units helpers: a stop is the lane's halt, and the
-# run budget sums every lane's units.tsv (spec 531-534).
+# run budget sums every lane's units.tsv (spec 531-534), estimated costs
+# included (an old row's `unknown` counts 0).
 stop_requested() { lane_halt; }
 spent_all() {
   cat "$RUN_DIR"/lanes/*/units.tsv "$RUN_DIR"/final/units.tsv 2>/dev/null \
     | awk -F'\t' '$4 != "unknown" { s += $4 } END { printf "%.2f\n", s + 0 }'
 }
 spent() { spent_all; }
+spent_mark() {
+  cat "$RUN_DIR"/lanes/*/units.tsv "$RUN_DIR"/final/units.tsv 2>/dev/null \
+    | awk -F'\t' '$8 == "estimate" { e = 1 } END { if (e) printf "≈" }'
+}
 
 # lane_halt — true when this lane must claim and launch no more: the stop
 # file exists, the runner is gone, or the lane hit the run budget.
@@ -1019,9 +1034,12 @@ lane_slot_drop() {
   SESS_ME=$$; sess_drop_owner "$_ld_p"
 }
 # last_stop_gate_red — the feature ledger's latest Stop: line is a red finish
-# gate, `Stop: gate red — …` (the resume's precondition; AC20, R29).
+# gate, `Stop: gate red — …`, or a gate repair cut short at wrap-up, `Stop:
+# gate repair out of time — …` (execute §8: the gate is still red), the
+# resume's precondition for a gate repair (AC20, R29).
 last_stop_gate_red() {
-  ledger_of "$FEATURE_DIR" | grep '^- [0-9-]* Stop: ' | tail -n 1 | grep -q '^- [0-9-]* Stop: gate red — '
+  ledger_of "$FEATURE_DIR" | grep '^- [0-9-]* Stop: ' | tail -n 1 \
+    | grep -Eq '^- [0-9-]* Stop: gate (red|repair out of time) — '
 }
 # lane_stopflag — a signal to a lane requests the run's stop; it never
 # truncates a stop file that already carries the runner's reason.
@@ -1405,12 +1423,15 @@ story_ledger_text() {
 }
 story_ledger_lines() { story_ledger_text "$1" | grep -E '^- [0-9-]+ (([^ ]+ )?(Ruling|Block): |P[0-9]+ Play: )'; }
 # story_units_table ID — ID's rows of every lane's units.tsv (the label is
-# `<id>-<unit label>`) as a markdown table; `(no units)` when none ran.
+# `<id>-<unit label>`) as a markdown table, an estimated cost (column 8
+# `estimate`, spec §6) as ≈<usd>, and a capped unit the cap did not end
+# (column 9 1, Timed out 0: it ended past its wrap-up time, C1) as
+# `<outcome> (capped)`; `(no units)` when none ran.
 story_units_table() {
   cat "$RUN_DIR"/lanes/*/units.tsv 2>/dev/null | awk -F'\t' -v p="$1-" '
     index($2, p) == 1 && substr($2, length(p) + 1) ~ /^(T[0-9]+|check|final-review|finish|repair|gate-repair|sync-repair)(-retry)?$/ {
       if (!n++) print "| # | Unit | Exit | Cost | Minutes | Timed out | Outcome |\n|---|------|------|------|---------|-----------|---------|"
-      printf "| %s | %s | %s | %s | %s | %s | %s |\n", $1, $2, $3, $4, $5, $6, $7 }
+      printf "| %s | %s | %s | %s%s | %s | %s | %s%s |\n", $1, $2, $3, ($8 == "estimate" ? "≈" : ""), $4, $5, $6, $7, ($9 == 1 && $6 != 1 ? " (capped)" : "") }
     END { if (!n) print "(no units)" }'
 }
 # final_why ENDING — why there is no final PR.
@@ -1435,9 +1456,8 @@ shell_word() {
 # deletes the run's remote branches. The run itself never deletes one.
 lanes_report() {
   lanes_counts
-  _r_unk="$(cat "$RUN_DIR"/lanes/*/units.tsv "$RUN_DIR"/final/units.tsv 2>/dev/null \
-    | awk -F'\t' '$4 == "unknown" { n++ } END { print n + 0 }')"
-  _r_sp="$(spent_all)"; [ "$_r_unk" -eq 0 ] || _r_sp="$_r_sp (cost unknown for $_r_unk unit(s))"
+  _r_sp="$(spent_all)"
+  cost_calib_save
   _r_st=""
   [ "$(sed -n 's/^run=//p' "$LOCK" 2>/dev/null | head -n 1)" != "$RUN_DIR" ] \
     || _r_st="$(sed -n 's/^started=//p' "$LOCK" 2>/dev/null | head -n 1)"
@@ -1447,7 +1467,7 @@ lanes_report() {
     printf '# Overnight run — %s\n\n' "$MF_SLUG"
     printf 'Ending: %s\n' "$1"
     printf 'Mode: %s\nTarget: %s\n' "$MF_MODE" "$MF_TARGET"
-    printf 'Spent: $%s\n' "$_r_sp"
+    printf 'Spent: %s$%s\n' "$(spent_mark)" "$_r_sp"
     printf 'Started: %s · Ended: %s\n' "${_r_st:-unknown}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     printf 'Stories: %s landed, %s stopped, %s skipped\n' "$LC_N" "$LC_S" "$LC_K"
     if [ -n "${FINAL_PR:-}" ]; then printf 'Final PR: %s (%s)\n' "$FINAL_PR" "${FINAL_COLOR:-red}"

@@ -11,7 +11,8 @@
 # studio-tsc run the project's own gate; studio-docs-sync only checks out the
 # run's docs and commits them; sdd-run runs only a script found under the
 # installed superpowers skills, and sdd-script refuses a name or skill that is
-# empty, holds a '/', or is . or .. .
+# empty, holds a '/', or is . or .. . studio-deadline only reads the unit's
+# deadline variables and gate.times.
 #
 # The $GODOT / ${GODOT} / $GODOT_PATH / $GODOT_BIN forms are left out on
 # purpose: Claude Code 2.1.296 never matched them (probe, spec "Probe
@@ -23,6 +24,7 @@ Bash(studio-vitest:*)
 Bash(studio-tsc:*)
 Bash(sdd-run:*)
 Bash(studio-docs-sync:*)
+Bash(studio-deadline:*)
 Bash(studio-gate godot -- /Applications/Godot.app/Contents/MacOS/Godot *)
 Bash(studio-gate godot -- /Applications/Godot_mono.app/Contents/MacOS/Godot *)
 Bash(studio-gate godot -- Godot *)

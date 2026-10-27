@@ -210,6 +210,93 @@ test_brief_directive_edge_cases() {
   assert_contains "$TMP/dslug.txt" "^==> .*/\.studio/ledger/demo\.md$" "no STUDIO_STORY: the part is headed by the dated spec name's slug ledger"
   assert_contains "$TMP/dslug.txt" "Directive 1: slug path" "and carries the directive"
 }
+# Task-scoped directives (`Directive <id> T<n>: …`) are active while the
+# story's task pointer k < n; ledger text escapes (\n, \\) are undone.
+test_brief_task_directive_scoped() {
+  Q="$TMP/projts"; build_fixture "$Q"
+  for _n in 5 6 7 8 9; do printf '\n### Task %s: t%s\nMARK-T%s\n' "$_n" "$_n" "$_n" >> "$Q/docs/plan.md"; done
+  ( cd "$Q" && STUDIO_STORY=S1 && export STUDIO_STORY
+    sh "$STATE_BIN" ledger 'Directive 3 T5: x'
+    sh "$STATE_BIN" ledger 'Directive 4: y'
+    sh "$STATE_BIN" set task 4/9 ) >/dev/null 2>&1
+  ( cd "$Q" && STUDIO_STORY=S1 sh "$BRIEF" task 5 ) > "$TMP/tsd.txt"; st=$?
+  assert_eq 0 "$st" "task 5 exits 0"
+  assert_contains "$TMP/tsd.txt" "^- [0-9-]* Directive 3 T5: x$" "at task 4/9 the T5 directive is active"
+  assert_contains "$TMP/tsd.txt" "^- [0-9-]* Directive 4: y$" "and the story directive"
+  ( cd "$Q" && STUDIO_STORY=S1 sh "$STATE_BIN" set task 5/9 ) >/dev/null 2>&1
+  ( cd "$Q" && STUDIO_STORY=S1 sh "$BRIEF" task 6 ) > "$TMP/tsd2.txt"
+  assert_not_contains "$TMP/tsd2.txt" "Directive 3" "at task 5/9 the T5 directive is retired"
+  assert_contains "$TMP/tsd2.txt" "^- [0-9-]* Directive 4: y$" "the story directive stays"
+  # a retire line retires a task directive too; escapes are undone
+  ( cd "$Q" && STUDIO_STORY=S1 && export STUDIO_STORY
+    sh "$STATE_BIN" ledger 'Directive 5 T9: gone'
+    sh "$STATE_BIN" ledger 'Directive 5 retired'
+    sh "$STATE_BIN" ledger 'Directive 6 T7: a\nb \\n c\\d' ) >/dev/null 2>&1
+  ( cd "$Q" && STUDIO_STORY=S1 sh "$BRIEF" task 6 ) > "$TMP/tsd3.txt"
+  assert_not_contains "$TMP/tsd3.txt" "Directive 5" "a retired task directive is left out"
+  assert_eq "$(printf '%s\n' 'Directive 6 T7: a' 'b \n c\d')" \
+    "$(sed -n '/Directive 6 T7: /,/^b /p' "$TMP/tsd3.txt" | sed 's/^- [0-9-]* //')" "\\n is a newline, \\\\ a backslash"
+}
+# Spec §2: the newest `T<n> checkpoint:` line written after the task's start
+# (the last `T<n-1> complete`) is a part of its own; `final` reads
+# `final-review checkpoint:` the same way.
+test_brief_task_checkpoint_part() {
+  Q="$TMP/projcp"; build_fixture "$Q"
+  for _n in 5 6; do printf '\n### Task %s: t%s\nMARK-T%s\n' "$_n" "$_n" "$_n" >> "$Q/docs/plan.md"; done
+  ( cd "$Q" && STUDIO_STORY=S1 && export STUDIO_STORY
+    sh "$STATE_BIN" ledger 'T5 checkpoint: before the start'
+    sh "$STATE_BIN" ledger 'T4 complete a..b'
+    sh "$STATE_BIN" ledger 'T5 checkpoint: old'
+    sh "$STATE_BIN" ledger 'T5 checkpoint: new'
+    sh "$STATE_BIN" ledger 'final-review checkpoint: fr-done x; left y; next z'
+    sh "$STATE_BIN" set task 4/6 ) >/dev/null 2>&1
+  ( cd "$Q" && STUDIO_STORY=S1 sh "$BRIEF" task 5 ) > "$TMP/cp5.txt"; st=$?
+  assert_eq 0 "$st" "task 5 exits 0"
+  assert_contains "$TMP/cp5.txt" "^==> .*\.studio/ledger/S1\.md (checkpoint)$" "a checkpoint part"
+  assert_contains "$TMP/cp5.txt" "^- [0-9-]* T5 checkpoint: new$" "the newest checkpoint"
+  assert_not_contains "$TMP/cp5.txt" "T5 checkpoint: old" "only the newest"
+  assert_not_contains "$TMP/cp5.txt" "before the start" "never one from before the task's start"
+  assert_eq 1 "$(awk '/^MARK-T5$/ { t = NR } /\(checkpoint\)$/ { c = NR } END { print (t && c > t) ? 1 : 0 }' "$TMP/cp5.txt")" "after the task block"
+  ( cd "$Q" && STUDIO_STORY=S1 sh "$BRIEF" task 6 ) > "$TMP/cp6.txt"
+  assert_not_contains "$TMP/cp6.txt" "checkpoint" "task 6 has none"
+  ( cd "$Q" && STUDIO_STORY=S1 sh "$BRIEF" final ) > "$TMP/cpf.txt"
+  assert_contains "$TMP/cpf.txt" "^- [0-9-]* final-review checkpoint: fr-done x; left y; next z$" "final prints the final-review checkpoint"
+  assert_not_contains "$TMP/cpf.txt" "T5 checkpoint" "and no task's"
+}
+# A brief from an install that predates checkpoint.awk warns like a missing
+# godot-cmd.awk (reinstall omega-ai), not awk's bare "can't open file".
+test_brief_missing_checkpoint_awk() {
+  mkdir -p "$TMP/nocp"; cp "$BRIEF" "$TMP/nocp/studio-brief"; ln -s "$STATE_BIN" "$TMP/nocp/studio-state"
+  cp "$REPO_ROOT/studios/game-dev/bin/godot-cmd.awk" "$TMP/nocp/godot-cmd.awk"
+  Q="$TMP/projnocp"; build_fixture "$Q"
+  printf '\n### Task 5: t5\nMARK-T5\n' >> "$Q/docs/plan.md"
+  ( cd "$Q" && STUDIO_STORY=S1 && export STUDIO_STORY
+    sh "$STATE_BIN" ledger 'T5 checkpoint: x; left y; next z'
+    sh "$STATE_BIN" set task 4/6 ) >/dev/null 2>&1
+  ( cd "$Q" && STUDIO_STORY=S1 sh "$TMP/nocp/studio-brief" task 5 ) > "$TMP/nocp.out" 2> "$TMP/nocp.err"; st=$?
+  assert_eq 0 "$st" "task without checkpoint.awk still exits 0"
+  assert_contains "$TMP/nocp.out" "MARK-T5" "with the task text"
+  assert_contains "$TMP/nocp.err" 'checkpoint.awk missing.*reinstall omega-ai' "and a reinstall warning"
+  assert_not_contains "$TMP/nocp.err" "can't open" "not awk's own error"
+  assert_eq 1 "$(grep -c . "$TMP/nocp.err")" "one line"
+}
+# The checkpoint part undoes the ledger escapes as directives_part does and
+# cuts the text to 600 bytes, as the runner's checkpoint_of does.
+test_brief_checkpoint_unesc_and_cut() {
+  Q="$TMP/projcu"; build_fixture "$Q"
+  printf '\n### Task 5: t5\nMARK-T5\n' >> "$Q/docs/plan.md"
+  _cu_long="$(head -c 700 /dev/zero | tr '\0' x)"
+  ( cd "$Q" && STUDIO_STORY=S1 && export STUDIO_STORY
+    sh "$STATE_BIN" ledger 'T4 complete a..b'
+    sh "$STATE_BIN" ledger 'T5 checkpoint: done a\nleft b \\n c'
+    sh "$STATE_BIN" set task 4/5 ) >/dev/null 2>&1
+  ( cd "$Q" && STUDIO_STORY=S1 sh "$BRIEF" task 5 ) > "$TMP/cu1.txt"
+  assert_eq "$(printf '%s\n' 'T5 checkpoint: done a' 'left b \n c')" \
+    "$(sed -n '/(checkpoint)$/,$p' "$TMP/cu1.txt" | sed -n '2,3p' | sed 's/^- [0-9-]* //')" "\\n is a newline, \\\\ a backslash"
+  ( cd "$Q" && STUDIO_STORY=S1 sh "$STATE_BIN" ledger "T5 checkpoint: $_cu_long" ) >/dev/null 2>&1
+  ( cd "$Q" && STUDIO_STORY=S1 sh "$BRIEF" task 5 ) > "$TMP/cu2.txt"
+  assert_eq "600 1" "$(grep 'T5 checkpoint: xxx' "$TMP/cu2.txt" | tr -cd x | wc -c | tr -d ' ') $(grep -c 'T5 checkpoint: x*…$' "$TMP/cu2.txt")" "cut to 600 bytes, marked …"
+}
 test_brief_no_directives_no_part() {
   ( cd "$P" && STUDIO_STORY=S1 sh "$BRIEF" task 3 ) > "$TMP/nd.txt"
   assert_eq 0 "$(grep -c '^==> .*\.studio/ledger/' "$TMP/nd.txt")" "no directives: no ledger part in task"
@@ -926,4 +1013,4 @@ test_brief_final_block_lines() {
   assert_not_contains "$out" "T1 complete" "other ledger lines are still absent"
 }
 
-run_tests test_godot_cmd_md_finds_bare_forms test_godot_cmd_md_span_edges test_godot_cmd_md_multiline test_brief_task test_brief_final test_brief_refusals test_brief_missing_sections test_brief_directives_task test_brief_directives_final test_brief_directive_text_not_ruling test_brief_directive_edge_cases test_brief_no_directives_no_part test_brief_context_appended test_brief_context_cap test_brief_context_missing_file test_brief_context_no_glob test_brief_final_plan_acceptance test_brief_check_verb test_brief_check_uses_truth_region test_brief_final_reads_check_rulings test_brief_original_plan_item test_brief_usage_names_check test_brief_single_line_item test_brief_validate_good_plan test_brief_validate_reports_all test_brief_validate_duplicate_task test_brief_validate_missing_plan_and_no_state test_brief_validate_relative_to_caller test_brief_rewrite_wraps_only test_brief_task_check_final_rewritten test_brief_validate_godot_form test_brief_missing_detector test_brief_broken_detector test_brief_rewrite_no_tmpdir test_brief_rewrite_file test_brief_task_blocks_default test_brief_task_blocks_sources test_brief_final_block_lines test_tracks_two_groups test_tracks_after_joins test_tracks_normalizes_paths test_tracks_ignores_backlog_and_fences test_tracks_deterministic test_validate_after_forward_fails test_validate_after_unknown_fails test_validate_after_ok test_tracks_no_tasks
+run_tests test_godot_cmd_md_finds_bare_forms test_godot_cmd_md_span_edges test_godot_cmd_md_multiline test_brief_task test_brief_final test_brief_refusals test_brief_missing_sections test_brief_directives_task test_brief_directives_final test_brief_directive_text_not_ruling test_brief_directive_edge_cases test_brief_no_directives_no_part test_brief_task_directive_scoped test_brief_task_checkpoint_part test_brief_checkpoint_unesc_and_cut test_brief_missing_checkpoint_awk test_brief_context_appended test_brief_context_cap test_brief_context_missing_file test_brief_context_no_glob test_brief_final_plan_acceptance test_brief_check_verb test_brief_check_uses_truth_region test_brief_final_reads_check_rulings test_brief_original_plan_item test_brief_usage_names_check test_brief_single_line_item test_brief_validate_good_plan test_brief_validate_reports_all test_brief_validate_duplicate_task test_brief_validate_missing_plan_and_no_state test_brief_validate_relative_to_caller test_brief_rewrite_wraps_only test_brief_task_check_final_rewritten test_brief_validate_godot_form test_brief_missing_detector test_brief_broken_detector test_brief_rewrite_no_tmpdir test_brief_rewrite_file test_brief_task_blocks_default test_brief_task_blocks_sources test_brief_final_block_lines test_tracks_two_groups test_tracks_after_joins test_tracks_normalizes_paths test_tracks_ignores_backlog_and_fences test_tracks_deterministic test_validate_after_forward_fails test_validate_after_unknown_fails test_validate_after_ok test_tracks_no_tasks

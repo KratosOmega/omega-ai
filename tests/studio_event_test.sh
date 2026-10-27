@@ -78,6 +78,12 @@ test_event_numbers_null_arrays() {
   sh "$EV" "$R" unit_ended story=- usd:=1.25 n:=unknown e:= big:=1e3 neg:=-2 'depends[]=A,B'
   assert_contains "$R/events.jsonl" '"usd":1.25,"n":null,"e":null,"big":1e3,"neg":-2,"depends":\["A","B"\]}$' "numbers, null for a non-number, string arrays"
 }
+# usd_est:=true (a killed unit's estimated cost, spec §6): := takes true and false as JSON booleans.
+test_event_booleans() {
+  fresh
+  sh "$EV" "$R" unit_ended a:=true b:=false c:=True d:=yes
+  assert_contains "$R/events.jsonl" '"a":true,"b":false,"c":null,"d":null}$' "true and false are booleans; other words are null"
+}
 test_event_usage() {
   fresh
   assert_status 2 "no arguments" -- sh "$EV"
@@ -126,5 +132,5 @@ test_event_minimal_path() {
 }
 
 run_tests test_event_line_shape test_event_escaping test_event_backslash_portable test_event_cut_500 test_event_utf8_cut \
-  test_event_line_cap_4k test_event_numbers_null_arrays test_event_usage test_event_usage_utf8_locale \
+  test_event_line_cap_4k test_event_numbers_null_arrays test_event_booleans test_event_usage test_event_usage_utf8_locale \
   test_event_minimal_path

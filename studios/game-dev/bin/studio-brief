@@ -9,8 +9,12 @@
 #   studio-brief task <n>   the plan's ## Global Constraints and ## Decisions,
 #                           the `### Task <n>:` block, and every range on that
 #                           block's `Spec:` line, then the story ledger's active directives
-#                           (`Directive <id>:` lines not later retired) as a
-#                           part `==> <ledger>`, then a last line
+#                           (`Directive <id>:` lines not later retired, and
+#                           `Directive <id> T<n>:` ones while task k < n) as a
+#                           part `==> <ledger>`, then the newest `T<n>
+#                           checkpoint:` line written after the last `T<n-1>
+#                           complete` (else `base`) line as a part `==>
+#                           <ledger> (checkpoint)` (spec §2), then a last line
 #                           `blocks: <path>`: the run's blocks file (#94), from
 #                           the plan's Global Constraints `Blocks file: <path>`
 #                           item, else $STUDIO_RUN's `Blocks:` header, else
@@ -22,7 +26,9 @@
 #                           ## Stories row, the ledger's `Ruling: `,
 #                           `minor (deferred)` and `Block: ` lines (anchored at
 #                           the line's prefix), the active directives the same way as for
-#                           `task`, before `diff:`, and the line
+#                           `task`, the newest `final-review checkpoint:` line
+#                           after the last `T<k> complete` the same way, before
+#                           `diff:`, and the line
 #                           `diff: git diff origin/<Target>...HEAD` (Target from
 #                           $STUDIO_RUN's `Target:` header, else origin/HEAD).
 #                           No plan text. The story id is $STUDIO_STORY.
@@ -212,18 +218,66 @@ ledger_path() {
   printf '%s\n' "$WORK/.studio/ledger/$(basename "$_lp_s" | sed -e 's/\.md$//' -e 's/^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}-//').md"
 }
 # directives_part — AC15: the ledger's active directives (a `Directive <id>:`
-# line with no later `Directive <id> retired`), as one part headed
-# `==> <ledger path>`; nothing when there are none.
+# or `Directive <id> T<n>:` line with no later `Directive <id> retired`), as
+# one part headed `==> <ledger path>`; nothing when there are none. A
+# task-scoped line is active only while the story's task pointer k < n (a
+# story with no `task k/N` has k 0, or every task done once the ledger has a
+# `shipped` line). Its text's escapes are undone: `\n` a newline, `\\` a
+# backslash (the record command writes both).
 directives_part() {
   _dp_l="$(ledger_path)"
   [ -n "$_dp_l" ] && [ -f "$_dp_l" ] || return 0
-  _dp="$(awk '
+  _dp_k="$(sh "$STATE_BIN" get task 2>/dev/null)"
+  case "$_dp_k" in
+    [0-9]*/[0-9]*) _dp_k="${_dp_k%%/*}" ;;
+    *) if grep -q '^- [0-9-]* shipped ' "$_dp_l"; then _dp_k=999999; else _dp_k=0; fi ;;
+  esac
+  case "$_dp_k" in ''|*[!0-9]*) _dp_k=0 ;; esac
+  _dp="$(LC_ALL=C awk -v k="$_dp_k" '
+    function unesc(s,   o, i, c, n) {
+      o = ""; n = length(s)
+      for (i = 1; i <= n; i++) {
+        c = substr(s, i, 1)
+        if (c == "\\" && i < n) {
+          c = substr(s, i + 1, 1)
+          if (c == "n") { o = o "\n"; i++; continue }
+          if (c == "\\") { o = o "\\"; i++; continue }
+          c = "\\"
+        }
+        o = o c
+      }
+      return o
+    }
     $0 !~ /^- [0-9-]+ / { next }
     { t = $0; sub(/^- [0-9-]+ /, "", t) }
-    t ~ /^Directive [0-9]+: / { id = t; sub(/^Directive /, "", id); sub(/:.*/, "", id); L[NR] = $0; D[NR] = id; next }
+    t ~ /^Directive [0-9]+( T[0-9]+)?: / {
+      id = t; sub(/^Directive /, "", id); sub(/[ :].*/, "", id)
+      if (t ~ /^Directive [0-9]+ T/) { n = t; sub(/^Directive [0-9]+ T/, "", n); sub(/:.*/, "", n); if (n + 0 <= k + 0) next }
+      L[NR] = $0; D[NR] = id; next
+    }
     t ~ /^Directive [0-9]+ retired *$/ { id = t; sub(/^Directive /, "", id); sub(/ .*/, "", id); R[id] = NR }
-    END { for (i = 1; i <= NR; i++) if ((i in L) && !((D[i] in R) && R[D[i]] > i)) print L[i] }' "$_dp_l")"
+    END { for (i = 1; i <= NR; i++) if ((i in L) && !((D[i] in R) && R[D[i]] > i)) print unesc(L[i]) }' "$_dp_l")"
   [ -z "$_dp" ] || printf '==> %s\n%s\n' "$_dp_l" "$_dp"
+}
+# checkpoint_part LABEL — spec §2: the newest `<LABEL> checkpoint: …` ledger
+# line written after the label's start, its escapes undone as directives_part
+# does and its text cut to 600 bytes, as one part headed `==> <ledger path>
+# (checkpoint)`; nothing when there is none. checkpoint.awk (shared with
+# studio-overnight's checkpoint_of) holds the start rule: T<n> starts at the
+# last `T<n-1> complete` line, any other label (final-review) at the last
+# `T<k> complete` line; either, when there is none, at the last `base` line.
+checkpoint_part() {
+  _cp_l="$(ledger_path)"
+  [ -n "$_cp_l" ] && [ -f "$_cp_l" ] || return 0
+  if [ ! -f "$HERE/checkpoint.awk" ]; then
+    if [ -z "${_NOCP_WARNED:-}" ]; then
+      printf 'studio-brief: warning: %s missing — no checkpoint is shown (reinstall omega-ai)\n' "$HERE/checkpoint.awk" >&2
+      _NOCP_WARNED=1
+    fi
+    return 0
+  fi
+  _cp="$(LC_ALL=C awk -v lb="$1" -v out=line -f "$HERE/checkpoint.awk" "$_cp_l")"
+  [ -z "$_cp" ] || printf '==> %s (checkpoint)\n%s\n' "$_cp_l" "$_cp"
 }
 
 CALLER_PWD="$(pwd -P)"
@@ -241,8 +295,9 @@ emit_section() {
 }
 
 # emit_task N WITHDIR — the `### Task N:` block, then (WITHDIR=1) the active
-# directives, then every range on the block's `Spec:` line (`task` and `check`
-# share it). Needs $plan. Exits 1 when the task or a range cannot be resolved.
+# directives and the task's checkpoint, then every range on the block's
+# `Spec:` line (`task` and `check` share it). Needs $plan. Exits 1 when the
+# task or a range cannot be resolved.
 emit_task() {
   _et_n="$1"; _et_wd="$2"
   _et_r="$(section "$plan" "### Task $_et_n:" 0)"
@@ -250,7 +305,7 @@ emit_task() {
   set -- $_et_r
   _et_a="$1"; _et_b="$2"
   emit "$plan" "$_et_a" "$_et_b"
-  if [ "$_et_wd" = 1 ]; then directives_part; fi
+  if [ "$_et_wd" = 1 ]; then directives_part; checkpoint_part "T$_et_n"; fi
   each_spec_item "$plan" "$_et_a" "$_et_b" emit_task_item || {
     printf '(task %s has no Spec: line)\n' "$_et_n"
     return 0
@@ -595,6 +650,7 @@ final)
     printf '(no ledger at %s)\n' "$ledger"
   fi
   directives_part
+  checkpoint_part final-review
   context_part
   # the diff command
   target=""

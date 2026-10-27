@@ -25,9 +25,10 @@ HOME="$TMP/home"; export HOME; mkdir -p "$HOME"
 FAKE="$TMP/fakebin"
 mkdir -p "$FAKE"
 
-# The stub session. Records argv (one element per line), cwd, the
-# OMEGA_AUTOPILOT value, start/end epoch seconds and a copy of the lock, then
-# runs this call's scenario line.
+# The stub session. Records first STUDIO_UNIT_DEADLINE and STUDIO_UNIT_WRAP_AT
+# (.deadline) and a copy of the runner's unit.now (.unow), then argv (one
+# element per line), cwd, the OMEGA_AUTOPILOT value, start/end epoch seconds
+# and a copy of the lock, then runs this call's scenario line.
 cat > "$FAKE/claude" <<'STUB'
 #!/bin/sh
 if [ "${1:-}" = "--version" ]; then
@@ -36,6 +37,8 @@ if [ "${1:-}" = "--version" ]; then
 fi
 n=$(( $(cat "$CALLS/count" 2>/dev/null || echo 0) + 1 ))
 echo "$n" > "$CALLS/count"
+printf '%s %s\n' "${STUDIO_UNIT_DEADLINE:-unset}" "${STUDIO_UNIT_WRAP_AT:-unset}" > "$CALLS/$n.deadline"
+cp "${STUDIO_RUN_DIR:-/nonexistent}/unit.now" "$CALLS/$n.unow" 2>/dev/null
 echo "$$" > "$CALLS/$n.pid"
 date +%s > "$CALLS/$n.t0"
 for a in "$@"; do printf '%s\n' "$a"; done > "$CALLS/$n.argv"
@@ -77,6 +80,12 @@ for act in "$@"; do
                   git push -q -u origin feat >/dev/null 2>&1 ;;
     # unpushed: an empty commit in the story worktree, not pushed (#91).
     unpushed)     git -C "$(sh "$STUB_STATE_BIN" worktree)" -c user.name=t -c user.email=t@t commit -q --allow-empty -m unpushed ;;
+    # wtcommit FILE SUBJECT: commit FILE (content: SUBJECT) in the story worktree, not pushed.
+    "wtcommit "*) _wc="${act#wtcommit }"; _wcw="$(sh "$STUB_STATE_BIN" worktree)"
+                  mkdir -p "$_wcw/$(dirname "${_wc%% *}")" && printf '%s\n' "${_wc#* }" > "$_wcw/${_wc%% *}" \
+                    && git -C "$_wcw" add "${_wc%% *}" && git -C "$_wcw" -c user.name=t -c user.email=t@t commit -q -m "${_wc#* }" ;;
+    # lastwords TEXT: an assistant text event on stdout (the unit's stream-json).
+    "lastwords "*) printf '{"type":"assistant","message":{"content":[{"type":"text","text":"%s"}]},"parent_tool_use_id":null}\n' "${act#lastwords }" ;;
     # pushwt: push the story worktree's branch to origin.
     pushwt)       _pw="$(sh "$STUB_STATE_BIN" worktree)"
                   git -C "$_pw" push -q origin "$(git -C "$_pw" symbolic-ref --short HEAD)" >/dev/null 2>&1 ;;
@@ -118,6 +127,23 @@ for act in "$@"; do
     inbox)        printf '{"session_id":"s","hook_event_name":"SessionStart","source":"startup"}' \
                     | sh "$STUB_PLUGIN/hooks/operator-inbox.sh" > "$CALLS/$n.inbox" ;;
     "say "*)      sh "$STUB_RUNNER" say - -- "${act#say }" > /dev/null 2>&1 ;;
+    # saytask T<n> TEXT: a task-scoped directive (say --task T<n>).
+    "saytask "*)  _stk="${act#saytask }"; sh "$STUB_RUNNER" say - --task "${_stk%% *}" -- "${_stk#* }" > /dev/null 2>&1 ;;
+    # sayfile PATH: say --file PATH (the text multi-line, verbatim).
+    "sayfile "*)  sh "$STUB_RUNNER" say - --file "${act#sayfile }" > /dev/null 2>&1 ;;
+    # said NAME: the said listing into $CALLS/<n>.said.NAME.
+    "said "*)     sh "$STUB_RUNNER" said - > "$CALLS/$n.said.${act#said }" 2>&1 ;;
+    # record [ID]: run the ledger commands this session's inbox block printed
+    # (only directive ID's), in the story worktree, as a unit records them.
+    record|"record "*) _rid="${act#record}"; _rid="${_rid# }"
+                  sed -n 's/^    studio-state ledger //p' "$CALLS/$n.inbox" | while IFS= read -r _rc; do
+                    [ -z "$_rid" ] || case "$_rc" in "'Directive $_rid:"*|"'Directive $_rid "*) ;; *) continue ;; esac
+                    ( cd "$(sh "$STUB_STATE_BIN" worktree)" && eval "set -- $_rc" && sh "$STUB_STATE_BIN" ledger "$1" ) > /dev/null 2>&1
+                  done ;;
+    # note T<n> TEXT: a runner note (scope note, from runner) pending as id 90.
+    "note "*)     r="$(sed -n 's/^run=//p' "$root/.studio/overnight.lock")"; _nt="${act#note }"; mkdir -p "$r/inbox/-"
+                  printf 'id: 90\nscope: note\ntarget: -\nstory: -\ntask: %s\nfrom: runner\nqueued: 2026-10-26T01:00:00Z\nrequeues: 0\n--\n%s\n' \
+                    "${_nt%% *}" "${_nt#* }" > "$r/inbox/-/.n" && mv "$r/inbox/-/.n" "$r/inbox/-/90.msg" ;;
     "corruptrq "*) r="$(sed -n 's/^run=//p' "$root/.studio/overnight.lock")"
                   for f in "$r"/inbox/-/delivered/*/[0-9]*.msg; do
                     sed "s/^requeues: .*/requeues: ${act#corruptrq }/" "$f" > "$f.t" && mv "$f.t" "$f"
@@ -424,6 +450,76 @@ test_overnight_preflight_env_warns_not_blocks() {
   assert_contains "$RS_OUT" "^    firefox 2.9 GB$" "and the top list"
 }
 
+# runner_copy NAME — a scratch git checkout of the runner tree (studios/game-dev
+# only) at $TMP/NAME/work, tracking a bare upstream; RC_UP is that upstream.
+runner_copy() {
+  _rc="$TMP/$1"; rm -rf "$_rc"; mkdir -p "$_rc/work/docs"
+  RC_UP="$_rc/up.git"; RC_W="$_rc/work"
+  cp -R "$REPO_ROOT/studios" "$RC_W/studios" || return 1
+  ( cd "$RC_W" && git init -q -b main && : > docs/keep && git add -A \
+      && git -c user.name=t -c user.email=t@t commit -qm base \
+      && git init -q --bare "$RC_UP" && git remote add origin "$RC_UP" \
+      && git push -q -u origin main ) >/dev/null 2>&1
+}
+# rc_push FILE — a commit touching FILE, pushed to the runner copy's upstream
+# from a second clone (the copy itself stays behind).
+rc_push() {
+  rm -rf "$TMP/rc-other"
+  git clone -q "$RC_UP" "$TMP/rc-other" >/dev/null 2>&1 \
+    && ( cd "$TMP/rc-other" && mkdir -p "$(dirname "$1")" && echo x >> "$1" && git add -A \
+         && git -c user.name=t -c user.email=t@t commit -qm "touch $1" && git push -q origin main ) >/dev/null 2>&1
+}
+# run_start_via RUNNER [ARGS] — start ARGS in $P through the given runner path.
+run_start_via() {
+  RS_STATUS=0; _rv="$1"; shift
+  ( cd "$P" && sh "$_rv" start "$@" ) > "$TMP/rs.out" 2> "$TMP/rs.err" || RS_STATUS=$?
+  RS_OUT="$TMP/rs.out"; RS_ERR="$TMP/rs.err"
+}
+# The preflight warns, never pulls and never refuses, when the runner's own
+# checkout is behind its upstream on studios/game-dev. The runner here is a
+# scratch copy (reached through a symlink, as in production), never this repo.
+test_preflight_runner_behind_warns() {
+  # The one test that runs the check: assert.sh turns it off for every suite.
+  fixture rbw
+  runner_copy rbw-rc || { TESTS_RUN=$((TESTS_RUN + 1)); _fail "runner copy: setup failed"; return 0; }
+  unset STUDIO_OVERNIGHT_RUNNER_CHECK
+  ln -s "$RC_W/studios/game-dev/bin/studio-overnight" "$TMP/rbw-link"
+  run_start_via "$TMP/rbw-link" --dry-run
+  assert_eq 0 "$RS_STATUS" "up to date: dry run exits 0"
+  assert_not_contains "$RS_ERR" "runner checkout .* behind" "up to date: no warning"
+  rc_push studios/game-dev/x
+  head0="$(git -C "$RC_W" rev-parse HEAD)"
+  run_start_via "$TMP/rbw-link" --dry-run
+  assert_eq 0 "$RS_STATUS" "behind: a warning, not a refusal"
+  assert_contains "$RS_ERR" "warning: runner checkout .*rbw-rc/work is 1 commit behind origin/main on studios/game-dev (touch studios/game-dev/x) — update it before starting$" "behind on studios/game-dev"
+  assert_eq "$head0" "$(git -C "$RC_W" rev-parse HEAD)" "never pulls"
+  # The test hook: STUDIO_OVERNIGHT_RUNNER_CHECK=0 skips the check, fetch included.
+  rm -f "$RC_W/.git/FETCH_HEAD"
+  STUDIO_OVERNIGHT_RUNNER_CHECK=0; export STUDIO_OVERNIGHT_RUNNER_CHECK
+  run_start_via "$TMP/rbw-link" --dry-run
+  unset STUDIO_OVERNIGHT_RUNNER_CHECK
+  assert_eq 0 "$RS_STATUS" "hook 0: dry run exits 0"
+  assert_not_contains "$RS_ERR" "runner checkout .* behind" "hook 0: no warning"
+  assert_missing "$RC_W/.git/FETCH_HEAD" "hook 0: no fetch"
+  # A commit touching only docs/: not behind on studios/game-dev.
+  runner_copy rbw-rc2 && rc_push docs/y
+  run_start_via "$RC_W/studios/game-dev/bin/studio-overnight" --dry-run
+  assert_not_contains "$RS_ERR" "runner checkout .* behind" "docs-only commit: no warning"
+  # Not a work tree: no warning.
+  rm -rf "$TMP/rbw-nogit"; mkdir -p "$TMP/rbw-nogit"; cp -R "$REPO_ROOT/studios" "$TMP/rbw-nogit/studios"
+  run_start_via "$TMP/rbw-nogit/studios/game-dev/bin/studio-overnight" --dry-run
+  assert_eq 0 "$RS_STATUS" "non-git copy: dry run exits 0"
+  assert_not_contains "$RS_ERR" "runner checkout .* behind" "non-git copy: no warning"
+  # A fetch that cannot run: the last fetch is used and its age named.
+  runner_copy rbw-rc3 && rc_push studios/game-dev/z
+  git -C "$RC_W" fetch -q
+  git -C "$RC_W" remote set-url origin "$TMP/rbw-gone.git"
+  run_start_via "$RC_W/studios/game-dev/bin/studio-overnight" --dry-run
+  assert_eq 0 "$RS_STATUS" "fetch failed: still exits 0"
+  assert_contains "$RS_ERR" "1 commit behind origin/main on studios/game-dev (touch studios/game-dev/z) — update it before starting (fetch failed; last fetch [0-9]* min ago)$" "fetch failed: warns from the last fetch"
+  STUDIO_OVERNIGHT_RUNNER_CHECK=0; export STUDIO_OVERNIGHT_RUNNER_CHECK
+}
+
 # refuse_case NAME MESSAGE-PATTERN — run start in the current fixture and
 # assert a one-line refusal, exit 2, no lock, no session.
 refuse_case() {
@@ -641,7 +737,7 @@ test_help_lists_new_keys() {
   assert_contains "$TMP/help-top.txt" "node_workers  *auto  *auto|1-32" "node_workers is in the top-level block"
   assert_contains "$TMP/help-top.txt" "node_dir  *\"\"" "node_dir is in the top-level block"
   assert_contains "$TMP/help2.txt" "studio-test, studio-run, studio-vitest, studio-tsc," "the allow rules line names the verbs"
-  assert_contains "$TMP/help2.txt" "sdd-run, studio-docs-sync and the gated Godot forms" "all of them"
+  assert_contains "$TMP/help2.txt" "sdd-run, studio-docs-sync, studio-deadline and the gated Godot forms" "all of them"
   assert_not_contains "$TMP/help2.txt" "the gate verbs" "not just the gate verbs"
   assert_eq 0 "$(cat "$TMP/help-ov.txt" "$TMP/help-top.txt" | awk 'length > 110' | grep -c .)" "no config help line is wider than 110 columns"
 }
@@ -919,7 +1015,7 @@ test_overnight_deny_file_required() {
   # The runner reads overnight-deny.txt beside itself: run a copy whose
   # sibling deny file holds only comments.
   fixture deny
-  mkdir -p "$TMP/denybin"; cp "$RUNNER" "$STATE_BIN" "$REPO_ROOT/studios/game-dev/bin/overnight-channel.sh" "$REPO_ROOT/studios/game-dev/bin/overnight-runs.sh" "$REPO_ROOT/studios/game-dev/bin/gate-times.sh" "$REPO_ROOT/studios/game-dev/bin/overnight-tools.sh" "$REPO_ROOT/studios/game-dev/bin/overnight-sessions.sh" "$REPO_ROOT/studios/game-dev/bin/overnight-progress.sh" "$REPO_ROOT/studios/game-dev/bin/studio-env" "$TMP/denybin/"
+  mkdir -p "$TMP/denybin"; cp "$RUNNER" "$STATE_BIN" "$REPO_ROOT/studios/game-dev/bin/overnight-channel.sh" "$REPO_ROOT/studios/game-dev/bin/overnight-runs.sh" "$REPO_ROOT/studios/game-dev/bin/gate-times.sh" "$REPO_ROOT/studios/game-dev/bin/overnight-tools.sh" "$REPO_ROOT/studios/game-dev/bin/overnight-sessions.sh" "$REPO_ROOT/studios/game-dev/bin/overnight-progress.sh" "$REPO_ROOT/studios/game-dev/bin/overnight-cost.sh" "$REPO_ROOT/studios/game-dev/bin/studio-env" "$TMP/denybin/"
   printf '# only a comment\n\n' > "$TMP/denybin/overnight-deny.txt"
   RS_STATUS=0; ( cd "$P" && sh "$TMP/denybin/studio-overnight" start ) > "$TMP/rs.out" 2> "$TMP/rs.err" || RS_STATUS=$?
   assert_eq 2 "$RS_STATUS" "a deny file with no rules refuses"
@@ -1058,7 +1154,7 @@ test_overnight_launch_allow_rules() {
   _di="$(grep -nx -- '--disallowedTools' "$a" | cut -d: -f1)"
   assert_eq "$(cat "$TMP/allow.txt")" "$(sed -n "$((_ai + 1)),$((_ai + N))p" "$a")" "every allow rule follows it, one argument each, in file order"
   assert_eq "$((_ai + N + 1))" "$_di" "--disallowedTools comes right after the allow rules"
-  for r in 'Bash(studio-test:*)' 'Bash(studio-run:*)' 'Bash(studio-vitest:*)' 'Bash(studio-tsc:*)' 'Bash(sdd-run:*)' 'Bash(studio-docs-sync:*)' 'Bash(studio-gate godot -- Godot *)' 'Bash(studio-gate godot -- godot *)' \
+  for r in 'Bash(studio-test:*)' 'Bash(studio-run:*)' 'Bash(studio-vitest:*)' 'Bash(studio-tsc:*)' 'Bash(sdd-run:*)' 'Bash(studio-docs-sync:*)' 'Bash(studio-deadline:*)' 'Bash(studio-gate godot -- Godot *)' 'Bash(studio-gate godot -- godot *)' \
            'Bash(studio-gate godot -- /Applications/Godot.app/Contents/MacOS/Godot *)' \
            'Bash(studio-gate godot -- /Applications/Godot_mono.app/Contents/MacOS/Godot *)'; do
     TESTS_RUN=$((TESTS_RUN + 1))
@@ -1177,11 +1273,144 @@ test_overnight_run_budget() {
   assert_contains "$(last_run_dir)/report.md" "stop: run budget" "budget is the ending"
 }
 
-test_overnight_cost_unknown() {
+test_overnight_cost_no_result_estimated() {
   fixture nocost; scenario "stage execute; task 1/1; nocost" "ledger final review done" \
     "ledger shipped https://x/pull/2; stage idle; task -"
   run_start
-  assert_eq "unknown" "$(awk -F'\t' 'NR == 1 { print $4 }' "$(last_run_dir)/units.tsv")" "a session with no result event costs unknown"
+  assert_eq "1 estimate" "$(awk -F'\t' 'NR == 1 { print ($4 ~ /^[0-9]+[.][0-9]+$/), $8 }' "$(last_run_dir)/units.tsv")" \
+    "a session with no result event has an estimated number, never unknown"
+}
+
+# ---- A killed unit's cost (spec §6, C3, C5) ----
+# The fixtures: overnight-cost-killed.jsonl has three assistant messages, msg_A
+# (opus, in two events with the same usage: 8 thinking bytes, a 32-byte tool
+# input; its signature and wire_tool_inputs are not output; its cache write is
+# all 1-hour), msg_B (sonnet, a subagent's: 16 text bytes; a 10000 5-minute +
+# 20000 1-hour cache write) and msg_D (sonnet: a 40000 cache write with no
+# split, priced as 5-minute), plus a user event whose toolUseResult carries a
+# decoy usage. Naive: opus 10000 x 4 + 100000 x 8 + 1000000 x 0.2 + 40 / 4 x 20
+# = 1040200; sonnet 5000 x 2 + 10000 x 2.5 + 20000 x 4 + 500000 x 0.1 + 16 / 4 x 10
+# = 165040, and 40000 x 2.5 = 100000; per 1M: 1.30524. Uncalibrated, an
+# estimate is naive x COST_DEFAULT_FACTOR (1.3): 1.30524 x 1.3 = 1.696812.
+# overnight-cost-calib.jsonl: one sonnet message of naive 1.00 (400000 x 2 +
+# 2000000 x 0.1) and a result whose modelUsage says sonnet cost 2.0.
+COST_FX="$REPO_ROOT/tests/fixtures"
+# cost_run CMD… — CMD with overnight-cost.sh sourced: SELF_DIR the plugin's bin,
+# RUN_DIR $CR_RUN, STATE_ROOT $CR_ROOT.
+cost_run() {
+  ( SELF_DIR="$REPO_ROOT/studios/game-dev/bin"; RUN_DIR="$CR_RUN"; STATE_ROOT="$CR_ROOT"
+    . "$SELF_DIR/overnight-cost.sh"; "$@" )
+}
+# cost_dirs — a fresh CR_RUN (with lanes/1) and CR_ROOT (with .studio).
+cost_dirs() {
+  CR_RUN="$TMP/cr/run"; CR_ROOT="$TMP/cr/root"; rm -rf "$TMP/cr"
+  mkdir -p "$CR_RUN/lanes/1" "$CR_ROOT/.studio"
+}
+test_overnight_cost_estimate_helpers() {
+  cost_dirs
+  grep -v '"type":"result"' "$COST_FX/overnight-cost-calib.jsonl" > "$TMP/cr/calk.jsonl"
+  assert_eq 1.3 "$(cost_run eval 'printf %s "$COST_DEFAULT_FACTOR"')" "the default factor is 1.3"
+  assert_eq 1.6968 "$(cost_run cost_estimate "$COST_FX/overnight-cost-killed.jsonl" 3)" \
+    "naive 1.30524 x 1.3: usage once per message id, output from content bytes / 4, priced per message model"
+  # Cache writes: usage.cache_creation's 5-minute and 1-hour split, else all 5-minute.
+  printf '%s\n' '{"type":"assistant","message":{"model":"claude-opus-5-5","id":"s1","content":[],"usage":{"input_tokens":0,"cache_creation_input_tokens":200000,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":100000,"ephemeral_1h_input_tokens":100000},"output_tokens":1}}}' > "$TMP/cr/split.jsonl"
+  assert_eq 1.6900 "$(cost_run cost_estimate "$TMP/cr/split.jsonl" 3)" "a split cache write: (100000 x 5 (5-minute) + 100000 x 8 (1-hour)) x 1.3"
+  printf '%s\n' '{"type":"assistant","message":{"model":"claude-opus-5-5","id":"s2","content":[],"usage":{"input_tokens":0,"cache_creation_input_tokens":200000,"cache_read_input_tokens":0,"output_tokens":1}}}' > "$TMP/cr/nosplit.jsonl"
+  assert_eq 1.3000 "$(cost_run cost_estimate "$TMP/cr/nosplit.jsonl" 3)" "no split: cache_creation_input_tokens at the 5-minute price (1.00 x 1.3)"
+  printf '%s\n' '{"type":"assistant","message":{"model":"claude-mystery-9","id":"m1","content":[],"usage":{"input_tokens":100000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}' > "$TMP/cr/unk.jsonl"
+  assert_eq 1.3000 "$(cost_run cost_estimate "$TMP/cr/unk.jsonl" 3)" "an unknown model takes the dearest row (fable input 10/M; 1.00 x 1.3)"
+  # Calibration: two samples fall back to the cache, else the default; three give the median.
+  assert_eq 1.3000 "$(cost_run cost_estimate "$TMP/cr/calk.jsonl" 3)" "no samples, no cache: the default factor 1.3"
+  _now="$(date +%s)"
+  printf 'claude-sonnet-5-5 3 100\n' > "$CR_ROOT/.studio/cost.calib"
+  assert_eq 1.3000 "$(cost_run cost_estimate "$TMP/cr/calk.jsonl" 3)" "a cached factor stamped before model-prices.tsv last changed is ignored (the default)"
+  printf 'claude-sonnet-5-5 3 %s\n' "$_now" > "$CR_ROOT/.studio/cost.calib"
+  cost_run cost_sample "$COST_FX/overnight-cost-calib.jsonl" > "$CR_RUN/lanes/1/cost.samples"
+  assert_eq "claude-sonnet-5-5	1.000000	2.0" "$(cat "$CR_RUN/lanes/1/cost.samples")" \
+    "a result unit's sample: model, naive, modelUsage costUSD (a model with no messages is left out)"
+  cost_run cost_sample "$COST_FX/overnight-cost-calib.jsonl" > "$CR_RUN/cost.samples"
+  assert_eq 3.0000 "$(cost_run cost_estimate "$TMP/cr/calk.jsonl" 3)" "two samples: the cached factor"
+  printf 'claude-sonnet-5-5\t1.000000\t4\n' >> "$CR_RUN/lanes/1/cost.samples"
+  assert_eq 2.0000 "$(cost_run cost_estimate "$TMP/cr/calk.jsonl" 3)" "three samples (2, 2, 4): their median, over the run's lanes"
+  # cost_calib_save: this run's medians replace those models' lines, others are kept.
+  printf 'claude-opus-5-5 1.5 100\nclaude-sonnet-5-5 3 100\n' > "$CR_ROOT/.studio/cost.calib"
+  cost_run cost_calib_save
+  assert_eq "claude-opus-5-5 1.5 100" "$(grep '^claude-opus-5-5 ' "$CR_ROOT/.studio/cost.calib")" "save keeps a model this run did not sample"
+  assert_contains "$CR_ROOT/.studio/cost.calib" '^claude-sonnet-5-5 2 [0-9][0-9]*$' "save writes the run's median with an epoch"
+  assert_eq 2 "$(wc -l < "$CR_ROOT/.studio/cost.calib" | tr -d ' ')" "one line per model"
+  rm -f "$CR_RUN/cost.samples"; printf 'claude-sonnet-5-5 9 100\n' > "$CR_ROOT/.studio/cost.calib"
+  cost_run cost_calib_save
+  assert_eq "claude-sonnet-5-5 9 100" "$(cat "$CR_ROOT/.studio/cost.calib")" "a run with fewer than 3 samples leaves the cache"
+  # A save in a checkout whose exclude file does not name it yet (no run_excludes): it excludes it.
+  rm -f "$CR_ROOT/.studio/cost.calib"; git init -q "$CR_ROOT"
+  printf 'claude-sonnet-5-5\t1.000000\t2.0\n' > "$CR_RUN/cost.samples"
+  cost_run cost_calib_save; cost_run cost_calib_save
+  assert_file "$CR_ROOT/.studio/cost.calib" "saved in a git checkout"
+  assert_eq "" "$(git -C "$CR_ROOT" status --porcelain --untracked-files=all)" "the save keeps it out of git status"
+  assert_eq 1 "$(grep -cxF .studio/cost.calib "$CR_ROOT/.git/info/exclude")" "excluded once"
+  # No usage: minutes x the median $/min of the run's result rows (old 7-column rows too).
+  cost_dirs
+  printf '1\tT1\t0\t3\t0.5\t0\tprogress\n' > "$CR_RUN/units.tsv"
+  printf '2\tT2\t0\t2\t1.0\t0\tprogress\tresult\t0\n3\tT3\t143\t99\t1.0\t1\ttimed out\testimate\t1\n4\tT4\t0\tunknown\t1.0\t0\tnoprog\n5\tT5\t0\t7\t0.0\t0\tprogress\tresult\t0\n' > "$CR_RUN/lanes/1/units.tsv"
+  : > "$TMP/cr/empty.jsonl"
+  assert_eq 2.0000 "$(cost_run cost_estimate "$TMP/cr/empty.jsonl" 0.5)" \
+    "an empty transcript: 0.5 min x the median of 6 and 2 \$/min (estimate, unknown and 0-minute rows left out)"
+  printf '{not json\n{"type":"assistant","message":{"model":"claude-opus-5-5"\n' > "$TMP/cr/garbled.jsonl"
+  assert_eq 2.0000 "$(cost_run cost_estimate "$TMP/cr/garbled.jsonl" 0.5)" "a garbled transcript: the same"
+  rm -f "$CR_RUN/units.tsv" "$CR_RUN/lanes/1/units.tsv"
+  assert_eq 1.0000 "$(cost_run cost_estimate "$TMP/cr/empty.jsonl" 2)" "no basis in the run: 0.50 \$/min"
+  assert_eq 0.0000 "$(cost_run cost_estimate "$TMP/cr/missing.jsonl" 0)" "zero minutes, no file: 0, never empty"
+}
+
+test_overnight_cost_estimate_killed_unit() {
+  fixture cek; scenario "stage execute; emit $COST_FX/overnight-cost-killed.jsonl; sleep 30" "cost 1"
+  # 8 s: the cap must not land before the stub's emit (its preamble can take ~2 s under load).
+  STUDIO_OVERNIGHT_SESSION_SECONDS=8; export STUDIO_OVERNIGHT_SESSION_SECONDS
+  run_start; unset STUDIO_OVERNIGHT_SESSION_SECONDS
+  R="$(last_run_dir)"
+  assert_eq "1 1.6968 estimate" "$(awk -F'\t' 'NR == 1 { print $6, $4, $8 }' "$R/units.tsv")" \
+    "a unit killed at its cap has its cost estimated from its transcript (default factor 1.3: no result units) and marked"
+  assert_eq 9 "$(awk -F'\t' 'NR == 1 { print NF }' "$R/units.tsv")" "units.tsv rows have 9 columns"
+  assert_contains "$R/events.jsonl" '"event":"unit_ended",.*"usd":1.6968,"usd_est":true' "unit_ended marks the estimate"
+  assert_not_contains "$R/report.md" "cost unknown" "the report never says cost unknown"
+  assert_contains "$R/report.md" '^| 1 | T1 | [0-9]* | ≈1.6968 | ' "the report marks the estimated cost"
+}
+
+test_overnight_cost_estimate_calibrated() {
+  fixture cec; CAL="$COST_FX/overnight-cost-calib.jsonl"
+  grep -v '"type":"result"' "$CAL" > "$TMP/cec-killed.jsonl"
+  scenario "stage execute; task 1/4; emit $CAL; cost 2" "task 2/4; emit $CAL; cost 2" "task 3/4; emit $CAL; cost 2" \
+    "emit $TMP/cec-killed.jsonl; sleep 30"
+  STUDIO_OVERNIGHT_SESSION_SECONDS=8; export STUDIO_OVERNIGHT_SESSION_SECONDS
+  run_start; unset STUDIO_OVERNIGHT_SESSION_SECONDS
+  R="$(last_run_dir)"
+  assert_eq "result result result estimate" "$(awk -F'\t' 'NR <= 4 { printf "%s%s", (NR > 1 ? " " : ""), $8 }' "$R/units.tsv")" \
+    "three result units, then the killed one"
+  assert_eq 1 "$(awk -F'\t' 'NR == 4 { print ($4 == 2 && $6 == 1) ? 1 : 0 }' "$R/units.tsv")" \
+    "the killed unit's naive 1.00 is calibrated by the run's sonnet factor (2.0 / 1.00) to 2.00"
+  assert_contains "$P/.studio/cost.calib" '^claude-sonnet-5-5 2 [0-9][0-9]*$' "the run's factor is cached for later runs"
+  assert_eq "" "$(git -C "$P" status --porcelain --untracked-files=all -- .studio/cost.calib)" "the cache is not in the project's git status"
+}
+
+test_overnight_cost_estimate_empty_transcript() {
+  fixture cee; scenario "stage execute; task 1/2; cost 3; sleep 4" "sleep 30"
+  STUDIO_OVERNIGHT_SESSION_SECONDS=12; export STUDIO_OVERNIGHT_SESSION_SECONDS
+  run_start; unset STUDIO_OVERNIGHT_SESSION_SECONDS
+  R="$(last_run_dir)"
+  assert_eq result "$(awk -F'\t' 'NR == 1 { print $8 }' "$R/units.tsv")" "the first unit: \$3 in about 0.1 min"
+  assert_eq "1 estimate" "$(awk -F'\t' 'NR == 2 { print $6, $8 }' "$R/units.tsv")" "the killed unit with an empty transcript is estimated"
+  assert_eq 1 "$(awk -F'\t' 'NR == 2 { print ($4 >= 2 ? 1 : 0) }' "$R/units.tsv")" \
+    "from its minutes x the run's \$30/min, not the 0.50 \$/min default ($(awk -F'\t' 'NR == 2 { print $4 }' "$R/units.tsv"))"
+}
+
+test_overnight_cost_counts_toward_budget() {
+  fixture ceb '{ "overnight": { "session_usd": 1, "run_usd": 1.5 } }'
+  scenario "stage execute; emit $COST_FX/overnight-cost-killed.jsonl; sleep 30" "cost 1"
+  STUDIO_OVERNIGHT_SESSION_SECONDS=8; export STUDIO_OVERNIGHT_SESSION_SECONDS
+  run_start; unset STUDIO_OVERNIGHT_SESSION_SECONDS
+  assert_eq 1 "$(calls)" "the estimate (1.70) + session_usd (1) passes run_usd (1.5): no second unit"
+  assert_contains "$(last_run_dir)/report.md" "^Ending: stop: run budget$" "budget is the ending"
+  assert_contains "$(last_run_dir)/report.md" '^Spent: ≈\$1.70$' "the estimate is in the spend, the total marked as one"
 }
 
 test_overnight_unexpected_stage() {
@@ -1272,8 +1501,89 @@ test_overnight_kill_after_grace() {
   STUDIO_OVERNIGHT_SESSION_SECONDS=1; export STUDIO_OVERNIGHT_SESSION_SECONDS
   run_start; unset STUDIO_OVERNIGHT_SESSION_SECONDS
   assert_eq 2 "$(calls)" "a session that ignores TERM is killed after the grace, and counted"
-  assert_contains "$(last_run_dir)/report.md" "^Ending: timed out on T1 (session_minutes " "two killed sessions with no progress stop the run, named as timed out"
+  assert_contains "$(last_run_dir)/report.md" "^Ending: timed out on T1 (session_minutes [0-9]*; 2 capped units) — checkpoint: " "two killed sessions with no progress stop the run at the task_timeouts bound, named as timed out"
   assert_eq "timed out" "$(awk -F'\t' 'NR == 1 { print $7 }' "$(last_run_dir)/units.tsv")" "a unit the watchdog ended with no progress is recorded timed out, not noprog"
+}
+# C1: a unit that ends on its own past its wrap-up time without finishing its
+# task is capped too (not killed: Timed out 0), and feeds only the bound. A
+# 20 s session wraps at 10 s; each unit ends at 12 s, far inside the cap.
+test_overnight_wrap_capped_unit() {
+  fixture wcu
+  scenario "stage execute; branch fw; task 1/2" "sleep 12" "sleep 12" "task 2/2"
+  STUDIO_OVERNIGHT_SESSION_SECONDS=20; export STUDIO_OVERNIGHT_SESSION_SECONDS
+  run_start; unset STUDIO_OVERNIGHT_SESSION_SECONDS
+  assert_eq "progress 0 0|noprog 0 1|noprog 0 1" \
+    "$(awk -F'\t' '{ printf "%s%s %s %s", (NR > 1 ? "|" : ""), $7, $6, $9 }' "$(last_run_dir)/units.tsv")" "outcome, timed out and capped per unit"
+  assert_contains "$(last_run_dir)/report.md" "^Ending: timed out on T2 (session_minutes [0-9]*; 2 capped units) — checkpoint: uncommitted: none; unpushed: none; last words: none$" "the bound, not retries, ends it; no checkpoint: the fallback's head"
+  assert_contains "$(last_run_dir)/report.md" "^| 2 | T2 | 0 | [^|]* | [^|]* | 0 | noprog (capped) |$" "the report marks a capped unit the cap did not end"
+  assert_contains "$(last_run_dir)/report.md" "^- 1 (note, requeues 0): uncommitted: none; unpushed: none; last words: none$" "the first unit's runner note is left for a unit that never read it"
+}
+# Ruling 6: an idle-watchdog kill past WRAP_AT is a stall, not a cap: it
+# keeps the stall ending and never feeds task_timeouts. A 20 s session wraps
+# at 10 s; the 12 s idle window ends the unit at about 13 s.
+test_overnight_stall_past_wrap_not_capped() {
+  fixture spw '{ "overnight": { "retries": 0 } }'
+  stall_log "$TMP/spw.jsonl" "sleep 999"
+  scenario "emit $TMP/spw.jsonl; hang"
+  idle_on 12 1 20; run_start; idle_off
+  R="$(last_run_dir)"
+  assert_eq "stalled 0 0" "$(awk -F'\t' 'NR == 1 { print $7, $6, $9 }' "$R/units.tsv")" "stalled, not timed out, not capped"
+  assert_eq yes "$(awk -F'\t' 'NR == 1 { print ($5 * 60 >= 10 ? "yes" : $5) }' "$R/units.tsv")" "it ended past its wrap-up time"
+  assert_contains "$R/report.md" '^Ending: stalled on T1 (no output for 20 min: Bash: sleep 999)$' "the stall ending, not the bound's"
+}
+# C4: a capped unit whose only own commit is studio-docs-sync's is not partial.
+test_overnight_docs_sync_commit_not_partial() {
+  fixture dsp '{ "overnight": { "kill_grace_seconds": 5 } }'
+  scenario "stage execute; branch fd; task 1/2" \
+    "wtcommit docs/plan.md docs(S1): plan at run docs abc1234; pushwt; hang" \
+    "wtcommit docs/spec.md docs(S1): approved plan; pushwt; hang"
+  STUDIO_OVERNIGHT_SESSION_SECONDS=8; export STUDIO_OVERNIGHT_SESSION_SECONDS
+  run_start; unset STUDIO_OVERNIGHT_SESSION_SECONDS
+  assert_eq "progress|timed out|timed out" "$(awk -F'\t' '{ printf "%s%s", (NR > 1 ? "|" : ""), $7 }' "$(last_run_dir)/units.tsv")" "docs-sync commits are not the unit's own"
+}
+# §3: commits a capped unit never pushed are no progress: it stays timed out.
+test_overnight_unpushed_commit_stays_timed_out() {
+  fixture upc '{ "overnight": { "kill_grace_seconds": 5 } }'
+  scenario "stage execute; branch fu; task 1/2" "wtcommit fix.gd fix: half; hang" "wtcommit fix2.gd fix: more; hang"
+  STUDIO_OVERNIGHT_SESSION_SECONDS=8; export STUDIO_OVERNIGHT_SESSION_SECONDS
+  run_start; unset STUDIO_OVERNIGHT_SESSION_SECONDS
+  R="$(last_run_dir)"
+  assert_eq "progress|timed out|timed out" "$(awk -F'\t' '{ printf "%s%s", (NR > 1 ? "|" : ""), $7 }' "$R/units.tsv")" "unpushed commits are not partial"
+  assert_contains "$R/report.md" "^- 1 (note, requeues 0): uncommitted: none; unpushed: [0-9a-f]* fix: half; last words: none$" "the runner note names the unpushed commit"
+}
+# D2: a capped unit that pushed one commit of its own and was killed with a
+# second one unpushed is partial: pushed commits are progress, all or not.
+test_overnight_partly_pushed_capped_is_partial() {
+  fixture ppc '{ "overnight": { "kill_grace_seconds": 5 } }'
+  scenario "stage execute; branch fq; task 1/2" "wtcommit fix.gd fix: one; pushwt; wtcommit fix2.gd fix: two; hang" "pushwt; task 2/2"
+  STUDIO_OVERNIGHT_SESSION_SECONDS=8; export STUDIO_OVERNIGHT_SESSION_SECONDS
+  run_start; unset STUDIO_OVERNIGHT_SESSION_SECONDS
+  R="$(last_run_dir)"
+  assert_eq "progress 0|partial 1|progress 0" \
+    "$(awk -F'\t' 'NR <= 3 { printf "%s%s %s", (NR > 1 ? "|" : ""), $7, $9 }' "$R/units.tsv")" "one pushed commit of two makes the capped unit partial"
+}
+# C1: partial resets noprog — noprog, partial, noprog still retries (retries 1).
+test_overnight_partial_resets_noprog() {
+  fixture prn '{ "overnight": { "kill_grace_seconds": 5 } }'
+  scenario "stage execute; branch fp; task 1/2" "" "wtcommit fix.gd fix: part; pushwt; hang" "" "task 2/2"
+  STUDIO_OVERNIGHT_SESSION_SECONDS=8; export STUDIO_OVERNIGHT_SESSION_SECONDS
+  run_start; unset STUDIO_OVERNIGHT_SESSION_SECONDS
+  assert_eq "progress|noprog|partial|noprog|progress" \
+    "$(awk -F'\t' 'NR <= 5 { printf "%s%s", (NR > 1 ? "|" : ""), $7 }' "$(last_run_dir)/units.tsv")" "the noprog after the partial is retried"
+}
+# Spec §4, single-plan: task_timeouts (2) capped units of one task end the
+# run (holds off) with the newest checkpoint in the ending.
+test_overnight_bound_single_plan() {
+  fixture bsp '{ "overnight": { "kill_grace_seconds": 5 } }'
+  scenario "stage execute; branch fb; task 1/2" \
+    "wtledger T2 checkpoint: done A, left B, next C; hang" \
+    "wtledger T2 checkpoint: done D, left E, next F; hang" "task 2/2"
+  STUDIO_OVERNIGHT_SESSION_SECONDS=8; export STUDIO_OVERNIGHT_SESSION_SECONDS
+  run_start; unset STUDIO_OVERNIGHT_SESSION_SECONDS
+  assert_eq 3 "$(calls)" "no third attempt of T2"
+  assert_contains "$(last_run_dir)/report.md" "^Ending: timed out on T2 (session_minutes [0-9]*; 2 capped units) — checkpoint: done D, left E, next F$" "the bound's ending carries the newest checkpoint"
+  assert_eq "progress 0|timed out 1|timed out 1" \
+    "$(awk -F'\t' '{ printf "%s%s %s", (NR > 1 ? "|" : ""), $7, $9 }' "$(last_run_dir)/units.tsv")" "outcome and capped per unit"
 }
 
 test_overnight_reap_poll_keeps_budget() {
@@ -1463,7 +1773,8 @@ test_overnight_report_not_done() {
   fixture repn; scenario "cost 1" "nocost"; run_start
   R="$(last_run_dir)/report.md"
   assert_contains "$R" "^Ending: no progress on T1$" "report: the stop reason"
-  assert_contains "$R" "cost unknown" "report: an unknown cost is said next to the total"
+  assert_not_contains "$R" "cost unknown" "report: no cost is unknown"
+  assert_contains "$R" '^| 2 | T1-retry | 0 | ≈[0-9.]* | ' "report: the result-less unit's cost is marked as an estimate"
   assert_contains "$R" "^## Resume" "report: a resume section when not done"
   assert_contains "$R" "cd '$P' && '$RUNNER' start" "report: the absolute resume command (D16)"
   assert_contains "$R" "^PR: none$" "report: no PR yet"
@@ -1786,6 +2097,43 @@ test_overnight_unit_env() {
   fixture uenv2; run_start --dry-run
   assert_not_contains "$RS_OUT" "STUDIO_RUN_DIR" "the dry-run launch line is unchanged"
 }
+# deadline_offsets — per call "<DEADLINE - the unit's start> <DEADLINE - WRAP_AT>",
+# each followed by a comma; the start is the runner's own (unit.now). `unset`
+# for a call whose session had no deadline.
+deadline_offsets() {
+  _dlo_i=1
+  while [ "$_dlo_i" -le "$(calls)" ]; do
+    cat "$CALLS/$_dlo_i.deadline" "$CALLS/$_dlo_i.unow" 2>/dev/null | tr '\n' ' ' \
+      | awk '{ if ($1 ~ /^[0-9]+$/ && $2 ~ /^[0-9]+$/ && $3 ~ /^[0-9]+$/) printf "%d %d,", $1 - $3, $1 - $2; else printf "unset," }'
+    _dlo_i=$((_dlo_i + 1))
+  done
+}
+test_overnight_deadline_exported() {
+  fixture dlx; scenario "$ISO1" "wtledger Stop: need art"
+  STUDIO_OVERNIGHT_SESSION_SECONDS=120; export STUDIO_OVERNIGHT_SESSION_SECONDS
+  run_start; unset STUDIO_OVERNIGHT_SESSION_SECONDS
+  assert_eq 2 "$(calls)" "two units ran"
+  assert_eq "120 60,120 60," "$(deadline_offsets)" \
+    "each unit: DEADLINE = its start + 120, WRAP_AT = DEADLINE - 60 (120/2 caps max(600, 120/6))"
+  _dlx_t0="$(cat "$CALLS/1.t0" 2>/dev/null)"; _dlx_d="$(cut -d' ' -f1 "$CALLS/1.deadline" 2>/dev/null)"
+  assert_eq ok "$(awk -v d="$_dlx_d" -v t="$_dlx_t0" 'BEGIN { print (d - t <= 120 && d - t >= 110) ? "ok" : d - t }')" \
+    "the session's own clock: its deadline is 120 s past the unit's start, less the launch"
+}
+# exclusive-scan: test_overnight_deadline_small_session in (d) the stub's first action records its environment, which must still beat the 2-second watchdog
+test_overnight_deadline_small_session() {
+  fixture dls; scenario "stage execute; task 1/2; ledger T1 complete a..b"
+  STUDIO_OVERNIGHT_SESSION_SECONDS=2; export STUDIO_OVERNIGHT_SESSION_SECONDS
+  run_start; unset STUDIO_OVERNIGHT_SESSION_SECONDS
+  assert_eq "2 1" "$(deadline_offsets | cut -d, -f1)" "session 2 s: DEADLINE = start + 2, WRAP_AT = DEADLINE - 1 (2/2 caps max(600, 0))"
+}
+test_help_exits_clean() {
+  _hx=0; sh "$RUNNER" --help > "$TMP/helpx.out" 2> "$TMP/helpx.err" || _hx=$?
+  assert_eq 0 "$_hx" "--help exits 0"
+  assert_eq "" "$(cat "$TMP/helpx.err")" "--help writes nothing on stderr"
+  for w in STUDIO_UNIT_DEADLINE STUDIO_UNIT_WRAP_AT studio-deadline 'sh -c "\$CMD" notify TEXT' 'tests set it to `: `'; do
+    assert_contains "$TMP/helpx.out" "$w" "help names $w"
+  done
+}
 test_overnight_events_two_units() {
   fixture ev2
   scenario "stage execute; task 1/1; ledger T1 complete; cost 2" \
@@ -1811,7 +2159,7 @@ test_say_writes_message() {
   assert_eq 1 "$(cat "$V_OUT")" "say prints the id"
   M="$FR_DIR/inbox/-/1.msg"
   assert_file "$M" "the message is in the story's inbox"
-  assert_eq "id: 1|scope: story|target: -|story: -|requeues: 0|--" \
+  assert_eq "id: 1|scope: story|target: -|story: -|from: operator|requeues: 0|--" \
     "$(sed '/^--$/q' "$M" | grep -v '^queued: ' | tr '\n' '|' | sed 's/|$//')" "the header, in order"
   assert_contains "$M" '^queued: 20[0-9-]*T[0-9:]*Z$' "queued is ISO-8601 UTC"
   assert_eq 'Use the EventBus, not "signals" — it'\''s $HOME' "$(body "$M")" "the body is the text, verbatim"
@@ -2024,6 +2372,221 @@ test_unsay_id_prefix() {
   verb unsay - 1; assert_eq 1 "$V_STATUS" "a second unsay 1 is unknown"
   fake_run_end
 }
+# ---- say --task, --file and - (spec §5, D5) ----
+# a task directive is active while the task pointer k < n, then retired (T<n>
+# done): said shows it so, and directive_chars stops counting it.
+test_channel_say_task_scope_retires() {
+  fixture cts '{"overnight": {"directive_chars": 500}}'
+  a="$(printf '%300s' '' | tr ' ' a)"; b="$(printf '%300s' '' | tr ' ' b)"; c="$(printf '%300s' '' | tr ' ' c)"
+  scenario "stage execute; branch feat; task 0/3; saytask T2 $a; inbox; record; task 1/3; wtledger T1 complete a..b; say $b; said 1" \
+           "task 2/3; wtledger T2 complete b..c; said 2; say $c" \
+           "task 3/3; wtledger T3 complete c..d" \
+           "wtledger final review done" "wtledger shipped https://x/pull/4; stage idle; task -"
+  run_start; R="$(last_run_dir)"
+  assert_eq 0 "$RS_STATUS" "done"
+  M="$(ls "$R"/inbox/-/delivered/*/1.msg 2>/dev/null | head -n 1)"
+  assert_contains "$M" "^scope: task$" "the message's scope is task"
+  assert_contains "$M" "^task: T2$" "and its task T2"
+  assert_contains "$CALLS/1.inbox" "^    studio-state ledger 'Directive 1 T2: $a'$" "the unit is told to record Directive 1 T2:"
+  assert_eq "1  active (T2)  $a" "$(cat "$CALLS/1.said.1")" "said after unit 1 (task 1/3): active"
+  assert_eq "" "$(grep -rl bbb "$R/inbox" 2>/dev/null)" "while T2 is open its 300 characters count: 600 of 500 is refused"
+  assert_eq "1  retired (T2 done)  $a" "$(cat "$CALLS/2.said.2")" "said after task 2/3: retired (T2 done)"
+  assert_contains "$R/inbox/-/2.msg" "^$c$" "once T2 is done it no longer counts: 300 of 500 fits"
+  assert_not_contains "$R/events.jsonl" '"event":"message_requeued"' "the recorded task directive is not requeued"
+}
+test_channel_say_task_bare_resolves_current() {
+  fixture stb; ( cd "$P" && sh "$STATE_BIN" set stage execute && sh "$STATE_BIN" set task 4/12 ) >/dev/null 2>&1
+  fake_run overnight-stb-1 single
+  verb say - --task -- x
+  assert_eq 0 "$V_STATUS" "say --task exits 0"
+  assert_eq 1 "$(cat "$V_OUT")" "it prints the id"
+  M="$FR_DIR/inbox/-/1.msg"
+  assert_contains "$M" "^scope: task$" "scope task"
+  assert_contains "$M" "^task: T5$" "a bare --task at task 4/12 is T5"
+  assert_contains "$M" "^from: operator$" "from the operator"
+  assert_contains "$FR_DIR/events.jsonl" '"event":"message_queued","story":"-","id":1,"scope":"task","task":"T5"}$' "message_queued, scope task, its task"
+  verb say - --task T7 'later'
+  assert_contains "$FR_DIR/inbox/-/2.msg" "^task: T7$" "an explicit T7"
+  verb said -
+  assert_eq "1  pending (T5)  x|2  pending (T7)  later" "$(tr '\n' '|' < "$V_OUT" | sed 's/|$//')" "said names each one's task"
+  verb say - --task t6 -- y
+  assert_eq 0 "$V_STATUS" "--task t6 is accepted"
+  assert_contains "$FR_DIR/inbox/-/3.msg" "^task: T6$" "t6 is normalised to T6"
+  fake_run_end
+}
+test_channel_say_task_refusals() {
+  fixture str; ( cd "$P" && sh "$STATE_BIN" set stage execute && sh "$STATE_BIN" set task 4/12 ) >/dev/null 2>&1
+  fake_run overnight-str-1 single
+  verb say - --unit --task T5 -- x;  assert_eq 2 "$V_STATUS" "--unit with --task is usage"
+  verb say - --task --unit -- x;     assert_eq 2 "$V_STATUS" "--task with --unit is usage"
+  verb said - --task;                assert_eq 2 "$V_STATUS" "--task belongs to say only"
+  verb say - --task T4 -- x
+  assert_eq 1 "$V_STATUS" "T4 at task 4/12: exit 1"
+  assert_eq "studio-overnight: say: T4 is already complete" "$(cat "$V_ERR")" "one line names it"
+  verb say - --task T1 x;            assert_eq 1 "$V_STATUS" "T1 too"
+  verb say - --task T0 -- x;         assert_eq 2 "$V_STATUS" "T0 is usage"
+  verb say - --task T05 -- x;        assert_eq 2 "$V_STATUS" "a leading zero is usage"
+  verb say - --task t05 -- x;        assert_eq 2 "$V_STATUS" "lower case too"
+  verb say - --task T13 -- x
+  assert_eq 1 "$V_STATUS" "T13 at task 4/12: exit 1"
+  assert_eq "studio-overnight: say: T13 is past the plan's last task T12" "$(cat "$V_ERR")" "one line names the last task"
+  assert_missing "$FR_DIR/inbox/-/1.msg" "no refusal wrote a message"
+  ( cd "$P" && sh "$STATE_BIN" set task 12/12 ) >/dev/null 2>&1
+  verb say - --task -- x
+  assert_eq 1 "$V_STATUS" "a bare --task at task 12/12: exit 1"
+  assert_eq "studio-overnight: say: story - is not at a task — use --task T<n>" "$(cat "$V_ERR")" "the refusal"
+  ( cd "$P" && sh "$STATE_BIN" set stage plan && sh "$STATE_BIN" set task - ) >/dev/null 2>&1
+  verb say - --task -- x;            assert_eq 1 "$V_STATUS" "a bare --task before execute: exit 1"
+  assert_contains "$V_ERR" "is not at a task — use --task T<n>" "the same refusal"
+  verb say - --task T2 -- x;         assert_eq 0 "$V_STATUS" "an explicit T2 before execute is accepted"
+  assert_eq 1 "$(cat "$V_OUT")" "as message 1 (no refusal wrote one)"
+  fake_run_end
+}
+# say --file: the text verbatim through the .msg, the delivery block, and the
+# ledger record (escaped) back out of studio-brief.
+test_channel_say_file_verbatim() {
+  fixture sfv
+  printf '\n## Tasks\n\n### Task 1: one\nMARK-T1\n' >> "$P/docs/plan.md"
+  F="$TMP/sfv.txt"; printf 'line one\nit'\''s $HOME \\n literal\n\t\n\nlast\n' > "$F"
+  fake_run overnight-sfv-1 single
+  verb say - --file "$F"
+  assert_eq 0 "$V_STATUS" "say --file exits 0"
+  M="$FR_DIR/inbox/-/1.msg"
+  body "$M" > "$TMP/sfv.body"
+  assert_eq 0 "$(cmp -s "$F" "$TMP/sfv.body"; echo $?)" "the .msg body is the file, byte for byte"
+  printf '{"session_id":"s","hook_event_name":"SessionStart","source":"startup"}' \
+    | STUDIO_UNIT_TAG=tag-sfv STUDIO_RUN_DIR="$FR_DIR" sh "$REPO_ROOT/studios/game-dev/hooks/operator-inbox.sh" > "$TMP/sfv.inbox"
+  sed -n '/^\[1, story\] /,/^  → Follow/p' "$TMP/sfv.inbox" | sed '$d' | sed '1s/^\[1, story\] //' > "$TMP/sfv.shown"
+  assert_eq 0 "$(cmp -s "$F" "$TMP/sfv.shown"; echo $?)" "the delivery block shows it verbatim"
+  cmd="$(sed -n 's/^    studio-state ledger //p' "$TMP/sfv.inbox")"
+  assert_eq 1 "$(printf '%s\n' "$cmd" | grep -c .)" "the record command is one line"
+  ( cd "$P" && eval "set -- $cmd" && sh "$STATE_BIN" ledger "$1" ) >/dev/null 2>&1
+  ( cd "$P" && sh "$REPO_ROOT/studios/game-dev/bin/studio-brief" task 1 ) > "$TMP/sfv.brief" 2>&1
+  sed -n '/Directive 1: /,/^(task 1 has no Spec: line)$/p' "$TMP/sfv.brief" | sed '$d' | sed '1s/^- [0-9-]* Directive 1: //' > "$TMP/sfv.round"
+  assert_eq 0 "$(cmp -s "$F" "$TMP/sfv.round"; echo $?)" "the ledger text round-trips through studio-brief task to the same bytes"
+  verb said -
+  assert_eq "1  active  line one it's \$HOME \\n literal    last" "$(cat "$V_OUT")" "said shows the recorded text on one line (newlines and the tab as spaces)"
+  verb say - --file "$TMP/no-such-file"
+  assert_eq 1 "$V_STATUS" "an unreadable file: exit 1"
+  assert_contains "$V_ERR" "say: cannot read $TMP/no-such-file" "named"
+  : > "$TMP/sfv.empty"; verb say - --file "$TMP/sfv.empty"
+  assert_eq 2 "$V_STATUS" "an empty file is empty text"
+  verb say - --file "$F" -- x;       assert_eq 2 "$V_STATUS" "--file with -- text is usage"
+  verb say - --file "$F" x;          assert_eq 2 "$V_STATUS" "--file with text is usage"
+  verb say - --file;                 assert_eq 2 "$V_STATUS" "--file needs a value"
+  fake_run_end
+}
+test_channel_say_stdin() {
+  fixture ssi; fake_run overnight-ssi-1 single
+  V_STATUS=0; ( cd "$P" && printf 'a\nb\n' | sh "$RUNNER" say - - ) > "$TMP/v.out" 2> "$TMP/v.err" || V_STATUS=$?
+  assert_eq 0 "$V_STATUS" "say - - reads stdin"
+  assert_eq "$(printf 'a\nb')" "$(body "$FR_DIR/inbox/-/1.msg")" "the body is stdin, its lines kept"
+  V_STATUS=0; ( cd "$P" && printf 'c\n' | sh "$RUNNER" say - --task T3 - ) > "$TMP/v.out" 2> "$TMP/v.err" || V_STATUS=$?
+  assert_eq 0 "$V_STATUS" "with --task too"
+  assert_eq c "$(body "$FR_DIR/inbox/-/2.msg")" "its body"
+  V_STATUS=0; ( cd "$P" && printf '  \n' | sh "$RUNNER" say - - ) > "$TMP/v.out" 2> "$TMP/v.err" || V_STATUS=$?
+  assert_eq 2 "$V_STATUS" "blank stdin is empty text"
+  V_STATUS=0; ( cd "$P" && printf 'x\n' | sh "$RUNNER" say - - -- y ) > "$TMP/v.out" 2> "$TMP/v.err" || V_STATUS=$?
+  assert_eq 2 "$V_STATUS" "- with -- text is usage"
+  fake_run_end
+}
+# requeue_check: a task directive is recorded as `Directive <id> T<n>:`; one
+# whose task completed in the unit is retired, not requeued; an open one is.
+test_requeue_task_directive_recorded() {
+  fixture rtd
+  scenario "stage execute; branch feat; task 1/3; wtledger T1 complete a..b; saytask T3 one; saytask T2 two; saytask T3 three" \
+           "inbox; record 1; task 2/3; wtledger T2 complete b..c" \
+           "inbox; record 3; task 3/3; wtledger T3 complete c..d" \
+           "wtledger final review done" "wtledger shipped https://x/pull/6; stage idle; task -"
+  run_start; R="$(last_run_dir)"
+  assert_eq 0 "$RS_STATUS" "done"
+  assert_contains "$(ls -d "$TMP_WT"/wt-feat)/.studio/ledger/spec.md" "^- [0-9-]* Directive 1 T3: one$" "recorded with its task"
+  assert_not_contains "$R/events.jsonl" '"event":"message_requeued","story":"-","id":1,' "a recorded task directive is not requeued"
+  assert_not_contains "$R/events.jsonl" '"event":"message_requeued","story":"-","id":2,' "one whose task is done is retired, not requeued"
+  assert_eq 1 "$(grep -c '"event":"message_requeued","story":"-","id":3,' "$R/events.jsonl")" "an unrecorded open one is requeued once"
+  assert_contains "$CALLS/3.inbox" "^\[3, task T3\] three$" "and delivered again"
+  assert_not_contains "$R/report.md" "Operator messages left" "nothing left"
+}
+test_requeue_note_never_requeued() {
+  fixture rnn
+  scenario "stage execute; branch feat; task 1/3; wtledger T1 complete a..b; note T2 done: a; next: b" \
+           "inbox; task 2/3; wtledger T2 complete b..c" \
+           "task 3/3; wtledger T3 complete c..d" \
+           "wtledger final review done" "wtledger shipped https://x/pull/7; stage idle; task -"
+  run_start; R="$(last_run_dir)"
+  assert_eq 0 "$RS_STATUS" "done"
+  assert_contains "$CALLS/2.inbox" "^RUNNER NOTE (previous attempt of T2)$" "the note is shown at the next unit's start"
+  assert_contains "$CALLS/2.inbox" "^done: a$" "with its text"
+  assert_not_contains "$CALLS/2.inbox" "studio-state ledger" "and never recorded"
+  assert_not_contains "$R/events.jsonl" '"event":"message_requeued"' "a note is never requeued"
+  assert_eq 1 "$(ls "$R"/inbox/-/delivered/*/90.msg 2>/dev/null | wc -l | tr -d ' ')" "it is spent once delivered"
+  assert_not_contains "$R/report.md" "Operator messages left" "nothing left"
+}
+# a requeued multi-line message is still one line in the report's list
+test_requeue_multiline_left_one_line() {
+  fixture rml; printf 'first\nsecond\n' > "$TMP/rml.txt"
+  scenario "stage execute; branch feat; task 1/2; wtledger T1 complete a..b; sayfile $TMP/rml.txt" \
+           "inbox; task 2/2; wtledger T2 complete b..c" \
+           "wtledger final review done" "wtledger shipped https://x/pull/9; stage idle; task -"
+  run_start; R="$(last_run_dir)"
+  assert_contains "$R/report.md" "^- 1 (story, requeues 1): first second$" "listed on one line"
+}
+# queue_note STORY T<n> TEXT — the runner's note, under the inbox lock.
+test_queue_note_writes_runner_note() {
+  D="$TMP/qn"; rm -rf "$D"; mkdir -p "$D/inbox/S1/delivered/u1"
+  put_msg "$D/inbox/S1" 4 story four; put_msg "$D/inbox/S1/delivered/u1" 6 unit six
+  QN="$(sed -n '/^queue_note() {/,/^}/p' "$REPO_ROOT/studios/game-dev/bin/studio-overnight")"
+  assert_eq 1 "$([ -n "$QN" ] && echo 1 || echo 0)" "studio-overnight defines queue_note"
+  ( SELF_DIR="$REPO_ROOT/studios/game-dev/bin"; . "$SELF_DIR/overnight-channel.sh"
+    RUN_DIR="$D"; CUR_ID=OTHER
+    say() { printf '%s\n' "$*" >> "$D/say"; }
+    run_event() { printf '%s\n' "$*" >> "$D/events"; }
+    feature_dir() { printf '%s\n' "$D"; }
+    # the given story's ledger (STUDIO_STORY), not the current story's
+    ledger_of() { [ "${STUDIO_STORY:-}" = S1 ] && printf '%s\n' '- 2026-10-26 Directive 9: older' '- 2026-10-26 T1 complete'; }
+    eval "$QN"
+    queue_note S1 T3 "$(printf 'done: a\nleft: b$HOME')" ) > "$TMP/qn.out" 2>&1
+  assert_eq 0 "$?" "queue_note returns 0"
+  M="$D/inbox/S1/10.msg"
+  assert_file "$M" "the next id passes STORY's ledger Directive 9 (CUR_ID is another story)"
+  assert_contains "$M" "^scope: note$" "scope note"
+  assert_contains "$M" "^from: runner$" "from runner"
+  assert_contains "$M" "^task: T3$" "its task"
+  assert_contains "$M" "^story: S1$" "its story"
+  assert_eq "$(printf 'done: a\nleft: b$HOME')" "$(body "$M")" "the text verbatim"
+  assert_missing "$D/inbox/S1/.lock" "the inbox lock is released"
+  assert_eq "message_queued story=S1 id:=10 scope=note" "$(cat "$D/events")" "a message_queued event, scope note"
+  if [ "$(id -u)" != 0 ]; then
+    chmod 555 "$D/inbox"
+    ( SELF_DIR="$REPO_ROOT/studios/game-dev/bin"; . "$SELF_DIR/overnight-channel.sh"
+      RUN_DIR="$D"; CUR_ID=S2
+      say() { printf '%s\n' "$*" >> "$D/say"; }
+      run_event() { :; }; feature_dir() { printf '%s\n' "$D"; }; ledger_of() { :; }
+      eval "$QN"
+      queue_note S2 T1 x ) > /dev/null 2>&1; _qn_st=$?
+    chmod 755 "$D/inbox"
+    assert_eq 1 "$_qn_st" "an inbox that cannot be created: 1"
+    assert_eq "cannot create $D/inbox/S2: the runner note for T1 was not queued" "$(tail -n 1 "$D/say")" "named as such, not busy"
+  fi
+}
+# spec §5: a pending task message whose task is done is not delivered; the
+# runner moves it aside after the unit that finished the task.
+test_requeue_stale_task_not_delivered() {
+  fixture rst
+  scenario "stage execute; branch feat; task 1/3; wtledger T1 complete a..b; saytask T2 stale; saytask T3 keep" \
+           "task 2/3; wtledger T2 complete b..c" \
+           "inbox; record; said 3; task 3/3; wtledger T3 complete c..d" \
+           "wtledger final review done" "wtledger shipped https://x/pull/12; stage idle; task -"
+  run_start; R="$(last_run_dir)"
+  assert_eq 0 "$RS_STATUS" "done"
+  assert_not_contains "$CALLS/3.inbox" "stale" "the T2 message, queued but not claimed before task 2/3, is not delivered"
+  assert_contains "$CALLS/3.inbox" "^\[2, task T3\] keep$" "the open T3 message is"
+  assert_file "$R/inbox/-/delivered/retired/1.msg" "the stale one is moved aside"
+  assert_contains "$CALLS/3.said.3" "^1  retired (T2 done)  stale$" "said shows it retired"
+  assert_not_contains "$R/events.jsonl" '"event":"message_requeued"' "nothing is requeued"
+  assert_not_contains "$R/report.md" "Operator messages left" "nothing left"
+}
+
 test_hold_resume_stop_table() {
   fixture tb
   fake_run overnight-tb-1 manifest Q=queued W=waiting R=running G=gate-repair \
@@ -2302,19 +2865,23 @@ test_overnight_resume_runs_next_unit() {
   scenario "$ISO1" "wtledger Stop: need art" "inbox; task 2/2; wtledger T2 complete b..c" \
            "wtledger final review done" "wtledger shipped https://x/pull/3; stage idle; task -"
   start_bg; wait_held 60
-  verb say - "use the bus"; assert_eq 1 "$(cat "$V_OUT")" "say on the held story: id 1"
+  # Ruling 7: the held unit left no checkpoint, so its runner note took id 1.
+  assert_contains "$(last_run_dir)/inbox/-/1.msg" "^scope: note$" "the held unit's runner note is id 1"
+  verb say - "use the bus"; assert_eq 2 "$(cat "$V_OUT")" "say on the held story: id 2"
   verb say - --unit "skip polish"
   verb resume -; assert_eq "resume requested: - resumes within one poll" "$(cat "$V_OUT")" "resume -"
   bg_end 60 "the resumed run finishes"
   assert_eq 0 "$BG_STATUS" "it ends done"
   assert_eq "1 2 3 4 5" "$(unit_col 1)" "unit numbers run on after the hold"
-  assert_contains "$CALLS/3.inbox" '^\[1, story\] use the bus$' "the next unit got the directive at startup"
-  assert_contains "$CALLS/3.inbox" '^\[2, unit\] skip polish$' "and the unit message"
-  assert_contains "$R/events.jsonl" '"event":"message_requeued","story":"-","id":1,"unit":"[^"]*-0-3-T2","requeues":1}$' "the unrecorded directive was requeued (AC13)"
-  assert_contains "$R/inbox/-/1.msg" "^requeues: 1$" "back in pending with requeues 1"
-  assert_missing "$R/inbox/-/2.msg" "a unit message is never requeued"
+  assert_contains "$CALLS/3.inbox" '^RUNNER NOTE (previous attempt of T2)$' "the next unit got the runner note"
+  assert_contains "$CALLS/3.inbox" '^\[2, story\] use the bus$' "and the directive at startup"
+  assert_contains "$CALLS/3.inbox" '^\[3, unit\] skip polish$' "and the unit message"
+  assert_contains "$R/events.jsonl" '"event":"message_requeued","story":"-","id":2,"unit":"[^"]*-0-3-T2","requeues":1}$' "the unrecorded directive was requeued (AC13)"
+  assert_contains "$R/inbox/-/2.msg" "^requeues: 1$" "back in pending with requeues 1"
+  assert_missing "$R/inbox/-/1.msg" "a runner note is never requeued"
+  assert_missing "$R/inbox/-/3.msg" "a unit message is never requeued"
   assert_contains "$R/report.md" "^## Operator messages left$" "the report lists the messages left (AC14)"
-  assert_contains "$R/report.md" "^- 1 (story, requeues 1): use the bus$" "id, scope, requeues, text"
+  assert_contains "$R/report.md" "^- 2 (story, requeues 1): use the bus$" "id, scope, requeues, text"
   assert_contains "$R/events.jsonl" '"state":"running"}$' "a running event after the resume"
   holds_off
 }
@@ -2643,7 +3210,7 @@ test_overnight_origin_check_holds_unpushed() {
   assert_contains "$R/control/-.held" "^held stop: $PUSH_WHY until " "the held record names the branch, the local head and origin's"
   assert_eq stop "$(unit_col 7)" "unit 1's outcome is stop"
   assert_eq 1 "$(calls)" "no other unit runs"
-  assert_not_contains "$R/units.tsv" "	progress$" "the unit is not counted as progress"
+  assert_not_contains "$R/units.tsv" "	progress	" "the unit is not counted as progress"
   verb stop -; bg_end 20 "the run ends within a poll"
   assert_contains "$R/report.md" "^Ending: stop: $PUSH_WHY$" "the stop keeps the why"
   holds_off
@@ -2989,7 +3556,8 @@ test_channel_ledger_follows_story() {
   assert_contains "$V_OUT" "^7  active  keep the bus$" "said reads the ledger where the story's pointer is"
   verb say - x
   assert_eq 0 "$V_STATUS" "say - succeeds during the hold"
-  assert_eq 8 "$(cat "$V_OUT")" "the next id counts the story worktree's Directive lines"
+  # 8 went to the held unit's runner note (ruling 7), which counted them too.
+  assert_eq 9 "$(cat "$V_OUT")" "the next id counts the story worktree's Directive lines"
   verb stop -; bg_end 60 "the run ends"
   assert_contains "$R/report.md" "^Ending: stop: need art$" "with the story's Stop:"
   holds_off
@@ -3291,6 +3859,7 @@ FAKE
   assert_file "$TMP/tpl/o-$_fb_key/ok" "the rebuilt template is marked ok"
   assert_eq '{"t":1}' "$(cat "$TMP/fb2/.studio/config.json")" "and the project carries the config"
 }
+# exclusive-scan: test_overnight_cost_estimate_empty_transcript out (d) the first unit's sleep 4 is a floor that gives it 0.1 min of a $3 cost; a late start only lengthens it (a lower $/min, still far above the default), and the 12 s cap leaves 8 s for the stub
 # exclusive-scan: test_overnight_overhead in (a) it bounds the runner's own gap between units, a pure elapsed ceiling that a loaded machine breaks
 # exclusive-scan: test_overnight_timeout in (a) it asserts the watchdog cut a long session far short of its sleep, which needs a quiet machine
 # exclusive-scan: test_overnight_kill_after_grace out (d) the one-second watchdog only has to fire, and a late start gives the same ending; the grace runs on the real clock, so the test is also in the real-clock list
@@ -3320,7 +3889,8 @@ FAKE
 # exclusive-scan: test_overnight_unit_caps out (static) reads the caps the stub recorded from its environment; no clock
 # exclusive-scan: test_overnight_open_calls out (d) a false hit: "--seconds 5" is text in a fixture log line; activity only parses the log
 TESTS_EXCLUSIVE="test_overnight_hold_on_feature_stop test_overnight_stop_held_by_operator test_overnight_overhead test_overnight_timeout test_overnight_inhibitor test_overnight_claim_without_run_dir test_inbox_lock_busy test_overnight_sighup_while_held test_overnight_sigterm test_overnight_sigint test_overnight_stop_beats_resume test_overnight_resume_wins_at_deadline \
-  test_overnight_idle_stall test_overnight_idle_spares_gate_call test_overnight_stall_holds_with_until_command"
+  test_overnight_idle_stall test_overnight_idle_spares_gate_call test_overnight_stall_holds_with_until_command \
+  test_overnight_deadline_small_session"
 TESTS_REAL_CLOCK="test_overnight_kill_after_grace test_overnight_sighup test_inbox_lock_released_on_signal test_overnight_hold_default_poll"
 # The knobs run at their production value in the real-clock and exclusive tests; every
 # other test polls fast. A test that sets its own POLL_SECONDS (holds_on) still wins.
@@ -3338,11 +3908,12 @@ run_tests test_overnight_setup_preflight_single test_overnight_tools_after_setup
   test_overnight_fixture_copy_equals_build test_overnight_fixture_failed_build_not_reused \
   test_overnight_open_calls test_overnight_denied_scan test_overnight_permission_route_ending test_overnight_idle_stall test_overnight_idle_spares_gate_call \
   test_overnight_idle_off_and_refusals test_overnight_idle_default_seams test_overnight_stall_holds_with_until_command \
-  test_overnight_report_done test_overnight_report_not_done test_overnight_preflight_env_warns_not_blocks \
+  test_overnight_report_done test_overnight_report_not_done test_overnight_preflight_env_warns_not_blocks test_preflight_runner_behind_warns \
   test_overnight_report_anchors test_overnight_report_blocks test_overnight_report_gate_block test_overnight_resume_quote test_overnight_label_t1 \
   test_overnight_session_seconds_refused test_overnight_claim_without_run_dir \
   test_overnight_report_runner_error test_overnight_crash_resume test_overnight_status test_overnight_status_short_lane \
-  test_overnight_timeout test_overnight_kill_after_grace \
+  test_overnight_timeout test_overnight_kill_after_grace test_overnight_bound_single_plan test_overnight_wrap_capped_unit test_overnight_stall_past_wrap_not_capped \
+  test_overnight_docs_sync_commit_not_partial test_overnight_unpushed_commit_stays_timed_out test_overnight_partly_pushed_capped_is_partial test_overnight_partial_resets_noprog \
   test_overnight_reap_poll_keeps_budget test_overnight_reap_poll_rejects_bad_value \
   test_overnight_stop_file test_overnight_sigterm test_overnight_sigint test_overnight_sighup \
   test_overnight_stop_no_run test_overnight_inhibitor test_overnight_no_inhibitor \
@@ -3360,7 +3931,9 @@ run_tests test_overnight_setup_preflight_single test_overnight_tools_after_setup
   test_overnight_sequence_to_done test_overnight_launch_argv test_overnight_launch_allow_rules test_overnight_ignores_inherited_lane_vars \
   test_overnight_retry_then_no_progress test_overnight_orphaned_unit test_overnight_progress_resets_retry \
   test_overnight_retries_zero test_overnight_stop_line test_overnight_copied_stop_not_new \
-  test_overnight_run_budget test_overnight_cost_unknown test_overnight_unexpected_stage \
+  test_overnight_run_budget test_overnight_cost_no_result_estimated test_overnight_cost_estimate_helpers \
+  test_overnight_cost_estimate_killed_unit test_overnight_cost_estimate_calibrated test_overnight_cost_estimate_empty_transcript \
+  test_overnight_cost_counts_toward_budget test_overnight_unexpected_stage \
   test_overnight_overhead test_overnight_unknown_label_stops \
   test_overnight_models_by_unit test_overnight_check_unit test_overnight_adopt_config_refusals test_overnight_config_refusals_v2 \
   test_overnight_default_branch_required test_overnight_deny_merge_basename \
@@ -3370,6 +3943,7 @@ run_tests test_overnight_setup_preflight_single test_overnight_tools_after_setup
   test_overnight_deny_rules_usage test_overnight_deny_rules_match_launch \
   test_overnight_origin_written test_overnight_origin_absent_without_variable test_overnight_origin_refused \
   test_overnight_hold_config_refused test_overnight_channel_file test_overnight_unit_env \
+  test_overnight_deadline_exported test_overnight_deadline_small_session test_help_exits_clean \
   test_overnight_events_two_units \
   test_say_writes_message \
   test_say_dash_text_and_unit \
@@ -3431,6 +4005,9 @@ run_tests test_overnight_setup_preflight_single test_overnight_tools_after_setup
   test_single_plan_story_not_found_stops test_single_plan_resume_line_names_story_worktree \
   test_single_plan_ambiguous_story_stops test_single_plan_preflight_names_story \
   test_single_plan_from_story_worktree test_single_plan_in_place_keeps_main_pointer \
+  test_channel_say_task_scope_retires test_channel_say_task_bare_resolves_current test_channel_say_task_refusals \
+  test_channel_say_file_verbatim test_channel_say_stdin test_requeue_task_directive_recorded \
+  test_requeue_note_never_requeued test_requeue_multiline_left_one_line test_queue_note_writes_runner_note test_requeue_stale_task_not_delivered \
   test_channel_ledger_follows_story test_status_reads_persisted_spec \
   test_single_plan_follows_adopted_legacy_story test_single_plan_legacybranch_in_unit_follows \
   test_single_plan_ignores_new_story_in_start

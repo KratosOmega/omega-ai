@@ -72,13 +72,16 @@ studio_env_test              1       43
 overnight_runs_test          1       71
 state_guard_test             1       66
 studio_peers_test            1       23
+studio_deadline_test         1       39
+docs_sync_test               1       25
 studio_event_test            1       41
 locale_guard_test            1       42
 overnight_sessions_test      1       23
 sync_test                    1       8
 pointer_skills_route_test    1       15
 pointer_skills_omega_test    1       16
-pointer_skills_execute_test  1       14
+pointer_skills_execute_test  1       32
+pointer_skills_plan_test     1       6
 EOF
 }
 

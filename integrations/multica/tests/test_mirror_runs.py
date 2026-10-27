@@ -311,6 +311,10 @@ class MirrorRunsTest(MirrorCase):
             (ev("unit_ended", story="B", unit="u1", label="repair", outcome="progress", usd=0.5), None,
              "studio: unit u1 (repair) ended: progress, $0.50"),
             (ev("message_queued", story="B", id=3, scope="story"), None, "studio: message 3 queued (story)"),
+            (ev("message_queued", story="B", id=4, scope="task", task="T12"), None, "studio: message 4 queued (task T12)"),
+            (ev("message_queued", story="B", id=5, scope="task", task=7), None, "studio: message 5 queued (task T7)"),
+            (ev("message_queued", story="B", id=7, scope="task", task="t7"), None, "studio: message 7 queued (task T7)"),
+            (ev("message_queued", story="B", id=6, scope="task"), None, "studio: message 6 queued (task)"),
             (ev("message_delivered", story="B", id=3, scope="story", unit="u1", via="tool_call"), None,
              "studio: message 3 delivered to unit u1"),
             (ev("message_requeued", story="B", id=3, unit="u1", requeues=1), None,
@@ -345,6 +349,18 @@ class MirrorRunsTest(MirrorCase):
         st = {"mode": "manifest", "story_failed": [], "run_dir": "/x"}
         w = self.mirror.event_writes(st, ev("unit_ended", story="A", unit="u", label="l", outcome="done", usd=None))
         self.assertEqual(w, [("comment", "A", "studio: unit u (l) ended: done, cost unknown")])
+
+    def test_usd_estimate_marked(self):
+        # A unit killed at its cap has an estimated cost (usd_est): ≈, as in the reports.
+        self.assertEqual(self.mirror.cost(1.6968, True), "≈$1.70")
+        self.assertEqual(self.mirror.cost(1.5, False), "$1.50")
+        self.assertEqual(self.mirror.cost(None, True), "cost unknown")
+        st = {"mode": "manifest", "story_failed": [], "run_dir": "/x"}
+        w = self.mirror.event_writes(st, ev("unit_ended", story="A", unit="u", label="T1", outcome="timed out",
+                                            usd=1.6968, usd_est=True))
+        self.assertEqual(w, [("comment", "A", "studio: unit u (T1) ended: timed out, ≈$1.70")])
+        w = self.mirror.event_writes(st, ev("unit_ended", story="A", unit="u", label="T1", outcome="done", usd=2))
+        self.assertEqual(w, [("comment", "A", "studio: unit u (T1) ended: done, $2.00")])
 
     def test_single_plan_routes_to_run_issue(self):
         run = self.mk()

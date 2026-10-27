@@ -75,10 +75,11 @@ envelope, in this order:
   character). A line that would pass 4096 bytes drops fields from its end
   and gains `"cut":true`. Message text is never written to the log.
 - Fields marked (number) are JSON numbers, or `null` when the runner does not
-  know the value (for example a unit's `usd`). Single-plan runs use
+  know the value (a unit's `usd` in logs written before cost estimates). Single-plan runs use
   `"story":"-"`; the final step's units do too.
 - Optional fields: `why` appears only for `held`, `stopped` and `skipped`;
-  `until` only for `held`. `story_synced` carries either `refs` and `sha`,
+  `until` only for `held`; `usd_est` (`true`) only on a `unit_ended` whose
+  `usd` is an estimate. `story_synced` carries either `refs` and `sha`,
   or `skipped`, or `failed`. No other field is optional, except that a line
   carrying `"cut":true` may be missing any trailing field, so a reader
   tolerates that.
@@ -89,7 +90,11 @@ envelope, in this order:
   text (for example `stop: need art`, or a timed-out gate's
   `stop: gate timed out — studio-test: studio-test timed out twice — 1140 s
   under load 25.1→24.6, then 1140 s exclusive under load 24.2→25.0 (busy at
-  24) — stopped`), possibly followed by ` (was held: …)`. To detect an operator stop, read the
+  24) — stopped`), possibly followed by ` (was held: …)`.
+  The `task_timeouts` bound's hold reads `timed out on T<n> (session_minutes N;
+  <k> capped units) — checkpoint: <text>` (the label's checkpoint, else the head
+  of the runner's fallback note); a `no progress on <label>` hold may end with
+  `— checkpoint: <text>` too. To detect an operator stop, read the
   `control` event (action `stop`) and the story's next terminal `story_state`.
 - A hold writes `story_state` held, then (unless resumed or ended first) one
   `hold_reminder` when 25% of the hold is left, then its resolution.
@@ -103,10 +108,10 @@ envelope, in this order:
 | `story_state` | `story`, `state`, `why`, `until` | `state`: `queued`, `waiting`, `running`, `repair`, `gate-repair`, `sync-repair`, `held`, `landing`, `landed`, `stopped`, `skipped`; `why` only for held, stopped, skipped; `until` only for held (ISO-8601 UTC) |
 | `story_synced` | `story`, `refs`, `sha`, `skipped`, `failed` | merged: `refs` (array, in merge order) and `sha` (the new head); `skipped`: `no-worktree`, `dirty`, `ahead`; `failed`: `fetch`, `merge-tree`, `merge`, `push`; no event when every ref is already merged; a merged line comes before a later `failed` one |
 | `unit_started` | `story`, `unit`, `label`, `model` | `unit` is the unit tag; `label` is for example `repair`, without the story id |
-| `unit_ended` | `story`, `unit`, `label`, `outcome`, `usd` | `outcome`: `progress`, `done`, `stop`, `noprog`, `timed out`, `stalled`, `orphaned`; `usd` is a number or `null` |
+| `unit_ended` | `story`, `unit`, `label`, `outcome`, `usd`, `usd_est` | `outcome`: `progress`, `partial` (a capped unit with one or more of its own commits pushed), `done`, `stop`, `noprog`, `timed out`, `stalled`, `orphaned`; `usd` is a number: the session's result cost, or, when it left no result event (killed at its cap), an estimate from its transcript, calibrated per model; `usd_est` is `true` on an estimate and absent otherwise (the Multica mirror shows it as `≈$x.xx`); logs written before estimates may hold `usd` `null` |
 | `unit_stalled` | `story`, `unit`, `label`, `idle_min`, `command` | `idle_min` is a number (overnight.idle_minutes); `command` is the newest open tool call, rendered as the status activity is and cut to 120 chars, or `-`; written before that unit's `unit_ended`, whose outcome is `stalled` unless the unit moved the state or recorded a stop |
 | `session_wait` | `lane`, `story`, `since` | `lane` is the lane number or `final`; `story` is `-` for a final-step unit; `since` is ISO-8601 UTC; once per wait, when the first slot request fails; the unit's own `unit_started` follows when it gets a slot |
-| `message_queued` | `story`, `id`, `scope` | `id` is a number; `scope`: `story`, `unit`, `retire` |
+| `message_queued` | `story`, `id`, `scope`, `task` (scope `task` only) | `id` is a number; `scope`: `story`, `unit`, `task`, `retire`, `note` (the runner's carry-over note); `task` is `T<n>`, the task a `say --task` message lasts until |
 | `message_delivered` | `story`, `id`, `scope`, `unit`, `via` | `via`: `session_start`, `tool_call`; a compact re-show of a delivered message is not logged |
 | `message_requeued` | `story`, `id`, `unit`, `requeues` | `id` and `requeues` are numbers |
 | `hold_reminder` | `story`, `until`, `why` | once per hold, at 25% of the hold left (`until` is ISO-8601 UTC; `story` is `-` in a single-plan run); the runner raises the operator banner itself; it comes before the held story's resolution |

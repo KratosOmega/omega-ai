@@ -378,11 +378,19 @@ usage: $SELF_ABS start [--dry-run | --detach] [<manifest>] | status [--run <slug
 
 Talking to a live run (<story> is - in a single-plan run; every verb takes
 --run <run>, a run dir basename, and then acts only on that live run):
-  say <story> [--unit] '<text>' | say <story> [--unit] -- <text>
+  say <story> [--unit | --task [T<n>]] ('<text>' | -- <text> | --file <path> | -)
                      queue a message for the story's sessions; prints its id.
                      A story message is followed for the rest of the story and
                      recorded as a Directive ledger line; --unit: this unit
-                     only. It arrives at the session's start or at its
+                     only; --task T<n>: until T<n> is complete, then it
+                     retires on its own (said: retired (T<n> done)); a bare
+                     --task is the story's current task (exit 1 when it is
+                     not at one, or T<n> is already complete or past the
+                     plan's last task; t<n> is read as T<n>, T0 or T05 exits
+                     2). --file <path> or - (stdin): the text, multi-line,
+                     delivered verbatim except its trailing blank lines,
+                     which are dropped.
+                     It arrives at the session's start or at its
                      next tool call (a session waiting on a subagent or a
                      long gate reads it when that returns). Empty text exits 2.
   said <story>       the story's directives: id, state, text
@@ -454,7 +462,15 @@ Config: .studio/config.json "overnight" (defaults, ranges):
   worktree_setup_minutes 20  1-120    cap on one worktree_setup run
   gate_command         ""             command the finish gate runs after the tests
                                     (studio-setup gate); no backslash. Unset = none
-  retries              1     0-3      retries of an unchanged unit
+  retries              1     0-3      retries of an unchanged unit (an uncapped one: ended
+                                    before its wrap-up time without finishing its task)
+  task_timeouts        2     1-5      capped units of one task (killed at the session cap, or
+                                    ended past its wrap-up time without finishing the task)
+                                    before the story holds with the task's checkpoint
+                                    (\`timed out on T<n> (session_minutes N; <k> capped
+                                    units) — checkpoint: …\`); after a resume the next
+                                    capped unit holds again. A capped unit that pushed
+                                    commits of its own (one is enough) is \`partial\` progress
   gate_cap_factor      4     0-10     a gate run is stopped at this factor x the median of the last 50
                                     main-lane passes of the same command in .studio/gate.times
                                     (STUDIO_GATE_CAP_FACTOR; at least 15 min, never past the cap
@@ -527,8 +543,8 @@ Deny rules: $DENY_FILE
 
 Allow rules: $ALLOW_FILE
   one --allowedTools rule per line: studio-test, studio-run, studio-vitest, studio-tsc,
-  sdd-run, studio-docs-sync and the gated Godot forms; no file or no rules: no
-  --allowedTools.
+  sdd-run, studio-docs-sync, studio-deadline and the gated Godot forms; no file or
+  no rules: no --allowedTools.
 
 The morning report is written to .studio/reports/overnight-<ts>/report.md on
 every ending (manifest mode: overnight-<slug>-<ts>/report.md, a section per
@@ -544,13 +560,21 @@ Environment:
                      start skips the check when it names the base's commit
                      and refuses (exit 2) when the base has moved since.
                      Never set it yourself
+Every unit session gets (the runner sets them; never set them yourself):
+  STUDIO_UNIT_DEADLINE — epoch seconds when the watchdog ends the session
+                     (its start + session_minutes)
+  STUDIO_UNIT_WRAP_AT — epoch seconds to wrap up by: STUDIO_UNIT_DEADLINE less
+                     max(10 min, session_minutes / 6), never more than half the
+                     session. studio-deadline prints both;
+                     studio-deadline fits <who>|agent [<minutes>] exits 1 when a
+                     gate run or a subagent would not finish by the wrap time
 
 Test hooks (tests only; never set them for a real run; --detach strips them):
   STUDIO_OVERNIGHT_POLL_SECONDS — test hook: a whole number of seconds between
                      a lane's polls of a wait or a lock (default 5)
-  STUDIO_OVERNIGHT_NOTIFY_CMD — shell text run as `sh -c "$CMD" notify TEXT` for a
+  STUDIO_OVERNIGHT_NOTIFY_CMD — shell text run as \`sh -c "\$CMD" notify TEXT\` for a
                      hold's banner and reminder (else terminal-notifier, else
-                     osascript on macOS); tests set it to `: `
+                     osascript on macOS); tests set it to \`: \`
   STUDIO_OVERNIGHT_NOTIFY_SECONDS — test hook: the notifier's cap (default 10)
   STUDIO_OVERNIGHT_TOOLS_SECONDS — test hook: the cap on one required_tools
                      probe run (default 10; a capped run is exit 124), and on
@@ -585,6 +609,12 @@ Test hooks (tests only; never set them for a real run; --detach strips them):
                      place of hold_minutes x 60; a whole number
   STUDIO_OVERNIGHT_INBOX_WAIT — test hook: seconds a verb waits for the
                      inbox lock (default 15)
+  STUDIO_OVERNIGHT_FETCH_SECONDS — test hook: the cap on the preflight's fetch
+                     of the runner's own checkout (default 15)
+  STUDIO_OVERNIGHT_RUNNER_CHECK — test hook: 0 skips the preflight's runner
+                     checkout check, its fetch included (tests/assert.sh sets
+                     it for every suite); read before the strip and passed to
+                     --detach's child
   STUDIO_OVERNIGHT_REAP_POLL_SECONDS — test hook: the poll while a TERMed
                      session or gate is given its grace: 1 (default), 0.5,
                      0.2 or 0.1; the grace stays in seconds
@@ -630,6 +660,10 @@ case "${STUDIO_OVERNIGHT_DETACH_WAIT_SECONDS:-300}" in
 esac
 [ -n "$DETACH_WAIT" ] && [ "$DETACH_WAIT" -le 3600 ] \
   || { say "STUDIO_OVERNIGHT_DETACH_WAIT_SECONDS must be a whole number from 1 to 3600, got $STUDIO_OVERNIGHT_DETACH_WAIT_SECONDS"; exit 2; }
+# runner_behind_warn's test hook: STUDIO_OVERNIGHT_RUNNER_CHECK=0 skips the
+# check, fetch included. Read here, so --detach's strip cannot drop it (its
+# child gets it back).
+RUNNER_CHECK="${STUDIO_OVERNIGHT_RUNNER_CHECK:-1}"
 
 START_DIR="$(sh "$STATE_BIN" root --work 2>/dev/null || true)"
 STATE_ROOT="$(sh "$STATE_BIN" root 2>/dev/null || true)"
@@ -648,6 +682,8 @@ TOOLS_MODE=start
 . "$SELF_DIR/gate-times.sh"
 # The project-wide session cap (#39 AC27): sess_*; slots are taken by manifest units only (D19).
 . "$SELF_DIR/overnight-sessions.sh"
+# A killed unit's cost (spec §6): cost_estimate, cost_sample, cost_calib_save.
+. "$SELF_DIR/overnight-cost.sh"
 
 # preflight [manifest] — bundle 2's checks. With `manifest`, the single-plan
 # checks (spec, plan, ledger, stage on STATE.md) are skipped and a failure
@@ -743,7 +779,9 @@ preflight() {
   cfg session_minutes 90 10 480 int
   [ -z "${SESSION_MINUTES:-}" ] || SESSION_MINUTES="$(printf '%s\n' "$SESSION_MINUTES" | awk '{ print $1 + 0 }')"
   gate_room_check
+  runner_behind_warn
   cfg retries 1 0 3 int
+  cfg task_timeouts 2 1 5 int
   cfg gate_repairs 2 0 3 int
   cfg gate_cap_factor 4 0 10 int auto
   # node_workers is a top-level key read by studio-vitest through gate-class.sh:
@@ -957,6 +995,57 @@ suite_every_resolve() {
   esac
 }
 
+# runner_behind_warn — a warning (never a refusal, never a pull) when the
+# runner's own git checkout is behind its upstream on studios/game-dev. The
+# checkout is found through the runner's symlinks (SELF_DIR: production runs
+# ~/.claude-gamedev/bin/studio-overnight, a link into the checkout). Skipped
+# silently when it is not a work tree or its branch has no upstream, and
+# under the test hook STUDIO_OVERNIGHT_RUNNER_CHECK=0 (RUNNER_CHECK: the
+# suites never fetch the real runner checkout's origin). The fetch
+# is bounded by STUDIO_OVERNIGHT_FETCH_SECONDS (default 15; a test hook); a
+# failed or timed-out fetch falls back to the last fetch and says how old it is.
+runner_behind_warn() {
+  [ "$RUNNER_CHECK" != 0 ] || return 0
+  _rb_d="$(cd "$SELF_DIR/../../.." 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null)" || return 0
+  [ -n "$_rb_d" ] || return 0
+  _rb_u="$(git -C "$_rb_d" rev-parse --abbrev-ref '@{u}' 2>/dev/null)" || return 0
+  [ -n "$_rb_u" ] || return 0
+  _rb_n="${STUDIO_OVERNIGHT_FETCH_SECONDS:-15}"
+  case "$_rb_n" in ''|*[!0-9]*) _rb_n=15 ;; esac
+  GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh} -o BatchMode=yes" git -C "$_rb_d" fetch -q </dev/null >/dev/null 2>&1 &
+  _rb_p=$!
+  _rb_i=0; _rb_max=$((_rb_n * 5))
+  while kill -0 "$_rb_p" 2>/dev/null && [ "$_rb_i" -lt "$_rb_max" ]; do sleep 0.2; _rb_i=$((_rb_i + 1)); done
+  _rb_note=""
+  if kill -0 "$_rb_p" 2>/dev/null; then
+    kill "$_rb_p" 2>/dev/null
+    _rb_i=0
+    while kill -0 "$_rb_p" 2>/dev/null && [ "$_rb_i" -lt 10 ]; do sleep 0.2; _rb_i=$((_rb_i + 1)); done
+    ! kill -0 "$_rb_p" 2>/dev/null || kill -9 "$_rb_p" 2>/dev/null
+    wait "$_rb_p" 2>/dev/null; _rb_ok=1
+  else
+    wait "$_rb_p" 2>/dev/null; _rb_ok=$?
+  fi
+  if [ "$_rb_ok" -ne 0 ]; then
+    _rb_fh="$(git -C "$_rb_d" rev-parse --git-path FETCH_HEAD 2>/dev/null)"
+    case "$_rb_fh" in /*) ;; *) _rb_fh="$_rb_d/$_rb_fh" ;; esac
+    _rb_t="$(stat -c %Y "$_rb_fh" 2>/dev/null || stat -f %m "$_rb_fh" 2>/dev/null)"
+    case "$_rb_t" in
+      ''|*[!0-9]*) _rb_note=" (fetch failed; no earlier fetch)" ;;
+      *) _rb_a=$(( $(date +%s) - _rb_t )); [ "$_rb_a" -ge 0 ] || _rb_a=0
+         if [ "$_rb_a" -ge 86400 ]; then _rb_age="$((_rb_a / 86400)) d"
+         elif [ "$_rb_a" -ge 3600 ]; then _rb_age="$((_rb_a / 3600)) h"
+         else _rb_age="$((_rb_a / 60)) min"; fi
+         _rb_note=" (fetch failed; last fetch $_rb_age ago)" ;;
+    esac
+  fi
+  _rb_k="$(git -C "$_rb_d" rev-list --count 'HEAD..@{u}' -- studios/game-dev 2>/dev/null)" || return 0
+  case "$_rb_k" in ''|*[!0-9]*|0) return 0 ;; esac
+  _rb_s="$(git -C "$_rb_d" log -1 --format=%s 'HEAD..@{u}' -- studios/game-dev 2>/dev/null)"
+  _rb_w=commits; [ "$_rb_k" -ne 1 ] || _rb_w=commit
+  say "warning: runner checkout $_rb_d is $_rb_k $_rb_w behind $_rb_u on studios/game-dev ($_rb_s) — update it before starting$_rb_note"
+}
+
 # gate_room_check — a warning (never a refusal) when the slowest of the last
 # 10 studio-test runs plus the slowest of the last 10 gate_command runs
 # (studio-gate's .studio/gate.times, who `studio-test` and `gate`) × 1.2 plus
@@ -1117,7 +1206,13 @@ cost_of() {
 }
 spent_all() { spent; }
 stop_requested() { [ -f "$STOP_FILE" ] || [ "$STOP_REQ" = 1 ]; }
+# spent — the run's cost so far: column 4 of units.tsv, a result or an
+# estimate (column 8); `unknown`, in a row written before estimates, counts 0.
 spent() { awk -F'\t' '$4 != "unknown" { s += $4 } END { printf "%.2f\n", s + 0 }' "$RUN_DIR/units.tsv" 2>/dev/null || echo 0.00; }
+# spent_mark — `≈` when a unit row spent sums is an estimate (column 8
+# `estimate`, spec §6), else nothing: report.md's `Spent: ≈$X`, as its unit
+# rows mark one. overnight-lanes.sh redefines it over every lane's rows.
+spent_mark() { awk -F'\t' '$8 == "estimate" { e = 1 } END { if (e) printf "≈" }' "$RUN_DIR/units.tsv" 2>/dev/null; }
 
 # ---- The event log (spec AC28-29; docs/game-dev/overnight-events.md) ----
 # run_event EVENT FIELD… — one line in RUN_DIR/events.jsonl (studio-event);
@@ -1184,24 +1279,39 @@ notify_operator() {
 # ---- Operator messages and holds (#27; spec AC13-14, AC17-27) ----
 # requeue_check — after each unit: each story or retire message the unit
 # claimed (inbox/<story>/delivered/<UNIT_TAG>/) is checked against the
-# story's feature-checkout ledger (`Directive <id>:` or `Directive <target>
-# retired` at a line's start, after its date). One with no match goes back to
-# pending with requeues + 1 and a message_requeued event. REQ_LIMIT is the
-# first id whose requeues reach RETRIES + 1, when holds are on and the story
-# is isolated (R6, R9). Writes no studio state. A manifest run's storyless
-# unit (the final step) has no inbox.
+# story's feature-checkout ledger (`Directive <id>:`, `Directive <id> T<n>:`
+# for a task message, or `Directive <target> retired` at a line's start,
+# after its date). A task message whose task the story has done (task k/N,
+# k >= n; every task once `shipped`) is retired, not checked. Unit messages
+# and the runner's notes (scope note, or `from: runner`) are never recorded,
+# so never requeued. One with no match goes back to
+# pending with requeues + 1 and a message_requeued event. Then each pending
+# task message whose task is done (spec §5: not delivered) moves aside into
+# delivered/retired/ (its id stays taken; said shows it retired). REQ_LIMIT
+# is the first id whose requeues reach RETRIES + 1, when holds are on and the
+# story is isolated (R6, R9). Writes no studio state. A manifest run's
+# storyless unit (the final step) has no inbox.
 requeue_check() {
   REQ_LIMIT=""
   if [ -z "${CUR_ID:-}" ] && [ -f "$RUN_DIR/rows.tsv" ]; then return 0; fi
   _rq_s="${CUR_ID:--}"; _rq_ib="$RUN_DIR/inbox/$_rq_s"; _rq_dl="$_rq_ib/delivered/$UNIT_TAG"
-  [ -d "$_rq_dl" ] || return 0
-  _rq_fd="$(feature_dir)"; _rq_l="$(ledger_of "$_rq_fd")"
+  _rq_pt=""                                 # a pending task message exists
+  for _rq_f in "$_rq_ib"/[0-9]*.msg; do
+    if [ -f "$_rq_f" ] && [ "$(msg_get scope "$_rq_f")" = task ]; then _rq_pt=1; break; fi
+  done
+  [ -d "$_rq_dl" ] || [ -n "$_rq_pt" ] || return 0
+  _rq_fd="$(feature_dir)"; _rq_l="$(ledger_of "$_rq_fd")"; _rq_k=""
   inbox_lock "$_rq_ib" 5 || { say "inbox busy: the directive check after $UNIT_STEM was skipped"; return 0; }
   for _rq_f in "$_rq_dl"/[0-9]*.msg; do
     [ -f "$_rq_f" ] || continue
+    [ "$(msg_get from "$_rq_f")" != runner ] || continue
     _rq_id="$(msg_get id "$_rq_f")"
     case "$(msg_get scope "$_rq_f")" in
       story) _rq_p="Directive $_rq_id:" ;;
+      task)
+        _rq_tk="$(msg_get task "$_rq_f")"; _rq_p="Directive $_rq_id $_rq_tk:"
+        rq_tasks_done
+        [ "${_rq_tk#T}" -gt "$_rq_k" ] 2>/dev/null || continue ;;
       retire) _rq_p="Directive $(msg_get target "$_rq_f") retired" ;;
       *) continue ;;
     esac
@@ -1223,7 +1333,50 @@ requeue_check() {
       REQ_LIMIT="$_rq_id"
     fi
   done
+  for _rq_f in "$_rq_ib"/[0-9]*.msg; do
+    [ -f "$_rq_f" ] && [ "$(msg_get scope "$_rq_f")" = task ] || continue
+    rq_tasks_done
+    _rq_tk="$(msg_get task "$_rq_f")"
+    [ "${_rq_tk#T}" -le "$_rq_k" ] 2>/dev/null || continue
+    mkdir -p "$_rq_ib/delivered/retired" 2>/dev/null && mv -f "$_rq_f" "$_rq_ib/delivered/retired/" 2>/dev/null || true
+  done
   inbox_unlock "$_rq_ib"
+}
+# rq_tasks_done — requeue_check's _rq_k, the story's tasks done, read once
+# from its feature checkout (_rq_fd): k of `task k/N`, else 0, or every task
+# once its ledger (_rq_l) has a `shipped` line.
+rq_tasks_done() {
+  [ -z "$_rq_k" ] || return 0
+  _rq_k="$(cd "$_rq_fd" && sh "$STATE_BIN" get task 2>/dev/null)"
+  case "$_rq_k" in
+    [0-9]*/[0-9]*) _rq_k="${_rq_k%%/*}" ;;
+    *) _rq_k=0; if printf '%s\n' "$_rq_l" | grep -q '^- [0-9-]* shipped '; then _rq_k=999999; fi ;;
+  esac
+  case "$_rq_k" in ''|*[!0-9]*) _rq_k=0 ;; esac
+}
+# queue_note STORY T<n> TEXT — a runner-origin note (spec §5; the carry-over
+# fallback): inbox/STORY/<next id>.msg with `scope: note`, `task: T<n>` and
+# `from: runner`, by temp file then mv under the inbox lock (STORY is - in a
+# single-plan run). The hook shows it at the next unit's start under
+# `RUNNER NOTE (previous attempt of T<n>)`; it is never recorded, counted
+# toward directive_chars or requeued, and is spent once delivered. The next
+# id passes STORY's ledger Directive ids too (its feature checkout, found
+# under STUDIO_STORY=STORY; - as the single-plan story_dir finds it).
+# Returns 1 (one line) when it is not written.
+queue_note() {
+  _qn_ib="$RUN_DIR/inbox/$1"
+  CH_LEDGER="$( if [ "$1" = - ]; then unset STUDIO_STORY; else STUDIO_STORY="$1"; export STUDIO_STORY; fi
+                ledger_of "$(feature_dir)" )"
+  inbox_lock "$_qn_ib" 5; _qn_rc=$?
+  if [ "$_qn_rc" = 2 ]; then say "cannot create $_qn_ib: the runner note for $2 was not queued"; return 1; fi
+  [ "$_qn_rc" = 0 ] || { say "inbox busy: the runner note for $2 was not queued"; return 1; }
+  CH_IB="$_qn_ib"; CH_STORY="$1"
+  _qn_id="$(chan_next_id "$_qn_ib")"
+  if ! chan_write_msg "$_qn_id" note - "$3" "$2" runner; then
+    inbox_unlock "$_qn_ib"; say "cannot write $_qn_ib/$_qn_id.msg: the runner note for $2 was not queued"; return 1
+  fi
+  inbox_unlock "$_qn_ib"
+  run_event message_queued "story=$1" "id:=$_qn_id" scope=note
 }
 # ctl_take ID KIND — control/ID.KIND exists: remove it, return 0.
 ctl_take() { [ -f "$RUN_DIR/control/$1.$2" ] || return 1; rm -f "$RUN_DIR/control/$1.$2"; }
@@ -1245,7 +1398,8 @@ isolated() { [ "${FEATURE_DIR:-$START_DIR}" != "$START_DIR" ]; }
 # holdable — AC17-18, R6: ENDING holds instead of ending. Never under a halt,
 # never with holds off; `held by operator` always; a `stop:` only when it is
 # the feature-only Stop take_new_stop saw, or origin_check's (#91); the rest
-# only after isolation.
+# only after isolation. `timed out on …` is the task_timeouts bound's ending
+# (spec §4), checkpoint included: a resume buys one more capped unit.
 holdable() {
   [ "$HOLD_ON" = 1 ] || return 1
   ! stop_requested || return 1
@@ -1293,7 +1447,7 @@ hold_wait() {
   rm -f "$RUN_DIR/control/$1.hold" "$RUN_DIR/control/$1.resume"
   _hw_dl=$(( $(date +%s) + HOLD_SECS ))
   hold_record "$1" "held $_hw_why until $(iso_utc "$_hw_dl")"
-  say "${CUR_ID:+$CUR_ID }held: $_hw_why — say / resume / stop ${CUR_ID:--}"
+  say "${CUR_ID:+$CUR_ID }held: $_hw_why — $(hold_hint "$_hw_why" "${CUR_ID:--}")"
   _hw_who="${CUR_ID:-run}"; _hw_run="$(basename "$RUN_DIR")"; _hw_rm=$(( _hw_dl - HOLD_SECS / 4 )); _hw_rd=0
   notify_operator "$_hw_who held in $_hw_run: $_hw_why — until $(hhmm_local "$(iso_utc "$_hw_dl")")"
   while :; do
@@ -1327,18 +1481,28 @@ hhmm_local() {
     printf '%s\n' "$1"
   fi
 }
+# hold_hint WHY ID — what the operator can do for story ID held for WHY:
+# `say / resume / stop ID`; for a task the bound held (`timed out on T<n> (`,
+# spec §4), `say ID --task T<n> -- '<done/left/next>' · resume ID`.
+hold_hint() {
+  case "$1" in
+    "timed out on T"[0-9]*" ("*) _hi_t="${1#timed out on }"
+      printf "say %s --task %s -- '<done/left/next>' · resume %s\n" "$2" "${_hi_t%% *}" "$2" ;;
+    *) printf 'say / resume / stop %s\n' "$2" ;;
+  esac
+}
 # held_line RECORD ID — AC27, R20.
 held_line() {
   _hl_r="${1#held }"
-  printf 'held — %s — until %s — say / resume / stop %s\n' "${_hl_r% until *}" "$(hhmm_local "${_hl_r##* until }")" "$2"
+  printf 'held — %s — until %s — %s\n' "${_hl_r% until *}" "$(hhmm_local "${_hl_r##* until }")" "$(hold_hint "${_hl_r% until *}" "$2")"
 }
 # msgs_left ID — R21: the story's pending messages, lowest id first, as
-# `- <id> (<scope>, requeues <n>): <text>`.
+# `- <id> (<scope>, requeues <n>): <text>` (a multi-line text on one line).
 msgs_left() {
   for _ml_f in "$RUN_DIR/inbox/$1"/[0-9]*.msg; do
     [ -f "$_ml_f" ] || continue
     printf '%s\t- %s (%s, requeues %s): %s\n' "$(msg_get id "$_ml_f")" "$(msg_get id "$_ml_f")" \
-      "$(msg_get scope "$_ml_f")" "$(msg_get requeues "$_ml_f")" "$(msg_body "$_ml_f")"
+      "$(msg_get scope "$_ml_f")" "$(msg_get requeues "$_ml_f")" "$(msg_body "$_ml_f" | LC_ALL=C tr '\n' ' ' | LC_ALL=C sed 's/ *$//')"
   done | sort -n | awk '{ sub(/^[0-9]+\t/, ""); print }'
 }
 
@@ -1643,11 +1807,14 @@ reg_end() {
 # the story's pointer is (story_dir: START_DIR until a hand-off, #42).
 # STUDIO_UNIT_TAG (UNIT_TAG) marks every studio-gate the session starts, so
 # unit_reap can end the ones it leaves behind. STUDIO_START_DIR is
-# the run's start dir, for every unit (AC30, D42).
+# the run's start dir, for every unit (AC30, D42). STUDIO_UNIT_DEADLINE and
+# STUDIO_UNIT_WRAP_AT (UNIT_DEADLINE, UNIT_WRAP_AT: run_unit's) are the
+# watchdog's kill time and the time to wrap up by, in epoch seconds.
 start_session() {
   set -m 2>/dev/null || true   # own process group: a terminal Ctrl-C reaches only the runner (D6; a lane subshell too, D1c)
   ( cd "${UNIT_CWD:-$(story_dir)}" && unset STUDIO_GATE_HELD STUDIO_SUITE_EVERY && eval "export ${LAUNCH_ENV:-$(caps_env) OMEGA_AUTOPILOT=1}" \
       && STUDIO_UNIT_TAG="$UNIT_TAG" && export STUDIO_UNIT_TAG \
+      && STUDIO_UNIT_DEADLINE="$UNIT_DEADLINE" && STUDIO_UNIT_WRAP_AT="$UNIT_WRAP_AT" && export STUDIO_UNIT_DEADLINE STUDIO_UNIT_WRAP_AT \
       && STUDIO_RUN_DIR="$RUN_DIR" && export STUDIO_RUN_DIR \
       && STUDIO_START_DIR="$START_DIR" && export STUDIO_START_DIR && exec claude-gd -p "$@" ) \
     > "$UNIT_DIR/$UNIT_STEM.jsonl" 2> "$UNIT_DIR/$UNIT_STEM.err" < /dev/null &
@@ -1672,8 +1839,10 @@ unit_pre() { return 0; }
 # CUR_ID (empty in single-plan mode) names the story: stem N-ID-LABEL, and
 # $UNIT_DIR/current reads "ID LABEL". The model comes from the bare LABEL.
 # While it runs, $UNIT_DIR/unit.now reads "<start epoch> <stem>" (status and
-# the heartbeat). Once the session is gone, the gates it left are ended
-# (unit_reap; UNIT_REAPED).
+# the heartbeat). UNIT_DEADLINE and UNIT_WRAP_AT are the session's
+# STUDIO_UNIT_DEADLINE and STUDIO_UNIT_WRAP_AT, kept after it ends; UNIT_END
+# is when it ended, and UNIT_CAPPED starts as UNIT_TIMED_OUT. Once the
+# session is gone, the gates it left are ended (unit_reap; UNIT_REAPED).
 run_unit() {
   UNIT_DENY_NOTE=""
   UNIT_STEM="$UNIT_PREFIX$1-${CUR_ID:+$CUR_ID-}$2"; printf '%s\n' "${CUR_ID:+$CUR_ID }$2" > "$UNIT_DIR/current"
@@ -1685,10 +1854,18 @@ run_unit() {
   _t0="$(date +%s)"
   printf '%s %s\n' "$_t0" "$UNIT_STEM" > "$UNIT_DIR/unit.now"
   say "${CUR_ID:+$CUR_ID }$2 · started${LANE_K:+ (lane $LANE_K)}"
+  # The unit's deadline (the watchdog ends the session at it, or 1 s after
+  # the watchdog starts when that is later: _t0 is a whole second taken
+  # before the session starts, so the kill lands at most ~1 s after the
+  # deadline and never before the session had 1 s) and its wrap-up time, a
+  # margin of max(600, _secs / 6) s before it, never more than _secs / 2 (D3).
+  _secs="${STUDIO_OVERNIGHT_SESSION_SECONDS:-$((SESSION_MINUTES * 60))}"
+  UNIT_DEADLINE=$((_t0 + _secs))
+  _mg=$((_secs / 6)); [ "$_mg" -ge 600 ] || _mg=600; [ "$_mg" -le $((_secs / 2)) ] || _mg=$((_secs / 2))
+  UNIT_WRAP_AT=$((UNIT_DEADLINE - _mg))
   with_launch_args start_session
   session_started "$CPID"
   heartbeat_start
-  _secs="${STUDIO_OVERNIGHT_SESSION_SECONDS:-$((SESSION_MINUTES * 60))}"
   _idle=""; [ "${IDLE_MINUTES:-0}" -eq 0 ] || _idle="${STUDIO_OVERNIGHT_IDLE_SECONDS:-$((IDLE_MINUTES * 60))}"
   _poll="${STUDIO_OVERNIGHT_IDLE_POLL_SECONDS:-30}"
   _log="$UNIT_DIR/$UNIT_STEM.jsonl"; _greg="$STATE_ROOT/.studio/gate.units/$UNIT_TAG"
@@ -1706,7 +1883,7 @@ run_unit() {
   # moves the marker inside it (D5), then ends the session as the cap does.
   # With the idle check off (idle_minutes 0) it naps once, to the deadline.
   ( _sp=; _why=; trap 'kill $_sp 2>/dev/null; exit 0' TERM
-    _end=$(( $(date +%s) + _secs )); _sz=""; _quiet=$(date +%s)
+    _end=$(( $(date +%s) + 1 )); [ "$_end" -ge "$UNIT_DEADLINE" ] || _end="$UNIT_DEADLINE"; _sz=""; _quiet=$(date +%s)
     while :; do
       _left=$(( _end - $(date +%s) )); [ "$_left" -gt 0 ] || break
       _nap="$_left"; [ -z "$_idle" ] || [ "$_nap" -le "$_poll" ] || _nap="$_poll"
@@ -1739,6 +1916,7 @@ run_unit() {
     kill -0 "$CPID" 2>/dev/null || break
   done
   CPID=""; [ -z "${LDIR:-}" ] || rm -f "$LDIR/cpid"   # reaped: never signal a reused pid
+  UNIT_END="$(date +%s)"
   session_release
   heartbeat_stop; rm -f "$UNIT_DIR/unit.now"
   UNIT_EXIT="$_st"; UNIT_TIMED_OUT=0; UNIT_STALLED=0; UNIT_STALL_MIN=""; UNIT_STALL_CMD=""
@@ -1754,19 +1932,35 @@ run_unit() {
       UNIT_STALL_CMD="$(sed -n 's/^command=//p' "$_sf" | head -n 1)"
     else UNIT_TIMED_OUT=1; fi
   fi
+  UNIT_CAPPED="$UNIT_TIMED_OUT"   # story_units adds a unit ended past UNIT_WRAP_AT (C1)
   rm -rf "$_claim" "$_claim.stall"
   [ "$UNIT_STALLED" = 0 ] || run_event unit_stalled "story=${CUR_ID:--}" "unit=$UNIT_TAG" "label=$2" "idle_min:=${UNIT_STALL_MIN:-0}" "command=${UNIT_STALL_CMD:--}"
   unit_reap "$UNIT_TAG"; [ -z "${LDIR:-}" ] || rm -f "$LDIR/utag"
-  UNIT_MIN="$(awk -v s="$(( $(date +%s) - _t0 ))" 'BEGIN { printf "%.1f", s / 60 }')"
-  UNIT_COST="$(cost_of "$UNIT_DIR/$UNIT_STEM.jsonl")"; [ -n "$UNIT_COST" ] || UNIT_COST=unknown
+  _usec=$(( $(date +%s) - _t0 ))
+  UNIT_MIN="$(awk -v s="$_usec" 'BEGIN { printf "%.1f", s / 60 }')"
+  # No result event (killed at the cap, or a crash): the cost is estimated
+  # from the transcript (spec §6), never unknown. A result unit leaves its
+  # calibration samples.
+  UNIT_COST="$(cost_of "$_log")"; UNIT_COST_SRC=result
+  if [ -n "$UNIT_COST" ]; then
+    _samp="$(cost_sample "$_log")"; [ -z "$_samp" ] || printf '%s\n' "$_samp" >> "$UNIT_DIR/cost.samples"
+  else
+    UNIT_COST_SRC=estimate
+    UNIT_COST="$(cost_estimate "$_log" "$(awk -v s="$_usec" 'BEGIN { printf "%.4f", s / 60 }')")"
+  fi
   UNIT_DENY_NOTE="$(deny_note "$_log")"   # #66 R5: appended by the caller to a non-done ending
   requeue_check
 }
-row() {  # row N LABEL OUTCOME — the label column is ID-LABEL when CUR_ID is set
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$1" "${CUR_ID:+$CUR_ID-}$2" "$UNIT_EXIT" "$UNIT_COST" "$UNIT_MIN" "$UNIT_TIMED_OUT" "$3" \
+# row N LABEL OUTCOME — the unit's units.tsv row: n, label (ID-LABEL when
+# CUR_ID is set), exit, cost, minutes, timed out, outcome, cost_src
+# (result|estimate) and capped (0|1, UNIT_CAPPED); its unit_ended event.
+row() {
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$1" "${CUR_ID:+$CUR_ID-}$2" "$UNIT_EXIT" "$UNIT_COST" "$UNIT_MIN" "$UNIT_TIMED_OUT" "$3" \
+    "${UNIT_COST_SRC:-result}" "${UNIT_CAPPED:-0}" \
     >> "$UNIT_DIR/units.tsv" || { say "cannot write $UNIT_DIR/units.tsv"; exit 3; }
   say "${CUR_ID:+$CUR_ID }$2 · ended: $3 · exit $UNIT_EXIT · $UNIT_MIN min${UNIT_REAPED:+ · a left-behind gate was ended}"
-  run_event unit_ended "story=${CUR_ID:--}" "unit=$UNIT_TAG" "label=$2" "outcome=$3" "usd:=$UNIT_COST"
+  _ue=""; [ "${UNIT_COST_SRC:-result}" != estimate ] || _ue=1
+  run_event unit_ended "story=${CUR_ID:--}" "unit=$UNIT_TAG" "label=$2" "outcome=$3" "usd:=$UNIT_COST" ${_ue:+"usd_est:=true"}
 }
 # unit_outcome — a unit that changed nothing: `timed out` when the session
 # cap ended it (UNIT_TIMED_OUT); `stalled` when the idle watchdog ended it
@@ -1813,14 +2007,142 @@ deny_note() {
   [ "$_dn_n" -le 1 ] || printf ' (+%s more)' "$((_dn_n - 1))"
   printf ']'
 }
+# ---- Carry-over (spec 2026-10-26 §2-§4, C1-C5) ----
+# story_checkout — the story has a checkout of its own: snapshot's
+# FEATURE_DIR is not START_DIR, or (single plan, in place) the story has a
+# branch recorded. A lanes story (CUR_ID) never works in START_DIR: before
+# its first unit, or with its worktree gone, it has none.
+story_checkout() {
+  [ "${FEATURE_DIR:-$START_DIR}" = "$START_DIR" ] || return 0
+  [ -z "${CUR_ID:-}" ] || return 1
+  case "$(state get branch 2>/dev/null)" in ''|-) return 1 ;; esac
+}
+# head0 — C4: the feature checkout's HEAD before a unit (after unit_pre);
+# empty with no story checkout.
+head0() { ! story_checkout || git -C "$FEATURE_DIR" rev-parse -q --verify HEAD 2>/dev/null; }
+# unit_commit_list HEAD0 — C4: the unit's own commits in the feature
+# checkout, one sha per line: HEAD0..HEAD, no merges, none on origin/<Target>
+# (lanes: the manifest's; single plan: the default branch), outside .studio/,
+# the docs-sync commits left out (studio-docs-sync's subjects: `docs(<id>):
+# approved plan`, `docs(<id>): plan at run docs <rev>`). None when HEAD0 is
+# empty.
+unit_commit_list() {
+  [ -n "$1" ] || return 0
+  _uc_t="${MF_TARGET:-${DEFAULT_BRANCH:-}}"; _uc_x=""
+  if [ -n "$_uc_t" ] && git -C "$FEATURE_DIR" rev-parse -q --verify "refs/remotes/origin/$_uc_t" >/dev/null 2>&1; then
+    _uc_x="^refs/remotes/origin/$_uc_t"
+  fi
+  git -C "$FEATURE_DIR" log --no-merges --format='%H %s' "$1..HEAD" ${_uc_x:+"$_uc_x"} -- . ':!.studio/' 2>/dev/null \
+    | awk '{ s = $0; sub(/^[^ ]* /, "", s) } s !~ /^docs\([^)]*\): (approved plan|plan at run docs )/ { print $1 }'
+}
+# unit_commits HEAD0 — C4: how many unit_commit_list names (0 for none).
+unit_commits() { unit_commit_list "$1" | awk 'END { print NR + 0 }'; }
+# unit_pushed HEAD0 — D2: the capped unit's pushed commits are progress. 0
+# when origin_check passes (all of HEAD on origin, or a story it skips: no
+# branch, in place on the default branch, not checked out), else when at
+# least one of unit_commit_list is an ancestor of refs/remotes/origin/<branch>
+# as origin_check's fetch (or the unit's own push) left it.
+unit_pushed() {
+  origin_check && return 0
+  _up_r="refs/remotes/origin/$(story_branch)"
+  git -C "$FEATURE_DIR" rev-parse -q --verify "$_up_r^{commit}" >/dev/null 2>&1 || return 1
+  for _up_c in $(unit_commit_list "$1"); do
+    git -C "$FEATURE_DIR" merge-base --is-ancestor "$_up_c" "$_up_r" 2>/dev/null && return 0
+  done
+  return 1
+}
+# ckpt_awk OUT LABEL — checkpoint.awk (shared with studio-brief) over the
+# ledger lines on stdin: OUT text (the newest `<LABEL> checkpoint:` text after
+# the label's start, escapes undone, on one line, cut to 600 bytes) or count.
+ckpt_awk() { LC_ALL=C awk -v out="$1" -v lb="$2" -f "$SELF_DIR/checkpoint.awk"; }
+# checkpoint_of LABEL — the feature ledger's newest LABEL checkpoint text;
+# empty when none.
+checkpoint_of() { ledger_of "$FEATURE_DIR" | ckpt_awk text "$1"; }
+# ckpt_count LABEL — how many LABEL checkpoint lines the feature ledger holds
+# after the label's start.
+ckpt_count() { ledger_of "$FEATURE_DIR" | ckpt_awk count "$1"; }
+# ckpt_base — before a unit, the commit whose ledger stands for the unit's
+# own checkout should that checkout change: HEAD0 (head0), else origin's
+# story branch, which a new story worktree starts from; empty for neither.
+ckpt_base() {
+  [ -z "$_su_h0" ] || { printf '%s\n' "$_su_h0"; return 0; }
+  _cb="$(story_branch)"; case "$_cb" in ''|-) return 0 ;; esac
+  git -C "$START_DIR" rev-parse -q --verify "refs/remotes/origin/$_cb^{commit}" 2>/dev/null || true
+}
+# ckpt_wrote LABEL — 1 when the unit just ended wrote a LABEL checkpoint line,
+# else 0: the feature ledger's count is above the count before the unit,
+# read from the same ledger — the working copy (_su_ck0) when the feature
+# checkout did not change (_su_fd0), else the ledger file at _su_l0
+# (ckpt_base; 0 when empty).
+ckpt_wrote() {
+  if [ "$FEATURE_DIR" = "$_su_fd0" ]; then _cw0="$_su_ck0"
+  elif [ -n "$_su_l0" ]; then
+    _cw_n="$( (cd "$FEATURE_DIR" && sh "$STATE_BIN" show 2>/dev/null) | sed -n 's/^## Feature ledger: //p' | head -n 1)"
+    _cw0="$(git -C "$FEATURE_DIR" show "$_su_l0:.studio/ledger/$_cw_n.md" 2>/dev/null | ckpt_awk count "$1")"
+  else _cw0=0; fi
+  if [ "$(ckpt_count "$1")" -gt "${_cw0:-0}" ]; then echo 1; else echo 0; fi
+}
+# capped_count LABEL — §4: this run's capped units (units.tsv column 9 is 1)
+# of LABEL's task, retries included.
+capped_count() {
+  [ -f "$UNIT_DIR/units.tsv" ] || { echo 0; return 0; }
+  awk -F'\t' -v l="${CUR_ID:+$CUR_ID-}$1" '$9 == 1 && ($2 == l || $2 == l "-retry") { k++ } END { print k + 0 }' "$UNIT_DIR/units.tsv"
+}
+# last_words JSONL — the session's last top-level assistant text (a subagent's
+# lines carry a parent_tool_use_id and are left out), escapes undone enough to
+# read, on one line, cut to 1500 bytes; empty when none.
+last_words() {
+  [ -s "$1" ] || return 0
+  _lw="$(LC_ALL=C awk '
+    /^\{"type":"assistant"/ && !/"parent_tool_use_id":"/ {
+      l = $0
+      while (match(l, /"type":"text","text":"([^"\\]|\\.)*"/)) {
+        w = substr(l, RSTART + 22, RLENGTH - 23); l = substr(l, RSTART + RLENGTH)
+        gsub(/\\[nt]/, " ", w); gsub(/\\"/, "\"", w); gsub(/\\\\/, "\\", w)
+      }
+    }
+    END { print w }' "$1" 2>/dev/null)"
+  [ -z "$_lw" ] || printf '%s\n' "$_lw" | cut_utf8 1500
+}
+# carry_note WROTE — §2's runner fallback for the unit just ended, one line:
+# `uncommitted: <git status --short, 20 lines at most>; unpushed: <commits not
+# on origin, 10 at most>` from the feature checkout (`none` for each without
+# a story checkout), then, when WROTE is 0 (the unit wrote no checkpoint
+# line), `; last words: <last_words, or none>`.
+carry_note() {
+  _cn_u=""; _cn_p=""
+  if story_checkout; then
+    _cn_u="$(git -C "$FEATURE_DIR" status --short 2>/dev/null | head -n 20 | awk '{ sub(/^ +/, ""); printf "%s%s", (NR > 1 ? ", " : ""), $0 }')"
+    _cn_p="$(git -C "$FEATURE_DIR" log --format='%h %s' HEAD --not --remotes=origin 2>/dev/null | head -n 10 | awk '{ printf "%s%s", (NR > 1 ? ", " : ""), $0 }')"
+  fi
+  printf 'uncommitted: %s; unpushed: %s' "${_cn_u:-none}" "${_cn_p:-none}"
+  if [ "$1" = 0 ]; then _cn_w="$(last_words "$UNIT_DIR/$UNIT_STEM.jsonl")"; printf '; last words: %s' "${_cn_w:-none}"; fi
+  printf '\n'
+}
+# carry_queue LABEL NOTE — the fallback NOTE queued for LABEL's next unit
+# (queue_note) after a task or final-review unit; no other label gets one.
+carry_queue() {
+  case "$1" in T[0-9]*|final-review) queue_note "${CUR_ID:--}" "$1" "$2" || true ;; esac
+}
+# carry_hold LABEL — ruling 7: on a holdable ending of story_units, the unit
+# just ended (it did not finish its task, and the caller knows) gets its
+# fallback note queued for the unit a resume runs, unless it wrote a
+# checkpoint (studio-brief carries that).
+carry_hold() {
+  holdable || return 0
+  [ "$(ckpt_wrote "$1")" = 0 ] || return 0
+  carry_queue "$1" "$(carry_note 0)"
+}
 # write_report REASON — the morning report: how it ended, what it cost, the
-# rulings to check, what to play, the PR, and how to resume.
+# rulings to check, what to play, the PR, and how to resume. A capped unit
+# the cap did not end (units.tsv column 9 1, Timed out 0; C1) shows as
+# `<outcome> (capped)`.
 write_report() {
   _ld="$(ledger_of "$(feature_dir)")"
   _tsv="$RUN_DIR/units.tsv"; [ -f "$_tsv" ] || _tsv=/dev/null
   _pr="$(printf '%s\n' "$_ld" | sed -n 's/^- [0-9-]* shipped //p' | tail -n 1)"
-  _unk="$(awk -F'\t' '$4 == "unknown" { n++ } END { print n + 0 }' "$_tsv")"
-  _spent="$(spent)"; [ "$_unk" -eq 0 ] || _spent="$_spent (cost unknown for $_unk unit(s))"
+  _spent="$(spent)"
+  cost_calib_save
   _started="$(sed -n 's/^started=//p' "$LOCK" 2>/dev/null | head -n 1)"
   {
     printf '# Overnight run — %s\n\n' "$(basename "$RUN_DIR")"
@@ -1828,10 +2150,10 @@ write_report() {
     printf 'Plan: %s\n' "$(state get plan 2>/dev/null)"
     printf 'Branch: %s\n' "$(state get branch 2>/dev/null)"
     printf 'PR: %s\n' "${_pr:-none}"
-    printf 'Spent: $%s\n' "$_spent"
+    printf 'Spent: %s$%s\n' "$(spent_mark)" "$_spent"
     printf 'Started: %s · Ended: %s\n\n' "${_started:-unknown}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     printf '## Units\n\n| # | Unit | Exit | Cost | Minutes | Timed out | Outcome |\n|---|------|------|------|---------|-----------|---------|\n'
-    awk -F'\t' '{ printf "| %s | %s | %s | %s | %s | %s | %s |\n", $1, $2, $3, $4, $5, $6, $7 }' "$_tsv"
+    awk -F'\t' '{ printf "| %s | %s | %s | %s%s | %s | %s | %s%s |\n", $1, $2, $3, ($8 == "estimate" ? "≈" : ""), $4, $5, $6, $7, ($9 == 1 && $6 != 1 ? " (capped)" : "") }' "$_tsv"
     printf '\n## Rulings\n\n'
     printf '%s\n' "$_ld" | grep -E '^- [0-9-]* ([^ ]+ )?Ruling: ' || echo '(none)'
     printf '\n## Blocks\n\n'
@@ -1915,10 +2237,21 @@ on_exit() {
 # story_units — bundle 2's unit loop for the current story. Returns with
 # ENDING set: done · stopped by user · stopped by operator · held by
 # operator · directive <id> not recorded · stop: <reason> · stop: run budget ·
-# no progress on <label> [(orphaned: …)] · timed out on <label> (…) ·
+# no progress on <label> [(orphaned: …)] [— checkpoint: <text>] ·
+# timed out on <label> (session_minutes N; <k> capped units) — checkpoint:
+# <text> (the task_timeouts bound; <text> the label's checkpoint, else the
+# head of the runner's fallback note) ·
 # stalled on <label> (no output for <N> min: <command>) ·
 # stop: unexpected stage <s> · unit_pre's (lanes: sync repair: <reason>, or
-# the halt reason). Its scratch files
+# the halt reason). A unit that changed nothing and did not stop is capped
+# (C1) or not: a capped one is `partial` when it pushed commits of its own
+# (unit_commits, unit_pushed: one pushed is enough), counts toward
+# task_timeouts and never toward retries; an uncapped one counts toward
+# retries. After a task or final-review unit that
+# did not finish its task, the runner's fallback note (carry_note) is queued
+# for the next unit: always before a retry, and on a holdable ending (a Stop:,
+# origin_check's stop, a directive not recorded, no progress, the bound)
+# when the unit wrote no checkpoint (carry_hold). Its scratch files
 # live in UNIT_DIR (the run dir; a lane's own dir in manifest mode). Unit
 # numbers run on from the caller's n (0 when unset), so a second call for the
 # same story (after a gate repair) never reuses a unit's file names.
@@ -1937,27 +2270,52 @@ story_units() {
     if run_budget_out; then ENDING="stop: run budget"; return 0; fi
     _base="${STUDIO_OVERNIGHT_LABEL:-$(label_for)}"
     unit_pre "$_base" || return 0
-    _before="$SIG"
+    _before="$SIG"; _su_h0="$(head0)"; _su_l0="$(ckpt_base)"; _su_fd0="$FEATURE_DIR"; _su_ck0="$(ckpt_count "$_base")"
     n=$((n + 1)); run_unit "$n" "$_base$suffix"
     [ "$UNIT_HALTED" = 0 ] || { ENDING="$(halt_reason)"; return 0; }   # halted waiting for a slot (D22)
     snapshot "$UNIT_DIR/stops.after"
+    # C1: capped — killed at the cap (run_unit's UNIT_CAPPED), or ended at or
+    # past its wrap-up time with its label's task not done. An idle-watchdog
+    # kill is a stall, never a cap (ruling 6).
+    [ "$SIG" != "$_before" ] || [ "$UNIT_STALLED" = 1 ] || [ "$UNIT_END" -lt "$UNIT_WRAP_AT" ] || UNIT_CAPPED=1
     take_new_stop "$UNIT_DIR/stops.before" "$UNIT_DIR/stops.after"
-    if [ -n "$NEW_STOP" ]; then row "$n" "$_base$suffix" stop; ENDING="$STOP_ENDING$UNIT_DENY_NOTE"; return 0; fi
+    if [ -n "$NEW_STOP" ]; then
+      row "$n" "$_base$suffix" stop; ENDING="$STOP_ENDING$UNIT_DENY_NOTE"
+      [ "$SIG" != "$_before" ] || carry_hold "$_base"; return 0
+    fi
     # #91: a unit that would be done or progress must have its work on origin.
     if { [ "$SIG_STAGE" = idle ] && [ "$SIG_SHIPPED" -gt 0 ]; } || [ "$SIG" != "$_before" ]; then
-      if ! origin_check; then row "$n" "$_base$suffix" stop; ENDING="stop: $ORIGIN_WHY$UNIT_DENY_NOTE"; return 0; fi
+      if ! origin_check; then
+        # The work is done but not on origin: the note names what to push.
+        row "$n" "$_base$suffix" stop; ENDING="stop: $ORIGIN_WHY$UNIT_DENY_NOTE"; carry_hold "$_base"; return 0
+      fi
     fi
     if [ "$SIG_STAGE" = idle ] && [ "$SIG_SHIPPED" -gt 0 ]; then row "$n" "$_base$suffix" done; ENDING=done; return 0; fi
     if [ -n "$REQ_LIMIT" ]; then
       if [ "$SIG" != "$_before" ]; then _su_o=progress; else _su_o="$(unit_outcome)"; fi
-      row "$n" "$_base$suffix" "$_su_o"; ENDING="directive $REQ_LIMIT not recorded$UNIT_DENY_NOTE"; return 0
+      row "$n" "$_base$suffix" "$_su_o"; ENDING="directive $REQ_LIMIT not recorded$UNIT_DENY_NOTE"
+      [ "$SIG" != "$_before" ] || carry_hold "$_base"; return 0
     fi
     if [ "$SIG" != "$_before" ]; then row "$n" "$_base$suffix" progress; noprog=0; suffix=""; continue; fi
-    _out="$(unit_outcome)"; row "$n" "$_base$suffix" "$_out"; noprog=$((noprog + 1))
-    if [ "$noprog" -le "$RETRIES" ]; then suffix="-retry"; continue; fi
-    if [ "$_out" = "timed out" ]; then ENDING="timed out on $_base (session_minutes $SESSION_MINUTES)$UNIT_DENY_NOTE"
+    # Spec §3-§4, C1: a capped unit feeds only the task_timeouts bound, and
+    # with commits of its own (C4), one or more of them pushed (unit_pushed),
+    # it is partial progress (noprog 0); an uncapped one is no progress,
+    # pushed commits or not.
+    if [ "$UNIT_CAPPED" = 1 ] && [ "$(unit_commits "$_su_h0")" -gt 0 ] && unit_pushed "$_su_h0"; then _out=partial; noprog=0
+    elif [ "$UNIT_CAPPED" = 1 ]; then _out="$(unit_outcome)"
+    else _out="$(unit_outcome)"; noprog=$((noprog + 1)); fi
+    row "$n" "$_base$suffix" "$_out"
+    _su_note="$(carry_note "$(ckpt_wrote "$_base")")"
+    _su_cp="$(checkpoint_of "$_base")"
+    _su_k=0; [ "$UNIT_CAPPED" = 0 ] || _su_k="$(capped_count "$_base")"
+    # C2: the bound's ending wins, with the checkpoint (else the fallback's head).
+    if [ "$UNIT_CAPPED" = 1 ] && [ "$_su_k" -ge "$TASK_TIMEOUTS" ]; then
+      ENDING="timed out on $_base (session_minutes $SESSION_MINUTES; $_su_k capped units) — checkpoint: ${_su_cp:-$(printf '%s\n' "$_su_note" | cut_utf8 300)}$UNIT_DENY_NOTE"
+    elif [ "$noprog" -le "$RETRIES" ]; then suffix="-retry"; carry_queue "$_base" "$_su_note"; continue
     elif [ "$_out" = stalled ]; then ENDING="stalled on $_base$(stall_note)$UNIT_DENY_NOTE"
-    else ENDING="no progress on $_base$(orphan_note "$_out")$UNIT_DENY_NOTE"; fi
+    else ENDING="no progress on $_base$(orphan_note "$_out")${_su_cp:+ — checkpoint: $_su_cp}$UNIT_DENY_NOTE"; fi
+    # The note waits for the unit a resume runs; an ending that does not hold has none.
+    carry_hold "$_base"
     return 0
   done
 }
@@ -2029,10 +2387,11 @@ detach_start() {
   fi
   mkdir -p "$REPORTS" || { say "cannot create $REPORTS"; exit 2; }
   _dlog="$REPORTS/overnight-$_dslug-detached-$(date +%Y%m%d-%H%M%S).log"
+  _drk=""; [ "$RUNNER_CHECK" != 0 ] || _drk="STUDIO_OVERNIGHT_RUNNER_CHECK=0"
   if [ -n "$_dhc" ]; then
-    nohup env ${RUN_ORIGIN:+"STUDIO_RUN_ORIGIN=$RUN_ORIGIN"} ${_dck:+"STUDIO_OVERNIGHT_SETUP_CHECKED=$_dck"} perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV' sh -c "$_dhc" </dev/null >"$_dlog" 2>&1 &
+    nohup env ${RUN_ORIGIN:+"STUDIO_RUN_ORIGIN=$RUN_ORIGIN"} ${_dck:+"STUDIO_OVERNIGHT_SETUP_CHECKED=$_dck"} ${_drk:+"$_drk"} perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV' sh -c "$_dhc" </dev/null >"$_dlog" 2>&1 &
   else
-    nohup env ${RUN_ORIGIN:+"STUDIO_RUN_ORIGIN=$RUN_ORIGIN"} ${_dck:+"STUDIO_OVERNIGHT_SETUP_CHECKED=$_dck"} perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV' sh "$SELF_ABS" start "$_dm" </dev/null >"$_dlog" 2>&1 &
+    nohup env ${RUN_ORIGIN:+"STUDIO_RUN_ORIGIN=$RUN_ORIGIN"} ${_dck:+"STUDIO_OVERNIGHT_SETUP_CHECKED=$_dck"} ${_drk:+"$_drk"} perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV' sh "$SELF_ABS" start "$_dm" </dev/null >"$_dlog" 2>&1 &
   fi
   _dpid=$!
   _ddl=$(( $(date +%s) + DETACH_WAIT ))
@@ -2236,13 +2595,14 @@ lock_lost() {
 # run_excludes — the run's machine-local paths into the common git dir's
 # info/exclude, each once (D6): the single-plan lock and stop flag, the
 # per-run records and locks, the session slots, both mutexes and their reap
-# locks (mx_reap), and the final step's worktrees. Sets _excl.
+# locks (mx_reap), the final step's worktrees and the cost calibration cache
+# (cost_calib_save excludes it too). Sets _excl.
 run_excludes() {
   _excl="$(git -C "$START_DIR" rev-parse --path-format=absolute --git-common-dir)/info/exclude"
   mkdir -p "$(dirname "$_excl")"
   for _e in .studio/overnight.lock .studio/overnight.stop .studio/runs/ .studio/sessions/ \
             .studio/runs.mutex .studio/sessions.mutex .studio/runs.mutex.reap/ .studio/sessions.mutex.reap/ \
-            .claude/worktrees/; do
+            .claude/worktrees/ .studio/cost.calib; do
     grep -qxF "$_e" "$_excl" 2>/dev/null || printf '%s\n' "$_e" >> "$_excl"
   done
 }

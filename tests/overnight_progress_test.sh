@@ -77,6 +77,17 @@ test_progress_mid_run_eta() {
   assert_contains "$TMP/st.out" "^progress: \[======              \] 33%  3/9 units · ETA ~[0-9][0-9]:[0-9][0-9] (in 1h50m, rough: 3 units timed)$" "mean task 20 min: 10 left of T4, then 20+20+20+20, plus the final step 20"
   assert_contains "$TMP/st.out" "^A  lane 1  running  unit A T4  task 3/6   \[=====         \] 37%$" "the story's bar: 3 of 8"
 }
+# Spec §6, C5: units.tsv rows gained cost_src and capped (9 columns); a run
+# dir may hold both kinds of row, and the progress reads only 2, 5 and 7.
+test_progress_nine_column_rows() {
+  proj nine; story A - running "3/6"; chain 1 - A; live
+  mkdir -p "$RD/claims/1"; echo 1 > "$RD/claims/1/lane"
+  units "$RD/lanes/1" A-T1 progress 10
+  printf '2\tA-T2\t143\t0.8502\t20\t1\tprogress\testimate\t1\n3\tA-T3\t0\t2.5\t30\t0\tprogress\tresult\t0\n' >> "$RD/lanes/1/units.tsv"
+  running "$RD/lanes/1" A T4 600
+  st
+  assert_contains "$TMP/st.out" "^progress: \[======              \] 33%  3/9 units · ETA ~[0-9][0-9]:[0-9][0-9] (in 1h50m, rough: 3 units timed)$" "7- and 9-column rows read alike (as test_progress_mid_run_eta)"
+}
 test_progress_past_run_median() {
   proj past; story A - running "0/2"; chain 1 - A; live
   mkdir -p "$RD/../overnight-demo-0/lanes/1" "$RD/../overnight-demo-0/final"
@@ -235,7 +246,7 @@ test_progress_task_follows_story() {
 
 # exclusive-scan: test_progress_scale_with_past_rows in (a) asserts 3000 past rows add at most a 3 s ceiling to status
 TESTS_EXCLUSIVE="test_progress_scale_with_past_rows"
-run_tests test_progress_fresh_no_data test_progress_mid_run_eta test_progress_past_run_median \
+run_tests test_progress_fresh_no_data test_progress_mid_run_eta test_progress_nine_column_rows test_progress_past_run_median \
   test_progress_repair_adds_a_unit test_progress_chains_waits_and_held test_progress_ended_run_no_eta \
   test_progress_single_plan test_progress_retry_and_unit_kinds \
   test_progress_scale_with_past_rows test_progress_held_single_plan_no_eta \

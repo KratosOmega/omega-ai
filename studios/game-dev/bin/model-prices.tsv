@@ -1,0 +1,12 @@
+# model	input	output	cache_write	cache_write_1h	cache_read — USD per 1M tokens, 2026-10
+# Anthropic list prices. They reproduce Claude Code's own modelUsage costUSD (what result
+# rows add to spent and calibration divides by): cache_write (5-minute) = 1.25 x input,
+# cache_write_1h = 2 x input, cache_read = 0.05 x input. The opus and sonnet rows match an
+# observed costUSD; the fable and haiku rows are derived by those ratios, not observed, and
+# calibration absorbs any difference. Read by overnight-cost.sh; a model not listed is
+# priced as the dearest row. Tab-separated. A change here voids the cached factors
+# in .studio/cost.calib.
+claude-fable-5-1	10.00	50.00	12.50	20.00	0.50
+claude-opus-5-5	4.00	20.00	5.00	8.00	0.20
+claude-sonnet-5-5	2.00	10.00	2.50	4.00	0.10
+claude-haiku-5-5	0.10	0.50	0.125	0.20	0.005

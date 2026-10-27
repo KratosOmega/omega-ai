@@ -152,7 +152,9 @@ stories as parallel lanes of dependency chains:
   re-runs only the failing tests, then a fresh finish, which runs the full gate
   again. It does this up to `overnight.gate_repairs` times (default 2; 0 stops
   the story at the first red gate). Hard stops (no Godot, GUT missing, a
-  timed-out gate) are never repaired.
+  timed-out gate) are never repaired. A gate repair that runs out of time
+  writes `Stop: gate repair out of time — done …; left …`; the story holds,
+  and `resume` goes back to the gate repair, not to a fresh finish.
 - One gate lock per project (`.studio/gate.lock`): `studio-test`, `studio-run`,
   the merge command and the final gate take it, so only one test or gate run
   happens at a time across all lanes. With no config keys that is the whole
@@ -258,8 +260,36 @@ stories as parallel lanes of dependency chains:
   resume command. `watch [SECONDS]` (or `status --follow`) repeats it; a
   foreground `start` prints a heartbeat line about once a minute. The installer
   puts `studio-overnight` on `PATH` beside `claude-gd`.
+- A unit knows its deadline. The runner exports `STUDIO_UNIT_DEADLINE` (epoch
+  seconds when the watchdog ends the session) and `STUDIO_UNIT_WRAP_AT` (the
+  time to wrap up: the deadline less `max(600, session_minutes*60/6)` s, at
+  most half the session) to every unit kind. `studio-deadline` prints them and
+  `studio-deadline fits <gate>` says whether a gate or a subagent (`agent`)
+  fits before the wrap time; the execute skill starts nothing that does not.
+  At the wrap time the operator-inbox hook tells the session and its
+  subagents to wrap up.
+- Carry-over across a cap: a task unit that is out of time commits its green
+  fixes, writes a `T<n> checkpoint: done …; left …; next …` ledger line
+  (`final-review checkpoint:` for the final review) and ends. The retry's
+  `studio-brief task` shows the newest one; when the unit wrote none, the
+  runner queues a fallback note from git and the killed transcript. A capped
+  unit (killed at the cap, or ended past its wrap time with the task
+  undone) that pushed commits of its own (one is enough; a later one may be
+  unpushed) is `partial` progress; it resets
+  `no progress` and counts toward `overnight.task_timeouts` (default 2, range
+  1-5), never toward retries. A task capped that many times holds the story
+  with its checkpoint in the hold message (`timed out on T<n> (session_minutes
+  N; <k> capped units) — checkpoint: …`) instead of retrying blind; `resume`
+  runs one more capped unit. A killed unit's cost is estimated from its
+  transcript (`usd_est`, units.tsv `cost_src` `estimate`), never null. An
+  estimate shows as `≈`: the report's unit row, its `Spent: ≈$X` total when
+  any unit in it is one, and the Multica unit comment (`≈$x.xx`). The
+  calibration cache, `.studio/cost.calib`, is machine-local and kept out of
+  git (`info/exclude`).
 - Talking to a live run: `studio-overnight say <story> '<text>'` queues a
-  message (`--unit` for this unit only; `said`, `unsay <story> <id>`), and
+  message (`--unit` for this unit only; `--task [T<n>]` until that task
+  completes; `--file <path>` or `-` for a long or multi-line text, delivered
+  verbatim; `said`, `unsay <story> <id>`), and
   `hold`, `resume` and `stop <story>` steer one story (`-` in a single-plan
   run; `--run <run>` names the run from anywhere). A message reaches the
   story's session at its start or its next tool call, so a session waiting
@@ -415,7 +445,9 @@ studios/<name>/
 ├── bin/                         toolkit, linked into the config root and put on PATH
 │   ├── studio-overnight         overnight runner: one fresh session per unit to a draft PR
 │   ├── godot-cmd.awk            the Godot command detector, shared by godot-guard and studio-brief
+│   ├── checkpoint.awk           a task's newest checkpoint ledger line, shared by studio-overnight and studio-brief
 │   ├── overnight-allow.txt      the runner's allow list: gate verbs, gated Godot (data)
+│   ├── model-prices.tsv         per-model USD prices for a killed unit's cost estimate (data)
 │   └── overnight-deny.txt       the runner's deny list (data)
 └── CLAUDE.md settings.json memory/   installed into the config root
 

@@ -109,7 +109,7 @@ test_bin_syntax() {
   for f in "$REPO_ROOT"/studios/*/bin/* "$REPO_ROOT"/studios/*/engines/*/*.sh "$REPO_ROOT"/studios/*/hooks/*.sh \
            "$REPO_ROOT"/shared/omega/bin/* "$REPO_ROOT"/shared/omega/hooks/*.sh; do
     [ -f "$f" ] || continue
-    case "$(basename "$f")" in .gitkeep|*.txt|*.awk) continue ;; esac
+    case "$(basename "$f")" in .gitkeep|*.txt|*.awk|*.tsv) continue ;; esac
     rel="${f#"$REPO_ROOT"/}"
     assert_status 0 "$rel parses as POSIX sh" -- sh -n "$f"
     TESTS_RUN=$((TESTS_RUN + 1))
@@ -766,6 +766,7 @@ test_execute_gate_repair() {
   assert_contains "$E" '^- `--gate-repair`' "§1 lists --gate-repair"
   assert_contains "$E" 'STUDIO_REPAIR=gate:<log>' "the repair reads the red gate's log"
   assert_contains "$E" 'its latest `Stop:` line is a `gate red` one' "§11's preconditions name the gate red stop"
+  assert_contains "$E" 'out of time` one: an earlier repair cut short at wrap-up, §8, and resumed)' "and accept a resumed out-of-time repair's stop (last_stop_gate_red)"
   assert_contains "$E" 'fix(gate): <summary>' "the repair commit"
   assert_contains "$E" '`studio-test --file <path>\[,<path>…\]` with every' "the repair re-runs only the failing test files, in one file run"
   assert_contains "$E" '`STUDIO_GATE_MINUTES`) and' "§11's env list names the gate cap"
@@ -916,7 +917,7 @@ test_execute_adopt() {
   assert_eq 1 "$([ "$(sed -n '/^## 6\. /,/^## 7\. /p' "$E" | grep -c 'first>^1')" -ge 1 ] && echo 1 || echo 0)" "the rule sits in §6"
   assert_contains "$E" "the task's ledger range (§6: it starts at .<first>^1.)" "§0 points the sync report at the §6 range"
   assert_contains "$E" 'verify with the command that failed' "§11 (AC20)"
-  assert_contains "$E" 'Direct mode runs no finish gate, so `gate_command` does not run there' "direct mode (AC20)"
+  assert_contains "$E" 'step 1 runs as under \*\*Integration\*\*' "direct mode runs the finish gate, gate_command included (AC20; unit-deadline D6)"
 }
 
 # #41: SDD scripts are found with sdd-script, never by searching or by an

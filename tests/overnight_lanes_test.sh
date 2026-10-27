@@ -46,7 +46,9 @@ export GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
 #   $CALLS/<n>.argv (one element per line), .story, .prompt, .pid, .pwd,
 #   .peers (the peer-runs hook's output; only with STUDIO_UNIT_TAG set),
 #   .env (OMEGA_AUTOPILOT, STUDIO_RUN, STUDIO_DOCS_REV, STUDIO_REPAIR,
-#   STUDIO_GATE_HELD, STUDIO_SUITE_EVERY as KEY=value lines), .t0 and .t1 (epoch seconds).
+#   STUDIO_GATE_HELD, STUDIO_SUITE_EVERY as KEY=value lines), .deadline
+#   (STUDIO_UNIT_DEADLINE and STUDIO_UNIT_WRAP_AT, `unset` when absent), .t0
+#   and .t1 (epoch seconds).
 # - Live count (#39): $CALLS/live/<pid> while a call runs; $CALLS/max holds
 #   the most calls seen running at once.
 # - Scenario: line m of $SCEN/<id> (unit prompts), $SCEN/<id>.land
@@ -78,6 +80,7 @@ export GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
 #   conflict <file> modifier: auto's task commit writes <file> (content: the
 #                   story id) instead of <id>-T<k>.txt
 #   cost <usd>      the result event's total_cost_usd (default 1)
+#   nocost          no result event (the runner estimates the unit's cost)
 #   sleep <s>       sleep s seconds
 #   waitfor <path>  poll up to 60 s for <path> to exist and be non-empty
 #                   (e.g. a peer run's landed.tsv); the unit then goes on
@@ -165,6 +168,20 @@ export GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
 #   inbox           modifier: the operator-inbox hook as a startup session
 #                   runs it, its output in $CALLS/<n>.inbox
 #   say <text>      modifier: `studio-overnight say <id> -- <text>`
+#   wtcommit <file> modifier: commits <file> (content: the story id) in the
+#                   story worktree, `fix(<id>): <file>`, not pushed
+#   wtfile <file>   modifier: writes <file> in the story worktree, uncommitted
+#   pushwt          modifier: pushes the story worktree's branch to origin
+#   ckpt <text>     modifier: ledgers `T<k+1> checkpoint: <text>` (k from
+#                   task k/N; each % in <text> a ;, which would end the action)
+#                   in the story worktree, commits it as
+#                   `chore(studio): checkpoint T<k+1>` and pushes (execute §8)
+#   lastwords <text> modifier: an assistant text event on stdout (the
+#                   unit's stream-json)
+#   mkwt            modifier: auto's worktree step alone (execute §0): the
+#                   story worktree, branch and stage execute, no task work
+#   brief <n>       modifier: `studio-brief task <n>` in the story worktree,
+#                   its output in $CALLS/<call>.brief
 cat > "$FAKE/claude" <<'STUB'
 #!/bin/sh
 if [ "${1:-}" = "--version" ]; then
@@ -201,6 +218,7 @@ pwd -P > "$CALLS/$n.pwd"
 printf 'OMEGA_AUTOPILOT=%s\nSTUDIO_RUN=%s\nSTUDIO_DOCS_REV=%s\nSTUDIO_REPAIR=%s\nSTUDIO_GATE_HELD=%s\nSTUDIO_SUITE_EVERY=%s\n' \
   "${OMEGA_AUTOPILOT:-}" "${STUDIO_RUN:-}" "${STUDIO_DOCS_REV:-}" "${STUDIO_REPAIR:-}" "${STUDIO_GATE_HELD:-}" "${STUDIO_SUITE_EVERY:-}" > "$CALLS/$n.env"
 env > "$CALLS/$n.fullenv"
+printf '%s %s\n' "${STUDIO_UNIT_DEADLINE:-unset}" "${STUDIO_UNIT_WRAP_AT:-unset}" > "$CALLS/$n.deadline"
 # #39: a unit session starts under the peers hook, as SessionStart runs it.
 [ -z "${STUDIO_UNIT_TAG:-}" ] || sh "$STUB_PLUGIN/hooks/peer-runs.sh" < /dev/null > "$CALLS/$n.peers" 2>/dev/null
 line="$(sed -n "${m}p" "$SCEN/$kind" 2>/dev/null)"
@@ -239,7 +257,9 @@ block_write() {
     && git add "tests/$blockchk.pending" "$_bf" ".studio/ledger/$id.md" && git commit -qm "block($id): $blockchk"
 }
 
-auto() {
+# mkwt — auto's §0 step: the story worktree $wt (made when there is none),
+# its branch and stage execute; spec and plan name the story's docs.
+mkwt() {
   spec="$(st get spec)"; plan="$(st get plan)"
   wt="$(story_wt)"
   if [ -z "$wt" ]; then
@@ -258,6 +278,9 @@ auto() {
     fi
     st set branch "$BRANCH"; st set stage execute
   fi
+}
+auto() {
+  mkwt
   cd "$wt" || exit 9
   git checkout -q "$STUDIO_DOCS_REV" -- "$spec" "$plan"
   git diff --cached --quiet || git commit -qm "docs($id): plan at run docs $(printf '%.7s' "$STUDIO_DOCS_REV")"
@@ -319,6 +342,7 @@ for act in "$@"; do
     ''|auto)          ;;
     "conflict "*)     conflict="${act#conflict }" ;;
     "cost "*)         cost="${act#cost }" ;;
+    nocost)           cost="" ;;
     "sleep "*)        sleep "${act#sleep }" ;;
     "waitfor "*)      _wf="$(printf '%s' "${act#waitfor }" | sed "s|@RUN@|${STUDIO_RUN_DIR:-@RUN@}|g")"; _wi=0
                       while [ ! -s "$_wf" ] && [ "$_wi" -lt "${STUB_WAIT_TICKS:-600}" ]; do sleep 0.1; _wi=$((_wi + 1)); done
@@ -389,6 +413,17 @@ for act in "$@"; do
     inbox)            printf '{"session_id":"s","hook_event_name":"SessionStart","source":"startup"}' \
                         | sh "$STUB_PLUGIN/hooks/operator-inbox.sh" > "$CALLS/$n.inbox" ;;
     "say "*)          sh "$STUB_RUNNER" say "$id" -- "${act#say }" > /dev/null 2>&1 ;;
+    "wtcommit "*)     w="$(story_wt)"; _wc="${act#wtcommit }"
+                      ( cd "$w" && printf '%s\n' "$id" > "$_wc" && git add "$_wc" && git commit -qm "fix($id): $_wc" ) >&2 ;;
+    "wtfile "*)       w="$(story_wt)"; printf '%s\n' "$id" > "$w/${act#wtfile }" ;;
+    pushwt)           w="$(story_wt)"; ( cd "$w" && sg push -q origin "$BRANCH" ) >&2 ;;
+    "ckpt "*)         w="$(story_wt)"; _ck="$(st get task)"; _ck="${_ck%/*}"; case "$_ck" in ''|-|*[!0-9]*) _ck=0 ;; esac
+                      ( cd "$w" && st ledger "T$((_ck + 1)) checkpoint: $(printf '%s' "${act#ckpt }" | tr % ';')" \
+                        && git add ".studio/ledger/$id.md" && git commit -qm "chore(studio): checkpoint T$((_ck + 1))" \
+                        && sg push -q origin "$BRANCH" ) >&2 ;;
+    "lastwords "*)    printf '{"type":"assistant","message":{"content":[{"type":"text","text":"%s"}]},"parent_tool_use_id":null}\n' "${act#lastwords }" ;;
+    mkwt)             ( mkwt ) >&2 ;;
+    "brief "*)        w="$(story_wt)"; ( cd "$w" && sh "$(dirname "$STUB_STATE_BIN")/studio-brief" task "${act#brief }" ) > "$CALLS/$n.brief" 2>&1 ;;
     *)                echo "stub: unknown action '$act'" >&2 ;;
   esac
 done
@@ -1770,6 +1805,55 @@ test_lanes_gate_repair_then_lands() {
     "$(story_rows A)" "a fresh finish follows the repair; unit numbers run on"
   assert_contains "$(last_lanes_dir)/report.md" "^| 4 | A-gate-repair | " "the report lists the gate-repair unit"
 }
+# bad_deadlines — every call of $CALLS whose session did not get DEADLINE = its
+# start + 5400 (session_minutes 90; the stub's start is up to 60 s late) and
+# WRAP_AT = DEADLINE - 900 (5400 / 6), as "<n>:<DEADLINE>/<WRAP_AT>" words, then
+# "missing:<k>" when k calls recorded no .deadline. Empty when all are right.
+bad_deadlines() {
+  _bd_k=0
+  for _bd in "$CALLS"/[0-9]*.deadline; do
+    [ -f "$_bd" ] || continue
+    _bd_k=$((_bd_k + 1)); _bd_n="$(basename "$_bd" .deadline)"
+    cat "$_bd" "$CALLS/$_bd_n.t0" 2>/dev/null | tr '\n' ' ' | awk -v n="$_bd_n" '
+      { ok = $1 ~ /^[0-9]+$/ && $2 ~ /^[0-9]+$/ && $3 ~ /^[0-9]+$/ && $1 - $2 == 900 && $1 - $3 <= 5400 && $1 - $3 >= 5340
+        if (!ok) printf "%s:%s/%s ", n, $1, $2 }'
+  done
+  [ "$_bd_k" = "$(calls)" ] || printf 'missing:%s' "$(( $(calls) - _bd_k ))"
+}
+# Every unit kind run_unit starts gets the deadline: check, task, final review,
+# finish, gate repair, the progress unit and a final repair (one run), a sync
+# repair, and a landing repair.
+test_lanes_deadline_every_unit_kind() {
+  LANES_PROGRESS=1; export LANES_PROGRESS
+  lanes_fixture dlkinds integration A:-
+  printf -- '- 2026-10-01 check requested\n' >> "$P/.studio/ledger/A.md"
+  redocs
+  printf 'auto\nauto\nauto\ngatelog; stop gate red — studio-test: 1 failed\n' > "$SCEN/A"
+  printf 'gaterepair\n' > "$SCEN/A.gate"
+  printf 'progress\n' > "$SCEN/progress"; printf 'fixgate\n' > "$SCEN/final-repair"
+  use_gate "[ -f fixed ]"
+  run_lanes start "$MFP"
+  use_gate true
+  assert_eq "1 A-check progress,2 A-T1 progress,3 A-final-review progress,4 A-finish stop,5 A-gate-repair progress,6 A-finish done," \
+    "$(story_rows A)" "the fixture: check, task, final review, a red finish, its gate repair, the finish again"
+  assert_eq "progress final-repair" "$(cut -f2 "$(last_lanes_dir)/final/units.tsv" 2>/dev/null | paste -sd' ' -)" \
+    "the fixture: the progress unit, then a final repair of the red gate"
+  assert_eq "" "$(bad_deadlines)" "every unit and final unit gets DEADLINE and WRAP_AT"
+  LANES_TASKS=2; export LANES_TASKS
+  lanes_fixture dlsync integration A:-
+  printf 'push_target A-T1.txt\n' > "$SCEN/A"
+  printf 'syncrepair\n' > "$SCEN/A.sync"
+  run_lanes start "$MFP"
+  assert_eq 1 "$(cat "$CALLS/m-A.sync" 2>/dev/null)" "the fixture: one sync repair"
+  assert_eq "" "$(bad_deadlines)" "a sync repair gets DEADLINE and WRAP_AT"
+  lanes_fixture dlland integration A:- B:-
+  printf 'conflict shared.txt\n' > "$SCEN/A"; printf 'conflict shared.txt\nauto\nwaitfor %s\n' "$P/.studio/runs/demo/landed.tsv" > "$SCEN/B"
+  printf 'repair\n' > "$SCEN/B.land"
+  run_lanes start "$MFP"
+  assert_eq 1 "$(land_calls)" "the fixture: one landing repair"
+  assert_eq "" "$(bad_deadlines)" "a landing repair gets DEADLINE and WRAP_AT"
+  assert_missing "$CALLS/wait.timeout" "no stub wait hit its ceiling"
+}
 # seed_suite_times FILE N SECS — N well-formed main-lane studio-test rows of SECS seconds.
 seed_suite_times() {
   mkdir -p "$(dirname "$1")"; _sst_i=0
@@ -1906,7 +1990,7 @@ test_lanes_gate_repair_no_progress() {
   printf 'noop\n' > "$SCEN/A.gate"
   run_lanes start "$MFP"
   assert_contains "$(last_lanes_dir)/stories/A" "^stopped gate repair made no progress$" "a repair with no Repair: line stops"
-  assert_contains "$(last_lanes_dir)/lanes/1/units.tsv" "	A-gate-repair	.*	noprog$" "its row says noprog"
+  assert_contains "$(last_lanes_dir)/lanes/1/units.tsv" "	A-gate-repair	.*	noprog	" "its row says noprog"
   lanes_fixture gatered integration A:-
   printf 'auto\nauto\nstop gate red — studio-test: 1 failed\n' > "$SCEN/A"
   printf 'stop gate repair red — studio-test: 1 failed\n' > "$SCEN/A.gate"
@@ -2532,7 +2616,7 @@ test_lanes_report_every_ending() {
   assert_contains "$R" "^Ending: partial: 1 landed, 1 stopped, 1 skipped$" "the partial ending counts each kind"
   assert_contains "$R" "^Mode: integration$" "mode"
   assert_contains "$R" "^Target: integration/demo$" "target"
-  assert_contains "$R" '^Spent: [$][0-9.]*$' "spend"
+  assert_contains "$R" '^Spent: [$][0-9.]*$' "spend (no estimate in it: no ≈)"
   assert_contains "$R" "^Started: .* · Ended: " "start and end times"
   assert_contains "$R" "^Final PR: https://gh.test/pr/1 (green)$" "the final PR"
   assert_eq "A B C" "$(sed -n 's/^## \([ABC]\)$/\1/p' "$R" | tr '\n' ' ' | sed 's/ $//')" "a section per story, in manifest order"
@@ -2562,6 +2646,19 @@ test_lanes_report_every_ending() {
   assert_contains "$R" "^## Resume$" "and the resume command"
   assert_missing "$P/.studio/runs/demo/done" "no done marker"
   assert_missing "$P/.studio/overnight.lock" "the run releases its lock"
+}
+# Spec §6: a unit with no result event has an estimated cost, marked ≈ in its
+# story's units table; the run report never says `cost unknown`.
+test_lanes_report_cost_estimate() {
+  lanes_fixture repest integration A:-
+  printf 'nocost\n' > "$SCEN/A"
+  run_lanes start "$MFP"
+  R="$(last_lanes_dir)/report.md"
+  assert_eq "estimate result result" "$(cut -f8 "$(last_lanes_dir)/lanes/1/units.tsv" | paste -sd' ' -)" "A-T1 is estimated, its later units are results"
+  assert_contains "$R" '^| 1 | A-T1 | 0 | ≈[0-9.]* | ' "the estimated row is marked"
+  assert_contains "$R" '^Spent: ≈[$][0-9.]*$' "and so is the total it is in"
+  assert_contains "$R" '^| 2 | A-final-review | 0 | 1 | ' "a result row is not"
+  assert_not_contains "$R" "cost unknown" "no cost is unknown"
 }
 test_lanes_report_on_lane_crash() {
   lanes_fixture repcrash integration A:-
@@ -2759,6 +2856,7 @@ test_lanes_detach_strips_env() {
   assert_contains "$CALLS/1.fullenv" "^CLAUDE_CONFIG_DIR=$TMP/cfg$" "CLAUDE_CONFIG_DIR is kept"
   assert_contains "$CALLS/1.fullenv" "^PATH=" "PATH is kept"
   assert_contains "$CALLS/1.fullenv" "^STUDIO_STORY=A$" "the runner's own STUDIO_STORY is set fresh"
+  assert_contains "$CALLS/1.fullenv" "^STUDIO_OVERNIGHT_RUNNER_CHECK=0$" "the runner-check test hook reaches the child: its preflight fetches nothing"
   _dl="$(ls "$P"/.studio/reports/overnight-demo-detached-*.log 2>/dev/null | head -n 1)"
   assert_eq 1 "$([ -n "$_dl" ] && echo 1 || echo 0)" "the detached log is under reports"
   _dr="$(ls -d "$P"/.studio/reports/overnight-demo-[0-9]* 2>/dev/null | tail -n 1)"
@@ -3053,11 +3151,13 @@ test_lanes_left_gate_reaped() {
   assert_contains "$LS_ERR" "left a gate running after it ended (pid [0-9]*) — ended it" "the runner says it ended the gate"
   assert_eq 1 "$(grep -c '^s A ' "$CALLS/gate.iv" 2>/dev/null)" "the retry's own gate ran"
   assert_eq yes "$([ "$_secs" -lt 60 ] && echo yes || echo "no ($_secs s)")" "the retry never waited behind the 100 s gate"
-  assert_contains "$(last_lanes_dir)/lanes/1/units.tsv" "	A-T1	0	[^	]*	[^	]*	0	noprog$" "the unit that left the gate made no progress"
+  assert_contains "$(last_lanes_dir)/lanes/1/units.tsv" "	A-T1	0	[^	]*	[^	]*	0	noprog	" "the unit that left the gate made no progress"
   assert_contains "$CALLS/1.fullenv" "^STUDIO_UNIT_TAG=overnight-demo-[0-9-]*-1-1-A-T1$" "each session carries its unit tag"
 }
 # A unit the session cap ends with no progress is `timed out`, not noprog,
-# and the story's ending says so.
+# and the story's ending says so: two capped units reach the task_timeouts
+# bound (spec §4). They never made a worktree and wrote no checkpoint, so
+# the runner's fallback note stands in for one.
 test_lanes_timed_out_outcome() {
   LANES_CONFIG='{"overnight": {"kill_grace_seconds": 5}}'; export LANES_CONFIG
   lanes_fixture tmo integration A:-
@@ -3066,7 +3166,7 @@ test_lanes_timed_out_outcome() {
   run_lanes start "$MFP"; unset STUDIO_OVERNIGHT_SESSION_SECONDS
   R="$(last_lanes_dir)"
   assert_eq "timed out|timed out" "$(cut -f7 "$R/lanes/1/units.tsv" | paste -sd'|' -)" "both capped units are timed out"
-  assert_contains "$R/stories/A" "^stopped timed out on T1 (session_minutes 90)$" "the ending names the timeout"
+  assert_contains "$R/stories/A" "^stopped timed out on T1 (session_minutes 90; 2 capped units) — checkpoint: uncommitted: none; unpushed: none; last words: none$" "the ending names the timeout, the bound and the fallback"
   assert_contains "$R/report.md" "^Not landed: stopped — timed out on T1 " "and so does the report"
 }
 # #59 R2 (AC3): a lanes unit silent past idle_minutes with an open plain
@@ -3236,6 +3336,35 @@ test_lanes_gate_cap_warning() {
   run_lanes start --dry-run "$MFP"
   assert_not_contains "$LS_ERR" "warning: gate run cap" "file runs are not read; a 10-minute suite fits 45"
 }
+# Direct mode with a merge_command and no gate_command: the merge's own gate is
+# the first full run, so a red lands as a failed landing, not a finish repair.
+test_lanes_preflight_direct_gate_warn() {
+  LANES_CONFIG='{"merge_command": "scripts/merge.sh <pr>"}'; export LANES_CONFIG
+  lanes_fixture dgw direct A:-
+  run_lanes start --dry-run "$MFP"
+  assert_eq 0 "$LS_STATUS" "a warning, not a refusal"
+  assert_contains "$LS_ERR" "warning: direct mode: merge_command's own gate is the first full run — set gate_command to that gate minus the merge (e.g. .github/scripts/run-tests.sh) so a red goes to a finish repair, not the landing" "direct, merge_command, no gate_command"
+  LANES_CONFIG='{"merge_command": "scripts/merge.sh <pr>", "gate_command": "true"}'; export LANES_CONFIG
+  lanes_fixture dgw2 direct A:-
+  run_lanes start --dry-run "$MFP"
+  assert_not_contains "$LS_ERR" "warning: direct mode" "gate_command set: no warning"
+  lanes_fixture dgw3 integration A:-
+  run_lanes start --dry-run "$MFP"
+  assert_not_contains "$LS_ERR" "warning: direct mode" "integration mode: no warning"
+}
+# A direct-mode red finish gate goes to the gate-repair loop, not the landing.
+test_lanes_direct_gate_red_repairs() {
+  LANES_CONFIG='{"merge_command": "scripts/merge.sh <pr>"}'; export LANES_CONFIG
+  lanes_fixture dgr direct A:-
+  printf 'auto\nauto\ngatelog; stop gate red — gate_command exit 1 — log x\n' > "$SCEN/A"
+  printf 'gaterepair\n' > "$SCEN/A.gate"
+  run_lanes start "$MFP"
+  assert_eq 1 "$(gate_calls)" "exactly one gate-repair unit in direct mode"
+  assert_eq "1 A-T1 progress,2 A-final-review progress,3 A-finish stop,4 A-gate-repair progress,5 A-finish done," \
+    "$(story_rows A)" "a fresh finish follows the repair"
+  assert_contains "$(last_lanes_dir)/stories/A" "^landed " "it lands only after the repaired finish"
+  assert_eq 1 "$(grep -c '^s merge' "$CALLS/gate.iv" 2>/dev/null)" "the merge program ran once, after the repair"
+}
 # The preflight warns when the slowest recent studio-test leaves a finish
 # unit too little room under session_minutes.
 test_lanes_gate_room_warning() {
@@ -3340,7 +3469,7 @@ lverb() {
 test_lanes_held_dependents_wait() {
   lanes_fixture hdw integration A:- C:- D:A,C
   lholds_on 120
-  printf 'auto\nstop need art\ninbox; ruling Directive 1: use the bus\nauto\n' > "$SCEN/A"
+  printf 'auto\nstop need art\ninbox; ruling Directive 2: use the bus\nauto\n' > "$SCEN/A"
   lanes_bg
   wait_for 'is_held A' 60
   assert_contains "$(last_lanes_dir)/stories/A" "^held stop: need art until 20[0-9-]*T[0-9:]*Z$" "a feature Stop: holds the story (AC17, AC19)"
@@ -3350,13 +3479,15 @@ test_lanes_held_dependents_wait() {
   lverb status
   assert_contains "$LV_OUT" "^A  lane [0-9]*  held  " "status: A's state is held"
   assert_contains "$LV_OUT" "^    held — stop: need art — until [0-9][0-9]:[0-9][0-9] — say / resume / stop A$" "the held line in place of the unit line (AC27)"
-  lverb say A -- use the bus; assert_eq 1 "$(cat "$LV_OUT")" "say A while held"
+  # Ruling 7: the held unit left no checkpoint, so its runner note took id 1.
+  lverb say A -- use the bus; assert_eq 2 "$(cat "$LV_OUT")" "say A while held"
   lverb resume A; assert_eq "resume requested: A resumes within one poll" "$(cat "$LV_OUT")" "resume A"
   wait_pid_or_fail "$RPID" 120 "the run finishes after the resume"
   assert_eq 0 "$WP_STATUS" "every story lands"
   for id in A C D; do assert_contains "$(last_lanes_dir)/stories/$id" "^landed " "$id landed"; done
   _n="$(story_calls A | sort -n | sed -n 3p)"
-  assert_contains "$CALLS/$_n.inbox" '^\[1, story\] use the bus$' "A's next unit got the directive"
+  assert_contains "$CALLS/$_n.inbox" '^RUNNER NOTE (previous attempt of final-review)$' "A's next unit got the runner note"
+  assert_contains "$CALLS/$_n.inbox" '^\[2, story\] use the bus$' "and the directive"
   assert_not_contains "$(last_lanes_dir)/events.jsonl" '"event":"message_requeued"' "the recorded directive is not requeued"
   assert_eq "1 A-T1 progress,2 A-final-review stop,3 A-final-review progress,4 A-finish done," "$(story_rows A)" "unit numbers run on after the hold"
   assert_contains "$(last_lanes_dir)/events.jsonl" '"story":"A","state":"held","why":"stop: need art","until":"20' "a held event"
@@ -3425,6 +3556,28 @@ test_lanes_gate_repair_noprog_holds() {
   assert_eq 2 "$(gate_calls)" "the latest Stop is still gate red: the resume gets a repair unit (R29)"
   assert_eq "1 A-T1 progress,2 A-final-review progress,3 A-finish stop,4 A-gate-repair noprog,5 A-gate-repair progress,6 A-finish done," \
     "$(story_rows A)" "repair, hold, repair, fresh finish"
+  lholds_off
+}
+# Execute §8: a gate repair cut short at wrap-up writes `Stop: gate repair
+# out of time — …`; the hold's resume goes back to the gate repair, not to a
+# fresh finish (the gate is still red).
+test_lanes_resume_after_gate_repair_out_of_time() {
+  LANES_CONFIG='{"overnight": {"gate_repairs": 1}}'; export LANES_CONFIG
+  lanes_fixture gro integration A:-
+  lholds_on 120
+  printf 'auto\nauto\ngatelog; stop gate red — gate_command exit 3 — log .studio/reports/gate-20261004-000000.log\nauto\n' > "$SCEN/A"
+  printf 'stop gate repair out of time — done a, left b\ngaterepair\n' > "$SCEN/A.gate"
+  lanes_bg
+  wait_for 'is_held A' 60
+  assert_contains "$(last_lanes_dir)/stories/A" "^held stop: gate repair out of time — done a, left b until " "the out-of-time repair holds"
+  lverb resume A
+  wait_pid_or_fail "$RPID" 120 "the run finishes"
+  assert_contains "$(last_lanes_dir)/stories/A" "^landed " "A lands"
+  assert_eq 2 "$(gate_calls)" "the resume gets a repair unit"
+  assert_eq "1 A-T1 progress,2 A-final-review progress,3 A-finish stop,4 A-gate-repair stop,5 A-gate-repair progress,6 A-finish done," \
+    "$(story_rows A)" "repair, hold, repair, fresh finish"
+  n="$(grep -l -- '--gate-repair' "$CALLS"/*.argv 2>/dev/null | sed 's#.*/\([0-9]*\)\.argv#\1#' | sort -n | tail -n 1)"
+  assert_contains "$CALLS/${n:-0}.env" "^STUDIO_REPAIR=gate:/.*/A-b/\.studio/reports/gate-20261004-000000\.log$" "its log is the gate red Stop's, not the out-of-time one's"
   lholds_off
 }
 # #66 R5 + Review Focus 4: the note on a held gate repair (exact-pattern
@@ -3799,6 +3952,160 @@ test_lanes_hold_during_last_unit_lands_and_clears() {
   assert_eq "" "$(ls -A "$(last_lanes_dir)/control" 2>/dev/null)" "the .hold is cleared when the story ends (R25)"
   lholds_off
   assert_missing "$CALLS/wait.timeout" "no stub wait hit its ceiling"
+}
+
+# ---- Unit deadline and carry-over (spec 2026-10-26 §2-§4, C1-C5) ----
+# Each test runs two-task stories under an 8 s session limit: a well-behaved
+# unit finishes far inside it (and its finished task makes it uncapped even
+# past WRAP_AT), and a killed one sleeps 30 s, so a late start cannot flip
+# an outcome.
+# ucol N COL — column COL of row N of lane 1's units.tsv in the newest run.
+ucol() { awk -F'\t' -v n="$1" -v c="$2" 'NR == n { print $c }' "$(last_lanes_dir)/lanes/1/units.tsv"; }
+# cap_on [SECS] / cap_off — the session limit (default 8 s) for the next run, and back.
+cap_on() { STUDIO_OVERNIGHT_SESSION_SECONDS="${1:-8}"; export STUDIO_OVERNIGHT_SESSION_SECONDS; }
+cap_off() { unset STUDIO_OVERNIGHT_SESSION_SECONDS; }
+# Done-when 1: a unit killed at the cap after writing its checkpoint; the
+# retry's `studio-brief task 2` carries it.
+test_lanes_checkpoint_reaches_retry() {
+  LANES_CONFIG='{"overnight": {"kill_grace_seconds": 5}}'; LANES_TASKS=2; export LANES_CONFIG LANES_TASKS
+  lanes_fixture ckr integration A:-
+  printf 'auto\nckpt done A%% left B%% next C; sleep 30\nbrief 2\n' > "$SCEN/A"
+  cap_on; run_lanes start "$MFP"; cap_off
+  assert_contains "$(last_lanes_dir)/stories/A" "^landed " "A lands after the retry"
+  assert_eq "timed out|1|1" "$(ucol 2 7)|$(ucol 2 6)|$(ucol 2 9)" "the killed unit: timed out, capped (a checkpoint alone is no progress)"
+  assert_contains "$CALLS/3.brief" "^==> .*\.studio/ledger/A\.md (checkpoint)$" "the retry's brief has a checkpoint part"
+  assert_contains "$CALLS/3.brief" "^- [0-9-]* T2 checkpoint: done A; left B; next C$" "with the killed unit's checkpoint"
+}
+# Done-when 2: a unit that committed and pushed, then was killed, is partial.
+test_lanes_commit_then_killed_is_partial() {
+  LANES_CONFIG='{"overnight": {"kill_grace_seconds": 5}}'; LANES_TASKS=2; export LANES_CONFIG LANES_TASKS
+  lanes_fixture ckp integration A:-
+  printf 'auto\nwtcommit fix.gd; pushwt; sleep 30\nauto\n' > "$SCEN/A"
+  cap_on; run_lanes start "$MFP"; cap_off
+  assert_contains "$(last_lanes_dir)/stories/A" "^landed " "A lands"
+  assert_eq "partial|1|1" "$(ucol 2 7)|$(ucol 2 6)|$(ucol 2 9)" "row 2: partial, timed out 1, capped 1"
+  assert_eq "A-T2-retry" "$(ucol 3 2)" "the next unit retries the task"
+  assert_eq 0 "$(ucol 3 9)" "a unit that finishes its task is not capped"
+  assert_contains "$(last_lanes_dir)/events.jsonl" '"event":"unit_ended","story":"A","unit":"[^"]*-2-A-T2","label":"T2","outcome":"partial"' "its unit_ended event"
+}
+# D2: a capped unit that pushed one commit of its own, then made a second it
+# never pushed, is partial too (lanes share story_units' rule).
+test_lanes_partly_pushed_is_partial() {
+  LANES_CONFIG='{"overnight": {"kill_grace_seconds": 5}}'; LANES_TASKS=2; export LANES_CONFIG LANES_TASKS
+  lanes_fixture ckq integration A:-
+  printf 'auto\nwtcommit f1.gd; pushwt; wtcommit f2.gd; sleep 30\npushwt\n' > "$SCEN/A"
+  cap_on; run_lanes start "$MFP"; cap_off
+  assert_eq "partial|1|1" "$(ucol 2 7)|$(ucol 2 6)|$(ucol 2 9)" "row 2: partial with one commit of two on origin"
+  assert_contains "$(last_lanes_dir)/stories/A" "^landed " "A lands"
+}
+# Done-when 3: task_timeouts (2) capped units of one task hold the story,
+# the checkpoint in the held why; nothing more runs until a resume.
+test_lanes_bound_holds_with_checkpoint() {
+  LANES_CONFIG='{"overnight": {"kill_grace_seconds": 5}}'; LANES_TASKS=2; export LANES_CONFIG LANES_TASKS
+  lanes_fixture ckb integration A:-
+  lholds_on 120
+  printf 'auto\nckpt done A%% left B%% next C; sleep 30\nckpt done D%% left E%% next F; sleep 30\nauto\n' > "$SCEN/A"
+  cap_on; lanes_bg; wait_for 'is_held A' 90; cap_off
+  W='timed out on T2 (session_minutes [0-9]*; 2 capped units) — checkpoint: done D; left E; next F'
+  assert_contains "$(last_lanes_dir)/stories/A" "^held $W until " "the bound holds, the newest checkpoint in the why"
+  assert_contains "$(last_lanes_dir)/events.jsonl" "\"story\":\"A\",\"state\":\"held\",\"why\":\"$W\"" "the held event carries it"
+  assert_contains "$TMP/lbg.err" "say A --task T2 -- '<done/left/next>' · resume A" "the hold hint names say --task"
+  lverb status
+  assert_contains "$LV_OUT" "^    held — $W — until [0-9][0-9]:[0-9][0-9] — say A --task T2 -- '<done/left/next>' · resume A$" "and so does status"
+  sleep 2
+  assert_eq 3 "$(calls)" "no unit 4 before the resume"
+  lverb stop A
+  wait_pid_or_fail "$RPID" 60 "the run ends"
+  assert_eq "1|1" "$(ucol 2 9)|$(ucol 3 9)" "both units capped"
+  lholds_off
+}
+# Review Focus 3: after a resume, exactly one more capped unit runs, then it
+# holds again.
+test_lanes_bound_resume_one_more() {
+  LANES_CONFIG='{"overnight": {"kill_grace_seconds": 5}}'; LANES_TASKS=2; export LANES_CONFIG LANES_TASKS
+  lanes_fixture ckm integration A:-
+  lholds_on 120
+  printf 'auto\nsleep 30\nsleep 30\nsleep 30\nauto\n' > "$SCEN/A"
+  cap_on; lanes_bg; wait_for 'is_held A' 90
+  lverb resume A
+  wait_for '[ "$(calls)" -ge 4 ] && is_held A' 60; cap_off
+  assert_contains "$(last_lanes_dir)/stories/A" "^held timed out on T2 (session_minutes [0-9]*; 3 capped units) — checkpoint: " "the resumed unit capped: held again at once"
+  sleep 2
+  assert_eq 4 "$(calls)" "no unit 5"
+  lverb stop A
+  wait_pid_or_fail "$RPID" 60 "the run ends"
+  lholds_off
+}
+# A partial unit is still capped: two of them hold too.
+test_lanes_partial_counts_toward_bound() {
+  LANES_CONFIG='{"overnight": {"kill_grace_seconds": 5}}'; LANES_TASKS=2; export LANES_CONFIG LANES_TASKS
+  lanes_fixture ckpb integration A:-
+  lholds_on 120
+  printf 'auto\nwtcommit f2.gd; pushwt; sleep 30\nwtcommit f3.gd; pushwt; sleep 30\nauto\n' > "$SCEN/A"
+  cap_on; lanes_bg; wait_for 'is_held A' 90; cap_off
+  assert_contains "$(last_lanes_dir)/stories/A" "^held timed out on T2 (session_minutes [0-9]*; 2 capped units) — checkpoint: " "two partial units hold"
+  lverb stop A
+  wait_pid_or_fail "$RPID" 60 "the run ends"
+  assert_eq "partial|partial" "$(ucol 2 7)|$(ucol 3 7)" "both partial"
+  lholds_off
+}
+# C1: an uncapped unit that ends early with pushed commits but no finished
+# task is noprog (it must not escape both counters).
+test_lanes_uncapped_early_end_is_noprog() {
+  LANES_CONFIG='{"overnight": {"retries": 0}}'; LANES_TASKS=2; export LANES_CONFIG LANES_TASKS
+  lanes_fixture cke integration A:-
+  printf 'auto\nwtcommit fix.gd; pushwt; noop\n' > "$SCEN/A"
+  cap_on 600; run_lanes start "$MFP"; cap_off
+  assert_eq "noprog|0|0" "$(ucol 2 7)|$(ucol 2 6)|$(ucol 2 9)" "row 2: noprog, not timed out, not capped"
+  assert_eq "stopped no progress on T2" "$(rec A)" "retries 0: no progress on T2"
+}
+# Review Focus 1: a killed unit that wrote no checkpoint; the runner's note
+# (its uncommitted files and last words) reaches the next unit.
+test_lanes_fallback_note_without_checkpoint() {
+  LANES_CONFIG='{"overnight": {"kill_grace_seconds": 5}}'; LANES_TASKS=2; export LANES_CONFIG LANES_TASKS
+  lanes_fixture ckf integration A:-
+  printf 'auto\nwtfile x.gd; lastwords next I will run probe 3; sleep 30\ninbox\n' > "$SCEN/A"
+  cap_on; run_lanes start "$MFP"; cap_off
+  assert_contains "$(last_lanes_dir)/stories/A" "^landed " "A lands"
+  assert_contains "$CALLS/3.inbox" "RUNNER NOTE (previous attempt of T2)" "the next unit gets the runner note"
+  assert_contains "$CALLS/3.inbox" "uncommitted: .*x\.gd" "naming the uncommitted file"
+  assert_contains "$CALLS/3.inbox" "last words: next I will run probe 3" "and the killed session's last words"
+}
+
+# Ruling 7: a holdable ending other than the bound — here a capped unit's
+# own Stop: — still leaves the runner's note pending for the unit a resume runs.
+test_lanes_stop_capped_holds_with_note() {
+  LANES_CONFIG='{"overnight": {"kill_grace_seconds": 5}}'; LANES_TASKS=2; export LANES_CONFIG LANES_TASKS
+  lanes_fixture cksn integration A:-
+  lholds_on 120
+  printf 'auto
+wtfile x.gd; lastwords next I will ask; stop need art; sleep 30
+' > "$SCEN/A"
+  cap_on; lanes_bg; wait_for 'is_held A' 60; cap_off
+  assert_contains "$(last_lanes_dir)/stories/A" "^held stop: need art until " "the feature Stop: holds"
+  _nf="$(grep -l '^scope: note$' "$(last_lanes_dir)"/inbox/A/[0-9]*.msg 2>/dev/null | head -n 1)"
+  assert_contains "${_nf:-/dev/null}" "^task: T2$" "a runner note for T2 is pending"
+  assert_contains "${_nf:-/dev/null}" "uncommitted: .*x\.gd.*; last words: next I will ask" "with the uncommitted file and the last words"
+  lverb stop A
+  wait_pid_or_fail "$RPID" 60 "the run ends"
+  lholds_off
+}
+
+# Fix 3: whether a unit wrote a checkpoint is judged in its own checkout's
+# ledger. Unit 2 checkpoints T2 (pushed), then its worktree goes; unit 3
+# re-adds it (so its pre-unit ledger was the start checkout's, with no T2
+# line), writes none and is killed: its note still carries its last words.
+test_lanes_checkpoint_judged_in_own_checkout() {
+  LANES_CONFIG='{"overnight": {"kill_grace_seconds": 5}}'; LANES_TASKS=2; export LANES_CONFIG LANES_TASKS
+  lanes_fixture ckj integration A:-
+  printf 'auto
+ckpt done A%% left B%% next C; noop; rmwt
+mkwt; lastwords LW3; sleep 30
+inbox
+' > "$SCEN/A"
+  cap_on; run_lanes start "$MFP"; cap_off
+  assert_eq "noprog|timed out" "$(ucol 2 7)|$(ucol 3 7)" "unit 2 no progress, unit 3 killed"
+  assert_contains "$CALLS/4.inbox" "last words: LW3" "unit 3 wrote no checkpoint: its note has its last words"
 }
 
 # Last: no process any test started is still alive.
@@ -4335,7 +4642,7 @@ test_lanes_excludes_before_lock() {
   _ex="$(git -C "$P" rev-parse --path-format=absolute --git-common-dir)/info/exclude"
   STUDIO_OVERNIGHT_LOCK_HOOK="cp '$_ex' '$TMP/excl.at-lock'"; export STUDIO_OVERNIGHT_LOCK_HOOK
   run_lanes start "$MFP"; unset STUDIO_OVERNIGHT_LOCK_HOOK
-  for _e in .studio/runs/ .studio/sessions/ .studio/runs.mutex .studio/sessions.mutex .studio/runs.mutex.reap/ .studio/sessions.mutex.reap/ .studio/overnight.lock .studio/overnight.stop .claude/worktrees/; do
+  for _e in .studio/runs/ .studio/sessions/ .studio/runs.mutex .studio/sessions.mutex .studio/runs.mutex.reap/ .studio/sessions.mutex.reap/ .studio/overnight.lock .studio/overnight.stop .claude/worktrees/ .studio/cost.calib; do
     assert_contains "$TMP/excl.at-lock" "^$(printf '%s' "$_e" | sed 's/\./\\./g')\$" "$_e excluded before the lock (D6)"
   done
 }
@@ -5523,7 +5830,7 @@ run_tests test_stub_waitexist_and_run_token test_lanes_setup_preflight_refuses_l
   test_lanes_land_second_conflict_stops test_lanes_land_repair_no_progress test_lanes_direct_refused_then_repaired test_lanes_direct_merged_never_repairs test_lanes_direct_merge_timeout test_lanes_direct_merge_runs_in_story_checkout test_lanes_direct_merge_program_changed_by_story test_lanes_land_program_resolution \
   test_lanes_land_once_explicit_branch test_lanes_land_idempotent \
   test_lanes_land_crash_after_push test_lanes_land_lock_reclaim test_lanes_land_shipped_resume \
-  test_lanes_gate_never_overlaps test_lanes_gate_repair_then_lands test_lanes_gate_repair_cap test_suite_every_auto_on test_suite_every_auto_off_slow test_suite_every_newest_ten_window test_suite_every_median_boundary test_suite_every_few_rows test_suite_every_config test_lanes_suite_every_env test_lanes_checkpoint_red_repairs_then_next_task \
+  test_lanes_gate_never_overlaps test_lanes_gate_repair_then_lands test_lanes_deadline_every_unit_kind test_lanes_gate_repair_cap test_suite_every_auto_on test_suite_every_auto_off_slow test_suite_every_newest_ten_window test_suite_every_median_boundary test_suite_every_few_rows test_suite_every_config test_lanes_suite_every_env test_lanes_checkpoint_red_repairs_then_next_task \
   test_lanes_gate_repair_same_stop_twice test_lanes_gate_repairs_zero test_lanes_gate_hard_stops_no_repair \
   test_lanes_gate_repair_no_progress test_lanes_gate_repair_model_and_no_log test_lanes_gate_repair_budget test_lanes_gate_repair_halt \
   test_lanes_sync_clean_merge_no_session test_lanes_sync_skips test_lanes_sync_integration_two_refs \
@@ -5535,7 +5842,7 @@ run_tests test_stub_waitexist_and_run_token test_lanes_setup_preflight_refuses_l
   test_lanes_final_skipped_on_stop_or_nothing_landed test_lanes_final_stop_before_setup test_lanes_final_gate_default test_lanes_direct_progress_landing \
   test_lanes_final_dirty_unit_is_red test_lanes_final_unit_stop_pointer_invisible test_lanes_final_budget test_lanes_final_conflict_then_red test_lanes_final_gate_interrupted_not_recorded \
   test_lanes_direct_merge_timeout_after_merge_lands test_lanes_direct_merge_timeout_term_ignored \
-  test_lanes_status_dead_old_lock_not_masking test_lanes_status_per_story test_lanes_report_every_ending test_lanes_report_on_lane_crash \
+  test_lanes_status_dead_old_lock_not_masking test_lanes_status_per_story test_lanes_report_every_ending test_lanes_report_cost_estimate test_lanes_report_on_lane_crash \
   test_lanes_done_marker test_lanes_settle_keeps_open test_lanes_settle_start_and_check test_lanes_status_reaps_dead_runner test_lanes_reap_names_final_pr \
   test_lanes_detach_strips_env test_lanes_detach_shows_push_warning test_lanes_push_check_target_workflows test_lanes_detach_refusal_in_foreground test_lanes_detach_child_refusal_surfaces \
   test_lanes_detach_timeout_lock_held_points_at_status test_lanes_detach_timeout_no_lock_ends_child \
@@ -5546,9 +5853,10 @@ run_tests test_stub_waitexist_and_run_token test_lanes_setup_preflight_refuses_l
   test_lanes_help_modes test_lanes_left_gate_reaped test_lanes_timed_out_outcome test_lanes_heartbeat \
   test_lanes_activity_verb test_lanes_status_anywhere test_lanes_status_ended_partial test_lanes_watch \
   test_lanes_unit_caps test_lanes_runner_gates_uncapped test_lanes_gate_cap_warning \
+  test_lanes_preflight_direct_gate_warn test_lanes_direct_gate_red_repairs \
   test_lanes_gate_room_warning test_lanes_gate_times_non_integer test_lanes_check_truth_region test_lanes_gate_log_from_stop test_lanes_story_listed_events test_lanes_unit_env_run_dir \
   test_lanes_held_dependents_wait test_lanes_resume_after_gate_red_runs_gate_repair test_lanes_resume_gate_repairs_counted \
-  test_lanes_resume_not_gate_red_no_repair_unit test_lanes_gate_repair_noprog_holds test_lanes_permission_route_note test_lanes_landing_never_holds \
+  test_lanes_resume_not_gate_red_no_repair_unit test_lanes_gate_repair_noprog_holds test_lanes_resume_after_gate_repair_out_of_time test_lanes_permission_route_note test_lanes_landing_never_holds \
   test_lanes_stop_queued_story test_lanes_stop_running_story test_lanes_stop_waiting_story \
   test_lanes_hold_waiting_story_holds_at_start test_lanes_hold_running_then_resume test_lanes_run_stop_held_was_held \
   test_lanes_push_rejected_first_unit_holds test_lanes_origin_check_localcommit_holds \
@@ -5556,6 +5864,9 @@ run_tests test_stub_waitexist_and_run_token test_lanes_setup_preflight_refuses_l
   test_lanes_final_step_no_delivery test_lanes_deadline \
   test_lanes_stop_at_done_never_lands test_lanes_stop_held_by_operator test_lanes_stop_pending_never_holds \
   test_lanes_gate_repair_own_stop_holds test_lanes_directive_cap_holds test_lanes_hold_during_last_unit_lands_and_clears \
+  test_lanes_checkpoint_reaches_retry test_lanes_commit_then_killed_is_partial test_lanes_bound_holds_with_checkpoint \
+  test_lanes_bound_resume_one_more test_lanes_partial_counts_toward_bound test_lanes_partly_pushed_is_partial test_lanes_uncapped_early_end_is_noprog \
+  test_lanes_fallback_note_without_checkpoint test_lanes_stop_capped_holds_with_note test_lanes_checkpoint_judged_in_own_checkout \
   test_lanes_next_adopted_planned test_lanes_context_preflight test_lanes_check_unit_first test_lanes_adopt_sync_fail_holds test_lanes_setup_fail_holds test_lanes_setup_fail_final_red test_lanes_setup_silent_fail_final_red test_lanes_setup_fail_path_specials test_lanes_direct_setup_fail_note test_lanes_setup_gets_start_dir test_lanes_run_config_reaches_every_worktree test_lanes_final_repair_sees_run_config test_lanes_setup_preflight_requires_a_run test_lanes_gate_command_final test_lanes_gate_command_finish_red_repair test_lanes_report_adopted_lines test_lanes_adopt_seeded_runs_rest test_lanes_adopt_round_trip \
   test_lanes_per_run_lock_paths test_lanes_excludes_before_lock test_lanes_two_runs_each_own_lock \
   test_lanes_status_run_not_live test_lanes_manifest_refuses_live_single test_lanes_lock_race_single_vs_manifest \
