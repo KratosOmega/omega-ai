@@ -208,6 +208,18 @@ test_direct_progress_required() {
   assert_status 2 "progress/p1 is deleted" -- remote_has progress/p1
 }
 
+test_direct_progress_in_story_landing() {
+  proj p2; mkdir -p "$R/docs/game-dev"; printf '# Progress\n' > "$R/docs/game-dev/PROGRESS.md"
+  git -C "$R" add docs && git -C "$R" commit -q -m progress-file && git -C "$R" push -q origin main
+  git -C "$R" checkout -q -b S-b origin/main && printf 'S entry\n' >> "$R/docs/game-dev/PROGRESS.md" \
+    && git -C "$R" commit -qam "S with its entry" && git -C "$R" push -q origin S-b && git -C "$R" checkout -q main
+  TS="$(git -C "$R" rev-parse S-b)"; land_squash S-b "S by hand (#21)"
+  record p2 direct main S:S-b:-; pr S-b 21 MERGED "$TS" "$MS" main
+  settle p2
+  assert_eq 0 "$RC" "the story's own landing carries the PROGRESS entry: cleaned"
+  assert_contains "$TMP/out" "; progress entry in S's landing$" "the head says where the entry is"
+}
+
 test_live_run_skipped() {
   proj lv; story_branch A-b a.txt; land_merge A-b
   record lv direct main A:A-b:-; landed A "$MS"
@@ -244,12 +256,16 @@ full_direct() {
   printf '# Studio State\n\nstage: idle\n\n## Ledger\n\n' > "$R/.studio/stories/A.md"
   printf '# Studio State\n\nstage: idle\n\n## Ledger\n\n' > "$R/.studio/stories/K.md"
 }
-# mirror SLUG IDS… — a retired Multica bridge state file for this run: story ID=IDENT pairs.
+# mirror SLUG IDS… — a retired Multica bridge state file for this run: story ID=IDENT pairs,
+# with no final newline (as the bridge's json.dump writes it); a second, older run of the
+# slug shares the first pair, so the files' lines must not run together.
 mirror() {
   _ms="$1"; shift; mkdir -p "$HOME/.claude-gamedev/multica/state/retired"; _mj=""
   for _mp in "$@"; do _mj="$_mj${_mj:+, }\"${_mp%%=*}\": \"${_mp#*=}\""; done
-  printf '{"key": "k", "root": "%s", "run_dir": "%s", "stories": {%s}, "run_issue": "OMEG-1"}\n' "$R" "$RUN" "$_mj" \
+  printf '{"key": "k", "root": "%s", "run_dir": "%s", "stories": {%s}, "run_issue": "OMEG-1"}' "$R" "$RUN" "$_mj" \
     > "$HOME/.claude-gamedev/multica/state/retired/overnight-$_ms-20261027-010000-abcd1234.json"
+  printf '{"key": "k", "root": "%s", "run_dir": "%s", "stories": {"%s": "%s"}}' "$R" "${RUN%-*}-000000" "${1%%=*}" "${1#*=}" \
+    > "$HOME/.claude-gamedev/multica/state/retired/overnight-$_ms-20261026-000000-abcd1234.json"
 }
 
 test_steps_full_direct() {
@@ -374,6 +390,12 @@ test_steps_tool_failures() {
   assert_contains "$TMP/out" "^run tg: not confirmed — gh pr list --head K-b: exit 1: gh: HTTP 502$" "the gh failure is the reason"
   assert_missing "$D/done" "nothing written"
   unset GH_FAIL
+  # A key Jira does not know (another tracker's): skipped, not left.
+  full_direct tj; printf '#!/bin/sh\necho "✗ Error: Issue does not exist or you do not have permission to see it." >&2; exit 1\n' > "$TMP/noissue"
+  chmod +x "$TMP/noissue"; printf '{"cleanup": {"jira_cli": "%s"}}\n' "$TMP/noissue" > "$R/.studio/config.json"
+  settle tj
+  assert_eq 0 "$RC" "an unknown key does not block the cleanup"
+  assert_contains "$TMP/out" "^  skip: Jira KAN-1: Jira has no such issue (or no access to it) — not a Jira ticket here$" "it is skipped with the reason"
   # No acli at all.
   full_direct tn; printf '{"cleanup": {"jira_cli": "no-such-acli"}}\n' > "$R/.studio/config.json"
   settle tn
@@ -459,7 +481,7 @@ test_settle_cli() {
   assert_eq "every run record is cleaned up" "$(cat "$TMP/o")" "it says so"
 }
 
-run_tests test_settle_cli test_direct_runner_landed test_direct_hand_landed_backfill test_unmerged_story_untouched \
+run_tests test_settle_cli test_direct_progress_in_story_landing test_direct_runner_landed test_direct_hand_landed_backfill test_unmerged_story_untouched \
   test_integration_final_merged_or_open test_direct_progress_required test_live_run_skipped \
   test_steps_full_direct test_steps_dry_run_writes_nothing test_steps_kept_branches_and_worktrees \
   test_steps_tool_failures test_steps_jira_guards test_steps_config_off_and_due test_steps_archived_record

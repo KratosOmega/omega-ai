@@ -70,7 +70,7 @@ overnight_progress_test      1       39
 sdd_script_test              1       22
 studio_env_test              1       43
 overnight_runs_test          1       71
-overnight_cleanup_test       1       156
+overnight_cleanup_test       1       160
 state_guard_test             1       66
 studio_peers_test            1       23
 studio_deadline_test         1       39

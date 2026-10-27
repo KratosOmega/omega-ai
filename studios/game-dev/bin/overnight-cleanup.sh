@@ -161,8 +161,8 @@ cl_tip_in() {
 # ancestor of RECORD/final's head. The final step: integration, that PR is
 # MERGED with that head and its merge commit is in origin/<default>
 # (runs_settle's rule); direct, when PROGRESS.md exists at Docs, a
-# `docs(progress): <slug>` commit is on origin/<Target> or the progress PR is
-# merged. Writes CL_T/rows (id branch ticket sha target url) and CL_FINAL (the
+# `docs(progress): <slug>` commit is on origin/<Target>, a row's landed
+# commit changed PROGRESS.md, or the progress PR is merged. Writes CL_T/rows (id branch ticket sha target url) and CL_FINAL (the
 # head line's tail). 1 with CL_WHY.
 cl_confirm() {
   cl_exec git fetch -q --prune origin
@@ -213,6 +213,8 @@ cl_confirm() {
     if git log --format=%s "refs/remotes/origin/$CL_TARGET" 2>/dev/null \
          | awk -v p="docs(progress): $CL_SLUG" '$0 == p || index($0, p " (#") == 1 { f = 1; exit } END { exit !f }'; then
       CL_FINAL="; progress entry on origin/$CL_TARGET"
+    elif _cf_p="$(cl_progress_in_rows)" && [ -n "$_cf_p" ]; then
+      CL_FINAL="; progress entry in $_cf_p's landing"
     else
       cl_merged_pr "progress/$CL_SLUG" "$CL_TARGET"
       case $? in
@@ -222,6 +224,14 @@ cl_confirm() {
       esac
     fi
   fi
+}
+# cl_progress_in_rows — the first row whose landed commit changed
+# docs/game-dev/PROGRESS.md (a story's finish writes its own entry, execute §9).
+cl_progress_in_rows() {
+  while IFS="$CL_TAB" read -r _pr_id _ _ _pr_s _; do
+    git rev-parse -q --verify "$_pr_s^1" >/dev/null 2>&1 || continue
+    git diff --quiet "$_pr_s^1" "$_pr_s" -- docs/game-dev/PROGRESS.md 2>/dev/null || { printf '%s\n' "$_pr_id"; return 0; }
+  done < "$CL_T/rows"
 }
 # cl_progress_needed — PROGRESS.md exists at the run's Docs revision (or that revision is unknown here).
 cl_progress_needed() {
@@ -404,6 +414,9 @@ cl_jira() {
     cl_state_has "jira-done $_cj_k" && continue
     _cj_w="$(cl_ticket_shared "$_cj_k")"; [ -z "$_cj_w" ] || { cl_left "Jira $_cj_k kept open: $_cj_w"; continue; }
     cl_exec "$_cj_a" jira workitem view "$_cj_k" --fields status --json
+    if [ "$TOOLS_RC" != 0 ] && printf '%s\n' "$TOOLS_OUT" | grep -qi 'does not exist'; then
+      cl_skip "Jira $_cj_k: Jira has no such issue (or no access to it) — not a Jira ticket here"; continue
+    fi
     [ "$TOOLS_RC" = 0 ] || { cl_left "Jira $_cj_k: cannot read it ($(cl_why))"; continue; }
     _cj_s="$(printf '%s\n' "$TOOLS_OUT" | awk '{ s = s $0 " " }
       END { i = index(s, "\"status\""); if (!i) exit; s = substr(s, i + 8)
@@ -431,7 +444,8 @@ cl_jira() {
 
 # cl_multica — each row's Multica story issue (the bridge's state files under
 # ~/.claude-gamedev/multica/state, retired ones included, for this root and
-# slug) set to done with `multica issue status <id> done --no-start`.
+# slug) set to done with `multica issue status <id> done --no-start`. The
+# bridge writes its JSON with no final newline: awk 1 ends each file's lines.
 cl_multica() {
   _cm_h="$HOME/.claude-gamedev/multica/state"; : > "$CL_T/mirror"
   for _cm_f in "$_cm_h"/*.json "$_cm_h"/retired/*.json; do
@@ -443,7 +457,7 @@ cl_multica() {
       *) continue ;;
     esac
     sed -n 's/.*"stories": {\([^}]*\)}.*/\1/p' "$_cm_f" | tr ',' '\n' \
-      | sed -n 's/^ *"\([^"]*\)": *"\([^"]*\)" *$/\1	\2/p' >> "$CL_T/mirror"
+      | sed -n 's/^ *"\([^"]*\)": *"\([^"]*\)" *$/\1	\2/p' | awk 1 >> "$CL_T/mirror"
   done
   awk -F'\t' 'NR == FNR { k[$1] = 1; next } ($1 in k) && !s[$2]++ { print $2 }' "$CL_T/rows" "$CL_T/mirror" > "$CL_T/idents"
   [ -s "$CL_T/idents" ] || return 0
