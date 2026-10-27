@@ -186,6 +186,7 @@ test_autopilot_contract() {
   test_autopilot_story_ids
   test_autopilot_discovery_lists_runs
   test_autopilot_start_from_run_worktree
+  test_autopilot_jira_acli
   test_autopilot_off_stop_rule
   test_autopilot_adopt_slug_forms
   # AC1: the manifest commit carries every story's ledger; AC3: step 3 ledgers `adopted` before seeding.
@@ -300,8 +301,26 @@ test_autopilot_start_from_run_worktree() {
   assert_contains "$S" "cd '<run worktree>' && '<abs>' start --detach <manifest>" "the detached start runs from the run worktree"
   assert_contains "$S" "cd '<run worktree>' && '<abs>' start <manifest>" "the printed command runs from the run worktree"
   assert_contains "$S" 'baseline test run is green.*run worktree.*worktree_setup' "the baseline test runs in the run worktree after setup"
-  assert_contains "$S" 'git worktree remove <path>' "the report names the worktree removal"
-  assert_contains "$S" 'nothing removes the worktree automatically' "the worktree is never removed automatically"
+  # Automatic run cleanup (2026-10-27): the runner, never a session, cleans up once every story is confirmed merged.
+  assert_not_contains "$S" 'nothing removes the worktree automatically' "the worktree is no longer left for the user"
+  assert_contains "$S" 'the runner itself, never a session, closes the run' "the runner cleans up, not a session"
+  assert_contains "$S" 'once every story is confirmed merged into its target (against origin' "cleanup waits for every story confirmed merged against origin"
+  assert_contains "$S" '`run/<slug>` after its tip is tagged `run-archive/<slug>-<tip12>`' "run/<slug> is archived as a tag before deletion"
+  assert_contains "$S" 'nor one with an open PR' "a branch with an open PR is never deleted"
+  assert_contains "$S" '`studio-overnight settle <slug>` does it (try `--dry-run` first)' "a hand landing is settled by studio-overnight settle"
+  assert_contains "$S" 'A worktree with uncommitted changes is kept and reported' "a dirty worktree is kept"
+  assert_contains "$S" "the report's \`## Cleanup\` says what was done and what is left" "the report's Cleanup section reports"
+  assert_contains "$S" 'no session deletes a remote branch' "a session still never deletes a remote branch"
+  assert_contains "$S" '^  delete a remote branch; no destructive' "phase 2 still forbids deleting a remote branch"
+}
+
+# Automatic run cleanup (2026-10-27): the Jira story comment goes through acli first.
+test_autopilot_jira_acli() {
+  S="$REPO_ROOT/shared/omega/skills/autopilot/SKILL.md"
+  assert_contains "$S" 'through `acli` first (on `PATH`, or' "Jira goes through acli first"
+  assert_contains "$S" '`~/.local/bin/acli`' "acli's fallback path"
+  assert_contains "$S" 'acli jira workitem comment create --key <KEY> --body "<text>"' "the acli comment command"
+  assert_contains "$S" 'without `acli`, through the Atlassian MCP' "the Atlassian MCP is the fallback"
 }
 
 # #39 AC19: off applies the bare-stop rule.

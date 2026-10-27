@@ -198,10 +198,10 @@ session (it is on `PATH` only inside a `claude-gd` session).
 
    Either way, say in the same message:
    - what the run may merge in the chosen mode — integration: the runner merges stories into `integration/<slug>`, nothing is merged into `main`, and the morning brings one draft PR integration → `main`; direct: the runner merges each story into `main` only through `merge_command`, each dependent after its dependency;
-   - what it may not do: no session merges anything; no force-push; no remote branch deleted; no destructive or security-sensitive operation; no reading or writing of secrets;
+   - what it may not do: no session merges anything; no force-push; no session deletes a remote branch (the runner itself cleans up once the run's work is confirmed merged, see the cleanup line below); no destructive or security-sensitive operation; no reading or writing of secrets;
    - how to watch and end it: `studio-overnight status` (from any directory) or `studio-overnight watch`, and `studio-overnight stop --run <slug>` (from the project);
    - that the morning `report.md` lands in `.studio/reports/overnight-<slug>-<ts>/`;
-   - the run worktree: `git worktree remove <path>` once the run is `done`; nothing removes the worktree automatically;
+   - the cleanup: once every story is confirmed merged into its target (against origin; a squash merge counts through the branch's merged PR), the runner itself, never a session, closes the run: it writes the record's `done`, removes the run's clean worktrees and their local branches, deletes its remote branches (`run/<slug>` after its tip is tagged `run-archive/<slug>-<tip12>`; never a branch whose tip is not in the base, nor one with an open PR), moves each story's Jira issue to Done (a ticket an unfinished run shares, or with open children, stays open), sets its Multica mirror to done, and archives `.studio/stories/<id>.md` into `.studio/stories/done/` — at the end of a done run or at the next `studio-overnight start` or `status`. After a hand landing, `studio-overnight settle <slug>` does it (try `--dry-run` first). A worktree with uncommitted changes is kept and reported, and the report's `## Cleanup` says what was done and what is left; `.studio/config.json`'s `cleanup` object switches each step off;
    - that this chat can now close, and to keep the laptop on power with the lid open.
 
 ### Does not fit
@@ -242,9 +242,12 @@ The single-plan path: one approved plan, run in this session under the mode.
    `git commit -m "docs: approve <topic> for autopilot"`,
    `git push -u origin <branch>`.
 4. **Update the story**, when a tracker is detectable from the branch name:
-   - `KAN-<n>` → Jira, through the Atlassian MCP when its tools are in the
-     tool list: a comment with the dependency list and links to the spec
-     and the plan.
+   - `KAN-<n>` → Jira: a comment with the dependency list and links to
+     the spec and the plan, through `acli` first (on `PATH`, or
+     `~/.local/bin/acli`):
+     `acli jira workitem comment create --key <KEY> --body "<text>"`;
+     without `acli`, through the Atlassian MCP when its tools are in the
+     tool list.
    - a leading `<n>-` or `issue-<n>` → `gh issue comment <n> --body "…"`
      with the same text.
    - The dependency list comes from `docs/integrations/<slug>.md` when

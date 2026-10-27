@@ -101,7 +101,7 @@ The shim puts `studios/game-dev/bin/` on `PATH`. From a Godot project root:
 | `studio-state …` | Reads and writes `.studio/STATE.md` | 0 · 1 |
 | `sdd-run [--skill S] <name> [ARG…]` | Runs a superpowers skill script that `sdd-script` locates (`exec bash <path> ARG…`), as one command word where `bash "$(sdd-script …)"` is refused by worktree isolation | the script's own · 1 script not found · 2 usage |
 | `studio-docs-sync [--new] [<path>…]` | Checks the story's spec and plan (and `Context:` paths, with `--new` the ledger) out of `$STUDIO_DOCS_REV` and commits them only when they differ | 0 · 1 a git failure · 2 usage, or `STUDIO_DOCS_REV` / `STUDIO_STORY` unset |
-| `studio-overnight start [<manifest>] \| status [--run] \| watch [--run] \| stop [--run \| --all] \| next \| check-id \| say \| said \| unsay \| hold \| resume` | Runs approved plans unattended, one fresh headless session per unit, and takes messages and holds while it runs; see below | start: 0 done · 1 other ending · 2 refused; the channel verbs: 0 · 1 refused · 2 usage; check-id: 0 free · 1 taken · 2 usage |
+| `studio-overnight start [<manifest>] \| status [--run] \| watch [--run] \| stop [--run \| --all] \| next \| check-id \| say \| said \| unsay \| hold \| resume \| settle [<slug> \| --all] [--dry-run]` | Runs approved plans unattended, one fresh headless session per unit, and takes messages and holds while it runs; `settle` cleans up after runs whose work is merged; see below | start: 0 done · 1 other ending · 2 refused; the channel verbs: 0 · 1 refused · 2 usage; check-id: 0 free · 1 taken · 2 usage; settle: 0 cleaned · 1 not confirmed or something left · 2 usage or no such record |
 
 The verbs never name Godot; `studios/game-dev/engines/godot/` does. Godot is
 found through `GODOT_PATH`, then `/Applications/Godot*.app`, then `godot` on
@@ -193,6 +193,35 @@ stories as parallel lanes of dependency chains:
   (`--dry-run` probes the start checkout and says so). Example:
   `"required_tools": [{"cmd": "ffmpeg", "hint": "brew install ffmpeg"},
   {"cmd": ".venv/bin/python", "min_version": "3.10", "hint": "python3.12 -m venv .venv"}]`
+- Cleanup after a run (`cleanup` in `.studio/config.json`): once every story
+  is confirmed merged into its target, checked against origin (a squash merge
+  counts through the branch's merged PR), the runner's own shell code, never
+  an agent session, closes the run. It marks the record `done`; removes the
+  run's worktrees (run, story, `progress-<slug>`) and their local branches,
+  keeping a worktree with uncommitted changes; deletes the run's remote
+  branches (story branches, `progress/<slug>`, `integration/<slug>` in
+  integration mode, and `run/<slug>` after pushing its tip as the tag
+  `run-archive/<slug>-<tip12>`, since its planning commits never reach
+  `main`); moves each story's Jira issue to Done through `acli`, with a
+  comment naming the PR and the merge sha (a ticket an unfinished run shares,
+  or with open child issues, stays open); sets each story's Multica mirror to
+  done; and archives `.studio/stories/<id>.md` into `.studio/stories/done/`.
+  Remote deletion is on by default and guarded: run-owned names only, after a
+  fresh fetch, only when the branch's tip is in the base (an ancestor of
+  `origin/<base>`, or the head of a merged PR whose merge commit is), never
+  while the branch has an open PR, and `run/<slug>` stays when the tag push
+  fails. It runs at the end of a done run, in the settle sweep of
+  `studio-overnight start` and `status` (an attempt that left something is
+  retried after `retry_minutes`), and on demand with `studio-overnight settle
+  [<slug>|--all] [--dry-run]` (bare means `--all`; `--dry-run` still fetches,
+  prints `would:` lines and writes nothing). Each step is idempotent: a rerun
+  posts no second Jira comment. Keys, all optional: `record`, `worktrees`,
+  `remote_branches`, `jira`, `multica`, `stories` (`"on"`/`"off"`, default
+  on); `jira_done_status` (default `"Done"`); `jira_cli` (default `acli`, then
+  `~/.local/bin/acli`); `multica_cli` (default `multica`); `retry_minutes`
+  (default 60); `timeout_seconds` (default 60, the cap on each external
+  call). A bad value skips that step with a `left:` line. Agent sessions
+  still never delete a remote branch.
 - Blocks (#94): a check that disagrees with a pinned reference (a frozen
   fixture, golden, approved value or capture) does not stop the run. The unit
   marks only the failing assertions pending with `BLOCKED <story> <check> ...`,
@@ -301,9 +330,13 @@ stories as parallel lanes of dependency chains:
   landing, a run budget or a dead runner still end at once. Tools read
   `events.jsonl` in the run dir; the contract is
   `docs/game-dev/overnight-events.md`.
-- `report.md` in the run's reports directory is written on every ending; its
-  `## Cleanup` section holds the one command that deletes the run's remote
-  branches, to run after the final PR lands.
+- `report.md` in the run's reports directory is written on every ending. Its
+  `## Cleanup` section reports the runner's cleanup (see `cleanup` above): what
+  was done (`done:` lines) and what is left (`left:` lines, such as a kept
+  dirty worktree or a Jira ticket kept open, with the `studio-overnight settle
+  <slug>` that retries them). When a story is not merged yet it says why
+  nothing was cleaned, and that the next `start`/`status`, or `settle <slug>`,
+  cleans up once every story is merged.
 
 ### MCP (optional)
 
