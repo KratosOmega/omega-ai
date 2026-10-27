@@ -198,10 +198,12 @@ cl_confirm() {
     printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$_cf_id" "${_cf_b:--}" "${_cf_t:--}" "$_cf_s" "$_cf_tg" "$_cf_u" >> "$CL_T/rows"
   done < "$CL_T/ids"
   if [ "$CL_MODE" = integration ]; then
-    cl_exec gh pr view "$CL_FURL" --json state,headRefOid,mergeCommit -q '[.state, .headRefOid, (.mergeCommit.oid // "-")] | @tsv'
+    cl_exec gh pr view "$CL_FURL" --json state,headRefOid,mergeCommit
     [ "$TOOLS_RC" = 0 ] || { CL_WHY="cannot read final PR $CL_FURL ($(cl_why))"; return 1; }
-    _cf_v="$(printf '%s\n' "$TOOLS_OUT" | awk -F'\t' 'NF == 3 { print; exit }')"
-    _cf_st="$(printf '%s\n' "$_cf_v" | cut -f1)"; _cf_h="$(printf '%s\n' "$_cf_v" | cut -f2)"; _cf_m="$(printf '%s\n' "$_cf_v" | cut -f3)"
+    _cf_v="$(printf '%s\n' "$TOOLS_OUT" | tr '\n' ' ')"
+    _cf_st="$(printf '%s\n' "$_cf_v" | sed -n 's/.*"state"[[:space:]]*:[[:space:]]*"\([A-Z]*\)".*/\1/p')"
+    _cf_h="$(printf '%s\n' "$_cf_v" | sed -n 's/.*"headRefOid"[[:space:]]*:[[:space:]]*"\([0-9a-f]*\)".*/\1/p')"
+    _cf_m="$(printf '%s\n' "$_cf_v" | sed -n 's/.*"mergeCommit"[[:space:]]*:[[:space:]]*{[^}]*"oid"[[:space:]]*:[[:space:]]*"\([0-9a-f]*\)".*/\1/p')"
     [ -n "$_cf_st" ] || { CL_WHY="cannot read the state of final PR $CL_FURL"; return 1; }
     [ "$_cf_st" = MERGED ] || { CL_WHY="final PR $CL_FURL is not merged ($_cf_st)"; return 1; }
     [ "$_cf_h" = "$CL_FH" ] || { CL_WHY="final PR $CL_FURL's head is not the run's final head"; return 1; }
@@ -331,7 +333,7 @@ cl_worktrees() {
   while IFS="$CL_TAB" read -r _cw_k _cw_b; do
     _cw_w="$(runs_worktree_of "$_cw_b")"
     if [ -n "$_cw_w" ]; then
-      [ "$_cw_w" != "$_cw_main" ] || { cl_left "branch $_cw_b is checked out in the main checkout — kept"; continue; }
+      [ "$_cw_w" != "$_cw_main" ] || { cl_skip "branch $_cw_b is checked out in the main checkout — kept"; continue; }
       cl_wt_rm "$_cw_w" || continue
     fi
     _cw_t="$(git rev-parse -q --verify "refs/heads/$_cw_b^{commit}" 2>/dev/null)" || continue

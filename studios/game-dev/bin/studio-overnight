@@ -294,7 +294,7 @@ take_lock() {
 
 usage() {
   cat <<EOF
-usage: $SELF_ABS start [--dry-run | --detach] [<manifest>] | status [--run <slug>] | status --follow | watch [--run <slug>] [<seconds>] | stop | stop --run <slug> | stop --all | next [<manifest>] | check-id <id> [--plan <path>|-] [--ticket <ticket>|-] [--slug <slug>] [--branch <branch>|-] | activity [--open] <unit.jsonl> | deny-rules [--dir <path>]
+usage: $SELF_ABS start [--dry-run | --detach] [<manifest>] | status [--run <slug>] | status --follow | watch [--run <slug>] [<seconds>] | stop | stop --run <slug> | stop --all | next [<manifest>] | check-id <id> [--plan <path>|-] [--ticket <ticket>|-] [--slug <slug>] [--branch <branch>|-] | activity [--open] <unit.jsonl> | deny-rules [--dir <path>] | settle [<slug>|--all] [--dry-run]
        $SELF_ABS say|said|unsay|hold|resume|stop <story> [--run <run>] … (talking to a live run; below)
 
   start [--dry-run]  preflight, then run the approved plan one unit per fresh
@@ -325,6 +325,32 @@ usage: $SELF_ABS start [--dry-run | --detach] [<manifest>] | status [--run <slug
                      print the deny rules a unit would get for the project at
                      <path> (default: here), one per line; notes on stderr for
                      placeholders with no value; reads no run state
+  settle [<slug>|--all] [--dry-run]
+                     close and clean up a run whose work is confirmed merged,
+                     now (a run landed by hand; bare: every record not yet
+                     cleaned). Checked against a fresh fetch of origin: each
+                     story's landing (or its branch's merged PR, squash
+                     included) is in origin/<Target>, and the final PR is
+                     merged (integration) or the progress entry is on the
+                     Target (direct, with PROGRESS.md). Then, each step on
+                     unless .studio/config.json's "cleanup" object turns it
+                     off: landed.tsv backfilled and done written; remote
+                     branches deleted (only the run's own, never one whose
+                     tip is not in the base or with an open PR; run/<slug>
+                     tagged run-archive/<slug>-<tip12> first); worktrees
+                     removed (one with uncommitted changes is kept) with
+                     their local branches; Jira keys moved to Done with a
+                     comment (acli; a key another unfinished run shares, or
+                     with open children, stays open); Multica mirrors set to
+                     done; story pointers moved to .studio/stories/done/.
+                     A record is marked cleaned once nothing is left; a
+                     rerun finishes the rest. start and status sweep the
+                     same way (at most once per cleanup.retry_minutes per
+                     record), and a run that ends done cleans up at once.
+                     --dry-run fetches, then prints every action (would:)
+                     and performs none. Exit 0 cleaned (dry run: nothing
+                     would be left) · 1 not confirmed or something left ·
+                     2 usage, no project or no such record
   next [<manifest>]  the planning loop: classify each manifest row (brainstorm,
                      plan, planned) and print the one next command; no argument
                      reads .studio/run. Reads files and ledger lines only.
@@ -420,7 +446,8 @@ basename> picks the run explicitly.
 install or pull omega-ai only when \`studio-overnight status\` shows no live run (a run reads the plugin while it runs)
 
 The run may: commit, push the feature branch, open a draft PR.
-The run may not: merge, force-push, delete a remote branch, read or write secrets.
+The run may not: merge, force-push, delete a remote branch, read or write secrets
+(its sessions; once the run's work is confirmed merged, the runner itself cleans up: see settle).
 
 A manifest run has two modes (Mode: in docs/runs/<slug>.md); sessions never
 merge in either, the runner lands:
@@ -678,6 +705,8 @@ RUN_SLUG=""   # a manifest run's slug (run_paths); empty for a single-plan run
 # (start, or dry for --dry-run; cmd_start sets it before the preflight).
 . "$SELF_DIR/overnight-tools.sh"
 TOOLS_MODE=start
+# A run whose work is confirmed merged cleans up after itself: cleanup_record, cleanup_sweep.
+. "$SELF_DIR/overnight-cleanup.sh"
 # gate_times_holds, gate_learned_cap: the readout of the gate caps studio-gate will learn.
 . "$SELF_DIR/gate-times.sh"
 # The project-wide session cap (#39 AC27): sess_*; slots are taken by manifest units only (D19).
@@ -2849,6 +2878,8 @@ project_status() {
     [ -z "${RUN_SEL:-}" ] && [ -f "$_ps_z" ] || continue
     _ps_z="${_ps_z%/landed.tsv}"; runs_settle "$STATE_ROOT" "${_ps_z##*/}" || :
   done
+  # A record whose work is confirmed merged cleans up (overnight-cleanup.sh), not under --run either.
+  [ -n "${RUN_SEL:-}" ] || cleanup_sweep "$STATE_ROOT"
   _ps_all="$(runs_live "$STATE_ROOT")"
   if [ -n "${RUN_SEL:-}" ]; then
     _ps_all="$(printf '%s\n' "$_ps_all" | runs_match "$RUN_SEL")"
@@ -2948,6 +2979,39 @@ registry_status() {
 # no live run also names the live runs of other projects. Outside one, the
 # registry (registry_status). Exit 0 this project's run is live, 1 none,
 # 3 (outside a project) a run is live elsewhere.
+# cmd_settle [<slug>|--all] [--dry-run] — cleanup_record now (no retry wait)
+# for one record (a slug, or an archived record's name under .studio/runs) or
+# for every record not yet cleaned (--all, the default). Exit 0 every one is
+# cleaned (dry run: nothing would be left), 1 any is not, 2 usage, no
+# project or no such record.
+cmd_settle() {
+  _se_dr=""; _se_s=""
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --dry-run) _se_dr=--dry-run ;;
+      --all|[A-Za-z0-9_]*) [ -z "$_se_s" ] || { usage >&2; exit 2; }; _se_s="$1" ;;
+      *) usage >&2; exit 2 ;;
+    esac
+    shift
+  done
+  case "$_se_s" in */*|*..*) usage >&2; exit 2 ;; esac
+  [ -n "$STATE_ROOT" ] && [ -d "$STATE_ROOT/.studio" ] || { say "settle: no studio project here (run it from the project checkout)"; exit 2; }
+  if [ -n "$_se_s" ] && [ "$_se_s" != --all ]; then
+    cleanup_record "$STATE_ROOT" "$_se_s" $_se_dr
+    case $? in 0) exit 0 ;; 2) exit 2 ;; *) exit 1 ;; esac
+  fi
+  _se_rc=0; _se_n=0
+  for _se_f in "$STATE_ROOT"/.studio/runs/*/landed.tsv; do
+    _se_d="${_se_f%/landed.tsv}"
+    [ -f "$_se_f" ] && [ ! -f "$_se_d/cleaned" ] || continue
+    [ "$_se_n" -eq 0 ] || echo
+    _se_n=$((_se_n + 1))
+    cleanup_record "$STATE_ROOT" "${_se_d##*/}" $_se_dr || _se_rc=1
+  done
+  [ "$_se_n" -gt 0 ] || echo "every run record is cleaned up"
+  exit "$_se_rc"
+}
+
 cmd_status() {
   if [ -n "$STATE_ROOT" ] && [ -d "$STATE_ROOT/.studio" ]; then
     project_status; _cs=$?
@@ -3016,6 +3080,7 @@ case "$1" in
     [ "$#" -eq 2 ] && [ -f "$2" ] || { usage >&2; exit 2; }
     unit_activity "$2"; exit 0 ;;
   deny-rules) shift; cmd_deny_rules "$@" ;;
+  settle) shift; cmd_settle "$@" ;;
   check-id)
     shift
     . "$SELF_DIR/overnight-lanes.sh"   # mf_load, row_field; it sources overnight-ids.sh

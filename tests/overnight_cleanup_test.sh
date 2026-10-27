@@ -24,7 +24,7 @@ STUBS="$TMP/stubs"; mkdir -p "$STUBS/bin"
 cat > "$STUBS/bin/gh" <<'STUB'
 #!/bin/sh
 # gh pr list --head B …: prints $STUBS/prs/<B with / as %> (TSV: number state head merge base url).
-# gh pr view URL …: prints $STUBS/view (the -q TSV: state head merge). GH_FAIL=1: exit 1. GH_SLEEP: sleep first.
+# gh pr view URL …: prints $STUBS/view (JSON). GH_FAIL=1: exit 1. GH_SLEEP: sleep first.
 printf '%s\n' "$*" >> "$STUBS/gh.log"
 [ -z "${GH_SLEEP:-}" ] || sleep "$GH_SLEEP"
 [ -z "${GH_FAIL:-}" ] || { echo "gh: HTTP 502" >&2; exit 1; }
@@ -170,7 +170,7 @@ test_integration_final_merged_or_open() {
   MC="$(git -C "$R" rev-parse integration/i1)"; FH="$MC"
   record i1 integration integration/i1 C:C-b:-; landed C "$MC" integration/i1
   printf '%s https://gh.test/pull/30 green\n' "$FH" > "$D/final"
-  printf 'OPEN\t%s\t-\n' "$FH" > "$STUBS/view"
+  printf '{"state":"OPEN","headRefOid":"%s","mergeCommit":null}\n' "$FH" > "$STUBS/view"
   pr integration/i1 30 OPEN "$FH" - main
   settle i1
   assert_eq 1 "$RC" "the final PR is open: not cleaned"
@@ -179,7 +179,7 @@ test_integration_final_merged_or_open() {
   assert_status 0 "C-b is kept" -- remote_has C-b
   # The final PR is merged (a squash: main does not hold the integration head).
   land_squash integration/i1 "integration i1 (#30)"; MF="$MS"
-  printf 'MERGED\t%s\t%s\n' "$FH" "$MF" > "$STUBS/view"
+  printf '{"state":"MERGED","headRefOid":"%s","mergeCommit":{"oid":"%s"}}\n' "$FH" "$MF" > "$STUBS/view"
   : > "$STUBS/prs/integration%i1"; pr integration/i1 30 MERGED "$FH" "$MF" main
   settle i1
   assert_eq 0 "$RC" "the final PR is merged: cleaned"
@@ -441,7 +441,25 @@ test_steps_archived_record() {
   assert_status 0 "and so is the run worktree" -- test -d "$R/.claude/worktrees/run-ar"
 }
 
-run_tests test_direct_runner_landed test_direct_hand_landed_backfill test_unmerged_story_untouched \
+# studio-overnight settle: from the project, one record or every one.
+test_settle_cli() {
+  full_direct sc; record nm direct main N:N-b:-
+  ( cd "$R" && sh "$BIN/studio-overnight" settle a b ) > "$TMP/o" 2>&1; assert_eq 2 $? "two slugs: usage"
+  ( cd "$R" && sh "$BIN/studio-overnight" settle ../x ) > "$TMP/o" 2>&1; assert_eq 2 $? "a path: usage"
+  ( cd "$R" && sh "$BIN/studio-overnight" settle nosuch ) > "$TMP/o" 2>&1; assert_eq 2 $? "no such record: 2"
+  assert_contains "$TMP/o" "^run nosuch: no record" "it says so"
+  ( cd "$R" && sh "$BIN/studio-overnight" settle --dry-run ) > "$TMP/o" 2>&1; assert_eq 1 $? "bare settle --dry-run: one record not confirmed, 1"
+  assert_contains "$TMP/o" "^run nm: not confirmed — N: N-b is not merged into main$" "every record is listed"
+  assert_contains "$TMP/o" "^run sc: dry run — nothing would be left$" "the confirmed one too"
+  assert_status 0 "the dry run deleted nothing" -- remote_has A-b
+  ( cd "$R" && sh "$BIN/studio-overnight" settle sc ) > "$TMP/o" 2>&1; assert_eq 0 $? "settle <slug>: cleaned, 0"
+  assert_contains "$TMP/o" "^run sc: cleaned up$" "the tail line"
+  rm -rf "$R/.studio/runs/nm"
+  ( cd "$R" && sh "$BIN/studio-overnight" settle --all ) > "$TMP/o" 2>&1; assert_eq 0 $? "nothing left to clean: 0"
+  assert_eq "every run record is cleaned up" "$(cat "$TMP/o")" "it says so"
+}
+
+run_tests test_settle_cli test_direct_runner_landed test_direct_hand_landed_backfill test_unmerged_story_untouched \
   test_integration_final_merged_or_open test_direct_progress_required test_live_run_skipped \
   test_steps_full_direct test_steps_dry_run_writes_nothing test_steps_kept_branches_and_worktrees \
   test_steps_tool_failures test_steps_jira_guards test_steps_config_off_and_due test_steps_archived_record

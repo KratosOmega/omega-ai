@@ -2224,6 +2224,10 @@ test_lanes_final_step_once() {
   _h="$(git -C "$P" rev-parse origin/integration/demo)"
   assert_contains "$P/.studio/runs/demo/gate" "^$_h green$" "the gate names the pushed head (PROGRESS commit included)"
   assert_contains "$P/.studio/runs/demo/final" "^$_h https://gh.test/pr/1 green$" "the final record: head, PR, color"
+  assert_contains "$(last_lanes_dir)/report.md" "^run demo: not confirmed — final PR https://gh.test/pr/1 is not merged (OPEN)$" "a done integration run cleans up only once its final PR is merged"
+  assert_contains "$(last_lanes_dir)/report.md" "^Once every story is merged into integration/demo and the final PR is merged, the next" "and says so"
+  assert_missing "$P/.studio/runs/demo/cleaned" "the record is not cleaned"
+  assert_status 0 "integration/demo stays on origin" -- git -C "$P" ls-remote --exit-code origin refs/heads/integration/demo
   _n="$(prompt_calls '/game-dev:execute --progress')"
   assert_eq 1 "$(printf '%s' "$_n" | grep -c .)" "one progress unit"
   [ -n "$_n" ] || _n=0
@@ -2399,7 +2403,13 @@ test_lanes_direct_progress_landing() {
   assert_contains "$(last_lanes_dir)/report.md" "^## Landed$" "direct: a Landed section"
   assert_contains "$(last_lanes_dir)/report.md" "^A [0-9a-f]\{40\}$" "each landed story's merge commit"
   assert_contains "$(last_lanes_dir)/report.md" "^Progress PR: https://gh.test/pr/2 (landed)$" "and the progress PR's state"
-  assert_contains "$(last_lanes_dir)/report.md" "git push origin --delete run/demo progress/demo A-b$" "direct cleanup names progress/<slug> (D12)"
+  assert_contains "$(last_lanes_dir)/report.md" "^run demo: confirmed — every story is in origin/main; progress entry on origin/main$" "a done direct run confirms its work at the end"
+  assert_contains "$(last_lanes_dir)/report.md" "^  done: deleted origin/progress/demo$" "and deletes progress/<slug> (D12)"
+  assert_contains "$(last_lanes_dir)/report.md" "^  done: deleted origin/A-b$" "and the landed story branch"
+  assert_contains "$(last_lanes_dir)/report.md" "^  done: tagged origin/run/demo as run-archive/demo-[0-9a-f]\{12\}$" "run/<slug> is tagged"
+  assert_contains "$(last_lanes_dir)/report.md" "^run demo: cleaned up$" "the Cleanup section says it is cleaned up"
+  assert_status 2 "A-b is gone from origin" -- git -C "$P" ls-remote --exit-code origin refs/heads/A-b
+  assert_file "$P/.studio/runs/demo/cleaned" "the record is cleaned"
   assert_not_contains "$(last_lanes_dir)/report.md" "^## Resume$" "no resume when done"
   # A refused progress landing: the PR stays open, no repair, the report names it.
   LANES_CONFIG='{"merge_command": "scripts/merge.sh <pr>"}'; LANES_PROGRESS=1; export LANES_CONFIG LANES_PROGRESS
@@ -2630,8 +2640,8 @@ test_lanes_report_every_ending() {
   assert_contains "$R" "^## Resume$" "resume when not done"
   assert_contains "$R" "^cd '$P' && '$RUNNER' start docs/runs/demo.md$" "the resume command names the manifest"
   assert_contains "$R" "^## Cleanup$" "cleanup section"
-  assert_contains "$R" "^Run this after the final PR is landed; the run itself never deletes a remote branch\.$" "cleanup's warning line"
-  assert_contains "$R" "git push origin --delete run/demo integration/demo C-b$" "cleanup names run, integration and landed story branches"
+  assert_contains "$R" "^Nothing cleaned yet: the run is not done (partial: 1 landed, 1 stopped, 1 skipped)\.$" "a partial run cleans nothing"
+  assert_contains "$R" "^Once every story is merged into integration/demo and the final PR is merged, the next .studio-overnight start. or .status. cleans up.*settle demo$" "and says how it will be cleaned up"
   assert_status 0 "the run deletes no remote branch (C-b is still on origin)" -- git -C "$P" ls-remote --exit-code origin refs/heads/C-b
   # The runner itself fails (exit 3) in the final step: still a full report.
   LANES_PROGRESS=1; export LANES_PROGRESS

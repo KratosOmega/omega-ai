@@ -181,6 +181,9 @@ mf_check() {
     if [ "${_ls_chk:-0}" -eq 1 ]; then runs_settle "$STATE_ROOT" "$_mc_z" $_mc_dr >&2 || :
     else runs_settle "$STATE_ROOT" "$_mc_z" $_mc_dr || :; fi
   done
+  # A record whose work is confirmed merged cleans up after itself (overnight-cleanup.sh).
+  if [ "${_ls_chk:-0}" -eq 1 ]; then cleanup_sweep "$STATE_ROOT" $_mc_dr >&2
+  else cleanup_sweep "$STATE_ROOT" $_mc_dr; fi
   IDS_IX_KEY=""   # one ids index for this check's stories, built afresh (overnight-ids.sh)
   git_version_ok || refuse "git 2.38 or newer is required (git merge-tree --write-tree); found $(git --version 2>/dev/null)"
   printf '%s\n' "$MF_SLUG" | grep -Eq '^[A-Za-z0-9._-]+$' \
@@ -1452,8 +1455,7 @@ shell_word() {
 # final PR), direct mode's `## Landed`, a `## <id>` section per story in
 # manifest order (its ending, branch, landed sha or why not, units, rulings
 # and play list), integration mode's open bundle-2 PRs (named, never
-# closed), `## Resume` when not done, and `## Cleanup`: the one command that
-# deletes the run's remote branches. The run itself never deletes one.
+# closed), `## Resume` when not done, and `## Cleanup` (lanes_cleanup_section).
 lanes_report() {
   lanes_counts
   _r_sp="$(spent_all)"
@@ -1527,26 +1529,43 @@ lanes_report() {
     if [ "$1" != done ]; then
       printf '\n## Resume\n\ncd %s && %s start %s\n' "$(sq "$START_DIR")" "$(sq "$SELF_ABS")" "$(shell_word "$_r_mf")"
     fi
-    _r_del="run/$MF_SLUG"
-    if [ "$MF_MODE" = direct ]; then
-      ! git -C "$START_DIR" rev-parse -q --verify "refs/remotes/origin/progress/$MF_SLUG" >/dev/null \
-        || _r_del="$_r_del progress/$MF_SLUG"
-    else
-      _r_del="$_r_del $MF_TARGET"
-    fi
-    for _r_id in $_r_ids; do
-      case "$(story_get "$_r_id")" in "landed "*) _r_del="$_r_del $(row_field "$_r_id" branch)" ;; esac
-    done
-    printf '\n## Cleanup\n\nRun this after the final PR is landed; the run itself never deletes a remote branch.\n\n'
-    printf 'cd %s && git push origin --delete %s\n' "$(sq "$START_DIR")" "$_r_del"
+    lanes_cleanup_section "$1"
   } > "$RUN_DIR/report.md"
   run_event run_ended "ending=$1" "report=$RUN_DIR/report.md"
 }
+# lanes_cleanup_section ENDING — the report's `## Cleanup`: what the run's
+# cleanup did and what is left (RUN_DIR/cleanup.out, written by lanes_finish
+# on `done`), else why nothing was cleaned yet; and how to finish it.
+lanes_cleanup_section() {
+  printf '\n## Cleanup\n\n'
+  _cs_c="cd $(sq "$STATE_ROOT") && $(sq "$SELF_ABS") settle $MF_SLUG"
+  if [ -s "$RUN_DIR/cleanup.out" ] && grep -q ': confirmed — ' "$RUN_DIR/cleanup.out"; then
+    cat "$RUN_DIR/cleanup.out"
+    grep -q ': cleaned up$' "$RUN_DIR/cleanup.out" \
+      || printf '\nWhat is left is retried by the next `studio-overnight start` or `status`; or now: %s\n' "$_cs_c"
+    return 0
+  fi
+  if [ -s "$RUN_DIR/cleanup.out" ]; then cat "$RUN_DIR/cleanup.out"; printf '\n'
+  elif [ "$1" = done ]; then printf 'Nothing cleaned yet: the cleanup runs as the run ends.\n\n'
+  else printf 'Nothing cleaned yet: the run is not done (%s).\n\n' "$1"; fi
+  _cs_f=""; [ "$MF_MODE" = direct ] || _cs_f=" and the final PR is merged"
+  printf 'Once every story is merged into %s%s, the next `studio-overnight start` or `status` cleans up (worktrees, branches, Jira, Multica, story pointers); or now: %s\n' \
+    "$MF_TARGET" "$_cs_f" "$_cs_c"
+}
 # lanes_finish ENDING — report; RECORD/done on `done` (removed on any other
-# ending); unlock; exit 0 only for done.
+# ending), then on `done` the run's own cleanup (cleanup_record --self: its
+# lock is still held) and the report's Cleanup section once more; unlock;
+# exit 0 only for done.
 lanes_finish() {
   lanes_report "$1"
-  if [ "$1" = done ]; then : > "$RECORD/done"; else rm -f "$RECORD/done"; fi
+  if [ "$1" = done ]; then
+    : > "$RECORD/done"
+    cleanup_record "$STATE_ROOT" "$MF_SLUG" --self > "$RUN_DIR/cleanup.out" 2>&1
+    awk '/^## Cleanup$/ { exit } { l[++n] = $0 } END { for (i = 1; i < n; i++) print l[i]; if (n && l[n] != "") print l[n] }' \
+      "$RUN_DIR/report.md" > "$RUN_DIR/report.md.tmp" \
+      && { cat "$RUN_DIR/report.md.tmp"; lanes_cleanup_section done; } > "$RUN_DIR/report.md"
+    rm -f "$RUN_DIR/report.md.tmp"
+  else rm -f "$RECORD/done"; fi
   unlock
   REPORTED=1
   [ "$1" = done ] && exit 0
