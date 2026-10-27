@@ -195,7 +195,9 @@ stories as parallel lanes of dependency chains:
   {"cmd": ".venv/bin/python", "min_version": "3.10", "hint": "python3.12 -m venv .venv"}]`
 - Cleanup after a run (`cleanup` in `.studio/config.json`): once every story
   is confirmed merged into its target, checked against origin (a squash merge
-  counts through the branch's merged PR), the runner's own shell code, never
+  counts through the branch's merged PR; in direct mode with PROGRESS.md, the
+  run's entry is on the target too, from the progress PR or a story's own
+  landing), the runner's own shell code, never
   an agent session, closes the run. It marks the record `done`; removes the
   run's worktrees (run, story, `progress-<slug>`) and their local branches,
   keeping a worktree with uncommitted changes; deletes the run's remote
@@ -204,7 +206,8 @@ stories as parallel lanes of dependency chains:
   `run-archive/<slug>-<tip12>`, since its planning commits never reach
   `main`); moves each story's Jira issue to Done through `acli`, with a
   comment naming the PR and the merge sha (a ticket an unfinished run shares,
-  or with open child issues, stays open); sets each story's Multica mirror to
+  or with open child issues, stays open; a key Jira does not know is
+  skipped); sets each story's Multica mirror to
   done; and archives `.studio/stories/<id>.md` into `.studio/stories/done/`.
   Remote deletion is on by default and guarded: run-owned names only, after a
   fresh fetch, only when the branch's tip is in the base (an ancestor of
