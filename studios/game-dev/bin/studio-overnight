@@ -2975,10 +2975,6 @@ registry_status() {
   printf 'no run — nothing registered in %s, and %s is not a studio project (no .studio/)\n' "$REGISTRY" "$(pwd)"
   return 1
 }
-# cmd_status — inside a project, its run (project_status); a project with
-# no live run also names the live runs of other projects. Outside one, the
-# registry (registry_status). Exit 0 this project's run is live, 1 none,
-# 3 (outside a project) a run is live elsewhere.
 # cmd_settle [<slug>|--all] [--dry-run] — cleanup_record now (no retry wait)
 # for one record (a slug, or an archived record's name under .studio/runs) or
 # for every record not yet cleaned (--all, the default). Exit 0 every one is
@@ -3012,6 +3008,10 @@ cmd_settle() {
   exit "$_se_rc"
 }
 
+# cmd_status — inside a project, its run (project_status); a project with
+# no live run also names the live runs of other projects. Outside one, the
+# registry (registry_status). Exit 0 this project's run is live, 1 none,
+# 3 (outside a project) a run is live elsewhere.
 cmd_status() {
   if [ -n "$STATE_ROOT" ] && [ -d "$STATE_ROOT/.studio" ]; then
     project_status; _cs=$?

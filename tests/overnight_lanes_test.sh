@@ -1472,7 +1472,8 @@ test_lanes_land_clean_direct() {
   assert_eq 2 "$(grep -c '^s merge' "$CALLS/gate.iv" 2>/dev/null)" "the merge program ran once per story"
   git -C "$P" fetch -q origin
   for id in A B; do
-    assert_status 0 "$id is in origin/main" -- git -C "$P" merge-base --is-ancestor "origin/$id-b" origin/main
+    assert_status 0 "$id is in origin/main" -- git -C "$P" merge-base --is-ancestor "$(awk -F'\t' -v i="$id" '$1 == i { print $3 }' "$P/.studio/runs/demo/landed.tsv")" origin/main
+    assert_status 2 "$id-b is deleted by the run's cleanup" -- git -C "$P" ls-remote --exit-code origin "refs/heads/$id-b"
     _f="$(grep -l "^head=$id-b$" "$GH"/pr-[0-9]* | head -n 1)"
     assert_contains "$P/.studio/runs/demo/landed.tsv" "^$id	main	$(sed -n 's/^oid=//p' "$_f" | tail -n 1)	" "$id: landed.tsv records the PR's merge commit"
     assert_contains "$(last_lanes_dir)/stories/$id" "^landed " "$id ends landed"

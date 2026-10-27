@@ -182,8 +182,9 @@ mf_check() {
     else runs_settle "$STATE_ROOT" "$_mc_z" $_mc_dr || :; fi
   done
   # A record whose work is confirmed merged cleans up after itself (overnight-cleanup.sh).
-  if [ "${_ls_chk:-0}" -eq 1 ]; then cleanup_sweep "$STATE_ROOT" $_mc_dr >&2
-  else cleanup_sweep "$STATE_ROOT" $_mc_dr; fi
+  # Not the run being started: a resume retries what its record still lacks.
+  if [ "${_ls_chk:-0}" -eq 1 ]; then cleanup_sweep "$STATE_ROOT" $_mc_dr --skip "$MF_SLUG" >&2
+  else cleanup_sweep "$STATE_ROOT" $_mc_dr --skip "$MF_SLUG"; fi
   IDS_IX_KEY=""   # one ids index for this check's stories, built afresh (overnight-ids.sh)
   git_version_ok || refuse "git 2.38 or newer is required (git merge-tree --write-tree); found $(git --version 2>/dev/null)"
   printf '%s\n' "$MF_SLUG" | grep -Eq '^[A-Za-z0-9._-]+$' \

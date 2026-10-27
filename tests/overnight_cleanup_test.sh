@@ -45,8 +45,8 @@ k=""; s=""; a="$*"
 while [ "$#" -gt 0 ]; do case "$1" in --key) k="$2"; shift ;; --status) s="$2"; shift ;; esac; shift; done
 case "$a" in
   "jira workitem view "*) k="${a#jira workitem view }"; k="${k%% *}"
-    printf '{\n  "key": "%s",\n  "fields": {\n    "status": {\n      "name": "%s",\n      "statusCategory": { "name": "x" }\n    }\n  }\n}\n' \
-      "$k" "$(cat "$STUBS/jira/$k" 2>/dev/null || echo 'To Do')" ;;
+    printf '{\n  "key": "%s",\n  "fields": {\n    "status": {\n      "name": "%s",\n      "statusCategory": { "key": "%s", "name": "x" }\n    }\n  }\n}\n' \
+      "$k" "$(cat "$STUBS/jira/$k" 2>/dev/null || echo 'To Do')" "$(cat "$STUBS/jira/$k.cat" 2>/dev/null || echo new)" ;;
   "jira workitem search "*) cat "$STUBS/jira/children" 2>/dev/null || echo '[]' ;;
   "jira workitem comment create "*) exit "${ACLI_RC:-0}" ;;
   "jira workitem transition "*) [ "${ACLI_RC:-0}" = 0 ] || exit "$ACLI_RC"; printf '%s\n' "$s" > "$STUBS/jira/$k" ;;
@@ -79,6 +79,7 @@ proj() {
   git -C "$R" commit -q --allow-empty -m init && git -C "$R" push -q origin main
   git -C "$R" remote set-head origin main >/dev/null 2>&1
   mkdir -p "$R/.studio/runs" "$R/.studio/reports" "$R/.studio/stories"
+  DOCS0="$(git -C "$R" rev-parse HEAD)"   # the run's Docs revision: before any story lands
   stubs_reset
 }
 # story_branch BRANCH FILE — BRANCH off origin/main with one commit adding FILE, pushed; TIP its head.
@@ -98,7 +99,7 @@ land_squash() {
     && git -C "$R" commit -q -m "$2" && git -C "$R" push -q origin main; MS="$(git -C "$R" rev-parse HEAD)"
 }
 # record SLUG MODE TARGET ROWS… — .studio/runs/SLUG (rows.tsv; empty landed.tsv) and its report dir
-# with manifest.md and rows.tsv. A row is ID:BRANCH:TICKET. RUN is the report dir.
+# with manifest.md (Docs: $DOCS0) and rows.tsv. A row is ID:BRANCH:TICKET. RUN is the report dir.
 record() {
   _s="$1"; _m="$2"; _t="$3"; shift 3
   D="$R/.studio/runs/$_s"; RUN="$R/.studio/reports/overnight-${_s%.*T*Z}-20261027-010000"
@@ -107,7 +108,7 @@ record() {
     printf '%s\t%s\t%s\tdocs/s.md\tdocs/p.md\t\n' "${_r%%:*}" "$(printf '%s' "$_r" | cut -d: -f2)" "${_r##*:}" >> "$D/rows.tsv"
   done
   cp "$D/rows.tsv" "$RUN/rows.tsv"
-  printf '# Run: %s\n\nMode: %s\nTarget: %s\nDocs: %s\n' "${_s%.*T*Z}" "$_m" "$_t" "$(git -C "$R" rev-parse origin/main)" > "$RUN/manifest.md"
+  printf '# Run: %s\n\nMode: %s\nTarget: %s\nDocs: %s\n' "${_s%.*T*Z}" "$_m" "$_t" "$DOCS0" > "$RUN/manifest.md"
 }
 # landed ID SHA [TARGET] — a landed.tsv line.
 landed() { printf '%s\t%s\t%s\t1\n' "$1" "${3:-main}" "$2" >> "$D/landed.tsv"; }
@@ -192,6 +193,7 @@ test_integration_final_merged_or_open() {
 test_direct_progress_required() {
   proj p1; mkdir -p "$R/docs/game-dev"; printf '# Progress\n' > "$R/docs/game-dev/PROGRESS.md"
   git -C "$R" add docs && git -C "$R" commit -q -m progress-file && git -C "$R" push -q origin main
+  DOCS0="$(git -C "$R" rev-parse HEAD)"
   story_branch A-b a.txt; land_merge A-b; MA="$MS"
   record p1 direct main A:A-b:-; landed A "$MA"
   git -C "$R" checkout -q -b progress/p1 origin/main && printf 'entry\n' >> "$R/docs/game-dev/PROGRESS.md" \
@@ -211,6 +213,7 @@ test_direct_progress_required() {
 test_direct_progress_in_story_landing() {
   proj p2; mkdir -p "$R/docs/game-dev"; printf '# Progress\n' > "$R/docs/game-dev/PROGRESS.md"
   git -C "$R" add docs && git -C "$R" commit -q -m progress-file && git -C "$R" push -q origin main
+  DOCS0="$(git -C "$R" rev-parse HEAD)"
   git -C "$R" checkout -q -b S-b origin/main && printf 'S entry\n' >> "$R/docs/game-dev/PROGRESS.md" \
     && git -C "$R" commit -qam "S with its entry" && git -C "$R" push -q origin S-b && git -C "$R" checkout -q main
   TS="$(git -C "$R" rev-parse S-b)"; land_squash S-b "S by hand (#21)"
@@ -334,32 +337,50 @@ test_steps_dry_run_writes_nothing() {
 
 test_steps_kept_branches_and_worktrees() {
   full_direct kp
-  # K-b moved past its merged PR's head; A-b has an open follow-up PR; A's worktree is dirty.
-  git -C "$R/.claude/worktrees/K-b" commit -q --allow-empty -m more && git -C "$R/.claude/worktrees/K-b" push -q origin K-b
-  pr A-b 8 OPEN "$TA" - main
-  printf 'wip\n' > "$R/.claude/worktrees/A-b/a.txt"
+  # A-b (landed by the runner) moved past its landing; K-b has an open follow-up PR and a dirty worktree.
+  git -C "$R/.claude/worktrees/A-b" commit -q --allow-empty -m more && git -C "$R/.claude/worktrees/A-b" push -q origin A-b
+  pr K-b 8 OPEN "$TK" - main
+  printf 'wip\n' > "$R/.claude/worktrees/K-b/k.txt"
   settle kp
   assert_eq 1 "$RC" "something is left"
-  assert_contains "$TMP/out" "^  left: origin/K-b: tip [0-9a-f]* is not merged into main — kept$" "a moved tip is kept"
-  assert_status 0 "K-b is still on origin" -- remote_has K-b
-  assert_contains "$TMP/out" "^  left: origin/A-b: open PR https://gh.test/pull/8 — kept$" "an open PR keeps its branch"
+  assert_contains "$TMP/out" "^  left: origin/A-b: tip [0-9a-f]* is not merged into main — kept$" "a moved tip is kept on origin"
   assert_status 0 "A-b is still on origin" -- remote_has A-b
-  assert_contains "$TMP/out" "^  left: worktree $R/.claude/worktrees/A-b has uncommitted changes — kept$" "a dirty worktree is kept"
-  assert_eq "wip" "$(cat "$R/.claude/worktrees/A-b/a.txt")" "with its change"
-  assert_eq "A-b" "$(git -C "$R" branch --list A-b | tr -d ' *+')" "and its local branch"
-  assert_missing "$R/.claude/worktrees/K-b" "K's clean worktree is removed"
-  assert_contains "$TMP/out" "^  left: local branch K-b: tip [0-9a-f]* is not merged into main — kept$" "but its moved branch is kept"
-  assert_file "$D/done" "the record is still done"
+  assert_contains "$TMP/out" "^  left: local branch A-b: tip [0-9a-f]* is not merged into main — kept$" "and locally"
+  assert_status 0 "its clean worktree is kept with it (checked before any removal)" -- test -d "$R/.claude/worktrees/A-b"
+  assert_contains "$TMP/out" "^  left: origin/K-b: open PR https://gh.test/pull/8 — kept$" "an open PR keeps its branch"
+  assert_status 0 "K-b is still on origin" -- remote_has K-b
+  assert_contains "$TMP/out" "^  left: worktree $R/.claude/worktrees/K-b has uncommitted changes — kept$" "a dirty worktree is kept"
+  assert_eq "wip" "$(cat "$R/.claude/worktrees/K-b/k.txt")" "with its change"
+  assert_eq "K-b" "$(git -C "$R" branch --list K-b | tr -d ' *+')" "and its local branch"
+  assert_file "$D/done" "the record is done"
   assert_missing "$D/cleaned" "but not cleaned"
   assert_contains "$TMP/out" "^run kp: 4 left — rerun: studio-overnight settle kp$" "the tail counts what is left"
-  # The rest is fixed by hand; a rerun finishes.
-  git -C "$R/.claude/worktrees/A-b" checkout -q -- a.txt; : > "$STUBS/prs/A-b"; pr A-b 5 MERGED "$TA" "$MA" main
-  git -C "$R" push -q origin --delete K-b; git -C "$R" branch -q -D K-b
+  # The rest is settled by hand; a rerun finishes.
+  git -C "$R/.claude/worktrees/K-b" checkout -q -- k.txt; : > "$STUBS/prs/K-b"; pr K-b 7 MERGED "$TK" "$MK" main
+  git -C "$R" worktree remove "$R/.claude/worktrees/A-b"; git -C "$R" push -q origin --delete A-b; git -C "$R" branch -q -D A-b
   settle kp
   assert_eq 0 "$RC" "the rerun finishes"
-  assert_status 2 "A-b is gone" -- remote_has A-b
-  assert_missing "$R/.claude/worktrees/A-b" "its worktree too"
+  assert_status 2 "K-b is gone" -- remote_has K-b
+  assert_missing "$R/.claude/worktrees/K-b" "its worktree too"
   assert_eq 2 "$(grep -c '^jira workitem comment create' "$STUBS/acli.log")" "no Jira comment posted twice"
+}
+
+# The reviewer's case: a branch name reused by a new story; its old merged PR does not confirm it.
+test_reused_branch_old_pr() {
+  proj rb; story_branch B-b b1.txt; TB1="$TIP"; land_squash B-b "old B (#1)"; MB1="$MS"
+  DOCS0="$(git -C "$R" rev-parse HEAD)"   # the new run starts after the old PR merged
+  git -C "$R" checkout -q B-b && printf 'new\n' > "$R/b2.txt" && git -C "$R" add b2.txt && git -C "$R" commit -q -m "new work" \
+    && git -C "$R" push -q origin B-b && git -C "$R" checkout -q main
+  record rb direct main S:B-b:KAN-9; pr B-b 1 MERGED "$TB1" "$MB1" main
+  settle rb
+  assert_eq 1 "$RC" "an old merged PR of a reused branch: not confirmed"
+  assert_contains "$TMP/out" "^run rb: not confirmed — S: B-b is not merged into main$" "the row is not merged"
+  assert_eq "" "$(cat "$D/landed.tsv")" "nothing backfilled"
+  # Even with the branch at the old PR's head, a PR merged before the run's Docs does not count.
+  git -C "$R" push -q -f origin "$TB1:refs/heads/B-b"; git -C "$R" fetch -q origin
+  settle rb
+  assert_eq 1 "$RC" "a PR merged before the run began: not confirmed"
+  assert_missing "$D/done" "no done"
 }
 
 test_steps_tool_failures() {
@@ -421,6 +442,11 @@ test_steps_jira_guards() {
   assert_contains "$TMP/out" "^  skip: Jira KAN-2 is already Done$" "a Done ticket is skipped"
   assert_eq 1 "$(grep -c 'transition --key KAN-1 ' "$STUBS/acli.log")" "KAN-1 moves"
   assert_eq 0 "$(grep -c -e 'comment create --key KAN-2' -e 'transition --key KAN-2' "$STUBS/acli.log")" "KAN-2 gets no comment and no move"
+  # Closed (status category done, another name): also skipped.
+  full_direct jc; printf 'Closed\n' > "$STUBS/jira/KAN-1"; printf 'done\n' > "$STUBS/jira/KAN-1.cat"
+  settle jc
+  assert_contains "$TMP/out" "^  skip: Jira KAN-1 is already Closed$" "a ticket in the done category is skipped"
+  assert_eq 0 "$(grep -c 'KAN-1 ' "$STUBS/acli.log" | sed 's/^1$/0/')" "nothing posted to it"
 }
 
 test_steps_config_off_and_due() {
@@ -451,6 +477,20 @@ test_steps_config_off_and_due() {
   : > "$STUBS/gh.log"; rm -f "$R/.studio/runs/un/cleanup.tried"; rm -rf "$R/.studio/runs/un"
   cleanup_sweep "$R" > "$TMP/sw" 2>&1
   assert_eq "" "$(cat "$TMP/sw" "$STUBS/gh.log")" "a cleaned record is not looked at again"
+}
+
+test_steps_foreign_branch_and_bad_timeout() {
+  full_direct fb
+  # Another record, not done, lists K-b (a carried-over story): K-b is left alone.
+  mkdir -p "$R/.studio/runs/next"; printf 'K2\tK-b\t-\n' > "$R/.studio/runs/next/rows.tsv"; : > "$R/.studio/runs/next/landed.tsv"
+  printf '{"cleanup": {"timeout_seconds": "soon"}}\n' > "$R/.studio/config.json"
+  settle fb
+  assert_contains "$TMP/out" "^  skip: branch K-b: run next lists it too — kept$" "a branch another run lists is kept"
+  assert_status 0 "on origin" -- remote_has K-b
+  assert_status 0 "with its worktree" -- test -d "$R/.claude/worktrees/K-b"
+  assert_contains "$TMP/out" '^  left: config cleanup.timeout_seconds must be a whole number above 0, got "soon" — using 60$' "a bad timeout is reported"
+  assert_eq 1 "$RC" "and counts as left"
+  assert_missing "$D/cleaned" "so the record is not cleaned"
 }
 
 test_steps_archived_record() {
@@ -484,4 +524,4 @@ test_settle_cli() {
 run_tests test_settle_cli test_direct_progress_in_story_landing test_direct_runner_landed test_direct_hand_landed_backfill test_unmerged_story_untouched \
   test_integration_final_merged_or_open test_direct_progress_required test_live_run_skipped \
   test_steps_full_direct test_steps_dry_run_writes_nothing test_steps_kept_branches_and_worktrees \
-  test_steps_tool_failures test_steps_jira_guards test_steps_config_off_and_due test_steps_archived_record
+  test_reused_branch_old_pr test_steps_tool_failures test_steps_jira_guards test_steps_config_off_and_due test_steps_foreign_branch_and_bad_timeout test_steps_archived_record
