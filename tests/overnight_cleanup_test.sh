@@ -221,5 +221,227 @@ test_live_run_skipped() {
   rm -f "$D/lock"
 }
 
+# ---- Task 2: the steps
+
+# full_direct SLUG — a done direct run of two rows (A runner-landed with merge
+# commits, K hand-squashed), each with a story worktree, a run worktree on
+# run/SLUG and a pushed progress-less run; Jira keys KAN-1 (A) and KAN-2 (K).
+full_direct() {
+  proj "$1"
+  git -C "$R" checkout -q -b "run/$1" origin/main && printf 'plan\n' > "$R/plan.md" && git -C "$R" add plan.md \
+    && git -C "$R" commit -q -m "docs(run): $1" && git -C "$R" push -q origin "run/$1" && git -C "$R" checkout -q main
+  RT="$(git -C "$R" rev-parse "run/$1")"
+  story_branch A-b a.txt; TA="$TIP"; land_merge A-b; MA="$MS"
+  story_branch K-b k.txt; TK="$TIP"; land_squash K-b "K by hand (#7)"; MK="$MS"
+  record "$1" direct main A:A-b:KAN-1 K:K-b:KAN-2; landed A "$MA"
+  pr A-b 5 MERGED "$TA" "$MA" main; pr K-b 7 MERGED "$TK" "$MK" main
+  mkdir -p "$R/.claude/worktrees"
+  git -C "$R" worktree add -q "$R/.claude/worktrees/run-$1" "run/$1"
+  : > "$R/.claude/worktrees/run-$1/.studio-run-placeholder"; rm -f "$R/.claude/worktrees/run-$1/.studio-run-placeholder"
+  mkdir -p "$R/.claude/worktrees/run-$1/.studio"; printf 'docs/runs/%s.md\n' "$1" > "$R/.claude/worktrees/run-$1/.studio/run"
+  git -C "$R" worktree add -q "$R/.claude/worktrees/A-b" A-b
+  git -C "$R" worktree add -q "$R/.claude/worktrees/K-b" K-b
+  printf '# Studio State\n\nstage: idle\n\n## Ledger\n\n' > "$R/.studio/stories/A.md"
+  printf '# Studio State\n\nstage: idle\n\n## Ledger\n\n' > "$R/.studio/stories/K.md"
+}
+# mirror SLUG IDS… — a retired Multica bridge state file for this run: story ID=IDENT pairs.
+mirror() {
+  _ms="$1"; shift; mkdir -p "$HOME/.claude-gamedev/multica/state/retired"; _mj=""
+  for _mp in "$@"; do _mj="$_mj${_mj:+, }\"${_mp%%=*}\": \"${_mp#*=}\""; done
+  printf '{"key": "k", "root": "%s", "run_dir": "%s", "stories": {%s}, "run_issue": "OMEG-1"}\n' "$R" "$RUN" "$_mj" \
+    > "$HOME/.claude-gamedev/multica/state/retired/overnight-$_ms-20261027-010000-abcd1234.json"
+}
+
+test_steps_full_direct() {
+  full_direct f1; mirror f1 A=OMEG-10 K=OMEG-11
+  settle f1
+  assert_eq 0 "$RC" "a full direct run cleans up"
+  assert_contains "$TMP/out" "^  done: deleted origin/A-b$" "the runner-landed branch is deleted"
+  assert_contains "$TMP/out" "^  done: deleted origin/K-b$" "the squashed branch is deleted"
+  assert_status 2 "A-b is gone from origin" -- remote_has A-b
+  assert_status 2 "K-b is gone from origin" -- remote_has K-b
+  _tag="run-archive/f1-$(printf '%.12s' "$RT")"
+  assert_contains "$TMP/out" "^  done: tagged origin/run/f1 as $_tag$" "run/f1 is tagged first"
+  assert_eq "$RT" "$(git -C "$R" ls-remote origin "refs/tags/$_tag" | cut -f1)" "the archive tag is on origin at the run branch's tip"
+  assert_status 2 "run/f1 is gone from origin" -- remote_has run/f1
+  assert_missing "$R/.claude/worktrees/run-f1" "the run worktree is removed (its .studio/run is the runner's own)"
+  assert_missing "$R/.claude/worktrees/A-b" "the story worktrees are removed"
+  assert_missing "$R/.claude/worktrees/K-b" "both"
+  assert_eq "" "$(git -C "$R" branch --list A-b K-b run/f1)" "and their local branches"
+  assert_eq "KAN-1 KAN-2" "$(sed -n 's/^jira workitem transition --key \([^ ]*\) --status Done --yes$/\1/p' "$STUBS/acli.log" | tr '\n' ' ' | sed 's/ $//')" "each Jira key moves to Done"
+  assert_eq 2 "$(grep -c '^jira workitem comment create --key' "$STUBS/acli.log")" "after one comment each"
+  assert_contains "$STUBS/acli.log" "^- K: https://gh.test/pull/7, merge $(printf '%.12s' "$MK")$" "the comment names the PR and merge sha"
+  assert_contains "$STUBS/acli.log" "^- A: https://gh.test/pull/5, merge $(printf '%.12s' "$MA")$" "a runner landing's PR too"
+  assert_eq "issue status OMEG-10 done --no-start
+issue status OMEG-11 done --no-start" "$(cat "$STUBS/multica.log")" "each Multica mirror is set to done"
+  assert_file "$R/.studio/stories/done/A.md" "the story pointers are archived"
+  assert_missing "$R/.studio/stories/K.md" "out of the live set"
+  assert_contains "$R/.studio/stories/done/K.md" "^- [0-9-]* merged $MK into main (run f1)$" "with a merged ledger line"
+  assert_file "$D/cleaned" "cleaned"
+  assert_contains "$D/cleanup.log" "^run f1: cleaned up$" "the attempt is logged"
+  # A rerun does nothing: no gh, acli or multica call.
+  : > "$STUBS/gh.log"; : > "$STUBS/acli.log"; : > "$STUBS/multica.log"
+  settle f1
+  assert_eq 0 "$RC" "a cleaned record: 0"
+  assert_eq "run f1: already cleaned up" "$(cat "$TMP/out")" "it says so"
+  assert_eq "" "$(cat "$STUBS/gh.log" "$STUBS/acli.log" "$STUBS/multica.log")" "and calls nothing"
+}
+
+test_steps_dry_run_writes_nothing() {
+  full_direct dr; mirror dr A=OMEG-10 K=OMEG-11
+  _refs="$(git -C "$R" for-each-ref | sort)"
+  settle dr --dry-run
+  assert_eq 0 "$RC" "the dry run: nothing would be left"
+  assert_contains "$TMP/out" "^  would: landed.tsv: K $MK (PR https://gh.test/pull/7)$" "it names the backfill"
+  assert_contains "$TMP/out" "^  would: mark the record done$" "the record"
+  assert_contains "$TMP/out" "^  would: delete origin/A-b$" "the remote branches"
+  assert_contains "$TMP/out" "^  would: tag origin/run/dr as run-archive/dr-" "the run branch's archive tag"
+  assert_contains "$TMP/out" "^  would: remove worktree $R/.claude/worktrees/A-b$" "the worktrees"
+  assert_contains "$TMP/out" "^  would: delete local branch K-b$" "the local branches"
+  assert_contains "$TMP/out" "^  would: Jira KAN-2 To Do → Done, comment: Merged into main by overnight run dr: - K: https://gh.test/pull/7" "the Jira moves"
+  assert_contains "$TMP/out" "^  would: Multica OMEG-11 → done$" "the Multica moves"
+  assert_contains "$TMP/out" "^  would: archive story pointer A " "the story pointers"
+  assert_contains "$TMP/out" "^run dr: dry run — nothing would be left$" "the tail"
+  assert_eq "$_refs" "$(git -C "$R" for-each-ref | sort)" "no ref changed"
+  assert_status 0 "A-b is still on origin" -- remote_has A-b
+  assert_status 0 "run/dr is still on origin" -- remote_has run/dr
+  assert_eq "" "$(git -C "$R" ls-remote --tags origin)" "no tag pushed"
+  assert_eq 0 "$(grep -c . "$D/landed.tsv" | sed 's/^1$/0/')" "landed.tsv not backfilled"
+  assert_eq "$(printf 'A\tmain\t%s' "$MA")" "$(cut -f1-3 "$D/landed.tsv")" "landed.tsv unchanged"
+  assert_eq "" "$(ls "$D" | grep -v -e '^rows.tsv$' -e '^landed.tsv$')" "no record file written"
+  assert_status 0 "the worktree is kept" -- test -d "$R/.claude/worktrees/A-b"
+  assert_file "$R/.studio/stories/A.md" "the pointer is kept"
+  assert_eq "" "$(grep -e 'comment create' -e transition "$STUBS/acli.log")" "acli only read"
+  assert_eq "" "$(cat "$STUBS/multica.log")" "multica not called"
+  assert_eq "" "$(grep -v -e '^pr list' -e '^pr view' "$STUBS/gh.log")" "gh only read"
+}
+
+test_steps_kept_branches_and_worktrees() {
+  full_direct kp
+  # K-b moved past its merged PR's head; A-b has an open follow-up PR; A's worktree is dirty.
+  git -C "$R/.claude/worktrees/K-b" commit -q --allow-empty -m more && git -C "$R/.claude/worktrees/K-b" push -q origin K-b
+  pr A-b 8 OPEN "$TA" - main
+  printf 'wip\n' > "$R/.claude/worktrees/A-b/a.txt"
+  settle kp
+  assert_eq 1 "$RC" "something is left"
+  assert_contains "$TMP/out" "^  left: origin/K-b: tip [0-9a-f]* is not merged into main — kept$" "a moved tip is kept"
+  assert_status 0 "K-b is still on origin" -- remote_has K-b
+  assert_contains "$TMP/out" "^  left: origin/A-b: open PR https://gh.test/pull/8 — kept$" "an open PR keeps its branch"
+  assert_status 0 "A-b is still on origin" -- remote_has A-b
+  assert_contains "$TMP/out" "^  left: worktree $R/.claude/worktrees/A-b has uncommitted changes — kept$" "a dirty worktree is kept"
+  assert_eq "wip" "$(cat "$R/.claude/worktrees/A-b/a.txt")" "with its change"
+  assert_eq "A-b" "$(git -C "$R" branch --list A-b | tr -d ' *+')" "and its local branch"
+  assert_missing "$R/.claude/worktrees/K-b" "K's clean worktree is removed"
+  assert_contains "$TMP/out" "^  left: local branch K-b: tip [0-9a-f]* is not merged into main — kept$" "but its moved branch is kept"
+  assert_file "$D/done" "the record is still done"
+  assert_missing "$D/cleaned" "but not cleaned"
+  assert_contains "$TMP/out" "^run kp: 4 left — rerun: studio-overnight settle kp$" "the tail counts what is left"
+  # The rest is fixed by hand; a rerun finishes.
+  git -C "$R/.claude/worktrees/A-b" checkout -q -- a.txt; : > "$STUBS/prs/A-b"; pr A-b 5 MERGED "$TA" "$MA" main
+  git -C "$R" push -q origin --delete K-b; git -C "$R" branch -q -D K-b
+  settle kp
+  assert_eq 0 "$RC" "the rerun finishes"
+  assert_status 2 "A-b is gone" -- remote_has A-b
+  assert_missing "$R/.claude/worktrees/A-b" "its worktree too"
+  assert_eq 2 "$(grep -c '^jira workitem comment create' "$STUBS/acli.log")" "no Jira comment posted twice"
+}
+
+test_steps_tool_failures() {
+  full_direct tf; mirror tf A=OMEG-10 K=OMEG-11
+  ACLI_RC=1; MULTICA_RC=1; export ACLI_RC MULTICA_RC
+  settle tf
+  assert_eq 1 "$RC" "acli and multica fail: left"
+  assert_contains "$TMP/out" "^  left: Jira KAN-1: comment failed (exit 1" "the Jira failure is reported"
+  assert_contains "$TMP/out" "^  left: Multica OMEG-10: exit 1" "the Multica failure is reported"
+  assert_contains "$TMP/out" "^  done: deleted origin/A-b$" "the other steps still run"
+  assert_file "$R/.studio/stories/done/A.md" "the pointers too"
+  # The comment went through but the transition fails: the rerun does not re-post.
+  unset ACLI_RC MULTICA_RC; printf 'jira-comment KAN-1\n' >> "$D/cleanup.state"; : > "$STUBS/acli.log"
+  ACLI_SLEEP=3 STUDIO_OVERNIGHT_TOOLS_SECONDS=1; export ACLI_SLEEP
+  printf '{"cleanup": {"timeout_seconds": 1}}\n' > "$R/.studio/config.json"
+  settle tf
+  assert_contains "$TMP/out" "^  left: Jira KAN-1: cannot read it (timed out after 1s)$" "an acli timeout is reported"
+  unset ACLI_SLEEP; rm -f "$R/.studio/config.json"
+  settle tf
+  assert_eq 0 "$RC" "the rerun finishes"
+  assert_eq 1 "$(grep -c '^jira workitem comment create --key KAN-2' "$STUBS/acli.log")" "KAN-2 gets its one comment"
+  assert_eq 0 "$(grep -c '^jira workitem comment create --key KAN-1' "$STUBS/acli.log")" "KAN-1's comment is not posted again"
+  assert_eq "Done" "$(cat "$STUBS/jira/KAN-1")" "KAN-1 is Done"
+  # gh fails: nothing is confirmed (K needs its PR).
+  full_direct tg; GH_FAIL=1; export GH_FAIL
+  settle tg
+  assert_eq 1 "$RC" "gh fails: not confirmed"
+  assert_contains "$TMP/out" "^run tg: not confirmed — gh pr list --head K-b: exit 1: gh: HTTP 502$" "the gh failure is the reason"
+  assert_missing "$D/done" "nothing written"
+  unset GH_FAIL
+  # No acli at all.
+  full_direct tn; printf '{"cleanup": {"jira_cli": "no-such-acli"}}\n' > "$R/.studio/config.json"
+  settle tn
+  assert_contains "$TMP/out" "^  left: Jira KAN-1 KAN-2: no-such-acli not found — not updated$" "a missing acli is reported"
+  assert_contains "$TMP/out" "^  done: deleted origin/A-b$" "the other steps still run"
+}
+
+test_steps_jira_guards() {
+  full_direct jg
+  # KAN-1 is also the ticket of a row of another, unfinished run; KAN-2 has an open child.
+  mkdir -p "$R/.studio/runs/other.20261025T011344Z"; printf 'A-2\tA2-b\tKAN-1\n' > "$R/.studio/runs/other.20261025T011344Z/rows.tsv"
+  : > "$R/.studio/runs/other.20261025T011344Z/landed.tsv"
+  printf '[{"key": "KAN-9", "fields": {}}]\n' > "$STUBS/jira/children"
+  settle jg
+  assert_contains "$TMP/out" "^  left: Jira KAN-1 kept open: also the ticket of A-2 (run other.20261025T011344Z, not done)$" "a ticket shared with a run not done stays open"
+  assert_contains "$TMP/out" "^  left: Jira KAN-2 kept open: open children KAN-9$" "a ticket with open children stays open"
+  assert_eq "" "$(grep -e 'comment create' -e transition "$STUBS/acli.log")" "nothing posted"
+  # The other run is done and landed; the child is closed; a Done ticket is not touched.
+  : > "$R/.studio/runs/other.20261025T011344Z/done"; printf 'A-2\tmain\tabc\t1\n' > "$R/.studio/runs/other.20261025T011344Z/landed.tsv"
+  printf '[]\n' > "$STUBS/jira/children"; printf 'Done\n' > "$STUBS/jira/KAN-2"; : > "$STUBS/acli.log"
+  settle jg
+  assert_eq 0 "$RC" "the guards clear"
+  assert_contains "$TMP/out" "^  skip: Jira KAN-2 is already Done$" "a Done ticket is skipped"
+  assert_eq 1 "$(grep -c 'transition --key KAN-1 ' "$STUBS/acli.log")" "KAN-1 moves"
+  assert_eq 0 "$(grep -c -e 'comment create --key KAN-2' -e 'transition --key KAN-2' "$STUBS/acli.log")" "KAN-2 gets no comment and no move"
+}
+
+test_steps_config_off_and_due() {
+  full_direct cf
+  printf '{\n  "merge_command": "x",\n  "cleanup": {\n    "remote_branches": "off",\n    "jira": "off",\n    "worktrees": "maybe",\n    "retry_minutes": 30\n  }\n}\n' > "$R/.studio/config.json"
+  settle cf
+  assert_contains "$TMP/out" "^  skip: remote_branches (cleanup.remote_branches is off)$" "remote deletion off"
+  assert_status 0 "A-b stays on origin" -- remote_has A-b
+  assert_contains "$TMP/out" "^  skip: jira (cleanup.jira is off)$" "Jira off"
+  assert_eq "" "$(cat "$STUBS/acli.log")" "no acli call"
+  assert_contains "$TMP/out" '^  left: config cleanup.worktrees must be "on" or "off", got "maybe" — step not run$' "a bad switch is reported"
+  assert_status 0 "and its step does not run" -- test -d "$R/.claude/worktrees/A-b"
+  # --due: tried just now, retry 30 min: skipped silently.
+  : > "$STUBS/gh.log"
+  settle cf --due
+  assert_eq 3 "$RC" "not due: skipped"
+  assert_eq "" "$(cat "$TMP/out" "$STUBS/gh.log")" "silently, with no call"
+  printf '%s\n' "$(( $(date +%s) - 1900 ))" > "$D/cleanup.tried"
+  settle cf --due
+  assert_eq 1 "$RC" "due again after retry_minutes"
+  # The sweep prints confirmed records only and skips cleaned ones.
+  rm -f "$R/.studio/config.json"; printf '0\n' > "$D/cleanup.tried"
+  record un direct main U:U-b:-
+  cleanup_sweep "$R" > "$TMP/sw" 2>&1
+  assert_contains "$TMP/sw" "^run cf: cleaned up$" "the sweep cleans a confirmed record"
+  assert_not_contains "$TMP/sw" "run un" "an unconfirmed one prints nothing"
+  assert_file "$R/.studio/runs/un/cleanup.tried" "but it was tried"
+  : > "$STUBS/gh.log"; rm -f "$R/.studio/runs/un/cleanup.tried"; rm -rf "$R/.studio/runs/un"
+  cleanup_sweep "$R" > "$TMP/sw" 2>&1
+  assert_eq "" "$(cat "$TMP/sw" "$STUBS/gh.log")" "a cleaned record is not looked at again"
+}
+
+test_steps_archived_record() {
+  full_direct ar
+  mv "$R/.studio/runs/ar" "$R/.studio/runs/ar.20261026T000000Z"; D="$R/.studio/runs/ar.20261026T000000Z"
+  settle ar.20261026T000000Z
+  assert_eq 0 "$RC" "an archived record cleans its stories"
+  assert_status 2 "its story branches go" -- remote_has A-b
+  assert_status 0 "run/ar is left to the newer run of the slug" -- remote_has run/ar
+  assert_status 0 "and so is the run worktree" -- test -d "$R/.claude/worktrees/run-ar"
+}
+
 run_tests test_direct_runner_landed test_direct_hand_landed_backfill test_unmerged_story_untouched \
-  test_integration_final_merged_or_open test_direct_progress_required test_live_run_skipped
+  test_integration_final_merged_or_open test_direct_progress_required test_live_run_skipped \
+  test_steps_full_direct test_steps_dry_run_writes_nothing test_steps_kept_branches_and_worktrees \
+  test_steps_tool_failures test_steps_jira_guards test_steps_config_off_and_due test_steps_archived_record

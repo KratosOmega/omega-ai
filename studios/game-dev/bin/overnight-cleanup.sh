@@ -294,9 +294,15 @@ cl_remote() {
 }
 
 # cl_dirty WT — WT's changes besides the runner's own untracked .studio/run and .studio/STATE.md.
-cl_dirty() { git -C "$1" status --porcelain 2>&1 | grep -vxF '?? .studio/run' | grep -vxF '?? .studio/STATE.md'; }
+cl_dirty() { git -C "$1" status --porcelain --untracked-files=all 2>&1 | grep -vxF '?? .studio/run' | grep -vxF '?? .studio/STATE.md'; }
 # cl_wt_rm WT — remove the worktree WT unless it is dirty; 1 when it is kept.
+# A worktree already handled in this attempt (CL_T/wtdone) is not looked at again.
 cl_wt_rm() {
+  _wr_s="$(awk -F'\t' -v w="$1" '$1 == w { print $2; exit }' "$CL_T/wtdone" 2>/dev/null)"
+  [ -z "$_wr_s" ] || return "$_wr_s"
+  cl_wt_rm1 "$1"; _wr_s=$?; printf '%s\t%s\n' "$1" "$_wr_s" >> "$CL_T/wtdone"; return "$_wr_s"
+}
+cl_wt_rm1() {
   if [ ! -d "$1" ]; then
     [ "$CL_DRY" = 1 ] || git worktree prune 2>/dev/null
     cl_did "prune the missing worktree $1"; return 0
