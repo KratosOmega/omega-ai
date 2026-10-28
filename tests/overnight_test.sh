@@ -1015,7 +1015,7 @@ test_overnight_deny_file_required() {
   # The runner reads overnight-deny.txt beside itself: run a copy whose
   # sibling deny file holds only comments.
   fixture deny
-  mkdir -p "$TMP/denybin"; cp "$RUNNER" "$STATE_BIN" "$REPO_ROOT/studios/game-dev/bin/overnight-channel.sh" "$REPO_ROOT/studios/game-dev/bin/overnight-runs.sh" "$REPO_ROOT/studios/game-dev/bin/gate-times.sh" "$REPO_ROOT/studios/game-dev/bin/overnight-tools.sh" "$REPO_ROOT/studios/game-dev/bin/overnight-sessions.sh" "$REPO_ROOT/studios/game-dev/bin/overnight-progress.sh" "$REPO_ROOT/studios/game-dev/bin/overnight-cost.sh" "$REPO_ROOT/studios/game-dev/bin/studio-env" "$TMP/denybin/"
+  mkdir -p "$TMP/denybin"; cp "$RUNNER" "$STATE_BIN" "$REPO_ROOT/studios/game-dev/bin/overnight-channel.sh" "$REPO_ROOT/studios/game-dev/bin/overnight-runs.sh" "$REPO_ROOT/studios/game-dev/bin/gate-times.sh" "$REPO_ROOT/studios/game-dev/bin/overnight-tools.sh" "$REPO_ROOT/studios/game-dev/bin/overnight-sessions.sh" "$REPO_ROOT/studios/game-dev/bin/overnight-progress.sh" "$REPO_ROOT/studios/game-dev/bin/overnight-cost.sh" "$REPO_ROOT/studios/game-dev/bin/overnight-cleanup.sh" "$REPO_ROOT/studios/game-dev/bin/studio-env" "$TMP/denybin/"
   printf '# only a comment\n\n' > "$TMP/denybin/overnight-deny.txt"
   RS_STATUS=0; ( cd "$P" && sh "$TMP/denybin/studio-overnight" start ) > "$TMP/rs.out" 2> "$TMP/rs.err" || RS_STATUS=$?
   assert_eq 2 "$RS_STATUS" "a deny file with no rules refuses"

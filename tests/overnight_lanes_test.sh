@@ -1683,7 +1683,8 @@ test_lanes_land_once_explicit_branch() {
   assert_eq "$_t0" "$(git -C "$P" rev-parse origin/integration/demo)" "no merge is pushed"
 }
 test_lanes_land_idempotent() {
-  LANES_CONFIG='{"merge_command": "scripts/merge.sh <pr>"}'; export LANES_CONFIG
+  # The second start replays a finished run, so the first one must not clean up after itself.
+  LANES_CONFIG='{"merge_command": "scripts/merge.sh <pr>", "cleanup": {"record": "off", "remote_branches": "off", "worktrees": "off", "stories": "off"}}'; export LANES_CONFIG
   lanes_fixture idem direct A:-
   MERGE_DELETES_BRANCH=1; export MERGE_DELETES_BRANCH
   run_lanes start "$MFP"                                  # lands A, and the merge deletes A-b

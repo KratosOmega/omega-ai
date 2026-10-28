@@ -383,6 +383,7 @@ test_reused_branch_old_pr() {
   assert_missing "$D/done" "no done"
 }
 
+# exclusive-scan: test_steps_tool_failures out (d) the one-second cap only has to fire before an acli that sleeps three seconds answers; a late cap is still a timeout
 test_steps_tool_failures() {
   full_direct tf; mirror tf A=OMEG-10 K=OMEG-11
   ACLI_RC=1; MULTICA_RC=1; export ACLI_RC MULTICA_RC
