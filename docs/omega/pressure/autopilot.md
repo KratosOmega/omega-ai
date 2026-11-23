@@ -56,12 +56,17 @@ how many lanes; the run manifest `docs/runs/<slug>.md` on `run/<slug>` and the
 pointer `.studio/run`; the planning loop driven by `studio-overnight next`,
 one stage per session (`/clear`, then the printed command); seeding; the
 readiness line `studio-overnight start --dry-run <manifest>`; then the
-start question — autopilot starts it (`start --detach`) or print the
-absolute `cd '<dir>' && '<abs>' start <manifest>` command — with what the
-run may merge in that mode, `studio-overnight status` and
-`studio-overnight stop`, where `report.md` lands, and that the chat can
-close. It never says the stories run in this session. Neither path keeps
-the machine awake or arms a re-prompt.
+start question — hand to Multica (listed first, only when the Multica
+integration serves the project; the session files the kickoff issue),
+autopilot starts it (`start --detach`) or print the absolute
+`cd '<dir>' && '<abs>' start <manifest>` command — with what the run may
+merge in that mode, `studio-overnight status` and `studio-overnight stop`,
+where `report.md` lands, that every choice leaves the run worktree first,
+and the reuse line ("This session has left the run worktree; `/clear` it
+and reuse it"), or, for a session launched inside the run worktree, that it
+cannot leave and is not free for other work while the run is live. It never
+says the stories run in this session. Neither path keeps the machine awake
+or arms a re-prompt.
 
 *2026-09-15: the arm-step criterion and the prompt B sentence that asks
 for it were added when the keep-awake process and the heartbeat landed;
@@ -81,6 +86,11 @@ predate them and were not re-run.*
 became the recommended mode and the dependencies question (maximize
 parallelism or chain) was added; the results below predate it and were not
 re-run.*
+
+*2026-11-22: the studio criterion's start question was rewritten when hand
+to Multica became a third choice and every choice began to leave the run
+worktree, replacing "the chat can close" with the leave and the reuse line
+(#108); the results below predate it and were not re-run.*
 
 ## Baseline (no skill) — 2026-09-13
 

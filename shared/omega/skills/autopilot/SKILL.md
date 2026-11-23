@@ -61,8 +61,8 @@ session (it is on `PATH` only inside a `claude-gd` session).
    - the **started runs**: records under `<root>/.studio/runs/` without `done`, live or not, as `studio-overnight status` prints them.
 
    Ask one `AskUserQuestion` with each run, and "new run". `/omega:autopilot <slug>` skips the question.
-   - A run being planned resumes at step 2, from its run worktree.
-   - A started run: when `.studio/runs/<slug>/` exists, the run was started: skip to step 4 (readiness, then how to start), from its run worktree. It is never planned or seeded again, and the runner resumes it from its record.
+   - A run being planned resumes at step 2, from its run worktree: enter it first (*The run worktree* step 3) when `git rev-parse --show-toplevel` is not it.
+   - A started run: when `.studio/runs/<slug>/` exists, the run was started: skip to step 4 (readiness, then how to start), from its run worktree, entered the same way. It is never planned or seeded again, and the runner resumes it from its record.
    - A run whose `.studio/runs/<slug>/done` exists is not listed (a done run's pointer is ignored).
    - "new run", or no run listed: a new run.
 
@@ -189,11 +189,11 @@ session (it is on `PATH` only inside a `claude-gd` session).
    - for each adopted story: `studio-adopt sync <id>` from its worktree exits 0 (a not-started story is skipped, with a note).
 
    A failed line stops here; fix it and print the checklist again.
-5. **Ask how to start** — one `AskUserQuestion`. List **hand to Multica** first, marked Recommended, only when Multica serves this project: `$HOME/.claude-gamedev/multica/config` exists and one of its comma-separated `roots=` entries is `<root>` (compare physical paths: each entry's `pwd -P` with that of `studio-state root`, so a symlink or a trailing slash does not hide it). Otherwise list the two choices below, as before.
+5. **Ask how to start** — one `AskUserQuestion`. List **hand to Multica** first, marked Recommended, only when Multica serves this project: `$HOME/.claude-gamedev/multica/config` exists and one of its comma-separated `roots=` entries is `<root>` (compare physical paths: each entry's `pwd -P` with that of `studio-state root`, so a symlink or a trailing slash does not hide it). Otherwise list the other two choices below, as before.
    - **hand to Multica** — the Multica agent that serves this project starts the run from a kickoff issue this session files; the session is free for other work once it has left the run worktree.
-     Lookups, before sub-step 1: the CLI is the config's `cli=`, else `multica`. Every call is `'<cli>' --profile '<profile>' --workspace-id '<workspace_id>' …`, with `<workspace_id>` from the config's `workspace_id=`. `<profile>` is the one folder in `~/.multica/profiles/`: the operator's own desktop login, never the bridge's keychain token or its `cli-home`. The agent and the Multica project come from this project's notes or memory. Otherwise ask one `AskUserQuestion` with the choices from `'<cli>' … agent list` and `'<cli>' … project list` (it also asks the profile when `~/.multica/profiles/` holds none or several), and remember the answer in memory. Never write a guess to the board. When a lookup call fails, or the operator cannot name the agent or the Multica project, still run sub-steps 1-2 (write the kickoff file, leave the run worktree) first, then show the CLI's message and print the kickoff file to paste, with the agent and the Multica project left for the operator to set by hand.
+     Lookups, before sub-step 1: the CLI is the config's `cli=`, else `multica`. Every call is `'<cli>' --profile '<profile>' --workspace-id '<workspace_id>' …`, with `<workspace_id>` from the config's `workspace_id=`. Resolve `<profile>` first: it is the one folder in `~/.multica/profiles/` (ask one `AskUserQuestion` when that holds none or several, and remember the answer in memory), the operator's own desktop login, never the bridge's keychain token or its `cli-home`. Then the agent and the Multica project, which come from this project's notes or memory. Otherwise ask one `AskUserQuestion` with the choices from `'<cli>' … agent list --output json` and `'<cli>' … project list --output json` (both need the ids in full), and remember the answer in memory. Never write a guess to the board. When a lookup call fails, or the operator cannot name the agent or the Multica project, still run sub-steps 1-2 (write the kickoff file, leave the run worktree) first, then show the CLI's message and print the kickoff file to paste, with the agent and the Multica project left for the operator to set by hand.
      1. Write the kickoff to a new file (`mktemp`), from the template below.
-     2. Leave the run worktree (below). When `ExitWorktree` reports no active worktree session, the kickoff file must not claim the session left: replace its line "The planning session has left the run worktree; an open session elsewhere is not a reason to wait." with exactly "The planning session was launched in the run worktree and is still there: wait for it under the rule below."
+     2. Leave the run worktree (below). When the session was launched in the run worktree (see *Leave the run worktree*), the kickoff file must not claim the session left: replace its line "The planning session has left the run worktree; an open session elsewhere is not a reason to wait." with exactly "The planning session was launched in the run worktree and is still there: wait for it under the rule below."
      3. File it: `'<cli>' … issue create --title 'Overnight run: <slug>' --description-file '<file>' --allow-external-file --project '<project id>' --assignee-id '<agent id>'`, and never `--allow-duplicate`: a refused duplicate is shown, not forced.
      4. Confirm with `'<cli>' … issue get <id>` that it exists with that assignee.
      5. Report its identifier, then the reuse line (or the launched-in-the-run-worktree message).
@@ -203,10 +203,10 @@ session (it is on `PATH` only inside a `claude-gd` session).
    - **autopilot starts it** — detached from the chat: no terminal, no Ctrl-C; watch with `studio-overnight status`.
      Run `cd '<run worktree>' && '<abs>' start --detach <manifest>`. It runs the preflight in the foreground, starts the runner in its own session, and waits for `studio-overnight status` to answer; exit 0 means the run is live — report success only then. It also checks `worktree_setup` in the foreground (up to `worktree_setup_minutes`, plus any wait for another run's gate lock), longer than a Bash command timeout: run it with the Bash tool's `run_in_background: true` and act on the completion notification — exit 0 is live; exit 2 is refused, so relay the printed reason with its log path. Do not poll and do not start a second one while one is in flight.
      The launch may need one permission approval and runs outside the Bash sandbox when one is on (the run needs the network).
-     On any non-zero exit, show its message (and the log it names), print the command below, and stop; autopilot never retries in this session.
+     On any non-zero exit, show its message (and the log it names), print the command below, leave the run worktree (below), and stop; autopilot never retries in this session.
    - **print the command** — paste it into a plain terminal: live output, and Ctrl-C stops after the running units. The command, with absolute paths: `cd '<run worktree>' && '<abs>' start <manifest>`.
 
-   **The kickoff** (hand to Multica, sub-step 1): a fenced block, written exactly, with each `<…>` filled in.
+   **The kickoff** (hand to Multica, sub-step 1): the issue body is this text exactly, without the fence, with each `<…>` filled in.
 
    ```
    # Overnight run: <slug>
@@ -228,10 +228,11 @@ session (it is on `PATH` only inside a `claude-gd` session).
    Never put a condition about a session (open, closed, quit) in the notes: the standard section holds the only session rule.
 
    **Leave the run worktree** — every choice ends here: after the launch's completion notification (any exit), after printing the command, or as hand to Multica's sub-step 2. Everything is already pushed in step 3, so nothing is lost by leaving; a session still in the run worktree after `/clear` would put its next job's edits on `run/<slug>`.
-   - Entered with `EnterWorktree`: `ExitWorktree` with `action: "keep"`, then check that `pwd` is `<root>`.
-   - Entered with `cd`: `cd '<root>'`.
-   - Then the reuse line: "This session has left the run worktree; `/clear` it and reuse it."
-   - When `ExitWorktree` reports no active worktree session, the session was launched in the run worktree, and neither `ExitWorktree` nor `cd` outlasts `/clear`. Then never print the reuse line. Say instead: "This session was launched in the run worktree and cannot leave it. Quit it to free the run: a Multica kickoff waits while it is open here (then stops after 2 hours), and while the run is live, use it for nothing else."
+   - With the `ExitWorktree` tool: call `ExitWorktree` with `action: "keep"` unconditionally, as execute §5 step 6 does. It is a no-op that says so when no `EnterWorktree` session is active, and an `EnterWorktree` made before a `/clear` in this process is still active though this conversation does not remember it, so this conversation cannot tell how the session entered. Without the tool (phase 1 entered with `cd`): `cd '<root>'`.
+   - Then check that `pwd` is outside the run worktree.
+   - When `ExitWorktree` reported no active worktree session and the shell is still inside the run worktree: if this conversation itself entered it with `cd`, run `cd '<root>'`; otherwise the session was launched in the run worktree, and neither `ExitWorktree` nor `cd` outlasts `/clear`.
+   - Left: the reuse line: "This session has left the run worktree; `/clear` it and reuse it."
+   - Launched inside: never print the reuse line. For hand to Multica say instead: "This session was launched in the run worktree and cannot leave it. Quit it to free the run: a Multica kickoff waits while it is open here (then stops after 2 hours), and while the run is live, use it for nothing else." For the other two choices: "This session was launched in the run worktree and cannot leave it. It is not free for other work while the run is live: quit it when work elsewhere is needed."
 
    Whichever choice, say in the same message:
    - what the run may merge in the chosen mode — integration: the runner merges stories into `integration/<slug>`, nothing is merged into `main`, and the morning brings one draft PR integration → `main`; direct: the runner merges each story into `main` only through `merge_command`, each dependent after its dependency;
@@ -388,6 +389,6 @@ gates, the reviewer per task, the tests.
 | The hook block already says `autopilot` while questions are still open | Clear it (`omega-mode clear autopilot`); the mode is set only when the checklist passes. |
 | "I'll start the next task while I'm here" | Under `--one`: one unit, then end. The runner starts the next session. |
 | "Every plan is approved, I'll just run the first story here" | In a studio (see *In a studio*) nothing executes stories in this session: start the runner or print its command. |
-| "The detached start failed, I'll try again" | Show the message, print the command, stop. |
+| "The detached start failed, I'll try again" | Show the message, print the command, leave the run worktree (step 5), stop. |
 | "The run is handed off; I'll start the next job right here" | Leave the run worktree first (`ExitWorktree` with `action: "keep"`): a `/clear`ed session still in it puts the next job's edits on `run/<slug>`. |
 | "I'll tell the agent to wait until this session is gone" | The kickoff's standard section holds the only session rule: wait while a live session works inside the run's worktrees. |

@@ -378,6 +378,17 @@ test_autopilot_multica_handoff() {
   assert_contains "$S" 'Once sub-step 2 has run, the session has left the run worktree' "the already-left claim holds only after sub-step 2 (#108)"
   assert_contains "$S" 'The planning session was launched in the run worktree and is still there: wait for it under the rule below' "a session that cannot leave says so in the kickoff (#108)"
   assert_contains "$S" 'then the reuse line (or the launched-in-the-run-worktree message)' "sub-step 5 names the launched-inside message too (#108)"
+  assert_contains "$S" '`ExitWorktree` with `action: "keep"` unconditionally' "the leave calls ExitWorktree unconditionally, as execute does: this conversation cannot tell how the session entered (#108)"
+  assert_contains "$S" 'every choice ends here' "the leave paragraph covers every start choice (#108)"
+  assert_contains "$S" 'the other two choices below' "the no-Multica list is the other two choices (#108)"
+  assert_contains "$S" 'agent list --output json' "the agent lookup returns full ids (#108)"
+  assert_contains "$S" 'project list --output json' "the project lookup returns full ids (#108)"
+  assert_contains "$S" 'When the session was launched in the run worktree (see \*Leave the run worktree\*), the kickoff file must not claim' "the kickoff rewrite is keyed on the launched-inside case, not the raw tool report (#108)"
+  assert_contains "$S" 'not free for other work while the run is live' "a launched-inside session that did not hand to Multica says it is not free (#108)"
+  assert_contains "$S" 'enter it first (\*The run worktree\* step 3)' "a resumed run enters its run worktree first (#108)"
+  assert_not_contains "$S" 'a fenced block, written exactly' "the kickoff body is the text without its fence (#108)"
+  assert_not_contains "$S" 'print the command below, and stop' "a failed start also leaves the run worktree (#108)"
+  assert_not_contains "$S" 'Show the message, print the command, stop' "the red-flag row also leaves the run worktree (#108)"
   assert_not_contains "$S" 'must be closed' "no session-must-be-closed rule (#108)"
   assert_not_contains "$S" 'closed first' "no closed-first rule (#108)"
   assert_not_contains "$S" 'chat can now close' "the chat-can-close line is replaced (#108)"
@@ -395,4 +406,16 @@ test_autopilot_multica_handoff() {
   TESTS_RUN=$((TESTS_RUN + 1))
   if [ -n "$_a" ] && [ -n "$_b" ] && [ -n "$_c" ] && [ "$_a" -lt "$_b" ] && [ "$_b" -lt "$_c" ]; then _pass "the kickoff is written, then the session leaves, then it files (#108)"
   else _fail "the kickoff is written, then the session leaves, then it files (#108) ($_a, $_b, $_c)"; fi
+  # Hand to Multica is listed before autopilot starts it (it is the Recommended first choice).
+  _a="$(grep -n -F -m1 -- '- **hand to Multica**' "$S" | cut -d: -f1)"
+  _b="$(grep -n -F -m1 -- '- **autopilot starts it**' "$S" | cut -d: -f1)"
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if [ -n "$_a" ] && [ -n "$_b" ] && [ "$_a" -lt "$_b" ]; then _pass "hand to Multica is listed before autopilot starts it (#108)"
+  else _fail "hand to Multica is listed before autopilot starts it (#108) ($_a, $_b)"; fi
+  # No ExitWorktree before step 5: the planning loop (and a /clear in it) stays in the run worktree.
+  _a="$(grep -n -F -m1 -- '5. **Ask how to start**' "$S" | cut -d: -f1)"
+  _b="$(grep -n -F -m1 -- 'ExitWorktree' "$S" | cut -d: -f1)"
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if [ -n "$_a" ] && [ -n "$_b" ] && [ "$_a" -lt "$_b" ]; then _pass "no ExitWorktree appears before step 5 (#108)"
+  else _fail "no ExitWorktree appears before step 5 (#108) ($_a, $_b)"; fi
 }

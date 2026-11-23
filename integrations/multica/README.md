@@ -170,9 +170,9 @@ Before the first real run:
 
 To start a run only when another has finished, queue its kickoff instead of assigning it:
 
-1. Create the kickoff issue for the new run as in step 2 of the nightly workflow, but leave it
-   **unassigned**. Assigning an issue starts the agent at once. Do not assign a queued kickoff,
-   not even later.
+1. Create the kickoff issue for the new run as in step 2's by-hand path (autopilot's hand to
+   Multica always assigns), but leave it **unassigned**. Assigning an issue starts the agent at
+   once. Do not assign a queued kickoff, not even later.
 2. Add a wakeup rule that starts it when the prior issue is done. The prior issue is the one whose
    finishing should start this run, normally the kickoff issue of the run ahead. The queued run
    starts only when that issue is marked Done, so tell the prior kickoff's agent to mark it Done
