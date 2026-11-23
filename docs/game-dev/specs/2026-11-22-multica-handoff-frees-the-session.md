@@ -35,7 +35,13 @@ from it. The same transcript shows that after `ExitWorktree` the next `/clear` s
   worktree of the run, never because a session exists. This rule travels in the kickoff text, so it
   reaches agents that already exist. The installer writes `agent-instructions.md` into an agent only at
   creation, so on its own that file would not reach them.
-- The Multica agent instructions and the README say the same thing, for new agents and for people.
+- The rule also goes in `integrations/multica/agent-context.md` (planning call, 2026-11-22).
+  `omega-multica-agent` appends that file to every agent run's system prompt, reading it from the
+  omega-ai checkout its `~/.local/bin` link points into. So existing agents get the rule once that
+  checkout has the change, with no reinstall. There it is the only session rule: a kickoff that asks for
+  a session to be closed or quit first is read as this check.
+- The Multica agent instructions, the agent context and the README say the same thing, for new agents,
+  existing ones and people.
 
 ## Non-goals
 
@@ -122,7 +128,7 @@ from it. The same transcript shows that after `ExitWorktree` the next `/clear` s
 2. Every choice ends with the session out of the run worktree, plus a line saying it can be `/clear`ed and
    reused. The case where the session was launched inside the worktree is called out.
 3. The standard kickoff section has the worktree wait rule and no "session closed" rule. The agent
-   instructions carry the same rule.
+   instructions and the agent context carry the same rule.
 4. The contract suites pass, and the repo's full gate is green.
 5. End to end on phoenix: a hand-off from an open planning session starts the run with no "Not started yet"
    wait. After `/clear`, `pwd` in that session prints the main checkout.
