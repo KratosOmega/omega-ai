@@ -176,7 +176,18 @@ test_readme_hold_notices() {
   assert_contains "$SPEC" 'Exception (#85)' "AC17 exception"
 }
 
-run_tests test_readme_hold_notices test_agent_instructions_adopted_line test_readme_sections test_readme_teaching_phrases test_readme_flags_match_install \
+# #108: autopilot's "hand to Multica" files the kickoff; the agent waits only on a session
+# inside the run's worktrees.
+test_readme_handoff_from_autopilot() {
+  assert_contains "$R" '\*\*hand to Multica\*\*' "#108 README names the autopilot choice"
+  assert_contains "$R" 'Overnight run: <slug>' "#108 README names the kickoff title"
+  assert_contains "$R" 'never a reason to wait' "#108 README: an open session elsewhere does not block"
+  assert_contains "$R" 'reuse it' "#108 README: the planning session is reused"
+  assert_contains "$R" 'To file it by hand instead' "#108 README keeps the by-hand start"
+  assert_not_contains "$R" 'must be closed' "#108 README has no must-be-closed rule"
+}
+
+run_tests test_readme_handoff_from_autopilot test_readme_hold_notices test_agent_instructions_adopted_line test_readme_sections test_readme_teaching_phrases test_readme_flags_match_install \
   test_readme_flags_exist test_readme_commands_match_code test_readme_status_table_matches_code \
   test_readme_deny_list_by_reference test_readme_known_risks test_readme_p5_text_matches_install \
   test_readme_names_every_linked_command test_agent_instructions_wake_line test_readme_queue_section

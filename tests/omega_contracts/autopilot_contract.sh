@@ -189,6 +189,7 @@ test_autopilot_contract() {
   test_autopilot_jira_acli
   test_autopilot_off_stop_rule
   test_autopilot_adopt_slug_forms
+  test_autopilot_multica_handoff
   # AC1: the manifest commit carries every story's ledger; AC3: step 3 ledgers `adopted` before seeding.
   _a="$(grep -n -F -m1 -- 'git add docs/runs/<slug>.md .studio/config.json .studio/ledger/<id>.md …`, then, only when it succeeded, `git commit -m "docs(run): <slug> manifest"' "$S" | cut -d: -f1)"
   TESTS_RUN=$((TESTS_RUN + 1))
@@ -343,4 +344,78 @@ test_autopilot_adopt_slug_forms() {
   assert_contains "$S" '/game-dev:brainstorm <slug>/<id>' "adopt prints the brainstorm command with slug/id"
   assert_not_contains "$S" '/game-dev:plan <id>' "no bare-id plan command"
   assert_not_contains "$S" '/game-dev:brainstorm <id>' "no bare-id brainstorm command"
+}
+
+# #108: step 5 hands the run to Multica, and every start choice leaves the run
+# worktree, so the planning session can be /clear'ed and reused. The kickoff's
+# standard section owns the only session rule: wait on a live session working
+# inside the run's worktrees, never on a session that merely exists.
+test_autopilot_multica_handoff() {
+  S="$REPO_ROOT/shared/omega/skills/autopilot/SKILL.md"
+  assert_contains "$S" '\*\*hand to Multica\*\*' "step 5 offers hand to Multica (#108)"
+  assert_contains "$S" '$HOME/.claude-gamedev/multica/config' "Multica is offered only when its config exists (#108)"
+  assert_contains "$S" 'roots=' "and its roots= list names this project (#108)"
+  assert_contains "$S" 'pwd -P' "the roots are compared as physical paths (#108)"
+  assert_contains "$S" "issue create --title 'Overnight run: <slug>'" "the kickoff issue's fixed title (#108)"
+  assert_contains "$S" '--description-file' "the kickoff is filed from a file (#108)"
+  assert_contains "$S" '--allow-external-file' "an external description file is allowed (#108)"
+  assert_contains "$S" '--assignee-id' "the issue is assigned to the agent (#108)"
+  assert_contains "$S" 'never `--allow-duplicate`' "a refused duplicate is never forced (#108)"
+  assert_contains "$S" "never the bridge's keychain token" "filing uses the operator's own login (#108)"
+  assert_contains "$S" '~/.multica/profiles/' "the profile is the one folder there (#108)"
+  assert_contains "$S" '^ *## Project notes$' "the kickoff template has a Project notes section (#108)"
+  assert_contains "$S" 'Never put a condition about a session' "the notes never add a session rule (#108)"
+  assert_contains "$S" 're-check every 10 minutes for up to 2 hours, then comment and stop' "the wait rule's bound (#108)"
+  assert_contains "$S" 'An open session anywhere else is never a reason to wait' "an open session elsewhere never delays (#108)"
+  assert_contains "$S" 'kill -0 <pid>' "a dead session's file does not count (#108)"
+  assert_contains "$S" 'The planning session has left the run worktree' "the kickoff says the session has left (#108)"
+  assert_contains "$S" 'ExitWorktree. with .action: "keep"' "leaving is ExitWorktree with keep (#108)"
+  assert_contains "$S" 'This session has left the run worktree; `/clear` it and reuse it' "the reuse line (#108)"
+  assert_contains "$S" 'was launched in the run worktree and cannot leave it' "a session launched inside says it cannot leave (#108)"
+  assert_contains "$S" 'never print the reuse line' "and never prints the reuse line (#108)"
+  assert_contains "$S" 'print the kickoff file' "a failed filing prints the kickoff to paste (#108)"
+  assert_contains "$S" 'still run sub-steps 1-2 (write the kickoff file, leave the run worktree)' "a failed lookup still writes the kickoff and leaves the worktree (#108)"
+  assert_contains "$S" 'Once sub-step 2 has run, the session has left the run worktree' "the already-left claim holds only after sub-step 2 (#108)"
+  assert_contains "$S" 'The planning session was launched in the run worktree and is still there: wait for it under the rule below' "a session that cannot leave says so in the kickoff (#108)"
+  assert_contains "$S" 'then the reuse line (or the launched-in-the-run-worktree message)' "sub-step 5 names the launched-inside message too (#108)"
+  assert_contains "$S" '`ExitWorktree` with `action: "keep"` unconditionally' "the leave calls ExitWorktree unconditionally, as execute does: this conversation cannot tell how the session entered (#108)"
+  assert_contains "$S" 'every choice ends here' "the leave paragraph covers every start choice (#108)"
+  assert_contains "$S" 'the other two choices below' "the no-Multica list is the other two choices (#108)"
+  assert_contains "$S" 'agent list --output json' "the agent lookup returns full ids (#108)"
+  assert_contains "$S" 'project list --output json' "the project lookup returns full ids (#108)"
+  assert_contains "$S" 'When the session was launched in the run worktree (see \*Leave the run worktree\*), the kickoff file must not claim' "the kickoff rewrite is keyed on the launched-inside case, not the raw tool report (#108)"
+  assert_contains "$S" 'not free for other work while the run is live' "a launched-inside session that did not hand to Multica says it is not free (#108)"
+  assert_contains "$S" 'enter it first (\*The run worktree\* step 3)' "a resumed run enters its run worktree first (#108)"
+  assert_not_contains "$S" 'a fenced block, written exactly' "the kickoff body is the text without its fence (#108)"
+  assert_not_contains "$S" 'print the command below, and stop' "a failed start also leaves the run worktree (#108)"
+  assert_not_contains "$S" 'Show the message, print the command, stop' "the red-flag row also leaves the run worktree (#108)"
+  assert_not_contains "$S" 'must be closed' "no session-must-be-closed rule (#108)"
+  assert_not_contains "$S" 'closed first' "no closed-first rule (#108)"
+  assert_not_contains "$S" 'chat can now close' "the chat-can-close line is replaced (#108)"
+  # Order: the leave is in step 5 (a /clear before step 5 stays in the run
+  # worktree), and the kickoff is written, then the session leaves, then it files.
+  _a="$(grep -n -F -m1 -- '5. **Ask how to start**' "$S" | cut -d: -f1)"
+  _b="$(grep -n -F -m1 -- 'Leave the run worktree' "$S" | cut -d: -f1)"
+  _c="$(grep -n -F -m1 -- '### Does not fit' "$S" | cut -d: -f1)"
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if [ -n "$_a" ] && [ -n "$_b" ] && [ -n "$_c" ] && [ "$_a" -lt "$_b" ] && [ "$_b" -lt "$_c" ]; then _pass "the leave is in step 5, after the question (#108)"
+  else _fail "the leave is in step 5, after the question (#108) ($_a, $_b, $_c)"; fi
+  _a="$(grep -n -F -m1 -- 'Write the kickoff to a new file' "$S" | cut -d: -f1)"
+  _b="$(grep -n -F -m1 -- '2. Leave the run worktree (below)' "$S" | cut -d: -f1)"
+  _c="$(grep -n -F -m1 -- 'issue create --title' "$S" | cut -d: -f1)"
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if [ -n "$_a" ] && [ -n "$_b" ] && [ -n "$_c" ] && [ "$_a" -lt "$_b" ] && [ "$_b" -lt "$_c" ]; then _pass "the kickoff is written, then the session leaves, then it files (#108)"
+  else _fail "the kickoff is written, then the session leaves, then it files (#108) ($_a, $_b, $_c)"; fi
+  # Hand to Multica is listed before autopilot starts it (it is the Recommended first choice).
+  _a="$(grep -n -F -m1 -- '- **hand to Multica**' "$S" | cut -d: -f1)"
+  _b="$(grep -n -F -m1 -- '- **autopilot starts it**' "$S" | cut -d: -f1)"
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if [ -n "$_a" ] && [ -n "$_b" ] && [ "$_a" -lt "$_b" ]; then _pass "hand to Multica is listed before autopilot starts it (#108)"
+  else _fail "hand to Multica is listed before autopilot starts it (#108) ($_a, $_b)"; fi
+  # No ExitWorktree before step 5: the planning loop (and a /clear in it) stays in the run worktree.
+  _a="$(grep -n -F -m1 -- '5. **Ask how to start**' "$S" | cut -d: -f1)"
+  _b="$(grep -n -F -m1 -- 'ExitWorktree' "$S" | cut -d: -f1)"
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if [ -n "$_a" ] && [ -n "$_b" ] && [ "$_a" -lt "$_b" ]; then _pass "no ExitWorktree appears before step 5 (#108)"
+  else _fail "no ExitWorktree appears before step 5 (#108) ($_a, $_b)"; fi
 }
