@@ -193,10 +193,10 @@ session (it is on `PATH` only inside a `claude-gd` session).
    - **hand to Multica** — the Multica agent that serves this project starts the run from a kickoff issue this session files; the session is free for other work once it has left the run worktree.
      Lookups, before sub-step 1: the CLI is the config's `cli=`, else `multica`. Every call is `'<cli>' --profile '<profile>' --workspace-id '<workspace_id>' …`, with `<workspace_id>` from the config's `workspace_id=`. `<profile>` is the one folder in `~/.multica/profiles/`: the operator's own desktop login, never the bridge's keychain token or its `cli-home`. The agent and the Multica project come from this project's notes or memory. Otherwise ask one `AskUserQuestion` with the choices from `'<cli>' … agent list` and `'<cli>' … project list` (it also asks the profile when `~/.multica/profiles/` holds none or several), and remember the answer in memory. Never write a guess to the board.
      1. Write the kickoff to a new file (`mktemp`), from the template below.
-     2. Leave the run worktree (below).
+     2. Leave the run worktree (below). When `ExitWorktree` reports no active worktree session, the kickoff file must not claim the session left: replace its line "The planning session has left the run worktree; an open session elsewhere is not a reason to wait." with exactly "The planning session was launched in the run worktree and is still there: wait for it under the rule below."
      3. File it: `'<cli>' … issue create --title 'Overnight run: <slug>' --description-file '<file>' --allow-external-file --project '<project id>' --assignee-id '<agent id>'`, and never `--allow-duplicate`: a refused duplicate is shown, not forced.
      4. Confirm with `'<cli>' … issue get <id>` that it exists with that assignee.
-     5. Report its identifier, then the reuse line.
+     5. Report its identifier, then the reuse line (or the launched-in-the-run-worktree message).
 
      Leaving comes before filing because assigning starts the agent at once: leaving afterwards would let its first check find this session still inside.
      On any failed call (CLI missing, logged out, a duplicate title refused), show the CLI's message and print the kickoff file to paste (README step 2, by hand). The session has already left the run worktree, so nothing more is needed from it.

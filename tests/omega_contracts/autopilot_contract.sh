@@ -374,6 +374,8 @@ test_autopilot_multica_handoff() {
   assert_contains "$S" 'was launched in the run worktree and cannot leave it' "a session launched inside says it cannot leave (#108)"
   assert_contains "$S" 'never print the reuse line' "and never prints the reuse line (#108)"
   assert_contains "$S" 'print the kickoff file' "a failed filing prints the kickoff to paste (#108)"
+  assert_contains "$S" 'The planning session was launched in the run worktree and is still there: wait for it under the rule below' "a session that cannot leave says so in the kickoff (#108)"
+  assert_contains "$S" 'then the reuse line (or the launched-in-the-run-worktree message)' "sub-step 5 names the launched-inside message too (#108)"
   assert_not_contains "$S" 'must be closed' "no session-must-be-closed rule (#108)"
   assert_not_contains "$S" 'closed first' "no closed-first rule (#108)"
   assert_not_contains "$S" 'chat can now close' "the chat-can-close line is replaced (#108)"
