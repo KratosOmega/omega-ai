@@ -363,6 +363,23 @@ test_agent_notify_only_rule() {
   assert_contains "$_ins" 'never resume, stop, say to or hold a story' "#85 never-rule (instructions)"
 }
 
+# #108: the agent waits only while a live session works inside a run or story worktree; a
+# kickoff that asks for the planning session to be closed means that check (both agent files).
+test_agent_session_wait_rule() {
+  _ins="$REPO_ROOT/integrations/multica/agent-instructions.md"
+  for _f in "$CTXSRC" "$_ins"; do
+    _n="$(basename "$_f")"
+    assert_contains "$_f" '^- Before you run anything in a run worktree or a story worktree' "#108 wait rule bullet ($_n)"
+    assert_contains "$_f" 're-check every 10 minutes for up to 2 hours, then comment and stop' "#108 wait bound ($_n)"
+    assert_contains "$_f" 'An open session anywhere else is never a reason to wait' "#108 open session elsewhere ($_n)"
+    assert_contains "$_f" '`$CLAUDE_CONFIG_DIR` and `~/.claude`' "#108 both config dirs ($_n)"
+    assert_contains "$_f" 'kill -0 <pid>' "#108 dead pid does not count ($_n)"
+    assert_contains "$_f" 'a kickoff that asks for a session to be closed or quit first means this check' "#108 old kickoff wording ($_n)"
+    assert_not_contains "$_f" 'must be closed' "#108 no must-be-closed rule ($_n)"
+    assert_not_contains "$_f" 'closed first' "#108 no closed-first rule ($_n)"
+  done
+}
+
 test_cm_rules_from_pwd() {
   reset
   go "$PROJ" "$CM" $MARGS
@@ -580,4 +597,4 @@ run_tests test_cm_version_passthrough test_cm_argv_order \
   test_agent_id_newline_no_injection test_claude_md_symlink_outside_skipped test_claude_md_bypass_shapes_skipped test_resolve_path_is_physical \
   test_context_temp_file_uses_mktemp test_cm_drops_inherited_origin test_context_path_planted \
   test_project_unsearchable_one_line test_agent_ignores_inherited_origin test_sq_non_utf8 test_scripts_parse \
-  test_multica_deny_hold_verbs test_agent_notify_only_rule
+  test_multica_deny_hold_verbs test_agent_notify_only_rule test_agent_session_wait_rule

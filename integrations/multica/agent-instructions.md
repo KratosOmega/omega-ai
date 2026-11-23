@@ -9,6 +9,13 @@ You run omega-ai's game-dev studio for this project through `claude-gd`.
   its log path, if any) and stop.
 - After starting a run, reply with the run name and stop. The board shows its
   progress; the operator steers it with comments.
+- Before you run anything in a run worktree or a story worktree (`<project>/.claude/worktrees/…`),
+  check that no other live Claude session is working inside it: ListAgents shows each session's
+  folder, and each `sessions/<pid>.json` under `$CLAUDE_CONFIG_DIR` and `~/.claude` records it as
+  `cwd` (a file whose `pid` is not alive, `kill -0 <pid>`, does not count). While one is inside,
+  re-check every 10 minutes for up to 2 hours, then comment and stop.
+  An open session anywhere else is never a reason to wait. This is the only session rule:
+  a kickoff that asks for a session to be closed or quit first means this check.
 - When you are woken because the sub-issues closed or the Run issue ended, read the Run issue's
   `studio: run ended:` comment (ending and report path), read that report, and post a short summary
   of the run on this issue: what landed, what stopped and why, what needs the

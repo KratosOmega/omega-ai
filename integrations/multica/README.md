@@ -119,8 +119,17 @@ mirrors each live run on its own Run issue.
      **approve**, then run `/omega:autopilot` again. Repeat until every story is
      planned.
    - It then seeds the stories, pushes, runs the readiness check and asks how
-     to start. Stop there.
-2. **Start (board).** Create an issue such as "Tonight: <slug>", assign it to
+     to start: pick **hand to Multica**.
+2. **Start (board).** Autopilot's **hand to Multica** files the kickoff issue
+   `Overnight run: <slug>` in the game's Multica project and assigns it to the
+   omega game-dev agent. It leaves the run worktree first, so you can `/clear`
+   the planning session and reuse it. The agent starts the run in the background
+   (the setup check can take minutes), replies with the run name and ends; the
+   runner keeps going. It waits only while a Claude session is working inside
+   the run worktree or a story worktree of the run, re-checking every 10 minutes
+   for up to 2 hours. An open session anywhere else is never a reason to wait.
+
+   To file it by hand instead: create an issue such as "Tonight: <slug>", assign it to
    the omega game-dev agent, and ask it to start the overnight run
    `docs/runs/<slug>.md` from the run worktree
    `<project>/.claude/worktrees/run-<slug>`. The manifest is only on
